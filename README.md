@@ -43,11 +43,33 @@ brew install ffmpeg
 
 Windows recommendation: install FFmpeg via winget/chocolatey or bundle a vetted binary in a future packaged release.
 
-## First smoke test
+## First local development run
+
+Detailed instructions are in `docs/development_first_run.md`. The shortest path is:
 
 ```bash
-vslp project init --output-root examples/demo_project/output --project-name demo
-vslp acoustic ingest --input examples/demo_project/input --output-root examples/demo_project/output
+# 1) Create optional synthetic local test files.
+python scripts/create_test_audio.py
+
+# 2) Create a project/output folder.
+vslp project init examples/test_runs/run_001 --project-name "VSLP smoke test"
+
+# 3) Digest the media files with ffprobe.
+vslp acoustic ingest examples/test_data/audio_inputs examples/test_runs/run_001
+
+# 4) Decode/canonicalize/preprocess with ffmpeg and write QC outputs.
+vslp acoustic preprocess examples/test_data/audio_inputs examples/test_runs/run_001
+
+# 5) Run Silero segmentation after installing the optional Silero dependency.
+vslp acoustic segment-silero \
+  examples/test_runs/run_001/acoustic/002_preprocess/tables/acoustic_preprocess_summary.csv \
+  examples/test_runs/run_001
+```
+
+For initial development without Silero, run:
+
+```bash
+vslp acoustic run-v1 examples/test_data/audio_inputs examples/test_runs/run_002 --skip-segmentation
 ```
 
 ## Repository layout
