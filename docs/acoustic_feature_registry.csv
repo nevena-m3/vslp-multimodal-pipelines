@@ -1,0 +1,74 @@
+feature,subsystem,meaning,unit,computation_note
+speech_rate,respiratory_timing,Bamboo words per minute over effective task duration,words/min,RMS/Silero-assisted silence and pause timing.
+total_dur,respiratory_timing,Effective analyzed duration after trimming leading/trailing silence,s,RMS/Silero-assisted silence and pause timing.
+speech_dur,respiratory_timing,Total non-silent phrase duration inside effective task interval,s,RMS/Silero-assisted silence and pause timing.
+percent_pause,respiratory_timing,Internal pause duration divided by effective duration,proportion,RMS/Silero-assisted silence and pause timing.
+num_pause,respiratory_timing,Number of internal pauses meeting minimum pause duration,count,RMS/Silero-assisted silence and pause timing.
+mean_pause_dur,respiratory_timing,Mean internal pause duration,s,RMS/Silero-assisted silence and pause timing.
+mean_phrase_dur,respiratory_timing,Mean speech phrase duration between pauses,s,RMS/Silero-assisted silence and pause timing.
+cv_pause_dur,respiratory_timing,Coefficient of variation of internal pause durations,unitless,RMS/Silero-assisted silence and pause timing.
+cv_phrase_dur,respiratory_timing,Coefficient of variation of speech phrase durations,unitless,RMS/Silero-assisted silence and pause timing.
+total_pause_dur,respiratory_timing,Total internal pause duration,s,RMS/Silero-assisted silence and pause timing.
+f1,resonatory,Median F1 across selected high-energy short frames,Hz,LPC/formant plugin; verify against reference notebook.
+f2,resonatory,Median F2 across selected high-energy short frames,Hz,LPC/formant plugin; verify against reference notebook.
+f3,resonatory,Median F3 across selected high-energy short frames,Hz,LPC/formant plugin; verify against reference notebook.
+f4,resonatory,Median F4 across selected high-energy short frames,Hz,LPC/formant plugin; verify against reference notebook.
+f5,resonatory,Median F5 across selected high-energy short frames,Hz,LPC/formant plugin; verify against reference notebook.
+f1_bw,resonatory,Median F1 bandwidth across selected high-energy short frames,Hz,LPC root bandwidth.
+f2_bw,resonatory,Median F2 bandwidth across selected high-energy short frames,Hz,LPC root bandwidth.
+f3_bw,resonatory,Median F3 bandwidth across selected high-energy short frames,Hz,LPC root bandwidth.
+f4_bw,resonatory,Median F4 bandwidth across selected high-energy short frames,Hz,LPC root bandwidth.
+f5_bw,resonatory,Median F5 bandwidth across selected high-energy short frames,Hz,LPC root bandwidth.
+f1_d_dx_median,articulatory,F1 Median first derivative over selected formant track,Hz/s,Gradient over selected high-energy frame times.
+f1_d_dx_prc_5,articulatory,F1 5th percentile of first derivative over selected formant track,Hz/s,Gradient over selected high-energy frame times.
+f1_d_dx_prc_95,articulatory,F1 95th percentile of first derivative over selected formant track,Hz/s,Gradient over selected high-energy frame times.
+f1_d_dx_prc_5_95,articulatory,F1 95th minus 5th percentile derivative range,Hz/s,Gradient over selected high-energy frame times.
+f2_d_dx_median,articulatory,F2 Median first derivative over selected formant track,Hz/s,Gradient over selected high-energy frame times.
+f2_d_dx_prc_5,articulatory,F2 5th percentile of first derivative over selected formant track,Hz/s,Gradient over selected high-energy frame times.
+f2_d_dx_prc_95,articulatory,F2 95th percentile of first derivative over selected formant track,Hz/s,Gradient over selected high-energy frame times.
+f2_d_dx_prc_5_95,articulatory,F2 95th minus 5th percentile derivative range,Hz/s,Gradient over selected high-energy frame times.
+f3_d_dx_median,articulatory,F3 Median first derivative over selected formant track,Hz/s,Gradient over selected high-energy frame times.
+f3_d_dx_prc_5,articulatory,F3 5th percentile of first derivative over selected formant track,Hz/s,Gradient over selected high-energy frame times.
+f3_d_dx_prc_95,articulatory,F3 95th percentile of first derivative over selected formant track,Hz/s,Gradient over selected high-energy frame times.
+f3_d_dx_prc_5_95,articulatory,F3 95th minus 5th percentile derivative range,Hz/s,Gradient over selected high-energy frame times.
+f1_range,articulatory,Robust F1 range: 95th minus 5th percentile,Hz,Computed over selected high-energy frames.
+f2_range,articulatory,Robust F2 range: 95th minus 5th percentile,Hz,Computed over selected high-energy frames.
+f3_range,articulatory,Robust F3 range: 95th minus 5th percentile,Hz,Computed over selected high-energy frames.
+f0_mean,phonatory,Mean voiced fundamental frequency,Hz,librosa.yin or validated F0 plugin.
+f0_std,phonatory,Standard deviation of voiced fundamental frequency,Hz,librosa.yin or validated F0 plugin.
+CPP_mean,phonatory,Mean cepstral peak prominence proxy,dB-like,Cepstral peak prominence over selected high-energy frames.
+CPP_F1_comp,coordination,Complexity index for CPP and F1 tracks,index,PCA components explaining 95% variance.
+CPP_F2_comp,coordination,Complexity index for CPP and F2 tracks,index,PCA components explaining 95% variance.
+F1_F2_comp,coordination,Complexity index for F1 and F2 tracks,index,PCA components explaining 95% variance.
+intensity_CV,rhythm,Coefficient of variation of RMS intensity,unitless,Envelope modulation spectrum from filtered amplitude envelope.
+fft_peaks1,rhythm,Strongest envelope modulation frequency,Hz,Envelope modulation spectrum from filtered amplitude envelope.
+fft_peaks2,rhythm,Second strongest envelope modulation frequency,Hz,Envelope modulation spectrum from filtered amplitude envelope.
+fft_ampli1,rhythm,Amplitude at strongest envelope modulation peak,a.u.,Envelope modulation spectrum from filtered amplitude envelope.
+fft_ampli2,rhythm,Amplitude at second envelope modulation peak,a.u.,Envelope modulation spectrum from filtered amplitude envelope.
+nrj_below_boundary,rhythm,Envelope modulation energy below 4 Hz,proportion,Envelope modulation spectrum from filtered amplitude envelope.
+nrj_above_boundary,rhythm,Envelope modulation energy from 4 to 10 Hz,proportion,Envelope modulation spectrum from filtered amplitude envelope.
+nrj_3_6,rhythm,Envelope modulation energy from 3 to 6 Hz,proportion,Envelope modulation spectrum from filtered amplitude envelope.
+ratio_below_above,rhythm,Energy below 4 Hz divided by energy 4 to 10 Hz,ratio,Envelope modulation spectrum from filtered amplitude envelope.
+A1P0,resonatory,Amplitude difference between F1-region peak and low-frequency nasal-region peak,dB,Welch spectrum plus F0/formant summaries; verify feature validity by task.
+A1P0comp,resonatory,Binary/continuous compression proxy for A1-P0 relation,dB,Welch spectrum plus F0/formant summaries; verify feature validity by task.
+A1P1,resonatory,Amplitude difference between F1-region peak and ~1 kHz nasal-region peak,dB,Welch spectrum plus F0/formant summaries; verify feature validity by task.
+A1P1comp,resonatory,Binary/continuous compression proxy for A1-P1 relation,dB,Welch spectrum plus F0/formant summaries; verify feature validity by task.
+A3P0,resonatory,Amplitude difference between F3-region peak and low-frequency nasal-region peak,dB,Welch spectrum plus F0/formant summaries; verify feature validity by task.
+F1freq,resonatory,Frequency of F1-region spectral peak,Hz,Welch spectrum plus F0/formant summaries; verify feature validity by task.
+F1amp,resonatory,Amplitude of F1-region spectral peak,dB,Welch spectrum plus F0/formant summaries; verify feature validity by task.
+F1width,resonatory,Approximate F1 bandwidth from LPC summary,Hz,Welch spectrum plus F0/formant summaries; verify feature validity by task.
+F2freq,resonatory,Frequency of F2-region spectral peak,Hz,Welch spectrum plus F0/formant summaries; verify feature validity by task.
+F2amp,resonatory,Amplitude of F2-region spectral peak,dB,Welch spectrum plus F0/formant summaries; verify feature validity by task.
+F2width,resonatory,Approximate F2 bandwidth from LPC summary,Hz,Welch spectrum plus F0/formant summaries; verify feature validity by task.
+F3freq,resonatory,Frequency of F3-region spectral peak,Hz,Welch spectrum plus F0/formant summaries; verify feature validity by task.
+F3amp,resonatory,Amplitude of F3-region spectral peak,dB,Welch spectrum plus F0/formant summaries; verify feature validity by task.
+F3width,resonatory,Approximate F3 bandwidth from LPC summary,Hz,Welch spectrum plus F0/formant summaries; verify feature validity by task.
+H1freq,resonatory,Estimated first harmonic frequency,Hz,Welch spectrum plus F0/formant summaries; verify feature validity by task.
+H1amp,resonatory,Amplitude around first harmonic,dB,Welch spectrum plus F0/formant summaries; verify feature validity by task.
+H2freq,resonatory,Estimated second harmonic frequency,Hz,Welch spectrum plus F0/formant summaries; verify feature validity by task.
+H2amp,resonatory,Amplitude around second harmonic,dB,Welch spectrum plus F0/formant summaries; verify feature validity by task.
+P0freq,resonatory,Low-frequency nasal-region peak frequency,Hz,Welch spectrum plus F0/formant summaries; verify feature validity by task.
+P0amp,resonatory,Low-frequency nasal-region peak amplitude,dB,Welch spectrum plus F0/formant summaries; verify feature validity by task.
+P0prom,resonatory,P0 prominence over local spectral median,dB,Welch spectrum plus F0/formant summaries; verify feature validity by task.
+P1amp,resonatory,~1 kHz nasal-region peak amplitude,dB,Welch spectrum plus F0/formant summaries; verify feature validity by task.
+RMSamp,resonatory,Global RMS amplitude,linear,Welch spectrum plus F0/formant summaries; verify feature validity by task.

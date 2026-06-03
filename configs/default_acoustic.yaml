@@ -1,0 +1,93 @@
+project:
+  title: "VSLP"
+  mode: "research_use_only"
+  privacy: "local_only"
+
+metadata:
+  demographics_csv: null
+  required_columns:
+    - subject_id
+    - session_id
+    - iteration
+    - task
+    - recording_date
+    - diagnosis
+    - severity_score
+    - severity_bin
+    - file_name
+  filename_parsing:
+    enabled: true
+    pattern: "{subject_id}_{session_id}_{task}"
+
+ingest:
+  accepted_extensions: [".wav", ".mp3", ".mp4", ".m4a", ".ogg", ".flac", ".aac", ".aiff", ".webm", ".mov"]
+  canonical_audio_format: "pcm_s16le_wav"
+  preserve_originals: true
+
+preprocess:
+  dc_offset_removal: true
+  stereo_policy: "best_channel_by_snr_then_mono"
+  segmentation_sample_rate_hz: 16000
+  feature_sample_rate_hz: null
+  clipping:
+    full_scale_threshold: 0.999
+    near_full_scale_threshold: 0.98
+    min_consecutive_clipped_samples: 3
+  snr:
+    method: "vad_or_low_energy_noise_floor"
+  powerline:
+    detect: true
+    frequencies_hz: [50, 60]
+    include_harmonics: true
+    apply_notch_by_default: false
+  filters:
+    enabled: false
+    highpass:
+      enabled: false
+      cutoff_hz: 50
+      order: 4
+    lowpass:
+      enabled: false
+      cutoff_hz: 7600
+      order: 6
+    bandpass:
+      enabled: false
+      lowcut_hz: 50
+      highcut_hz: 7600
+      order: 4
+    notch:
+      enabled: false
+      center_hz: 60
+      q: 30
+
+segmentation:
+  method: "silero_vad"
+  available_methods: ["silero_vad", "energy_rms", "custom_plugin"]
+  silero_vad:
+    threshold: 0.5
+    min_speech_duration_ms: 250
+    min_silence_duration_ms: 100
+    speech_pad_ms: 50
+    return_seconds: false
+    frame_ms: 30
+  energy_rms:
+    frame_ms: 30
+    hop_ms: 10
+    threshold_db: null
+
+features:
+  default_selection: "all"
+  subsystems:
+    - respiratory_timing
+    - phonatory
+    - articulatory
+    - resonatory
+    - rhythm
+    - coordination
+  bamboo_word_count: 99
+
+aggregation:
+  level: "file_task"
+  missing_policy: "retain_nan_and_report"
+  export_csv: true
+  export_parquet: true
