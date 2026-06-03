@@ -1,0 +1,14 @@
+# Task-level word counts used only when computing speech_rate.
+# Edit these after confirming your exact task scripts.
+# speech_rate = word_count / effective_speaking_duration_sec * 60
+bamboo: 99
+sentence_reading: 100
+buy_bobby_a_puppy: 4
+vc3g: 0
+sustained_vowel: 0
+sustained_vowel_a: 0
+ddk: 0
+ddk_pa: 0
+ddk_ta: 0
+ddk_ka: 0
+ddk_pataka: 0

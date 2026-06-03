@@ -58,6 +58,7 @@ class FeatureExtractionConfig:
     selected_subsystems: list[str] = field(default_factory=list)
     selected_features: list[str] = field(default_factory=list)
     task_word_counts: dict[str, float] = field(default_factory=dict)
+    metadata_csv: str | None = None
     minimum_pause_duration_sec: float = 0.15
 
     def to_dict(self) -> dict[str, Any]:
@@ -143,6 +144,23 @@ def run_acoustic_feature_extraction(
 
     registry = _select_registry(cfg)
     seg_summary = pd.read_csv(segmentation_summary_csv)
+    if cfg.metadata_csv:
+        metadata_path = Path(cfg.metadata_csv).expanduser()
+        if metadata_path.exists():
+            meta = pd.read_csv(metadata_path)
+            if "file_name" in meta.columns:
+                keep_cols = [c for c in ["file_name", "subject_id", "session_id", "iteration", "task", "recording_date", "diagnosis", "severity_score", "severity_bin", "record_key"] if c in meta.columns]
+                seg_summary = seg_summary.merge(meta[keep_cols], on="file_name", how="left", suffixes=("", "_metadata"))
+                for col in ["subject_id", "session_id", "iteration", "task", "recording_date", "diagnosis", "severity_score", "severity_bin", "record_key"]:
+                    mcol = f"{col}_metadata"
+                    if mcol in seg_summary.columns:
+                        if col in seg_summary.columns:
+                            seg_summary[col] = seg_summary[col].combine_first(seg_summary[mcol])
+                        else:
+                            seg_summary[col] = seg_summary[mcol]
+                        seg_summary = seg_summary.drop(columns=[mcol])
+        else:
+            raise FileNotFoundError(f"metadata_csv was provided but does not exist: {metadata_path}")
 
     rows: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
@@ -154,7 +172,15 @@ def run_acoustic_feature_extraction(
             "file_name": file_name,
             "source_file_path": row.get("source_file_path", row.get("file_path")),
             "segmentation_wav_path": row.get("segmentation_wav_path"),
+            "subject_id": row.get("subject_id", np.nan),
+            "session_id": row.get("session_id", np.nan),
+            "iteration": row.get("iteration", np.nan),
             "task": row.get("task", np.nan),
+            "recording_date": row.get("recording_date", np.nan),
+            "diagnosis": row.get("diagnosis", np.nan),
+            "severity_score": row.get("severity_score", np.nan),
+            "severity_bin": row.get("severity_bin", np.nan),
+            "record_key": row.get("record_key", np.nan),
             "duration_sec": row.get("duration_sec", np.nan),
         }
         try:
