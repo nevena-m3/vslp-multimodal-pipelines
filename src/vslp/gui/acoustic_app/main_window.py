@@ -1,6 +1,6 @@
-"""VSLP Acoustic Pipeline GUI v0.14.
+"""VSLP Acoustic Pipeline GUI v0.15.
 
-V0.14 product-design correction:
+V0.15 product-design correction:
 - stage-aware workflow guidance with scientific rationale;
 - embedded CSV and plot previews;
 - latest-output detection;
@@ -41,6 +41,7 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QSplitter,
     QTableWidget,
@@ -110,6 +111,7 @@ class AcousticPipelineWindow(QMainWindow):
         self.resize(1480, 900)
         self.setMinimumSize(1180, 760)
         self._current_preview_pixmap: QPixmap | None = None
+        self._current_preview_path: Path | None = None
 
         self.registry = build_acoustic_feature_registry()
         self._updating_feature_tree = False
@@ -628,63 +630,139 @@ class AcousticPipelineWindow(QMainWindow):
         return self._scrollable(container)
 
     def _build_inspector_tab(self) -> QWidget:
+        """Build an inspector with left-side controls and right-side previews.
+
+        Product design rule for v0.15:
+        - controls live in a compact left rail;
+        - previews live in a large right canvas;
+        - plot preview receives a near-square high-contrast viewport;
+        - tables retain the same professional outline and are not mixed with plot controls.
+        """
         container = QWidget()
         layout = QVBoxLayout(container)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(10)
         layout.addWidget(self._info_panel(
             "Visual inspection layer",
-            "The Inspector previews output tables and generated PNG plots directly inside the GUI. Full files remain on disk for audit, publication graphics, and downstream analysis."
+            "Preview generated tables and plots without leaving the GUI. Use the left panel to choose an artifact; the right panel provides a large, audit-friendly preview. Full files remain on disk for reproducibility and publication-quality inspection."
         ))
-        controls_group = QGroupBox("Table previews")
-        controls = QGridLayout(controls_group)
-        table_buttons = [
-            ("Metadata", lambda: self.preview_csv(self._metadata_index_path())),
-            ("Ingest", lambda: self.preview_csv(self._stage_path("ingest", "summary"))),
-            ("Preprocess", lambda: self.preview_csv(self._stage_path("preprocess", "summary"))),
-            ("Segmentation", lambda: self.preview_csv(self._stage_path("segment", "summary"))),
-            ("Features", lambda: self.preview_csv(self._stage_path("features", "summary"))),
-            ("Aggregated", lambda: self.preview_csv(self._stage_path("aggregate", "summary"))),
-            ("QC", lambda: self.preview_csv(self._stage_path("qc", "summary"))),
-        ]
-        for i, (label, callback) in enumerate(table_buttons):
-            btn = QPushButton(label)
-            btn.clicked.connect(callback)
-            controls.addWidget(btn, i // 4, i % 4)
-        layout.addWidget(controls_group)
 
-        plot_group = QGroupBox("Plot previews")
-        plot_controls = QGridLayout(plot_group)
-        plot_buttons = [
-            ("Segmentation Plot", self.preview_latest_segmentation_plot),
-            ("Feature Missingness", lambda: self.preview_image(self._features_plot_path("feature_missingness.png"))),
-            ("Feature Status", lambda: self.preview_image(self._features_plot_path("feature_subsystem_implementation_status.png"))),
-            ("Feature Distributions", lambda: self.preview_image(self._features_plot_path("implemented_feature_distributions.png"))),
-            ("Aggregation Missingness", lambda: self.preview_image(self._output_root() / "acoustic" / "005_aggregation" / "plots" / "aggregation_missingness_top30.png")),
-            ("QC Flags", lambda: self.preview_image(self._output_root() / "acoustic" / "006_qc_dashboard" / "plots" / "qc_flag_counts.png")),
-            ("QC SNR", lambda: self.preview_image(self._output_root() / "acoustic" / "006_qc_dashboard" / "plots" / "qc_snr_distribution.png")),
-            ("QC Speech Fraction", lambda: self.preview_image(self._output_root() / "acoustic" / "006_qc_dashboard" / "plots" / "qc_speech_fraction_distribution.png")),
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.setChildrenCollapsible(False)
+
+        controls_panel = QFrame()
+        controls_panel.setObjectName("Card")
+        controls_panel.setMinimumWidth(260)
+        controls_panel.setMaximumWidth(360)
+        controls_layout = QVBoxLayout(controls_panel)
+        controls_layout.setContentsMargins(12, 12, 12, 12)
+        controls_layout.setSpacing(10)
+
+        table_group = QGroupBox("Table previews")
+        table_layout = QVBoxLayout(table_group)
+        table_layout.setSpacing(7)
+        table_buttons = [
+            ("Metadata file index", lambda: self.preview_csv(self._metadata_index_path())),
+            ("Ingest summary", lambda: self.preview_csv(self._stage_path("ingest", "summary"))),
+            ("Preprocess summary", lambda: self.preview_csv(self._stage_path("preprocess", "summary"))),
+            ("Segmentation summary", lambda: self.preview_csv(self._stage_path("segment", "summary"))),
+            ("Feature table", lambda: self.preview_csv(self._stage_path("features", "summary"))),
+            ("Aggregated table", lambda: self.preview_csv(self._stage_path("aggregate", "summary"))),
+            ("QC dashboard", lambda: self.preview_csv(self._stage_path("qc", "summary"))),
         ]
-        for i, (label, callback) in enumerate(plot_buttons):
+        for label, callback in table_buttons:
             btn = QPushButton(label)
             btn.setObjectName("OpenButton")
             btn.clicked.connect(callback)
-            plot_controls.addWidget(btn, i // 4, i % 4)
-        layout.addWidget(plot_group)
+            table_layout.addWidget(btn)
 
-        self.inspector_status = QLabel("Preview tables and plots after stages have run.")
+        plot_group = QGroupBox("Plot previews")
+        plot_layout = QVBoxLayout(plot_group)
+        plot_layout.setSpacing(7)
+        plot_buttons = [
+            ("Latest segmentation plot", self.preview_latest_segmentation_plot),
+            ("Feature missingness", lambda: self.preview_image(self._features_plot_path("feature_missingness.png"))),
+            ("Feature implementation status", lambda: self.preview_image(self._features_plot_path("feature_subsystem_implementation_status.png"))),
+            ("Feature distributions", lambda: self.preview_image(self._features_plot_path("implemented_feature_distributions.png"))),
+            ("Aggregation missingness", lambda: self.preview_image(self._output_root() / "acoustic" / "005_aggregation" / "plots" / "aggregation_missingness_top30.png")),
+            ("Aggregation group counts", lambda: self.preview_image(self._output_root() / "acoustic" / "005_aggregation" / "plots" / "aggregation_group_counts.png")),
+            ("QC flag counts", lambda: self.preview_image(self._output_root() / "acoustic" / "006_qc_dashboard" / "plots" / "qc_flag_counts.png")),
+            ("QC SNR distribution", lambda: self.preview_image(self._output_root() / "acoustic" / "006_qc_dashboard" / "plots" / "qc_snr_distribution.png")),
+            ("QC speech fraction", lambda: self.preview_image(self._output_root() / "acoustic" / "006_qc_dashboard" / "plots" / "qc_speech_fraction_distribution.png")),
+        ]
+        for label, callback in plot_buttons:
+            btn = QPushButton(label)
+            btn.setObjectName("OpenButton")
+            btn.clicked.connect(callback)
+            plot_layout.addWidget(btn)
+
+        utility_group = QGroupBox("Utilities")
+        utility_layout = QVBoxLayout(utility_group)
+        utility_layout.setSpacing(7)
+        refresh_btn = QPushButton("Refresh latest outputs")
+        refresh_btn.clicked.connect(self.refresh_latest_outputs)
+        open_current_btn = QPushButton("Open current preview file")
+        open_current_btn.setObjectName("OpenButton")
+        open_current_btn.clicked.connect(self.open_current_preview_file)
+        open_output_btn = QPushButton("Open output project folder")
+        open_output_btn.setObjectName("OpenButton")
+        open_output_btn.clicked.connect(self.open_output_root)
+        utility_layout.addWidget(refresh_btn)
+        utility_layout.addWidget(open_current_btn)
+        utility_layout.addWidget(open_output_btn)
+
+        controls_layout.addWidget(table_group)
+        controls_layout.addWidget(plot_group)
+        controls_layout.addWidget(utility_group)
+        controls_layout.addStretch(1)
+
+        controls_scroll = QScrollArea()
+        controls_scroll.setWidgetResizable(True)
+        controls_scroll.setWidget(controls_panel)
+        controls_scroll.setMinimumWidth(290)
+        controls_scroll.setMaximumWidth(390)
+
+        preview_panel = QFrame()
+        preview_panel.setObjectName("Card")
+        preview_layout = QVBoxLayout(preview_panel)
+        preview_layout.setContentsMargins(12, 12, 12, 12)
+        preview_layout.setSpacing(10)
+
+        self.inspector_status = QLabel("Select a table or plot from the left panel.")
         self.inspector_status.setObjectName("SubtitleLabel")
-        layout.addWidget(self.inspector_status)
+        self.inspector_status.setWordWrap(True)
+        preview_layout.addWidget(self.inspector_status)
 
         self.preview_tabs = QTabWidget()
         self.preview_table = QTableWidget()
         self.preview_table.setAlternatingRowColors(True)
+        self.preview_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.preview_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.preview_table.verticalHeader().setVisible(False)
+
+        plot_canvas = QFrame()
+        plot_canvas.setObjectName("PlotCanvas")
+        plot_canvas_layout = QVBoxLayout(plot_canvas)
+        plot_canvas_layout.setContentsMargins(12, 12, 12, 12)
         self.preview_image_label = QLabel("No plot selected")
+        self.preview_image_label.setObjectName("PlotPreviewLabel")
         self.preview_image_label.setAlignment(Qt.AlignCenter)
-        self.preview_image_label.setMinimumHeight(360)
-        self.preview_image_label.setStyleSheet("background-color:#0E1B2A; border:1px solid #30495F; border-radius:10px; padding:10px;")
+        self.preview_image_label.setMinimumSize(560, 560)
+        self.preview_image_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.preview_image_label.setScaledContents(False)
+        plot_canvas_layout.addWidget(self.preview_image_label, stretch=1)
+
         self.preview_tabs.addTab(self.preview_table, "Table Preview")
-        self.preview_tabs.addTab(self.preview_image_label, "Plot Preview")
-        layout.addWidget(self.preview_tabs, stretch=1)
+        self.preview_tabs.addTab(plot_canvas, "Plot Preview")
+        preview_layout.addWidget(self.preview_tabs, stretch=1)
+
+        splitter.addWidget(controls_scroll)
+        splitter.addWidget(preview_panel)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([320, 980])
+
+        layout.addWidget(splitter, stretch=1)
         return container
 
     def _build_reports_tab(self) -> QWidget:
@@ -927,7 +1005,8 @@ class AcousticPipelineWindow(QMainWindow):
         for r in range(len(df)):
             for c, col in enumerate(df.columns):
                 self.preview_table.setItem(r, c, QTableWidgetItem(str(df.iloc[r, c])))
-        self.inspector_status.setText(f"Previewing first {len(df)} rows: {path}")
+        self._current_preview_path = path
+        self.inspector_status.setText(f"Table preview: first {len(df)} rows from {path}")
         self.preview_tabs.setCurrentWidget(self.preview_table)
 
     def preview_image(self, path: Path) -> None:
@@ -939,21 +1018,36 @@ class AcousticPipelineWindow(QMainWindow):
             QMessageBox.warning(self, "Preview failed", f"Could not load image:\n{path}")
             return
         self._current_preview_pixmap = pix
+        self._current_preview_path = path
+        self.preview_tabs.setCurrentIndex(1)
         self._update_preview_image_scaled()
-        self.inspector_status.setText(f"Previewing plot: {path}")
-        self.preview_tabs.setCurrentWidget(self.preview_image_label)
+        self.inspector_status.setText(f"Plot preview: {path}")
 
     def _update_preview_image_scaled(self) -> None:
         if not getattr(self, "_current_preview_pixmap", None) or not hasattr(self, "preview_image_label"):
             return
-        target_w = max(480, self.preview_image_label.width() - 24)
-        target_h = max(320, self.preview_image_label.height() - 24)
-        scaled = self._current_preview_pixmap.scaled(target_w, target_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        # Use a near-square canvas for scientific plot inspection.
+        # The image is never distorted; it is fitted into the available canvas.
+        avail_w = max(420, self.preview_image_label.width() - 20)
+        avail_h = max(420, self.preview_image_label.height() - 20)
+        square = max(420, min(avail_w, avail_h))
+        scaled = self._current_preview_pixmap.scaled(square, square, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self.preview_image_label.setPixmap(scaled)
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override
         super().resizeEvent(event)
         self._update_preview_image_scaled()
+
+
+    def open_current_preview_file(self) -> None:
+        if not getattr(self, "_current_preview_path", None):
+            QMessageBox.information(self, "No preview selected", "Select a table or plot preview first.")
+            return
+        path = Path(self._current_preview_path)
+        if not path.exists():
+            QMessageBox.information(self, "Missing file", f"The current preview file no longer exists:\n{path}")
+            return
+        open_path(path)
 
     def preview_latest_segmentation_plot(self) -> None:
         plot_dir = self._output_root() / "acoustic" / "003_segmentation" / "plots"
