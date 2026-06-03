@@ -21,9 +21,11 @@ app = typer.Typer(help="VSLP multimodal pipelines")
 project_app = typer.Typer(help="Project management")
 acoustic_app = typer.Typer(help="Acoustic pipeline")
 features_app = typer.Typer(help="Feature utilities")
+gui_app = typer.Typer(help="Desktop GUIs")
 app.add_typer(project_app, name="project")
 app.add_typer(acoustic_app, name="acoustic")
 app.add_typer(features_app, name="features")
+app.add_typer(gui_app, name="gui")
 
 
 @app.command("doctor")
@@ -143,6 +145,17 @@ def acoustic_run_v1(
             typer.echo(f"{name}: skipped")
         else:
             typer.echo(f"{name}: {result.status} | summary={result.summary_table} | manifest={result.manifest_path}")
+
+
+@gui_app.command("acoustic")
+def gui_acoustic():
+    """Launch the acoustic pipeline desktop GUI."""
+    try:
+        from vslp.gui.acoustic_app.app import launch_acoustic_gui
+        raise typer.Exit(code=launch_acoustic_gui())
+    except RuntimeError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=1)
 
 
 @features_app.command("registry")
