@@ -10,6 +10,7 @@ from pathlib import Path
 import typer
 
 from vslp.acoustic.features.registry import build_acoustic_feature_registry
+from vslp.acoustic.features.stage import FeatureExtractionConfig, run_acoustic_feature_extraction
 from vslp.acoustic.ingest.stage import run_acoustic_ingest
 from vslp.acoustic.pipeline.run_preprocess_to_segmentation import run_acoustic_ingest_preprocess_segment
 from vslp.acoustic.preprocess.stage import FilterConfig, PreprocessConfig, run_acoustic_preprocess
@@ -145,6 +146,26 @@ def acoustic_run_v1(
             typer.echo(f"{name}: skipped")
         else:
             typer.echo(f"{name}: {result.status} | summary={result.summary_table} | manifest={result.manifest_path}")
+
+
+@acoustic_app.command("extract-features")
+def acoustic_extract_features(
+    segmentation_summary_csv: Path,
+    output_root: Path,
+    minimum_pause_duration_sec: float = 0.15,
+):
+    """Extract currently implemented acoustic features from segmentation outputs."""
+    cfg = FeatureExtractionConfig(minimum_pause_duration_sec=minimum_pause_duration_sec)
+    result = run_acoustic_feature_extraction(
+        segmentation_summary_csv=segmentation_summary_csv,
+        output_root=output_root,
+        config=cfg,
+    )
+    typer.echo(f"Status: {result.status}")
+    typer.echo(f"Features: {result.summary_table}")
+    typer.echo(f"Errors: {result.error_table}")
+    typer.echo(f"Report: {result.report_path}")
+    typer.echo(f"Manifest: {result.manifest_path}")
 
 
 @gui_app.command("acoustic")

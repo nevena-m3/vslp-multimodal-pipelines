@@ -1,4 +1,4 @@
-"""VSLP Acoustic Pipeline GUI v0.1.
+"""VSLP Acoustic Pipeline GUI v0.2.
 
 This first GUI wraps the validated backend stages:
 - project setup
@@ -42,6 +42,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from vslp.acoustic.features.registry import build_acoustic_feature_registry
+from vslp.acoustic.features.stage import FeatureExtractionConfig, run_acoustic_feature_extraction
 from vslp.acoustic.ingest.stage import run_acoustic_ingest
 from vslp.acoustic.preprocess.stage import FilterConfig, PreprocessConfig, run_acoustic_preprocess
 from vslp.acoustic.segment.stage import run_acoustic_segmentation_silero
@@ -94,6 +96,7 @@ class AcousticPipelineWindow(QMainWindow):
             "ingest": StageRecord(),
             "preprocess": StageRecord(),
             "segment": StageRecord(),
+            "features": StageRecord(),
         }
         self._thread: QThread | None = None
         self._worker: Worker | None = None
@@ -118,7 +121,7 @@ class AcousticPipelineWindow(QMainWindow):
 
         title = QLabel("VSLP")
         title.setObjectName("TitleLabel")
-        subtitle = QLabel("Acoustic Pipeline GUI v0.1\nValidated stages first, polished workflow next.")
+        subtitle = QLabel("Acoustic Pipeline GUI v0.2\nValidated stages first, polished workflow next.")
         subtitle.setObjectName("SubtitleLabel")
         side_layout.addWidget(title)
         side_layout.addWidget(subtitle)
@@ -129,6 +132,7 @@ class AcousticPipelineWindow(QMainWindow):
             ("ingest", "Ingest"),
             ("preprocess", "Preprocess"),
             ("segment", "Silero Segmentation"),
+            ("features", "Feature Extraction"),
         ]:
             card = QFrame()
             card.setObjectName("Card")
@@ -165,7 +169,7 @@ class AcousticPipelineWindow(QMainWindow):
         banner_title = QLabel("Professional local research workflow")
         banner_title.setObjectName("TitleLabel")
         banner_sub = QLabel(
-            "This GUI wraps the validated CLI/backend stages for ingest, preprocessing, and Silero segmentation. "
+            "This GUI wraps the validated CLI/backend stages for ingest, preprocessing, Silero segmentation, and first feature extraction. "
             "All outputs remain fully reproducible on disk."
         )
         banner_sub.setObjectName("SubtitleLabel")
@@ -177,6 +181,7 @@ class AcousticPipelineWindow(QMainWindow):
         tabs.addTab(self._build_setup_tab(), "Setup")
         tabs.addTab(self._build_preprocess_tab(), "Preprocess")
         tabs.addTab(self._build_segment_tab(), "Segmentation")
+        tabs.addTab(self._build_features_tab(), "Features")
         tabs.addTab(self._build_reports_tab(), "Reports & Outputs")
         main_col.addWidget(tabs, stretch=1)
 
@@ -313,6 +318,65 @@ class AcousticPipelineWindow(QMainWindow):
         layout.addStretch(1)
         return container
 
+    def _build_features_tab(self) -> QWidget:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+
+        intro = QLabel(
+            "This first feature layer computes validated timing/respiratory features from Silero segments. "
+            "The remaining registered acoustic features are listed and emitted as explicit NaN placeholders until their implementations are validated against the uploaded notebook."
+        )
+        intro.setWordWrap(True)
+        intro.setObjectName("SubtitleLabel")
+        layout.addWidget(intro)
+
+        registry = build_acoustic_feature_registry()
+        subsystems = sorted(registry["subsystem"].dropna().unique().tolist())
+
+        self.feature_select_all = QCheckBox("Select all subsystems")
+        self.feature_select_all.setChecked(True)
+        self.feature_select_all.stateChanged.connect(self._toggle_feature_subsystems)
+        layout.addWidget(self.feature_select_all)
+
+        subsystem_group = QGroupBox("Feature subsystems")
+        grid = QGridLayout(subsystem_group)
+        self.feature_subsystem_checks: dict[str, QCheckBox] = {}
+        for i, subsystem in enumerate(subsystems):
+            count = int((registry["subsystem"] == subsystem).sum())
+            cb = QCheckBox(f"{subsystem} ({count})")
+            cb.setChecked(True)
+            self.feature_subsystem_checks[subsystem] = cb
+            grid.addWidget(cb, i // 2, i % 2)
+        layout.addWidget(subsystem_group)
+
+        param_group = QGroupBox("Feature parameters")
+        form = QFormLayout(param_group)
+        self.min_pause_feature_spin = QDoubleSpinBox()
+        self.min_pause_feature_spin.setDecimals(2)
+        self.min_pause_feature_spin.setRange(0.0, 5.0)
+        self.min_pause_feature_spin.setSingleStep(0.05)
+        self.min_pause_feature_spin.setValue(0.15)
+        form.addRow("Minimum internal pause duration (s)", self.min_pause_feature_spin)
+        layout.addWidget(param_group)
+
+        preview = QPlainTextEdit()
+        preview.setReadOnly(True)
+        preview.setMaximumHeight(140)
+        computed_count = len([f for f in registry["feature"].tolist() if f in {"speech_rate", "total_dur", "speech_dur", "percent_pause", "num_pause", "mean_pause_dur", "mean_phrase_dur", "cv_pause_dur", "cv_phrase_dur", "total_pause_dur"}])
+        preview.setPlainText(
+            f"Registered acoustic features: {len(registry)}\n"
+            f"Implemented in this GUI/backend pass: {computed_count} timing/respiratory features\n"
+            "Pending features are intentionally written as NaN with explicit status until formula-level implementation is validated."
+        )
+        layout.addWidget(preview)
+
+        run_btn = QPushButton("Run Feature Extraction")
+        run_btn.setObjectName("RunButton")
+        run_btn.clicked.connect(self.run_features)
+        layout.addWidget(run_btn)
+        layout.addStretch(1)
+        return container
+
     def _build_reports_tab(self) -> QWidget:
         container = QWidget()
         layout = QVBoxLayout(container)
@@ -330,10 +394,14 @@ class AcousticPipelineWindow(QMainWindow):
         open_seg_sum.clicked.connect(lambda: self._open_stage_file("segment", "summary"))
         open_seg_rep = QPushButton("Open Segmentation HTML Report")
         open_seg_rep.clicked.connect(lambda: self._open_stage_file("segment", "report"))
+        open_feat_sum = QPushButton("Open Feature Table CSV")
+        open_feat_sum.clicked.connect(lambda: self._open_stage_file("features", "summary"))
+        open_feat_rep = QPushButton("Open Feature HTML Report")
+        open_feat_rep.clicked.connect(lambda: self._open_stage_file("features", "report"))
         open_stage_dir = QPushButton("Open Acoustic Output Folder")
         open_stage_dir.clicked.connect(self.open_output_root)
 
-        for i, btn in enumerate([open_ingest, open_pre_sum, open_pre_rep, open_seg_sum, open_seg_rep, open_stage_dir]):
+        for i, btn in enumerate([open_ingest, open_pre_sum, open_pre_rep, open_seg_sum, open_seg_rep, open_feat_sum, open_feat_rep, open_stage_dir]):
             btn.setObjectName("OpenButton")
             btns.addWidget(btn, i // 2, i % 2)
 
@@ -367,6 +435,15 @@ class AcousticPipelineWindow(QMainWindow):
     def _preprocess_summary_path(self) -> Path:
         output_root = Path(self.output_edit.text().strip()).expanduser()
         return output_root / "acoustic" / "002_preprocess" / "tables" / "acoustic_preprocess_summary.csv"
+
+    def _segmentation_summary_path(self) -> Path:
+        output_root = Path(self.output_edit.text().strip()).expanduser()
+        return output_root / "acoustic" / "003_segmentation" / "tables" / "acoustic_segmentation_summary.csv"
+
+    def _toggle_feature_subsystems(self) -> None:
+        checked = self.feature_select_all.isChecked()
+        for cb in getattr(self, "feature_subsystem_checks", {}).values():
+            cb.setChecked(checked)
 
     def browse_input_dir(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Select input audio folder")
@@ -536,6 +613,32 @@ class AcousticPipelineWindow(QMainWindow):
             },
         )
 
+    def run_features(self) -> None:
+        paths = self._require_paths()
+        if paths is None:
+            return
+        _input_path, output_root = paths
+        segmentation_summary = self._segmentation_summary_path()
+        if not segmentation_summary.exists():
+            QMessageBox.warning(self, "Segmentation required", "Run Silero segmentation first. The segmentation summary CSV was not found.")
+            return
+        selected_subsystems = [
+            subsystem for subsystem, cb in getattr(self, "feature_subsystem_checks", {}).items() if cb.isChecked()
+        ]
+        cfg = FeatureExtractionConfig(
+            selected_subsystems=selected_subsystems,
+            minimum_pause_duration_sec=float(self.min_pause_feature_spin.value()),
+        )
+        self._run_worker(
+            "features",
+            run_acoustic_feature_extraction,
+            {
+                "segmentation_summary_csv": segmentation_summary,
+                "output_root": output_root,
+                "config": cfg,
+            },
+        )
+
     def run_all(self) -> None:
         paths = self._require_paths()
         if paths is None:
@@ -562,18 +665,24 @@ class AcousticPipelineWindow(QMainWindow):
                 frame_ms=int(self.frame_ms_spin.value()),
                 force_reload=bool(self.force_reload_check.isChecked()),
             )
+            features_result = run_acoustic_feature_extraction(
+                segmentation_summary_csv=output_root / "acoustic" / "003_segmentation" / "tables" / "acoustic_segmentation_summary.csv",
+                output_root=output_root,
+                config=FeatureExtractionConfig(minimum_pause_duration_sec=float(self.min_pause_feature_spin.value())),
+            )
             # Update stage records manually inside the final result pack.
             return {
                 "ingest": ingest_result,
                 "preprocess": preprocess_result,
                 "segment": segment_result,
+                "features": features_result,
             }
 
         self._run_worker("full_run", full_run, {"input_path": input_path, "output_root": output_root})
 
     def _on_worker_finished(self, name: str, result: object) -> None:  # type: ignore[override]
         if name == "full_run" and isinstance(result, dict):
-            for stage_name in ["ingest", "preprocess", "segment"]:
+            for stage_name in ["ingest", "preprocess", "segment", "features"]:
                 self._on_worker_finished(stage_name, result[stage_name])
             self.append_log("Full acoustic backend run finished.")
             return
