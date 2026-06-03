@@ -1,7 +1,7 @@
-"""VSLP Acoustic Pipeline GUI v0.12.
+"""VSLP Acoustic Pipeline GUI v0.14.
 
-V0.12 production-readiness pass:
-- stage-aware workflow guidance;
+V0.14 product-design correction:
+- stage-aware workflow guidance with scientific rationale;
 - embedded CSV and plot previews;
 - latest-output detection;
 - feature-level selection inside each subsystem;
@@ -20,7 +20,7 @@ import traceback
 
 import pandas as pd
 from PySide6.QtCore import QObject, QThread, Qt, Signal
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QBrush, QColor, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -107,7 +107,9 @@ class AcousticPipelineWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("VSLP - Acoustic Pipeline")
-        self.resize(1660, 1020)
+        self.resize(1480, 900)
+        self.setMinimumSize(1180, 760)
+        self._current_preview_pixmap: QPixmap | None = None
 
         self.registry = build_acoustic_feature_registry()
         self._updating_feature_tree = False
@@ -137,14 +139,14 @@ class AcousticPipelineWindow(QMainWindow):
 
         sidebar = QFrame()
         sidebar.setObjectName("Sidebar")
-        sidebar.setFixedWidth(305)
+        sidebar.setFixedWidth(260)
         side_layout = QVBoxLayout(sidebar)
-        side_layout.setContentsMargins(16, 16, 16, 16)
-        side_layout.setSpacing(12)
+        side_layout.setContentsMargins(12, 12, 12, 12)
+        side_layout.setSpacing(7)
 
         title = QLabel("VSLP")
-        title.setObjectName("TitleLabel")
-        subtitle = QLabel("Acoustic Pipeline GUI v0.9\nFeature-level selection + embedded inspection.")
+        title.setObjectName("AppTitleLabel")
+        subtitle = QLabel("Acoustic Pipeline GUI v0.14\nClinical research workflow • local-first • auditable")
         subtitle.setObjectName("SubtitleLabel")
         side_layout.addWidget(title)
         side_layout.addWidget(subtitle)
@@ -164,13 +166,14 @@ class AcousticPipelineWindow(QMainWindow):
             card = QFrame()
             card.setObjectName("Card")
             card_layout = QVBoxLayout(card)
-            card_layout.setContentsMargins(12, 12, 12, 12)
+            card_layout.setContentsMargins(9, 7, 9, 7)
             label_widget = QLabel(label)
             label_widget.setStyleSheet("font-weight: 700;")
             status_lbl = QLabel("Not run")
             status_lbl.setObjectName("SubtitleLabel")
             card_layout.addWidget(label_widget)
             card_layout.addWidget(status_lbl)
+            card.setMaximumHeight(62)
             self.stage_labels[key] = status_lbl
             self.stage_cards[key] = card
             side_layout.addWidget(card)
@@ -203,16 +206,26 @@ class AcousticPipelineWindow(QMainWindow):
         banner_title = QLabel("Professional local acoustic workflow")
         banner_title.setObjectName("TitleLabel")
         banner_sub = QLabel(
-            "Run, audit, inspect, and export acoustic metadata, preprocessing, segmentation, and feature extraction outputs. "
-            "V0.12 adds region-aware feature extraction, aggregation, QC dashboards, and improved inspection."
+            "A local-first research platform for clinically oriented speech acoustics: ingest, QC, segmentation, "
+            "region-aware features, aggregation, reports, plots, and reproducible audit trails."
         )
         banner_sub.setObjectName("SubtitleLabel")
         banner_sub.setWordWrap(True)
         banner_layout.addWidget(banner_title)
         banner_layout.addWidget(banner_sub)
+        chip_row = QHBoxLayout()
+        for chip in ["Local-only", "Research use", "Region-aware features", "Silero speech/pause timing", "Audit manifests"]:
+            chip_label = QLabel(chip)
+            chip_label.setObjectName("Chip")
+            chip_row.addWidget(chip_label)
+        chip_row.addStretch(1)
+        banner_layout.addLayout(chip_row)
+        banner.setMaximumHeight(142)
         main_col.addWidget(banner)
 
         tabs = QTabWidget()
+        tabs.setUsesScrollButtons(True)
+        tabs.setElideMode(Qt.ElideRight)
         tabs.addTab(self._build_setup_tab(), "Setup")
         tabs.addTab(self._build_metadata_tab(), "Metadata")
         tabs.addTab(self._build_preprocess_tab(), "Preprocess")
@@ -231,16 +244,81 @@ class AcousticPipelineWindow(QMainWindow):
         self.progress.setValue(0)
         self.log_box = QPlainTextEdit()
         self.log_box.setReadOnly(True)
-        self.log_box.setMinimumHeight(155)
+        self.log_box.setMinimumHeight(90)
+        self.log_box.setMaximumHeight(125)
         log_layout.addWidget(self.progress)
         log_layout.addWidget(self.log_box)
+        log_group.setMaximumHeight(180)
         main_col.addWidget(log_group)
 
         root.addLayout(main_col, stretch=1)
 
+
+    # ---------------------------- VISUAL HELPERS ----------------------------
+    def _info_panel(self, title: str, body: str) -> QFrame:
+        panel = QFrame()
+        panel.setObjectName("InfoPanel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(14, 12, 14, 12)
+        title_label = QLabel(title)
+        title_label.setObjectName("InfoTitle")
+        body_label = QLabel(body)
+        body_label.setObjectName("InfoBody")
+        body_label.setWordWrap(True)
+        panel.setMaximumHeight(118)
+        layout.addWidget(title_label)
+        layout.addWidget(body_label)
+        return panel
+
+    def _metric_card(self, label: str, value: str, tooltip: str = "") -> QFrame:
+        card = QFrame()
+        card.setObjectName("MetricCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(12, 10, 12, 10)
+        value_label = QLabel(value)
+        value_label.setObjectName("MetricValue")
+        label_widget = QLabel(label)
+        label_widget.setObjectName("MetricLabel")
+        label_widget.setWordWrap(True)
+        layout.addWidget(value_label)
+        layout.addWidget(label_widget)
+        if tooltip:
+            card.setToolTip(tooltip)
+        return card
+
+    def _set_tooltip(self, widget: QWidget, text: str) -> None:
+        widget.setToolTip(text)
+
+    def _scrollable(self, content: QWidget) -> QWidget:
+        """Return a scrollable tab wrapper so every control remains reachable on laptops."""
+        wrapper = QWidget()
+        outer = QVBoxLayout(wrapper)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(content)
+        outer.addWidget(scroll)
+        return wrapper
+
+    def _stage_status_text(self, status: str) -> str:
+        if status in {"completed", "detected"}:
+            return f"● {status}"
+        if status == "completed_with_warnings":
+            return "● completed with warnings"
+        if status == "failed":
+            return "● failed"
+        if status == "running":
+            return "● running"
+        return f"○ {status}"
+
     def _build_setup_tab(self) -> QWidget:
         container = QWidget()
         layout = QVBoxLayout(container)
+        layout.addWidget(self._info_panel(
+            "Scientific workflow rationale",
+            "The acoustic workflow is intentionally ordered. Metadata establishes subject/session/task identity; ingest verifies file format and duration using ffprobe; preprocessing creates non-destructive canonical WAVs; segmentation defines speech and pause regions; features and QC are then computed from auditable upstream artifacts."
+        ))
 
         paths_group = QGroupBox("Project and Input Paths")
         form = QGridLayout(paths_group)
@@ -248,6 +326,9 @@ class AcousticPipelineWindow(QMainWindow):
         self.input_edit = QLineEdit()
         self.output_edit = QLineEdit()
         self.project_name_edit = QLineEdit("VSLP Acoustic Project")
+        self._set_tooltip(self.input_edit, "Folder containing raw audio/video files. Extensions are not trusted; ffprobe detects true media format.")
+        self._set_tooltip(self.output_edit, "Root folder where VSLP writes stage outputs, logs, reports, plots, tables, and manifests.")
+        self._set_tooltip(self.project_name_edit, "Human-readable project label stored in the project manifest.")
 
         browse_in = QPushButton("Browse Input Folder")
         browse_in.clicked.connect(self.browse_input_dir)
@@ -273,6 +354,16 @@ class AcousticPipelineWindow(QMainWindow):
         self.dependency_label.setObjectName("SubtitleLabel")
         guidance_layout.addWidget(self.dependency_label)
 
+        metric_row = QHBoxLayout()
+        for label, value, tip in [
+            ("Default segmentation SR", "16 kHz", "Silero-compatible analysis WAV; feature WAV can preserve original SR."),
+            ("Feature region default", "speech_only", "Signal features avoid leading/trailing silence by default."),
+            ("QC SNR flag", "< 10 dB", "Estimated SNR proxy; flag for review, not automatic exclusion."),
+            ("Pause minimum", "150 ms", "Starting internal pause threshold for speech timing features."),
+        ]:
+            metric_row.addWidget(self._metric_card(label, value, tip))
+        guidance_layout.addLayout(metric_row)
+
         btn_row = QHBoxLayout()
         init_btn = QPushButton("Initialize Project")
         init_btn.clicked.connect(self.run_project_init)
@@ -288,22 +379,21 @@ class AcousticPipelineWindow(QMainWindow):
         layout.addWidget(guidance)
         layout.addLayout(btn_row)
         layout.addStretch(1)
-        return container
+        return self._scrollable(container)
 
     def _build_metadata_tab(self) -> QWidget:
         container = QWidget()
         layout = QVBoxLayout(container)
 
-        intro = QLabel(
-            "Metadata connects files to subject/session/iteration/task/labels. Use a CSV when available; otherwise VSLP conservatively parses filenames and flags inferred values."
-        )
-        intro.setWordWrap(True)
-        intro.setObjectName("SubtitleLabel")
-        layout.addWidget(intro)
+        layout.addWidget(self._info_panel(
+            "Why metadata comes first",
+            "Metadata prevents leakage and preserves longitudinal structure. The minimum clinically useful identity is subject_id, session_id, iteration, task, recording_date, diagnosis, severity_score, severity_bin, and file_name. If no CSV is provided, VSLP parses filenames conservatively and leaves clinical labels blank."
+        ))
 
         group = QGroupBox("Demographics / metadata CSV")
         grid = QGridLayout(group)
         self.demographics_csv_edit = QLineEdit()
+        self._set_tooltip(self.demographics_csv_edit, "Optional CSV with one row per recording. file_name is used for the primary join.")
         self.demographics_csv_edit.setPlaceholderText("optional CSV with file_name, subject_id, session_id, iteration, task, recording_date, diagnosis, severity_score, severity_bin")
         browse_demo = QPushButton("Browse CSV")
         browse_demo.clicked.connect(self.browse_demographics_csv)
@@ -327,22 +417,22 @@ class AcousticPipelineWindow(QMainWindow):
         run_btn.clicked.connect(self.run_metadata)
         layout.addWidget(run_btn)
         layout.addStretch(1)
-        return container
+        return self._scrollable(container)
 
     def _build_preprocess_tab(self) -> QWidget:
         container = QWidget()
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        inner = QWidget()
-        scroll.setWidget(inner)
-        outer = QVBoxLayout(container)
-        outer.addWidget(scroll)
-        layout = QVBoxLayout(inner)
+        layout = QVBoxLayout(container)
+        layout.addWidget(self._info_panel(
+            "Preprocessing rationale and default values",
+            "Original files are never modified. VSLP creates canonical mono WAVs, removes DC offset, estimates SNR/clipping/powerline interference, and creates a 16 kHz segmentation WAV for Silero. Feature WAVs preserve the original sampling rate by default because some acoustic features can be sensitive to resampling."
+        ))
 
         simple_group = QGroupBox("Clinical/simple preprocessing parameters")
         form = QFormLayout(simple_group)
         self.seg_sr_spin = QSpinBox(); self.seg_sr_spin.setRange(8000, 48000); self.seg_sr_spin.setValue(16000)
+        self._set_tooltip(self.seg_sr_spin, "Default 16 kHz because Silero VAD is designed for 8/16 kHz audio. This is for segmentation WAVs, not necessarily feature WAVs.")
         self.feature_sr_edit = QLineEdit(); self.feature_sr_edit.setPlaceholderText("leave blank to keep original sample rate")
+        self._set_tooltip(self.feature_sr_edit, "Leave blank to preserve original sampling rate for feature extraction. Set only when you intentionally want feature WAV resampling.")
         form.addRow("Segmentation sample rate (Hz)", self.seg_sr_spin)
         form.addRow("Feature sample rate (optional)", self.feature_sr_edit)
 
@@ -351,9 +441,13 @@ class AcousticPipelineWindow(QMainWindow):
         self.expert_group = QGroupBox("Expert preprocessing controls")
         expert_form = QFormLayout(self.expert_group)
         self.filter_kind_combo = QComboBox(); self.filter_kind_combo.addItems(["none", "lpf", "hpf", "bpf", "notch"])
+        self._set_tooltip(self.filter_kind_combo, "Filtering is off by default. Enable only with a specific rationale because filters can alter acoustic features.")
         self.low_hz_spin = QDoubleSpinBox(); self.low_hz_spin.setRange(0, 50000); self.low_hz_spin.setValue(80.0)
+        self._set_tooltip(self.low_hz_spin, "Typical high-pass cutoff candidate for low-frequency rumble; use cautiously and document.")
         self.high_hz_spin = QDoubleSpinBox(); self.high_hz_spin.setRange(0, 50000); self.high_hz_spin.setValue(8000.0)
+        self._set_tooltip(self.high_hz_spin, "Typical low-pass cutoff candidate after 16 kHz segmentation resampling; use cautiously for feature WAVs.")
         self.notch_hz_combo = QComboBox(); self.notch_hz_combo.addItems(["", "50", "60"])
+        self._set_tooltip(self.notch_hz_combo, "Optional notch filtering for known powerline interference. Detection is reported even when filtering is off.")
         expert_form.addRow("Filter kind", self.filter_kind_combo)
         expert_form.addRow("Low cutoff (Hz)", self.low_hz_spin)
         expert_form.addRow("High cutoff (Hz)", self.high_hz_spin)
@@ -369,18 +463,27 @@ class AcousticPipelineWindow(QMainWindow):
         layout.addWidget(self.expert_group)
         layout.addWidget(run_btn)
         layout.addStretch(1)
-        return container
+        return self._scrollable(container)
 
     def _build_segment_tab(self) -> QWidget:
         container = QWidget()
         layout = QVBoxLayout(container)
+        layout.addWidget(self._info_panel(
+            "Segmentation rationale and default values",
+            "Silero estimates speech-active regions. VSLP converts these to speech and nonspeech segments, frame tables, boundary tables, and diagnostic plots. Defaults are conservative for remote speech recordings: threshold 0.50, minimum speech 250 ms, minimum silence 100 ms, speech padding 50 ms, and 30 ms diagnostic frames."
+        ))
         group = QGroupBox("Silero segmentation parameters")
         form = QFormLayout(group)
         self.threshold_spin = QDoubleSpinBox(); self.threshold_spin.setDecimals(2); self.threshold_spin.setRange(0.0, 1.0); self.threshold_spin.setSingleStep(0.05); self.threshold_spin.setValue(0.50)
+        self._set_tooltip(self.threshold_spin, "Silero speech probability threshold. 0.50 is a neutral default; increasing it is more conservative.")
         self.min_speech_spin = QSpinBox(); self.min_speech_spin.setRange(0, 5000); self.min_speech_spin.setValue(250)
+        self._set_tooltip(self.min_speech_spin, "Rejects very short speech detections. 250 ms avoids many transient clicks/noises while preserving short syllabic bursts.")
         self.min_silence_spin = QSpinBox(); self.min_silence_spin.setRange(0, 5000); self.min_silence_spin.setValue(100)
+        self._set_tooltip(self.min_silence_spin, "Minimum silence separating speech chunks. 100 ms preserves clinically relevant short pauses.")
         self.speech_pad_spin = QSpinBox(); self.speech_pad_spin.setRange(0, 2000); self.speech_pad_spin.setValue(50)
+        self._set_tooltip(self.speech_pad_spin, "Padding around speech segments to reduce boundary truncation; default 50 ms.")
         self.frame_ms_spin = QSpinBox(); self.frame_ms_spin.setRange(10, 1000); self.frame_ms_spin.setValue(30)
+        self._set_tooltip(self.frame_ms_spin, "Diagnostic frame size for frame-level tables and plots. 30 ms is standard for speech time-scale inspection.")
         self.force_reload_check = QCheckBox("Force reload Silero model")
         form.addRow("Threshold", self.threshold_spin)
         form.addRow("Min speech duration (ms)", self.min_speech_spin)
@@ -394,17 +497,15 @@ class AcousticPipelineWindow(QMainWindow):
         layout.addWidget(group)
         layout.addWidget(run_btn)
         layout.addStretch(1)
-        return container
+        return self._scrollable(container)
 
     def _build_features_tab(self) -> QWidget:
         container = QWidget()
         layout = QVBoxLayout(container)
-        intro = QLabel(
-            "Select entire subsystems or individual features. Implemented features are computed; proxy features are useful for engineering review but require validation before clinical interpretation; pending features remain explicit NaN placeholders."
-        )
-        intro.setWordWrap(True)
-        intro.setObjectName("SubtitleLabel")
-        layout.addWidget(intro)
+        layout.addWidget(self._info_panel(
+            "Region-aware feature extraction",
+            "Many acoustic features should not be computed over the full file. Timing and pause features use Silero speech/nonspeech segments. Signal features default to speech_only regions so leading silence, trailing silence, instructions, and dead time do not contaminate the measurement. Pending features remain explicit NaN placeholders until validated."
+        ))
 
         splitter = QSplitter(Qt.Horizontal)
         left = QWidget(); left_layout = QVBoxLayout(left)
@@ -424,6 +525,7 @@ class AcousticPipelineWindow(QMainWindow):
 
         self.feature_tree = QTreeWidget()
         self.feature_tree.setHeaderLabels(["Feature / subsystem", "Status", "Unit"])
+        self.feature_tree.setMinimumHeight(360)
         self.feature_tree.setSelectionMode(QAbstractItemView.SingleSelection)
         self.feature_tree.itemChanged.connect(self._on_feature_tree_item_changed)
         self.feature_tree.itemSelectionChanged.connect(self._update_feature_detail)
@@ -439,12 +541,15 @@ class AcousticPipelineWindow(QMainWindow):
         right_layout.addWidget(self.feature_count_label)
         self.feature_detail_box = QPlainTextEdit()
         self.feature_detail_box.setReadOnly(True)
-        self.feature_detail_box.setMinimumHeight(230)
+        self.feature_detail_box.setMinimumHeight(150)
+        self.feature_detail_box.setMaximumHeight(210)
         right_layout.addWidget(self.feature_detail_box)
         param_group = QGroupBox("Feature parameters")
         form = QFormLayout(param_group)
         self.min_pause_feature_spin = QDoubleSpinBox(); self.min_pause_feature_spin.setDecimals(2); self.min_pause_feature_spin.setRange(0.0, 5.0); self.min_pause_feature_spin.setSingleStep(0.05); self.min_pause_feature_spin.setValue(0.15)
+        self._set_tooltip(self.min_pause_feature_spin, "Minimum internal nonspeech duration counted as a pause. 150 ms is a conservative starting point for speech pause analysis.")
         self.region_policy_combo = QComboBox(); self.region_policy_combo.addItems(["speech_only", "effective_task", "full_file"])
+        self._set_tooltip(self.region_policy_combo, "Default speech_only computes signal features from detected speech regions. effective_task includes internal pauses. full_file is exploratory only.")
         form.addRow("Minimum internal pause duration (s)", self.min_pause_feature_spin)
         form.addRow("Signal-feature analysis region", self.region_policy_combo)
         region_note = QLabel("Recommended default: speech_only. Timing features always use speech/pause segments. Use full_file only for explicit full-recording exploratory features.")
@@ -456,15 +561,19 @@ class AcousticPipelineWindow(QMainWindow):
         run_btn.clicked.connect(self.run_features)
         right_layout.addWidget(run_btn)
         right_layout.addStretch(1)
-        splitter.addWidget(left); splitter.addWidget(right); splitter.setSizes([900, 500])
+        splitter.addWidget(left); splitter.addWidget(right); splitter.setSizes([720, 430]); splitter.setMinimumHeight(540)
         layout.addWidget(splitter)
         self._refresh_feature_count_label()
-        return container
+        return self._scrollable(container)
 
 
     def _build_aggregation_tab(self) -> QWidget:
         container = QWidget()
         layout = QVBoxLayout(container)
+        layout.addWidget(self._info_panel(
+            "Aggregation rationale",
+            "Aggregation converts per-file feature outputs into analysis-ready tables while preserving subject/session/iteration/task structure. The default grouping is designed for longitudinal clinical monitoring and ML leakage control."
+        ))
         group = QGroupBox("Aggregation configuration")
         form = QFormLayout(group)
         self.agg_group_columns_edit = QLineEdit("subject_id,session_id,iteration,task")
@@ -484,17 +593,25 @@ class AcousticPipelineWindow(QMainWindow):
         layout.addWidget(guidance)
         layout.addWidget(run_btn)
         layout.addStretch(1)
-        return container
+        return self._scrollable(container)
 
     def _build_qc_tab(self) -> QWidget:
         container = QWidget()
         layout = QVBoxLayout(container)
+        layout.addWidget(self._info_panel(
+            "QC rationale",
+            "QC flags recordings for review; it does not reject data automatically. Thresholds are intentionally visible and editable because acceptable quality depends on task, device, patient speech impairment, and study design."
+        ))
         group = QGroupBox("QC dashboard thresholds")
         form = QFormLayout(group)
         self.qc_min_snr_spin = QDoubleSpinBox(); self.qc_min_snr_spin.setDecimals(1); self.qc_min_snr_spin.setRange(-50.0, 80.0); self.qc_min_snr_spin.setValue(10.0)
+        self._set_tooltip(self.qc_min_snr_spin, "Research-screening SNR proxy threshold. 10 dB is a conservative initial flag, not a hard exclusion rule.")
         self.qc_clip_spin = QDoubleSpinBox(); self.qc_clip_spin.setDecimals(4); self.qc_clip_spin.setRange(0.0, 1.0); self.qc_clip_spin.setSingleStep(0.0005); self.qc_clip_spin.setValue(0.001)
+        self._set_tooltip(self.qc_clip_spin, "Fraction of samples allowed near full scale before flagging clipping. Default 0.001 = 0.1%.")
         self.qc_min_speech_spin = QDoubleSpinBox(); self.qc_min_speech_spin.setDecimals(2); self.qc_min_speech_spin.setRange(0.0, 1.0); self.qc_min_speech_spin.setValue(0.05)
+        self._set_tooltip(self.qc_min_speech_spin, "Very low speech fraction may indicate wrong file, failed recording, or VAD failure.")
         self.qc_max_speech_spin = QDoubleSpinBox(); self.qc_max_speech_spin.setDecimals(2); self.qc_max_speech_spin.setRange(0.0, 1.0); self.qc_max_speech_spin.setValue(0.98)
+        self._set_tooltip(self.qc_max_speech_spin, "Very high speech fraction may indicate missing pause detection or excessive background/sustained activity.")
         form.addRow("Minimum estimated SNR (dB)", self.qc_min_snr_spin)
         form.addRow("Maximum clipping fraction", self.qc_clip_spin)
         form.addRow("Minimum speech fraction", self.qc_min_speech_spin)
@@ -508,40 +625,50 @@ class AcousticPipelineWindow(QMainWindow):
         layout.addWidget(guidance)
         layout.addWidget(run_btn)
         layout.addStretch(1)
-        return container
+        return self._scrollable(container)
 
     def _build_inspector_tab(self) -> QWidget:
         container = QWidget()
         layout = QVBoxLayout(container)
-        controls = QHBoxLayout()
-        for label, callback in [
-            ("Preview Metadata", lambda: self.preview_csv(self._metadata_index_path())),
-            ("Preview Ingest", lambda: self.preview_csv(self._stage_path("ingest", "summary"))),
-            ("Preview Preprocess", lambda: self.preview_csv(self._stage_path("preprocess", "summary"))),
-            ("Preview Segmentation", lambda: self.preview_csv(self._stage_path("segment", "summary"))),
-            ("Preview Features", lambda: self.preview_csv(self._stage_path("features", "summary"))),
-            ("Preview Aggregated", lambda: self.preview_csv(self._stage_path("aggregate", "summary"))),
-            ("Preview QC", lambda: self.preview_csv(self._stage_path("qc", "summary"))),
-        ]:
+        layout.addWidget(self._info_panel(
+            "Visual inspection layer",
+            "The Inspector previews output tables and generated PNG plots directly inside the GUI. Full files remain on disk for audit, publication graphics, and downstream analysis."
+        ))
+        controls_group = QGroupBox("Table previews")
+        controls = QGridLayout(controls_group)
+        table_buttons = [
+            ("Metadata", lambda: self.preview_csv(self._metadata_index_path())),
+            ("Ingest", lambda: self.preview_csv(self._stage_path("ingest", "summary"))),
+            ("Preprocess", lambda: self.preview_csv(self._stage_path("preprocess", "summary"))),
+            ("Segmentation", lambda: self.preview_csv(self._stage_path("segment", "summary"))),
+            ("Features", lambda: self.preview_csv(self._stage_path("features", "summary"))),
+            ("Aggregated", lambda: self.preview_csv(self._stage_path("aggregate", "summary"))),
+            ("QC", lambda: self.preview_csv(self._stage_path("qc", "summary"))),
+        ]
+        for i, (label, callback) in enumerate(table_buttons):
             btn = QPushButton(label)
             btn.clicked.connect(callback)
-            controls.addWidget(btn)
-        layout.addLayout(controls)
+            controls.addWidget(btn, i // 4, i % 4)
+        layout.addWidget(controls_group)
 
-        plot_controls = QHBoxLayout()
-        for label, callback in [
+        plot_group = QGroupBox("Plot previews")
+        plot_controls = QGridLayout(plot_group)
+        plot_buttons = [
             ("Segmentation Plot", self.preview_latest_segmentation_plot),
             ("Feature Missingness", lambda: self.preview_image(self._features_plot_path("feature_missingness.png"))),
             ("Feature Status", lambda: self.preview_image(self._features_plot_path("feature_subsystem_implementation_status.png"))),
             ("Feature Distributions", lambda: self.preview_image(self._features_plot_path("implemented_feature_distributions.png"))),
             ("Aggregation Missingness", lambda: self.preview_image(self._output_root() / "acoustic" / "005_aggregation" / "plots" / "aggregation_missingness_top30.png")),
             ("QC Flags", lambda: self.preview_image(self._output_root() / "acoustic" / "006_qc_dashboard" / "plots" / "qc_flag_counts.png")),
-        ]:
+            ("QC SNR", lambda: self.preview_image(self._output_root() / "acoustic" / "006_qc_dashboard" / "plots" / "qc_snr_distribution.png")),
+            ("QC Speech Fraction", lambda: self.preview_image(self._output_root() / "acoustic" / "006_qc_dashboard" / "plots" / "qc_speech_fraction_distribution.png")),
+        ]
+        for i, (label, callback) in enumerate(plot_buttons):
             btn = QPushButton(label)
             btn.setObjectName("OpenButton")
             btn.clicked.connect(callback)
-            plot_controls.addWidget(btn)
-        layout.addLayout(plot_controls)
+            plot_controls.addWidget(btn, i // 4, i % 4)
+        layout.addWidget(plot_group)
 
         self.inspector_status = QLabel("Preview tables and plots after stages have run.")
         self.inspector_status.setObjectName("SubtitleLabel")
@@ -554,7 +681,7 @@ class AcousticPipelineWindow(QMainWindow):
         self.preview_image_label = QLabel("No plot selected")
         self.preview_image_label.setAlignment(Qt.AlignCenter)
         self.preview_image_label.setMinimumHeight(360)
-        self.preview_image_label.setStyleSheet("background-color:#061525; border:1px solid #234966; border-radius:10px;")
+        self.preview_image_label.setStyleSheet("background-color:#0E1B2A; border:1px solid #30495F; border-radius:10px; padding:10px;")
         self.preview_tabs.addTab(self.preview_table, "Table Preview")
         self.preview_tabs.addTab(self.preview_image_label, "Plot Preview")
         layout.addWidget(self.preview_tabs, stretch=1)
@@ -593,7 +720,7 @@ class AcousticPipelineWindow(QMainWindow):
         layout.addWidget(group)
         layout.addWidget(notes)
         layout.addStretch(1)
-        return container
+        return self._scrollable(container)
 
     # ---------------------------- FEATURE TREE ----------------------------
     def _feature_status(self, name: str) -> str:
@@ -619,6 +746,16 @@ class AcousticPipelineWindow(QMainWindow):
                 item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
                 item.setCheckState(0, Qt.Checked)
                 item.setData(0, Qt.UserRole, feature)
+                item.setToolTip(0, str(row.get("meaning", "")))
+                item.setToolTip(1, "implemented = computed; proxy = engineering estimate needing validation; pending = explicit NaN placeholder")
+                if status == "implemented":
+                    color = QColor("#8EF2C6")
+                elif status == "proxy":
+                    color = QColor("#FFD98E")
+                else:
+                    color = QColor("#8FA9BD")
+                item.setForeground(1, QBrush(color))
+                item.setForeground(0, QBrush(QColor("#EAF2F8")))
                 parent.addChild(item)
                 self.feature_items[feature] = item
             parent.setExpanded(True)
@@ -701,13 +838,19 @@ class AcousticPipelineWindow(QMainWindow):
             return
         row = self.registry.loc[self.registry["feature"].astype(str) == str(feature)].iloc[0]
         status = self._feature_status(str(feature))
+        status_note = {
+            "implemented": "Computed by the current backend and ready for engineering review.",
+            "proxy": "Computed as a proxy. Use for pipeline testing/exploration; validate before clinical interpretation.",
+            "pending": "Registered but not implemented yet. Output remains NaN intentionally."
+        }.get(status, "")
         detail = (
             f"Feature: {feature}\n"
             f"Subsystem: {row['subsystem']}\n"
-            f"Status: {status}\n"
+            f"Status: {status} — {status_note}\n"
             f"Unit: {row.get('unit', '')}\n\n"
-            f"Meaning:\n{row.get('meaning', '')}\n\n"
-            f"Computation note:\n{row.get('computation_note', '')}"
+            f"Scientific meaning:\n{row.get('meaning', '')}\n\n"
+            f"Computation note:\n{row.get('computation_note', '')}\n\n"
+            "Region policy note:\nTiming and pause features use Silero segment tables. Signal features use the selected analysis region, with speech_only recommended by default."
         )
         self.feature_detail_box.setPlainText(detail)
 
@@ -795,10 +938,22 @@ class AcousticPipelineWindow(QMainWindow):
         if pix.isNull():
             QMessageBox.warning(self, "Preview failed", f"Could not load image:\n{path}")
             return
-        scaled = pix.scaled(1120, 560, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        self.preview_image_label.setPixmap(scaled)
+        self._current_preview_pixmap = pix
+        self._update_preview_image_scaled()
         self.inspector_status.setText(f"Previewing plot: {path}")
         self.preview_tabs.setCurrentWidget(self.preview_image_label)
+
+    def _update_preview_image_scaled(self) -> None:
+        if not getattr(self, "_current_preview_pixmap", None) or not hasattr(self, "preview_image_label"):
+            return
+        target_w = max(480, self.preview_image_label.width() - 24)
+        target_h = max(320, self.preview_image_label.height() - 24)
+        scaled = self._current_preview_pixmap.scaled(target_w, target_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.preview_image_label.setPixmap(scaled)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().resizeEvent(event)
+        self._update_preview_image_scaled()
 
     def preview_latest_segmentation_plot(self) -> None:
         plot_dir = self._output_root() / "acoustic" / "003_segmentation" / "plots"
@@ -869,6 +1024,9 @@ class AcousticPipelineWindow(QMainWindow):
 
     def _on_worker_started(self, name: str) -> None:
         self._set_busy(True)
+        if name in self.stage_records:
+            self.stage_records[name].status = "running"
+            self._refresh_stage_cards()
         self.append_log(f"=== {name} ===")
 
     def _on_worker_failed(self, name: str, err: str) -> None:
@@ -880,7 +1038,18 @@ class AcousticPipelineWindow(QMainWindow):
 
     def _refresh_stage_cards(self) -> None:
         for key, lbl in self.stage_labels.items():
-            lbl.setText(self.stage_records[key].status)
+            status = self.stage_records[key].status
+            lbl.setText(self._stage_status_text(status))
+            if status in {"completed", "detected"}:
+                lbl.setStyleSheet("color:#8EF2C6; font-weight:800;")
+            elif status == "completed_with_warnings":
+                lbl.setStyleSheet("color:#FFD98E; font-weight:800;")
+            elif status == "failed":
+                lbl.setStyleSheet("color:#FF8EA3; font-weight:800;")
+            elif status == "running":
+                lbl.setStyleSheet("color:#8FCBFF; font-weight:800;")
+            else:
+                lbl.setStyleSheet("color:#BFD5E6;")
 
     def _open_stage_file(self, stage_key: str, kind: str) -> None:
         target = self._stage_path(stage_key, kind)
