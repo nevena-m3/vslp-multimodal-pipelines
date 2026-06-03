@@ -9,6 +9,7 @@ from pathlib import Path
 
 import typer
 
+from vslp.acoustic.aggregate.stage import AggregationConfig, run_acoustic_aggregation
 from vslp.acoustic.features.registry import build_acoustic_feature_registry
 from vslp.acoustic.features.stage import FeatureExtractionConfig, run_acoustic_feature_extraction
 from vslp.acoustic.ingest.stage import run_acoustic_ingest
@@ -16,6 +17,7 @@ from vslp.acoustic.metadata.stage import MetadataConfig, run_acoustic_metadata
 from vslp.acoustic.pipeline.run_preprocess_to_segmentation import run_acoustic_ingest_preprocess_segment
 from vslp.acoustic.preprocess.stage import FilterConfig, PreprocessConfig, run_acoustic_preprocess
 from vslp.acoustic.segment.stage import run_acoustic_segmentation_silero
+from vslp.acoustic.qc.stage import AcousticQCConfig, run_acoustic_qc_dashboard
 from vslp.core.project import initialize_project
 from vslp.core.doctor import run_doctor
 
@@ -166,11 +168,13 @@ def acoustic_extract_features(
     output_root: Path,
     minimum_pause_duration_sec: float = 0.15,
     metadata_csv: Path | None = None,
+    acoustic_region_policy: str = "speech_only",
 ):
-    """Extract currently implemented acoustic features from segmentation outputs."""
+    """Extract acoustic features from region-aware segmentation outputs."""
     cfg = FeatureExtractionConfig(
         minimum_pause_duration_sec=minimum_pause_duration_sec,
         metadata_csv=str(metadata_csv) if metadata_csv else None,
+        acoustic_region_policy=acoustic_region_policy,
     )
     result = run_acoustic_feature_extraction(
         segmentation_summary_csv=segmentation_summary_csv,
@@ -179,6 +183,46 @@ def acoustic_extract_features(
     )
     typer.echo(f"Status: {result.status}")
     typer.echo(f"Features: {result.summary_table}")
+    typer.echo(f"Errors: {result.error_table}")
+    typer.echo(f"Report: {result.report_path}")
+    typer.echo(f"Manifest: {result.manifest_path}")
+
+
+@acoustic_app.command("aggregate")
+def acoustic_aggregate(
+    features_csv: Path,
+    output_root: Path,
+    group_columns: str = "subject_id,session_id,iteration,task",
+    numeric_policy: str = "mean",
+    missing_policy: str = "preserve",
+    max_missing_fraction: float = 0.40,
+):
+    """Aggregate per-file acoustic features into analysis-ready tables."""
+    cfg = AggregationConfig(
+        group_columns=[c.strip() for c in group_columns.split(",") if c.strip()],
+        numeric_policy=numeric_policy,
+        missing_policy=missing_policy,
+        max_missing_fraction=max_missing_fraction,
+    )
+    result = run_acoustic_aggregation(features_csv=features_csv, output_root=output_root, config=cfg)
+    typer.echo(f"Status: {result.status}")
+    typer.echo(f"Aggregated features: {result.summary_table}")
+    typer.echo(f"Errors: {result.error_table}")
+    typer.echo(f"Report: {result.report_path}")
+    typer.echo(f"Manifest: {result.manifest_path}")
+
+
+@acoustic_app.command("qc-dashboard")
+def acoustic_qc_dashboard(
+    output_root: Path,
+    min_snr_db: float = 10.0,
+    max_clipping_fraction: float = 0.001,
+):
+    """Generate an acoustic QC dashboard from preprocessing, segmentation, and feature outputs."""
+    cfg = AcousticQCConfig(min_snr_db=min_snr_db, max_clipping_fraction=max_clipping_fraction)
+    result = run_acoustic_qc_dashboard(output_root=output_root, config=cfg)
+    typer.echo(f"Status: {result.status}")
+    typer.echo(f"QC table: {result.summary_table}")
     typer.echo(f"Errors: {result.error_table}")
     typer.echo(f"Report: {result.report_path}")
     typer.echo(f"Manifest: {result.manifest_path}")

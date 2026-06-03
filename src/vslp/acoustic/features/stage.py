@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Any
 import json
 
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -56,6 +58,7 @@ class FeatureExtractionConfig:
     task_word_counts: dict[str, float] = field(default_factory=dict)
     metadata_csv: str | None = None
     minimum_pause_duration_sec: float = 0.15
+    acoustic_region_policy: str = "speech_only"  # speech_only, effective_task, full_file
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -125,6 +128,7 @@ def _make_context(row: pd.Series, cfg: FeatureExtractionConfig) -> FeatureContex
         task=str(row.get("task")) if pd.notna(row.get("task", np.nan)) else None,
         duration_sec=duration_float,
         config=cfg,
+        analysis_region=str(getattr(cfg, "acoustic_region_policy", "speech_only")),
     )
 
 
@@ -258,7 +262,7 @@ def run_acoustic_feature_extraction(
 
     manifest = StageManifest(
         stage_name="acoustic_feature_extraction",
-        stage_version="0.8.0",
+        stage_version="0.12.0",
         status="completed_with_warnings" if warnings else "completed",
         input_artifacts=[ArtifactRef(path=str(segmentation_summary_csv), role="segmentation_summary", media_type="text/csv")],
         output_artifacts=[
@@ -272,7 +276,7 @@ def run_acoustic_feature_extraction(
         warnings=warnings,
         errors=errors,
         notes=[
-            "Feature extraction now uses subsystem plugins.",
+            "Feature extraction now uses subsystem plugins and a region-aware signal policy.",
             f"Computed feature families in this pass: {computed_features}",
             "Registered-but-not-yet-implemented features remain explicit NaN placeholders.",
         ],
@@ -414,7 +418,7 @@ img {{ max-width:100%; border-radius:10px; border:1px solid #315D7C; background:
 </style></head><body>
 <h1>VSLP Acoustic Feature Extraction Report</h1>
 <div class='card'><span class='badge'>Files OK: {files_ok}</span><span class='badge'>Files failed: {failed}</span><span class='badge'>Computed feature values: {computed}</span><span class='badge'>Proxy values: {proxies}</span><span class='badge'>Pending placeholders: {pending}</span></div>
-<div class='card'><h2>Current implementation scope</h2><p>V0.8 uses a plugin architecture. Timing and rhythm features are computed from validated segmentation/preprocessed audio outputs. F0 and CPP are currently local engineering proxies and must be validated against the reference notebook/Praat-style definitions before clinical interpretation.</p><p class='warning'>Registered features that are not yet implemented remain explicit <code>NaN</code> placeholders with status <code>not_implemented_yet</code>.</p></div>
+<div class='card'><h2>Current implementation scope</h2><p>V0.12 uses a region-aware plugin architecture. Timing and rhythm features are computed from validated segmentation/preprocessed audio outputs. F0 and CPP are currently local engineering proxies and must be validated against the reference notebook/Praat-style definitions before clinical interpretation.</p><p class='warning'>Registered features that are not yet implemented remain explicit <code>NaN</code> placeholders with status <code>not_implemented_yet</code>.</p></div>
 <div class='card'><h2>Computed feature names</h2><pre>{json.dumps(implemented, indent=2)}</pre></div>
 {img_block('Feature missingness', missingness_plot)}
 {img_block('Subsystem implementation status', subsystem_plot)}
