@@ -87,3 +87,20 @@ src/vslp/cli               Reproducible command-line interface
 ## Clinical/product caution
 
 This software is currently designed for research workflows. It should not be used for clinical decision-making until validated, locked, risk-managed, and documented under the appropriate regulatory pathway.
+
+
+## Launch the acoustic desktop GUI
+
+Install GUI dependencies:
+
+```bash
+pip install -e '.[gui,silero]'
+```
+
+Launch:
+
+```bash
+vslp gui acoustic
+```
+
+See `docs/gui_first_run.md` for step-by-step instructions.

@@ -1,0 +1,1 @@
+"""Acoustic pipeline desktop GUI."""
