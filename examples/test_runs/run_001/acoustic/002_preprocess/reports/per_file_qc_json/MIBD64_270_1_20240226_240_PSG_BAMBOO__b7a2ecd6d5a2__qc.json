@@ -1,0 +1,55 @@
+{
+  "source_file": "examples/test_data/audio_inputs/MIBD64_270_1_20240226_240_PSG_BAMBOO.wav",
+  "source_sha256": "b7a2ecd6d5a21a8ad127dbbce3e5e83fd1b06647c8c1d4dafd3156cfb4daa1cb",
+  "raw_qc": {
+    "duration_sec": 55.53208616780045,
+    "sample_rate_hz": 44100,
+    "n_samples": 2448965,
+    "n_channels": 1,
+    "dc_offset": -7.007055558005959e-08,
+    "peak_abs": 0.33758544921875,
+    "rms": 0.026279637590050697,
+    "clipping_fraction_near_full_scale": 0.0,
+    "clipping_run_count": 0,
+    "snr_db_estimate": 66.87610834566482,
+    "powerline_50hz_flag": false,
+    "powerline_60hz_flag": false
+  },
+  "processed_qc": {
+    "duration_sec": 55.53208616780045,
+    "sample_rate_hz": 44100,
+    "n_samples": 2448965,
+    "n_channels": 1,
+    "dc_offset": -1.5294444877245184e-10,
+    "peak_abs": 0.3375855088233948,
+    "rms": 0.026279639452695847,
+    "clipping_fraction_near_full_scale": 0.0,
+    "clipping_run_count": 0,
+    "snr_db_estimate": 66.87180233709174,
+    "powerline_50hz_flag": false,
+    "powerline_60hz_flag": false
+  },
+  "mono_selection": {
+    "stereo_policy": "already_mono",
+    "selected_channel": 0
+  },
+  "filter_warnings": [],
+  "config": {
+    "segmentation_sample_rate_hz": 16000,
+    "feature_sample_rate_hz": null,
+    "make_segmentation_wav": true,
+    "make_feature_wav": true,
+    "remove_dc_offset": true,
+    "mono_policy": "best_channel",
+    "filter": {
+      "enabled": false,
+      "kind": "none",
+      "low_hz": null,
+      "high_hz": null,
+      "notch_hz": null,
+      "notch_q": 30.0,
+      "order": 4
+    },
+    "ffmpeg_bin": "ffmpeg"
+  }
+}
