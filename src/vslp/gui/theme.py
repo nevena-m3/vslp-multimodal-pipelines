@@ -1,6 +1,6 @@
 """Shared VSLP Qt theme.
 
-V0.14 product-design correction:
+V0.15 inspector-preview correction:
 - avoids QLabel background styling that produced black artifacts on macOS;
 - uses a restrained scientific/clinical dark theme;
 - improves readability and scroll behavior on laptop screens.
@@ -74,6 +74,19 @@ def build_dark_stylesheet() -> str:
         padding: 0px;
         background: transparent;
         border: none;
+    }
+
+    QFrame#PlotCanvas {
+        background-color: #0A1320;
+        border: 1px solid #2C4359;
+        border-radius: 12px;
+    }
+    QLabel#PlotPreviewLabel {
+        background-color: #0A1320;
+        color: #93A9BB;
+        border: 1px dashed #38536B;
+        border-radius: 10px;
+        padding: 14px;
     }
 
     QPushButton {
