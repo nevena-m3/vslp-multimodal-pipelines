@@ -1,0 +1,24 @@
+privacy:
+  local_only: true
+  allow_external_model_calls: false
+
+splitting:
+  group_column: "subject_id"
+  longitudinal_group_columns: ["subject_id"]
+  default_strategy: "group_stratified_train_test"
+  random_seed: 42
+
+models:
+  classical:
+    classification: ["logistic_regression", "random_forest", "gradient_boosting", "svm"]
+    regression: ["elastic_net", "random_forest_regressor", "gradient_boosting_regressor", "svr"]
+  deep_learning_enabled: false
+
+metrics:
+  classification: ["auroc", "average_precision", "balanced_accuracy", "sensitivity", "specificity", "f1", "confusion_matrix", "calibration"]
+  regression: ["mae", "rmse", "r2", "pearson", "spearman"]
+
+explainability:
+  permutation_importance: true
+  coefficients_if_available: true
+  shap_optional: true
