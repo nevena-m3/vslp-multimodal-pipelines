@@ -15,7 +15,7 @@ import numpy as np
 from vslp.acoustic.features.plugins.audio_utils import (
     cepstral_peak_prominence_proxy,
     frame_signal,
-    read_mono_audio,
+    read_region_audio,
     rms_envelope,
     robust_voiced_mask_from_rms,
     simple_autocorr_f0,
@@ -33,7 +33,8 @@ class PhonatoryPlugin(AcousticFeaturePlugin):
     def compute(self, context: FeatureContext) -> dict[str, FeatureValue]:
         if context.segmentation_wav_path is None or not context.segmentation_wav_path.exists():
             return {name: FeatureValue(name, np.nan, "failed", "segmentation_wav_missing") for name in self.feature_names}
-        x, sr = read_mono_audio(context.segmentation_wav_path)
+        min_pause = float(getattr(context.config, "minimum_pause_duration_sec", 0.15))
+        x, sr, region_note = read_region_audio(context.segmentation_wav_path, context.segments_csv, region=context.analysis_region, min_pause_duration_sec=min_pause)
         if x.size == 0:
             return {name: FeatureValue(name, np.nan, "failed", "empty_audio") for name in self.feature_names}
 
@@ -57,7 +58,7 @@ class PhonatoryPlugin(AcousticFeaturePlugin):
 
         f0_arr = np.asarray(f0_vals, dtype=float)
         cpp_arr = np.asarray(cpp_vals, dtype=float)
-        note = "computed_local_autocorr_f0_and_cpp_proxy_requires_reference_validation"
+        note = "computed_local_autocorr_f0_and_cpp_proxy_requires_reference_validation; " + region_note
         return {
             "f0_mean": FeatureValue("f0_mean", float(np.mean(f0_arr)) if f0_arr.size else np.nan, "computed_proxy", note),
             "f0_std": FeatureValue("f0_std", float(np.std(f0_arr, ddof=0)) if f0_arr.size else np.nan, "computed_proxy", note),

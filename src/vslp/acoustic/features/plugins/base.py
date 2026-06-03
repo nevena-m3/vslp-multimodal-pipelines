@@ -26,6 +26,7 @@ class FeatureContext:
     task: str | None = None
     duration_sec: float | None = None
     config: Any | None = None
+    analysis_region: str = "speech_only"
 
 
 @dataclass

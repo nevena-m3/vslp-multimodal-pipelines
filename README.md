@@ -116,3 +116,16 @@ V0.5 adds an Acoustic GUI **Features** tab and a conservative backend feature-ex
 V0.9 adds feature-level selection, embedded table previews, embedded plot previews, latest-output detection, and clearer stage workflow guidance.
 
 See `docs/acoustic_gui_v09.md` for details.
+
+
+## VSLP v0.12 acoustic pipeline status
+
+The acoustic GUI now supports metadata indexing, ingest, preprocessing, Silero segmentation, region-aware feature extraction, aggregation, QC dashboard generation, embedded table/plot previews, and feature-level selection.
+
+Key principle: most signal features should not be computed blindly over the full file. Timing features use Silero speech/nonspeech segments. Phonatory, rhythm, and baseline intensity features default to `speech_only` analysis regions, with expert options for `effective_task` and `full_file`.
+
+Launch:
+
+```bash
+vslp gui acoustic
+```

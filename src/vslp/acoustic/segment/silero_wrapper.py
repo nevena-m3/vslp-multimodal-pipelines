@@ -350,6 +350,8 @@ def plot_silero_stage(stage, file_name=None, save_path=None, show=True):
     Four panels: waveform, RMS dB, Silero speech mask, and speech/non-speech segment spans.
     """
     from pathlib import Path
+    import matplotlib
+    matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     audio = stage["audio"]

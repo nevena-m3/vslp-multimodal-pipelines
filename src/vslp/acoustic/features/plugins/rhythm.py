@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 from scipy import signal
 
-from vslp.acoustic.features.plugins.audio_utils import read_mono_audio, rms_envelope
+from vslp.acoustic.features.plugins.audio_utils import read_region_audio, rms_envelope
 from vslp.acoustic.features.plugins.base import AcousticFeaturePlugin, FeatureContext, FeatureValue
 
 RHYTHM_FEATURES = (
@@ -35,7 +35,8 @@ class RhythmPlugin(AcousticFeaturePlugin):
     def compute(self, context: FeatureContext) -> dict[str, FeatureValue]:
         if context.segmentation_wav_path is None or not context.segmentation_wav_path.exists():
             return _nan_map("segmentation_wav_missing")
-        x, sr = read_mono_audio(context.segmentation_wav_path)
+        min_pause = float(getattr(context.config, "minimum_pause_duration_sec", 0.15))
+        x, sr, region_note = read_region_audio(context.segmentation_wav_path, context.segments_csv, region=context.analysis_region, min_pause_duration_sec=min_pause)
         if x.size == 0:
             return _nan_map("empty_audio")
 
@@ -87,7 +88,7 @@ class RhythmPlugin(AcousticFeaturePlugin):
         above = band_energy(4.0, 10.0)
         band36 = band_energy(3.0, 6.0)
         ratio = float(below / above) if np.isfinite(below) and np.isfinite(above) and above > 0 else np.nan
-        note = "computed_from_rms_envelope_modulation_spectrum"
+        note = "computed_from_rms_envelope_modulation_spectrum; " + region_note
         return {
             "intensity_CV": FeatureValue("intensity_CV", intensity_cv, "computed", note),
             "fft_peaks1": FeatureValue("fft_peaks1", peak_freqs[0], "computed", note),
