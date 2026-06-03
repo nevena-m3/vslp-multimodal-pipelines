@@ -109,3 +109,10 @@ See `docs/gui_first_run.md` for step-by-step instructions.
 ## Acoustic GUI feature layer
 
 V0.5 adds an Acoustic GUI **Features** tab and a conservative backend feature-extraction stage. It computes the validated timing/respiratory subset from Silero segments and writes all registered but pending features as explicit NaN placeholders with status metadata. See `docs/acoustic_gui_feature_layer_v05.md`.
+
+
+## Acoustic GUI v0.9
+
+V0.9 adds feature-level selection, embedded table previews, embedded plot previews, latest-output detection, and clearer stage workflow guidance.
+
+See `docs/acoustic_gui_v09.md` for details.

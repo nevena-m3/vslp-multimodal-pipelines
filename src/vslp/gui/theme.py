@@ -101,10 +101,23 @@ def build_dark_stylesheet() -> str:
         left: 12px;
         padding: 0 4px;
     }
-    QTreeWidget, QListWidget {
+    QTreeWidget, QListWidget, QTableWidget {
         background-color: #0B253D;
+        alternate-background-color: #0E2A45;
+        color: #EAF2F8;
         border: 1px solid #234966;
         border-radius: 8px;
+        gridline-color: #315D7C;
+    }
+    QHeaderView::section {
+        background-color: #123655;
+        color: #F6FBFF;
+        padding: 6px;
+        border: 1px solid #315D7C;
+        font-weight: 700;
+    }
+    QTreeWidget::item:selected, QTableWidget::item:selected {
+        background-color: #1A5F91;
     }
     QProgressBar {
         background-color: #102A43;
