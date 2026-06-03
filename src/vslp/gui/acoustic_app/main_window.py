@@ -1,4 +1,4 @@
-"""VSLP Acoustic Pipeline GUI v0.2.
+"""VSLP Acoustic Pipeline GUI v0.3.
 
 This first GUI wraps the validated backend stages:
 - project setup
@@ -45,6 +45,7 @@ from PySide6.QtWidgets import (
 from vslp.acoustic.features.registry import build_acoustic_feature_registry
 from vslp.acoustic.features.stage import FeatureExtractionConfig, run_acoustic_feature_extraction
 from vslp.acoustic.ingest.stage import run_acoustic_ingest
+from vslp.acoustic.metadata.stage import MetadataConfig, run_acoustic_metadata
 from vslp.acoustic.preprocess.stage import FilterConfig, PreprocessConfig, run_acoustic_preprocess
 from vslp.acoustic.segment.stage import run_acoustic_segmentation_silero
 from vslp.core.project import initialize_project
@@ -93,6 +94,7 @@ class AcousticPipelineWindow(QMainWindow):
 
         self.stage_records: dict[str, StageRecord] = {
             "project": StageRecord(),
+            "metadata": StageRecord(),
             "ingest": StageRecord(),
             "preprocess": StageRecord(),
             "segment": StageRecord(),
@@ -121,7 +123,7 @@ class AcousticPipelineWindow(QMainWindow):
 
         title = QLabel("VSLP")
         title.setObjectName("TitleLabel")
-        subtitle = QLabel("Acoustic Pipeline GUI v0.2\nValidated stages first, polished workflow next.")
+        subtitle = QLabel("Acoustic Pipeline GUI v0.3\nMetadata-aware local research workflow.")
         subtitle.setObjectName("SubtitleLabel")
         side_layout.addWidget(title)
         side_layout.addWidget(subtitle)
@@ -129,6 +131,7 @@ class AcousticPipelineWindow(QMainWindow):
         self.stage_labels: dict[str, QLabel] = {}
         for key, label in [
             ("project", "Project"),
+            ("metadata", "Metadata"),
             ("ingest", "Ingest"),
             ("preprocess", "Preprocess"),
             ("segment", "Silero Segmentation"),
@@ -179,6 +182,7 @@ class AcousticPipelineWindow(QMainWindow):
 
         tabs = QTabWidget()
         tabs.addTab(self._build_setup_tab(), "Setup")
+        tabs.addTab(self._build_metadata_tab(), "Metadata")
         tabs.addTab(self._build_preprocess_tab(), "Preprocess")
         tabs.addTab(self._build_segment_tab(), "Segmentation")
         tabs.addTab(self._build_features_tab(), "Features")
@@ -236,6 +240,46 @@ class AcousticPipelineWindow(QMainWindow):
 
         layout.addWidget(paths_group)
         layout.addLayout(btn_row)
+        layout.addStretch(1)
+        return container
+
+    def _build_metadata_tab(self) -> QWidget:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+
+        intro = QLabel(
+            "Metadata connects files to subject/session/iteration/task/labels. "
+            "Use a CSV when available; otherwise VSLP will conservatively parse filenames and flag inferred values."
+        )
+        intro.setWordWrap(True)
+        intro.setObjectName("SubtitleLabel")
+        layout.addWidget(intro)
+
+        group = QGroupBox("Demographics / metadata CSV")
+        grid = QGridLayout(group)
+        self.demographics_csv_edit = QLineEdit()
+        self.demographics_csv_edit.setPlaceholderText("optional CSV with file_name, subject_id, session_id, iteration, task, recording_date, diagnosis, severity_score, severity_bin")
+        browse_demo = QPushButton("Browse CSV")
+        browse_demo.clicked.connect(self.browse_demographics_csv)
+        grid.addWidget(QLabel("Metadata CSV"), 0, 0)
+        grid.addWidget(self.demographics_csv_edit, 0, 1)
+        grid.addWidget(browse_demo, 0, 2)
+        layout.addWidget(group)
+
+        required = QPlainTextEdit()
+        required.setReadOnly(True)
+        required.setMaximumHeight(135)
+        required.setPlainText(
+            "Recommended CSV columns:\n"
+            "file_name, subject_id, session_id, iteration, task, recording_date, diagnosis, severity_score, severity_bin\n\n"
+            "If missing, VSLP will parse what it can from filenames and leave clinical labels blank."
+        )
+        layout.addWidget(required)
+
+        run_btn = QPushButton("Run Metadata Indexing")
+        run_btn.setObjectName("RunButton")
+        run_btn.clicked.connect(self.run_metadata)
+        layout.addWidget(run_btn)
         layout.addStretch(1)
         return container
 
@@ -384,6 +428,10 @@ class AcousticPipelineWindow(QMainWindow):
         group = QGroupBox("Open outputs")
         btns = QGridLayout(group)
 
+        open_metadata = QPushButton("Open Metadata File Index CSV")
+        open_metadata.clicked.connect(lambda: self._open_stage_file("metadata", "summary"))
+        open_metadata_report = QPushButton("Open Metadata HTML Report")
+        open_metadata_report.clicked.connect(lambda: self._open_stage_file("metadata", "report"))
         open_ingest = QPushButton("Open Ingest Summary CSV")
         open_ingest.clicked.connect(lambda: self._open_stage_file("ingest", "summary"))
         open_pre_sum = QPushButton("Open Preprocess Summary CSV")
@@ -401,7 +449,7 @@ class AcousticPipelineWindow(QMainWindow):
         open_stage_dir = QPushButton("Open Acoustic Output Folder")
         open_stage_dir.clicked.connect(self.open_output_root)
 
-        for i, btn in enumerate([open_ingest, open_pre_sum, open_pre_rep, open_seg_sum, open_seg_rep, open_feat_sum, open_feat_rep, open_stage_dir]):
+        for i, btn in enumerate([open_metadata, open_metadata_report, open_ingest, open_pre_sum, open_pre_rep, open_seg_sum, open_seg_rep, open_feat_sum, open_feat_rep, open_stage_dir]):
             btn.setObjectName("OpenButton")
             btns.addWidget(btn, i // 2, i % 2)
 
@@ -440,6 +488,10 @@ class AcousticPipelineWindow(QMainWindow):
         output_root = Path(self.output_edit.text().strip()).expanduser()
         return output_root / "acoustic" / "003_segmentation" / "tables" / "acoustic_segmentation_summary.csv"
 
+    def _metadata_index_path(self) -> Path:
+        output_root = Path(self.output_edit.text().strip()).expanduser()
+        return output_root / "acoustic" / "000_metadata" / "tables" / "project_file_index.csv"
+
     def _toggle_feature_subsystems(self) -> None:
         checked = self.feature_select_all.isChecked()
         for cb in getattr(self, "feature_subsystem_checks", {}).values():
@@ -454,6 +506,11 @@ class AcousticPipelineWindow(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, "Select output project folder")
         if folder:
             self.output_edit.setText(folder)
+
+    def browse_demographics_csv(self) -> None:
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select demographics CSV", "", "CSV files (*.csv);;All files (*)")
+        if file_path:
+            self.demographics_csv_edit.setText(file_path)
 
     def _set_busy(self, busy: bool) -> None:
         for btn in self.findChildren(QPushButton):
@@ -557,6 +614,16 @@ class AcousticPipelineWindow(QMainWindow):
         project_name = self.project_name_edit.text().strip() or "VSLP Acoustic Project"
         self._run_worker("project", initialize_project, {"output_root": output_root, "project_name": project_name})
 
+    def run_metadata(self) -> None:
+        paths = self._require_paths()
+        if paths is None:
+            return
+        input_path, output_root = paths
+        demo_text = self.demographics_csv_edit.text().strip() if hasattr(self, "demographics_csv_edit") else ""
+        cfg = MetadataConfig(demographics_csv=demo_text or None)
+        initialize_project(output_root=output_root, project_name=self.project_name_edit.text().strip() or "VSLP Acoustic Project")
+        self._run_worker("metadata", run_acoustic_metadata, {"input_path": input_path, "output_root": output_root, "config": cfg})
+
     def run_ingest(self) -> None:
         paths = self._require_paths()
         if paths is None:
@@ -625,9 +692,11 @@ class AcousticPipelineWindow(QMainWindow):
         selected_subsystems = [
             subsystem for subsystem, cb in getattr(self, "feature_subsystem_checks", {}).items() if cb.isChecked()
         ]
+        metadata_index = self._metadata_index_path()
         cfg = FeatureExtractionConfig(
             selected_subsystems=selected_subsystems,
             minimum_pause_duration_sec=float(self.min_pause_feature_spin.value()),
+            metadata_csv=str(metadata_index) if metadata_index.exists() else None,
         )
         self._run_worker(
             "features",
@@ -648,6 +717,8 @@ class AcousticPipelineWindow(QMainWindow):
 
         # Run a simple chained workflow to keep the first GUI dependable.
         def full_run(input_path: Path, output_root: Path):
+            demo_text = self.demographics_csv_edit.text().strip() if hasattr(self, "demographics_csv_edit") else ""
+            metadata_result = run_acoustic_metadata(input_path=input_path, output_root=output_root, config=MetadataConfig(demographics_csv=demo_text or None))
             ingest_result = run_acoustic_ingest(input_path=input_path, output_root=output_root)
             preprocess_cfg = PreprocessConfig(
                 segmentation_sample_rate_hz=int(self.seg_sr_spin.value()),
@@ -668,10 +739,14 @@ class AcousticPipelineWindow(QMainWindow):
             features_result = run_acoustic_feature_extraction(
                 segmentation_summary_csv=output_root / "acoustic" / "003_segmentation" / "tables" / "acoustic_segmentation_summary.csv",
                 output_root=output_root,
-                config=FeatureExtractionConfig(minimum_pause_duration_sec=float(self.min_pause_feature_spin.value())),
+                config=FeatureExtractionConfig(
+                    minimum_pause_duration_sec=float(self.min_pause_feature_spin.value()),
+                    metadata_csv=str(output_root / "acoustic" / "000_metadata" / "tables" / "project_file_index.csv"),
+                ),
             )
             # Update stage records manually inside the final result pack.
             return {
+                "metadata": metadata_result,
                 "ingest": ingest_result,
                 "preprocess": preprocess_result,
                 "segment": segment_result,
@@ -682,7 +757,7 @@ class AcousticPipelineWindow(QMainWindow):
 
     def _on_worker_finished(self, name: str, result: object) -> None:  # type: ignore[override]
         if name == "full_run" and isinstance(result, dict):
-            for stage_name in ["ingest", "preprocess", "segment", "features"]:
+            for stage_name in ["metadata", "ingest", "preprocess", "segment", "features"]:
                 self._on_worker_finished(stage_name, result[stage_name])
             self.append_log("Full acoustic backend run finished.")
             return
