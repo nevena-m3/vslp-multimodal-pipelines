@@ -1,4 +1,4 @@
-"""VSLP Acoustic Pipeline GUI v0.3.
+"""VSLP Acoustic Pipeline GUI v0.8.
 
 This first GUI wraps the validated backend stages:
 - project setup
@@ -43,7 +43,7 @@ from PySide6.QtWidgets import (
 )
 
 from vslp.acoustic.features.registry import build_acoustic_feature_registry
-from vslp.acoustic.features.stage import FeatureExtractionConfig, run_acoustic_feature_extraction
+from vslp.acoustic.features.stage import IMPLEMENTED_FEATURES, PROXY_FEATURES, FeatureExtractionConfig, run_acoustic_feature_extraction
 from vslp.acoustic.ingest.stage import run_acoustic_ingest
 from vslp.acoustic.metadata.stage import MetadataConfig, run_acoustic_metadata
 from vslp.acoustic.preprocess.stage import FilterConfig, PreprocessConfig, run_acoustic_preprocess
@@ -123,7 +123,7 @@ class AcousticPipelineWindow(QMainWindow):
 
         title = QLabel("VSLP")
         title.setObjectName("TitleLabel")
-        subtitle = QLabel("Acoustic Pipeline GUI v0.3\nMetadata-aware local research workflow.")
+        subtitle = QLabel("Acoustic Pipeline GUI v0.8\nMetadata-aware feature plugin workflow.")
         subtitle.setObjectName("SubtitleLabel")
         side_layout.addWidget(title)
         side_layout.addWidget(subtitle)
@@ -367,8 +367,9 @@ class AcousticPipelineWindow(QMainWindow):
         layout = QVBoxLayout(container)
 
         intro = QLabel(
-            "This first feature layer computes validated timing/respiratory features from Silero segments. "
-            "The remaining registered acoustic features are listed and emitted as explicit NaN placeholders until their implementations are validated against the uploaded notebook."
+            "Feature extraction now uses modular subsystem plugins. Timing/respiratory, rhythm/envelope, "
+            "global RMS, and engineering phonatory proxies are computed from validated stage outputs. "
+            "Features still requiring formula-level validation remain explicit NaN placeholders."
         )
         intro.setWordWrap(True)
         intro.setObjectName("SubtitleLabel")
@@ -406,11 +407,13 @@ class AcousticPipelineWindow(QMainWindow):
         preview = QPlainTextEdit()
         preview.setReadOnly(True)
         preview.setMaximumHeight(140)
-        computed_count = len([f for f in registry["feature"].tolist() if f in {"speech_rate", "total_dur", "speech_dur", "percent_pause", "num_pause", "mean_pause_dur", "mean_phrase_dur", "cv_pause_dur", "cv_phrase_dur", "total_pause_dur"}])
+        computed_count = len([f for f in registry["feature"].tolist() if f in IMPLEMENTED_FEATURES])
+        proxy_count = len([f for f in registry["feature"].tolist() if f in PROXY_FEATURES])
         preview.setPlainText(
             f"Registered acoustic features: {len(registry)}\n"
-            f"Implemented in this GUI/backend pass: {computed_count} timing/respiratory features\n"
-            "Pending features are intentionally written as NaN with explicit status until formula-level implementation is validated."
+            f"Implemented or proxy-computed in this GUI/backend pass: {computed_count} features\n"
+            f"Proxy features requiring validation before clinical interpretation: {proxy_count}\n"
+            "The feature code is now modular: plugins live under src/vslp/acoustic/features/plugins/."
         )
         layout.addWidget(preview)
 

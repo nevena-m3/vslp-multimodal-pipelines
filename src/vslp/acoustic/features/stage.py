@@ -1,13 +1,15 @@
-"""Acoustic feature extraction stage v0.1.
+"""Acoustic feature extraction stage.
 
-This first production stage intentionally separates:
-1. implemented, auditable features;
-2. registered-but-not-yet-implemented features from the uploaded 73-feature notebook.
+V0.7/V0.8 introduces a plugin architecture and computes the first validated-safe
+feature families:
+- respiratory/timing features from Silero segments;
+- rhythm/envelope modulation features from canonical segmentation WAVs;
+- phonatory engineering proxies for F0 and CPP;
+- global RMS amplitude.
 
-That is safer than silently computing approximate versions of clinical features. The first
-implemented feature family is timing/respiratory features derived from Silero speech and
-nonspeech segments. Remaining registered features are emitted as NaN with explicit status
-so downstream aggregation and GUI review can handle them transparently.
+Features still requiring formula-level validation against the uploaded notebook remain
+registered, written as NaN, and marked `not_implemented_yet`. This avoids silent
+approximation of clinical features.
 """
 
 from __future__ import annotations
@@ -21,23 +23,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from vslp.acoustic.features.plugins import build_default_plugins, implemented_feature_names
+from vslp.acoustic.features.plugins.base import FeatureContext, FeatureValue
 from vslp.acoustic.features.registry import build_acoustic_feature_registry
 from vslp.core.project import ensure_stage_folders
 from vslp.core.provenance import python_environment
 from vslp.core.schemas import ArtifactRef, StageManifest, StageResult
 
-IMPLEMENTED_FEATURES = {
-    "total_dur",
-    "speech_dur",
-    "percent_pause",
-    "num_pause",
-    "mean_pause_dur",
-    "mean_phrase_dur",
-    "cv_pause_dur",
-    "cv_phrase_dur",
-    "total_pause_dur",
-    "speech_rate",
-}
+IMPLEMENTED_FEATURES = implemented_feature_names()
+PROXY_FEATURES = {"f0_mean", "f0_std", "CPP_mean"}
 
 
 @dataclass(frozen=True)
@@ -51,6 +45,8 @@ class FeatureExtractionConfig:
     task_word_counts
         Optional map from task name to known word count. Used only for speech_rate.
         If absent, speech_rate is emitted as NaN rather than guessed.
+    metadata_csv
+        Optional metadata/file index CSV with file_name as key.
     minimum_pause_duration_sec
         Internal nonspeech runs shorter than this are ignored for pause summary features.
     """
@@ -65,59 +61,6 @@ class FeatureExtractionConfig:
         return asdict(self)
 
 
-def _cv(values: pd.Series | np.ndarray) -> float:
-    arr = np.asarray(values, dtype=float)
-    arr = arr[np.isfinite(arr)]
-    if arr.size == 0:
-        return np.nan
-    mean = float(np.mean(arr))
-    if abs(mean) < 1e-12:
-        return np.nan
-    return float(np.std(arr, ddof=0) / mean)
-
-
-def _compute_timing_features(segments_csv: Path, duration_sec: float, task: str | None, cfg: FeatureExtractionConfig) -> dict[str, float]:
-    segs = pd.read_csv(segments_csv)
-    out: dict[str, float] = {}
-
-    if segs.empty:
-        return {name: np.nan for name in IMPLEMENTED_FEATURES}
-
-    speech = segs.loc[segs["segment_type"] == "speech"].copy()
-    internal_pause = segs.loc[segs["segment_role"] == "internal_nonspeech"].copy()
-    if "duration_sec" in internal_pause.columns:
-        internal_pause = internal_pause.loc[internal_pause["duration_sec"] >= cfg.minimum_pause_duration_sec]
-
-    leading = float(segs.loc[segs["segment_role"] == "leading_nonspeech", "duration_sec"].sum()) if "segment_role" in segs else 0.0
-    trailing = float(segs.loc[segs["segment_role"] == "trailing_nonspeech", "duration_sec"].sum()) if "segment_role" in segs else 0.0
-    effective_dur = float(duration_sec) - leading - trailing
-    if not np.isfinite(effective_dur) or effective_dur <= 0:
-        effective_dur = float(duration_sec) if np.isfinite(duration_sec) and duration_sec > 0 else np.nan
-
-    speech_dur = float(speech["duration_sec"].sum()) if not speech.empty else 0.0
-    total_pause_dur = float(internal_pause["duration_sec"].sum()) if not internal_pause.empty else 0.0
-
-    out["total_dur"] = effective_dur
-    out["speech_dur"] = speech_dur
-    out["total_pause_dur"] = total_pause_dur
-    out["percent_pause"] = float(total_pause_dur / effective_dur) if np.isfinite(effective_dur) and effective_dur > 0 else np.nan
-    out["num_pause"] = float(len(internal_pause))
-    out["mean_pause_dur"] = float(internal_pause["duration_sec"].mean()) if not internal_pause.empty else 0.0
-    out["mean_phrase_dur"] = float(speech["duration_sec"].mean()) if not speech.empty else 0.0
-    out["cv_pause_dur"] = _cv(internal_pause["duration_sec"]) if not internal_pause.empty else np.nan
-    out["cv_phrase_dur"] = _cv(speech["duration_sec"]) if not speech.empty else np.nan
-
-    # Speech rate is only scientifically meaningful when the task word count is known.
-    normalized_task = str(task).strip().lower() if task is not None and pd.notna(task) else ""
-    word_count = cfg.task_word_counts.get(normalized_task)
-    if word_count is not None and np.isfinite(effective_dur) and effective_dur > 0:
-        out["speech_rate"] = float(word_count / effective_dur * 60.0)
-    else:
-        out["speech_rate"] = np.nan
-
-    return out
-
-
 def _select_registry(cfg: FeatureExtractionConfig) -> pd.DataFrame:
     registry = build_acoustic_feature_registry()
     if cfg.selected_subsystems:
@@ -127,40 +70,99 @@ def _select_registry(cfg: FeatureExtractionConfig) -> pd.DataFrame:
     return registry.reset_index(drop=True)
 
 
+def _merge_metadata_if_available(seg_summary: pd.DataFrame, metadata_csv: str | None) -> pd.DataFrame:
+    if not metadata_csv:
+        return seg_summary
+    metadata_path = Path(metadata_csv).expanduser()
+    if not metadata_path.exists():
+        raise FileNotFoundError(f"metadata_csv was provided but does not exist: {metadata_path}")
+    meta = pd.read_csv(metadata_path)
+    if "file_name" not in meta.columns:
+        raise ValueError("metadata_csv must contain a file_name column")
+    keep_cols = [
+        c
+        for c in [
+            "file_name",
+            "subject_id",
+            "session_id",
+            "iteration",
+            "task",
+            "recording_date",
+            "diagnosis",
+            "severity_score",
+            "severity_bin",
+            "record_key",
+        ]
+        if c in meta.columns
+    ]
+    out = seg_summary.merge(meta[keep_cols], on="file_name", how="left", suffixes=("", "_metadata"))
+    for col in ["subject_id", "session_id", "iteration", "task", "recording_date", "diagnosis", "severity_score", "severity_bin", "record_key"]:
+        mcol = f"{col}_metadata"
+        if mcol in out.columns:
+            if col in out.columns:
+                out[col] = out[col].combine_first(out[mcol])
+            else:
+                out[col] = out[mcol]
+            out = out.drop(columns=[mcol])
+    return out
+
+
+def _make_context(row: pd.Series, cfg: FeatureExtractionConfig) -> FeatureContext:
+    segments_raw = row.get("segments_csv_path", "")
+    wav_raw = row.get("segmentation_wav_path", "")
+    segments_path = Path(str(segments_raw)) if str(segments_raw) and str(segments_raw) != "nan" else None
+    wav_path = Path(str(wav_raw)) if str(wav_raw) and str(wav_raw) != "nan" else None
+    duration = row.get("duration_sec", np.nan)
+    try:
+        duration_float = float(duration)
+    except Exception:
+        duration_float = np.nan
+    return FeatureContext(
+        file_name=str(row.get("file_name", "")),
+        row=row,
+        segments_csv=segments_path,
+        segmentation_wav_path=wav_path,
+        task=str(row.get("task")) if pd.notna(row.get("task", np.nan)) else None,
+        duration_sec=duration_float,
+        config=cfg,
+    )
+
+
+def _metadata_prefix(row: pd.Series) -> dict[str, Any]:
+    return {
+        "file_name": row.get("file_name", ""),
+        "source_file_path": row.get("source_file_path", row.get("file_path")),
+        "segmentation_wav_path": row.get("segmentation_wav_path"),
+        "subject_id": row.get("subject_id", np.nan),
+        "session_id": row.get("session_id", np.nan),
+        "iteration": row.get("iteration", np.nan),
+        "task": row.get("task", np.nan),
+        "recording_date": row.get("recording_date", np.nan),
+        "diagnosis": row.get("diagnosis", np.nan),
+        "severity_score": row.get("severity_score", np.nan),
+        "severity_bin": row.get("severity_bin", np.nan),
+        "record_key": row.get("record_key", np.nan),
+        "duration_sec": row.get("duration_sec", np.nan),
+    }
+
+
 def run_acoustic_feature_extraction(
     segmentation_summary_csv: str | Path,
     output_root: str | Path,
     config: FeatureExtractionConfig | None = None,
 ) -> StageResult:
-    """Extract acoustic features from segmentation outputs.
-
-    V0.1 computes the timing/respiratory subset from the Silero segment tables and
-    emits all selected registered features with explicit implementation status.
-    """
+    """Extract acoustic features from segmentation outputs."""
     cfg = config or FeatureExtractionConfig()
     segmentation_summary_csv = Path(segmentation_summary_csv)
     stage_dir = Path(output_root) / "acoustic" / "004_features"
     folders = ensure_stage_folders(stage_dir)
 
     registry = _select_registry(cfg)
+    selected_names = set(registry["feature"].astype(str).tolist())
     seg_summary = pd.read_csv(segmentation_summary_csv)
-    if cfg.metadata_csv:
-        metadata_path = Path(cfg.metadata_csv).expanduser()
-        if metadata_path.exists():
-            meta = pd.read_csv(metadata_path)
-            if "file_name" in meta.columns:
-                keep_cols = [c for c in ["file_name", "subject_id", "session_id", "iteration", "task", "recording_date", "diagnosis", "severity_score", "severity_bin", "record_key"] if c in meta.columns]
-                seg_summary = seg_summary.merge(meta[keep_cols], on="file_name", how="left", suffixes=("", "_metadata"))
-                for col in ["subject_id", "session_id", "iteration", "task", "recording_date", "diagnosis", "severity_score", "severity_bin", "record_key"]:
-                    mcol = f"{col}_metadata"
-                    if mcol in seg_summary.columns:
-                        if col in seg_summary.columns:
-                            seg_summary[col] = seg_summary[col].combine_first(seg_summary[mcol])
-                        else:
-                            seg_summary[col] = seg_summary[mcol]
-                        seg_summary = seg_summary.drop(columns=[mcol])
-        else:
-            raise FileNotFoundError(f"metadata_csv was provided but does not exist: {metadata_path}")
+    seg_summary = _merge_metadata_if_available(seg_summary, cfg.metadata_csv)
+
+    plugins = [p for p in build_default_plugins() if selected_names.intersection(set(p.feature_names))]
 
     rows: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
@@ -168,51 +170,42 @@ def run_acoustic_feature_extraction(
 
     for _, row in seg_summary.iterrows():
         file_name = str(row.get("file_name", ""))
-        out_row: dict[str, Any] = {
-            "file_name": file_name,
-            "source_file_path": row.get("source_file_path", row.get("file_path")),
-            "segmentation_wav_path": row.get("segmentation_wav_path"),
-            "subject_id": row.get("subject_id", np.nan),
-            "session_id": row.get("session_id", np.nan),
-            "iteration": row.get("iteration", np.nan),
-            "task": row.get("task", np.nan),
-            "recording_date": row.get("recording_date", np.nan),
-            "diagnosis": row.get("diagnosis", np.nan),
-            "severity_score": row.get("severity_score", np.nan),
-            "severity_bin": row.get("severity_bin", np.nan),
-            "record_key": row.get("record_key", np.nan),
-            "duration_sec": row.get("duration_sec", np.nan),
-        }
+        out_row: dict[str, Any] = _metadata_prefix(row)
+        feature_results: dict[str, FeatureValue] = {}
+        context = _make_context(row, cfg)
         try:
-            segments_path = Path(str(row.get("segments_csv_path", "")))
-            if not segments_path.exists():
-                raise FileNotFoundError(f"Missing segments CSV: {segments_path}")
-
-            timing = _compute_timing_features(
-                segments_csv=segments_path,
-                duration_sec=float(row.get("duration_sec", np.nan)),
-                task=row.get("task", None),
-                cfg=cfg,
-            )
+            for plugin in plugins:
+                try:
+                    feature_results.update(plugin.compute(context))
+                except Exception as exc:  # noqa: BLE001 - one plugin should not kill the file
+                    for name in plugin.feature_names:
+                        feature_results[name] = FeatureValue(name, np.nan, "failed", f"plugin_failed: {exc}")
 
             for _, feat in registry.iterrows():
                 name = str(feat["feature"])
                 subsystem = str(feat["subsystem"])
-                if name in IMPLEMENTED_FEATURES:
-                    out_row[name] = timing.get(name, np.nan)
-                    status = "computed"
-                    note = "computed_from_silero_segments"
+                result = feature_results.get(name)
+                if result is not None:
+                    out_row[name] = result.value
+                    status = result.status
+                    note = result.note
+                elif name in IMPLEMENTED_FEATURES:
+                    out_row[name] = np.nan
+                    status = "not_selected_or_missing_input"
+                    note = "feature_has_plugin_but_required_input_was_unavailable"
                 else:
                     out_row[name] = np.nan
                     status = "not_implemented_yet"
                     note = "registered_from_uploaded_feature_notebook_pending_validated_implementation"
-                long_status_rows.append({
-                    "file_name": file_name,
-                    "feature": name,
-                    "subsystem": subsystem,
-                    "status": status,
-                    "note": note,
-                })
+                long_status_rows.append(
+                    {
+                        "file_name": file_name,
+                        "feature": name,
+                        "subsystem": subsystem,
+                        "status": status,
+                        "note": note,
+                    }
+                )
             out_row["feature_extraction_status"] = "ok"
             rows.append(out_row)
         except Exception as exc:  # noqa: BLE001
@@ -232,16 +225,41 @@ def run_acoustic_feature_extraction(
 
     missingness_plot = folders["plots"] / "feature_missingness.png"
     subsystem_plot = folders["plots"] / "feature_subsystem_implementation_status.png"
+    distribution_plot = folders["plots"] / "implemented_feature_distributions.png"
+    task_plot = folders["plots"] / "task_feature_overview.png"
     _plot_feature_missingness(features_path, registry, missingness_plot)
     _plot_subsystem_status(status_path, subsystem_plot)
+    _plot_implemented_feature_distributions(features_path, registry, distribution_plot)
+    _plot_task_feature_overview(features_path, task_plot)
 
     report_path = folders["reports"] / "acoustic_feature_report.html"
-    _write_feature_html_report(report_path, rows, long_status_rows, errors, cfg, missingness_plot, subsystem_plot)
+    _write_feature_html_report(
+        report_path,
+        rows,
+        long_status_rows,
+        errors,
+        cfg,
+        missingness_plot,
+        subsystem_plot,
+        distribution_plot,
+        task_plot,
+    )
+
+    computed_statuses = {"computed", "computed_proxy"}
+    status_df = pd.DataFrame(long_status_rows)
+    computed_features = sorted(status_df.loc[status_df["status"].isin(computed_statuses), "feature"].unique().tolist()) if not status_df.empty else []
+    proxy_features = sorted(status_df.loc[status_df["status"].eq("computed_proxy"), "feature"].unique().tolist()) if not status_df.empty else []
+
+    warnings: list[str] = []
+    if proxy_features:
+        warnings.append(f"Proxy features require reference validation before clinical interpretation: {proxy_features}")
+    if errors:
+        warnings.append(f"{len(errors)} files failed feature extraction")
 
     manifest = StageManifest(
         stage_name="acoustic_feature_extraction",
-        stage_version="0.1.0",
-        status="completed_with_warnings" if errors else "completed",
+        stage_version="0.8.0",
+        status="completed_with_warnings" if warnings else "completed",
         input_artifacts=[ArtifactRef(path=str(segmentation_summary_csv), role="segmentation_summary", media_type="text/csv")],
         output_artifacts=[
             ArtifactRef(path=str(features_path), role="features_per_file", media_type="text/csv"),
@@ -251,11 +269,13 @@ def run_acoustic_feature_extraction(
         ],
         config=cfg.to_dict(),
         environment={"python": python_environment()},
-        warnings=[
-            "V0.1 computes timing/respiratory features only; remaining registered features are explicit NaN placeholders."
-        ],
+        warnings=warnings,
         errors=errors,
-        notes=["This is intentionally conservative to avoid silent approximate clinical-feature implementations."],
+        notes=[
+            "Feature extraction now uses subsystem plugins.",
+            f"Computed feature families in this pass: {computed_features}",
+            "Registered-but-not-yet-implemented features remain explicit NaN placeholders.",
+        ],
     )
     manifest_path = folders["logs"] / "stage_manifest.json"
     manifest.write_json(manifest_path)
@@ -267,6 +287,11 @@ def run_acoustic_feature_extraction(
         error_table=errors_path,
         report_path=report_path,
     )
+
+
+def _feature_names_in_table(features_csv: Path, registry: pd.DataFrame) -> list[str]:
+    df_cols = pd.read_csv(features_csv, nrows=0).columns
+    return [f for f in registry["feature"].tolist() if f in df_cols]
 
 
 def _plot_feature_missingness(features_csv: Path, registry: pd.DataFrame, output_path: Path) -> None:
@@ -304,6 +329,52 @@ def _plot_subsystem_status(status_csv: Path, output_path: Path) -> None:
     plt.close(fig)
 
 
+def _plot_implemented_feature_distributions(features_csv: Path, registry: pd.DataFrame, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    df = pd.read_csv(features_csv)
+    names = [f for f in registry["feature"].astype(str).tolist() if f in df.columns and f in IMPLEMENTED_FEATURES]
+    numeric_names = [n for n in names if pd.to_numeric(df[n], errors="coerce").notna().any()]
+    if not numeric_names:
+        return
+    chosen = numeric_names[:16]
+    n = len(chosen)
+    ncols = 4
+    nrows = int(np.ceil(n / ncols))
+    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(14, max(3, 2.8 * nrows)))
+    axes_arr = np.asarray(axes).reshape(-1)
+    for ax, name in zip(axes_arr, chosen, strict=False):
+        vals = pd.to_numeric(df[name], errors="coerce").dropna().values
+        if vals.size:
+            ax.hist(vals, bins=min(20, max(5, int(np.sqrt(vals.size)))))
+        ax.set_title(name, fontsize=9)
+        ax.tick_params(axis="both", labelsize=8)
+    for ax in axes_arr[len(chosen):]:
+        ax.axis("off")
+    fig.suptitle("Implemented acoustic feature distributions", fontsize=14)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=160)
+    plt.close(fig)
+
+
+def _plot_task_feature_overview(features_csv: Path, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    df = pd.read_csv(features_csv)
+    if "task" not in df.columns or df.empty:
+        return
+    candidate_features = [f for f in ["percent_pause", "speech_dur", "f0_mean", "intensity_CV", "fft_peaks1", "RMSamp"] if f in df.columns]
+    if not candidate_features:
+        return
+    task_counts = df["task"].fillna("unknown").astype(str).value_counts().head(12)
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.bar(task_counts.index, task_counts.values)
+    ax.set_ylabel("Files")
+    ax.set_title("Files by task in feature table")
+    ax.tick_params(axis="x", rotation=35)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=160)
+    plt.close(fig)
+
+
 def _write_feature_html_report(
     path: Path,
     rows: list[dict[str, Any]],
@@ -312,29 +383,43 @@ def _write_feature_html_report(
     cfg: FeatureExtractionConfig,
     missingness_plot: Path,
     subsystem_plot: Path,
+    distribution_plot: Path,
+    task_plot: Path,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     status_df = pd.DataFrame(status_rows)
-    computed = int((status_df["status"] == "computed").sum()) if not status_df.empty else 0
+    computed = int(status_df["status"].isin(["computed", "computed_proxy"]).sum()) if not status_df.empty else 0
+    proxies = int((status_df["status"] == "computed_proxy").sum()) if not status_df.empty else 0
     pending = int((status_df["status"] == "not_implemented_yet").sum()) if not status_df.empty else 0
     files_ok = int(sum(1 for r in rows if r.get("feature_extraction_status") == "ok"))
     failed = len(errors)
-    missing_rel = Path("../plots") / missingness_plot.name
-    subsystem_rel = Path("../plots") / subsystem_plot.name
+    implemented = sorted(status_df.loc[status_df["status"].isin(["computed", "computed_proxy"]), "feature"].unique().tolist()) if not status_df.empty else []
+
+    def img_block(title: str, image_path: Path) -> str:
+        if not image_path.exists():
+            return ""
+        rel = Path("../plots") / image_path.name
+        return f"<div class='card'><h2>{title}</h2><img src='{rel.as_posix()}'></div>"
+
     html = f"""<!doctype html>
 <html><head><meta charset='utf-8'><title>VSLP Acoustic Feature Report</title>
 <style>
 body {{ font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; background:#071A2D; color:#EAF2F8; margin:32px; }}
 .card {{ background:#0B253D; border:1px solid #315D7C; border-radius:12px; padding:18px; margin:14px 0; }}
-.badge {{ display:inline-block; padding:4px 8px; border-radius:6px; background:#0E3A5B; margin-right:8px; }}
+.badge {{ display:inline-block; padding:4px 8px; border-radius:6px; background:#0E3A5B; margin-right:8px; margin-top:4px; }}
 pre {{ white-space:pre-wrap; background:#102A43; padding:12px; border-radius:8px; }}
+code {{ background:#102A43; padding:2px 5px; border-radius:4px; }}
 img {{ max-width:100%; border-radius:10px; border:1px solid #315D7C; background:white; }}
+.warning {{ color:#FFDFA8; }}
 </style></head><body>
 <h1>VSLP Acoustic Feature Extraction Report</h1>
-<div class='card'><span class='badge'>Files OK: {files_ok}</span><span class='badge'>Files failed: {failed}</span><span class='badge'>Computed feature values: {computed}</span><span class='badge'>Pending placeholders: {pending}</span></div>
-<div class='card'><h2>Current implementation scope</h2><p>V0.1 computes timing/respiratory features from validated Silero segment tables. Registered-but-not-yet-implemented features are written as NaN with explicit status, not silently approximated.</p></div>
-<div class='card'><h2>Feature missingness</h2><img src='{missing_rel.as_posix()}'></div>
-<div class='card'><h2>Subsystem implementation status</h2><img src='{subsystem_rel.as_posix()}'></div>
+<div class='card'><span class='badge'>Files OK: {files_ok}</span><span class='badge'>Files failed: {failed}</span><span class='badge'>Computed feature values: {computed}</span><span class='badge'>Proxy values: {proxies}</span><span class='badge'>Pending placeholders: {pending}</span></div>
+<div class='card'><h2>Current implementation scope</h2><p>V0.8 uses a plugin architecture. Timing and rhythm features are computed from validated segmentation/preprocessed audio outputs. F0 and CPP are currently local engineering proxies and must be validated against the reference notebook/Praat-style definitions before clinical interpretation.</p><p class='warning'>Registered features that are not yet implemented remain explicit <code>NaN</code> placeholders with status <code>not_implemented_yet</code>.</p></div>
+<div class='card'><h2>Computed feature names</h2><pre>{json.dumps(implemented, indent=2)}</pre></div>
+{img_block('Feature missingness', missingness_plot)}
+{img_block('Subsystem implementation status', subsystem_plot)}
+{img_block('Implemented feature distributions', distribution_plot)}
+{img_block('Task overview', task_plot)}
 <div class='card'><h2>Configuration</h2><pre>{json.dumps(cfg.to_dict(), indent=2)}</pre></div>
 </body></html>"""
     path.write_text(html, encoding="utf-8")
