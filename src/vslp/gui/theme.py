@@ -1,6 +1,6 @@
 """Shared VSLP Qt theme.
 
-V0.15 inspector-preview correction:
+V0.16 branding correction:
 - avoids QLabel background styling that produced black artifacts on macOS;
 - uses a restrained scientific/clinical dark theme;
 - improves readability and scroll behavior on laptop screens.
@@ -19,13 +19,14 @@ def build_dark_stylesheet() -> str:
     }
     QMainWindow, QDialog { background-color: #0B1624; }
 
-    QFrame#Sidebar, QFrame#TopBanner, QFrame#Card, QFrame#InfoPanel, QFrame#MetricCard {
+    QFrame#Sidebar, QFrame#TopBanner, QFrame#BrandingBar, QFrame#Card, QFrame#InfoPanel, QFrame#MetricCard {
         background-color: #122235;
         border: 1px solid #253B52;
         border-radius: 12px;
     }
     QFrame#Sidebar { background-color: #0F2033; }
     QFrame#TopBanner { background-color: #132941; }
+    QFrame#BrandingBar { background-color: #0F2033; border-color: #24394E; }
     QFrame#InfoPanel {
         background-color: #102033;
         border: 1px solid #2C4D68;
@@ -47,6 +48,26 @@ def build_dark_stylesheet() -> str:
         font-weight: 900;
         color: #FFFFFF;
         letter-spacing: 1px;
+    }
+    QLabel#IPNoticeLabel {
+        color: #9CB1C2;
+        font-size: 10px;
+        line-height: 1.2;
+    }
+    QLabel#BrandingTitle {
+        color: #EAF4FB;
+        font-size: 14px;
+        font-weight: 800;
+        letter-spacing: 0.2px;
+    }
+    QLabel#LogoPlaceholder {
+        color: #B8CAD8;
+        font-size: 11px;
+        font-weight: 700;
+        border: 1px solid #2F485F;
+        border-radius: 8px;
+        padding: 6px 10px;
+        background-color: #122235;
     }
     QLabel#SubtitleLabel, QLabel#InfoBody {
         color: #B9CBD9;
