@@ -150,8 +150,11 @@ def run_acoustic_segmentation_silero(
             errors.append({"file_name": file_name, "segmentation_wav_path": str(wav_path), "status": "failed", "error": str(exc)})
 
     summary_path = folders["tables"] / "acoustic_segmentation_summary.csv"
+    main_summary_path = folders["tables"] / "acoustic_segmentation_main_summary.csv"
     errors_path = folders["errors"] / "acoustic_segmentation_errors.csv"
-    pd.DataFrame(rows).to_csv(summary_path, index=False)
+    summary_df = pd.DataFrame(rows)
+    summary_df.to_csv(summary_path, index=False)
+    _write_main_segmentation_summary(summary_df, main_summary_path)
     pd.DataFrame(errors).to_csv(errors_path, index=False)
 
     report_path = folders["reports"] / "acoustic_segmentation_report.html"
@@ -164,11 +167,13 @@ def run_acoustic_segmentation_silero(
         input_artifacts=[ArtifactRef(path=str(preprocess_summary_csv), role="preprocess_summary", media_type="text/csv")],
         output_artifacts=[
             ArtifactRef(path=str(summary_path), role="segmentation_summary", media_type="text/csv"),
+            ArtifactRef(path=str(main_summary_path), role="segmentation_main_summary", media_type="text/csv"),
             ArtifactRef(path=str(errors_path), role="segmentation_errors", media_type="text/csv"),
             ArtifactRef(path=str(report_path), role="segmentation_html_report", media_type="text/html"),
         ],
         config={
             "method": "silero_vad",
+            "method_family": "speech_pause_vad",
             "threshold": threshold,
             "min_speech_duration_ms": min_speech_duration_ms,
             "min_silence_duration_ms": min_silence_duration_ms,
@@ -192,6 +197,36 @@ def run_acoustic_segmentation_silero(
         error_table=errors_path,
         report_path=report_path,
     )
+
+
+def _write_main_segmentation_summary(summary_df: pd.DataFrame, path: Path) -> None:
+    """Write a compact user-facing segmentation summary table."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if summary_df.empty:
+        pd.DataFrame().to_csv(path, index=False)
+        return
+    preferred = [
+        "file_name",
+        "status",
+        "method",
+        "duration_sec",
+        "sample_rate_analysis",
+        "n_segments_total",
+        "n_speech_segments",
+        "n_internal_nonspeech_segments",
+        "speech_fraction",
+        "leading_nonspeech_sec",
+        "trailing_nonspeech_sec",
+        "longest_internal_nonspeech_sec",
+        "rms_db_median",
+        "rms_db_std",
+        "frame_csv_path",
+        "segments_csv_path",
+        "boundaries_csv_path",
+        "plot_png_path",
+    ]
+    cols = [c for c in preferred if c in summary_df.columns]
+    summary_df.loc[:, cols].to_csv(path, index=False)
 
 
 def _write_segmentation_html_report(path: Path, rows: list[dict[str, Any]], errors: list[dict[str, Any]]) -> None:
