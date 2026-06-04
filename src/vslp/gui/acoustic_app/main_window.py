@@ -1,4 +1,4 @@
-"""VSLP Acoustic Pipeline GUI v0.17.
+"""VSLP Acoustic Pipeline GUI v0.18.
 
 V0.17 Setup/Ingest refinement:
 - stage-aware workflow guidance with scientific rationale;
@@ -148,7 +148,7 @@ class AcousticPipelineWindow(QMainWindow):
 
         title = QLabel("VSLP")
         title.setObjectName("AppTitleLabel")
-        subtitle = QLabel("Acoustic Pipeline GUI v0.17")
+        subtitle = QLabel("Acoustic Pipeline GUI v0.18")
         subtitle.setObjectName("SubtitleLabel")
         ip_notice = QLabel(
             "© 2026 Nevena Musikic and Jana Yunusova\n"
@@ -419,15 +419,15 @@ class AcousticPipelineWindow(QMainWindow):
         layout = QVBoxLayout(container)
 
         layout.addWidget(self._info_panel(
-            "Why metadata comes first",
-            "Metadata prevents leakage and preserves longitudinal structure. The minimum clinically useful identity is subject_id, session_id, iteration, task, recording_date, diagnosis, severity_score, severity_bin, and file_name. If no CSV is provided, VSLP parses filenames conservatively and leaves clinical labels blank."
+            "Info",
+            "The minimum clinically useful identity is subject_id, session_id, iteration, task, recording_date, diagnosis, severity_score, severity_bin, and file_name. If no CSV is provided, VSLP parses filenames conservatively and leaves clinical labels blank."
         ))
 
         group = QGroupBox("Demographics / metadata CSV")
         grid = QGridLayout(group)
         self.demographics_csv_edit = QLineEdit()
-        self._set_tooltip(self.demographics_csv_edit, "Optional CSV with one row per recording. file_name is used for the primary join.")
-        self.demographics_csv_edit.setPlaceholderText("optional CSV with file_name, subject_id, session_id, iteration, task, recording_date, diagnosis, severity_score, severity_bin")
+        self._set_tooltip(self.demographics_csv_edit, "Optional CSV with one row per recording. VSLP detects flexible column names and links only ingested files to matching metadata rows.")
+        self.demographics_csv_edit.setPlaceholderText("optional CSV; flexible column names are detected automatically")
         browse_demo = QPushButton("Browse CSV")
         browse_demo.clicked.connect(self.browse_demographics_csv)
         grid.addWidget(QLabel("Metadata CSV"), 0, 0)
@@ -439,9 +439,9 @@ class AcousticPipelineWindow(QMainWindow):
         required.setReadOnly(True)
         required.setMaximumHeight(135)
         required.setPlainText(
-            "Recommended CSV columns:\n"
-            "file_name, subject_id, session_id, iteration, task, recording_date, diagnosis, severity_score, severity_bin\n\n"
-            "If missing, VSLP parses what it can from filenames and leaves clinical labels blank."
+            "Metadata CSV can contain more rows than uploaded files. VSLP links only the ingested files.\n"
+            "Column names are detected flexibly, for example: Raw Media File name, SubjectID, Protocol ID, Iteration, Task Name, Recording date, Visit date, ALSFRS total score, ALSFRS bulbar subscore.\n\n"
+            "Outputs include a project file index, column-mapping table, linkage summary, unmatched ingested files, and unused metadata row sample."
         )
         layout.addWidget(required)
 
@@ -694,6 +694,9 @@ class AcousticPipelineWindow(QMainWindow):
         table_layout.setSpacing(7)
         table_buttons = [
             ("Metadata file index", lambda: self.preview_csv(self._metadata_index_path())),
+            ("Metadata column mapping", lambda: self.preview_csv(self._stage_path("metadata", "column_mapping"))),
+            ("Metadata linkage", lambda: self.preview_csv(self._stage_path("metadata", "linkage"))),
+            ("Metadata unmatched files", lambda: self.preview_csv(self._stage_path("metadata", "unmatched"))),
             ("Ingest summary", lambda: self.preview_csv(self._stage_path("ingest", "summary"))),
             ("Preprocess summary", lambda: self.preview_csv(self._stage_path("preprocess", "summary"))),
             ("Segmentation summary", lambda: self.preview_csv(self._stage_path("segment", "summary"))),
@@ -803,6 +806,8 @@ class AcousticPipelineWindow(QMainWindow):
         btns = QGridLayout(group)
         buttons = [
             ("Open Metadata File Index CSV", lambda: self._open_stage_file("metadata", "summary")),
+            ("Open Metadata Column Mapping CSV", lambda: self._open_stage_file("metadata", "column_mapping")),
+            ("Open Metadata Linkage CSV", lambda: self._open_stage_file("metadata", "linkage")),
             ("Open Metadata HTML Report", lambda: self._open_stage_file("metadata", "report")),
             ("Open Ingest Summary CSV", lambda: self._open_stage_file("ingest", "summary")),
             ("Open Preprocess Summary CSV", lambda: self._open_stage_file("preprocess", "summary")),
@@ -1066,6 +1071,10 @@ class AcousticPipelineWindow(QMainWindow):
         mapping = {
             ("metadata", "summary"): self._metadata_index_path(),
             ("metadata", "report"): self._output_root() / "acoustic" / "000_metadata" / "reports" / "metadata_report.html",
+            ("metadata", "column_mapping"): self._output_root() / "acoustic" / "000_metadata" / "tables" / "metadata_column_mapping.csv",
+            ("metadata", "linkage"): self._output_root() / "acoustic" / "000_metadata" / "tables" / "metadata_linkage_summary.csv",
+            ("metadata", "unmatched"): self._output_root() / "acoustic" / "000_metadata" / "tables" / "metadata_unmatched_ingested_files.csv",
+            ("metadata", "unused"): self._output_root() / "acoustic" / "000_metadata" / "tables" / "metadata_unused_rows_sample.csv",
             ("ingest", "summary"): self._output_root() / "acoustic" / "001_ingest" / "tables" / "audio_ingest_summary.csv",
             ("preprocess", "summary"): self._preprocess_summary_path(),
             ("preprocess", "report"): self._output_root() / "acoustic" / "002_preprocess" / "reports" / "acoustic_preprocess_report.html",
