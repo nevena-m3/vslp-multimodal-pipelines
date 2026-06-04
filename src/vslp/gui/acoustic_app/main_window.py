@@ -1,6 +1,6 @@
-"""VSLP Acoustic Pipeline GUI v0.15.
+"""VSLP Acoustic Pipeline GUI v0.16.
 
-V0.15 product-design correction:
+V0.16 branding/product-design correction:
 - stage-aware workflow guidance with scientific rationale;
 - embedded CSV and plot previews;
 - latest-output detection;
@@ -148,10 +148,17 @@ class AcousticPipelineWindow(QMainWindow):
 
         title = QLabel("VSLP")
         title.setObjectName("AppTitleLabel")
-        subtitle = QLabel("Acoustic Pipeline GUI v0.14\nClinical research workflow • local-first • auditable")
+        subtitle = QLabel("Acoustic Pipeline GUI v0.16")
         subtitle.setObjectName("SubtitleLabel")
+        ip_notice = QLabel(
+            "© 2026 Nevena Musikic & Yana Yunusova\n"
+            "Speech Production Lab, University of Toronto"
+        )
+        ip_notice.setObjectName("IPNoticeLabel")
+        ip_notice.setWordWrap(True)
         side_layout.addWidget(title)
         side_layout.addWidget(subtitle)
+        side_layout.addWidget(ip_notice)
 
         self.stage_labels: dict[str, QLabel] = {}
         self.stage_cards: dict[str, QFrame] = {}
@@ -160,7 +167,7 @@ class AcousticPipelineWindow(QMainWindow):
             ("metadata", "Metadata"),
             ("ingest", "Ingest"),
             ("preprocess", "Preprocess"),
-            ("segment", "Silero Segmentation"),
+            ("segment", "Data Segmentation"),
             ("features", "Feature Extraction"),
             ("aggregate", "Aggregation"),
             ("qc", "QC Dashboard"),
@@ -201,29 +208,8 @@ class AcousticPipelineWindow(QMainWindow):
         main_col = QVBoxLayout()
         main_col.setSpacing(16)
 
-        banner = QFrame()
-        banner.setObjectName("TopBanner")
-        banner_layout = QVBoxLayout(banner)
-        banner_layout.setContentsMargins(16, 16, 16, 16)
-        banner_title = QLabel("Professional local acoustic workflow")
-        banner_title.setObjectName("TitleLabel")
-        banner_sub = QLabel(
-            "A local-first research platform for clinically oriented speech acoustics: ingest, QC, segmentation, "
-            "region-aware features, aggregation, reports, plots, and reproducible audit trails."
-        )
-        banner_sub.setObjectName("SubtitleLabel")
-        banner_sub.setWordWrap(True)
-        banner_layout.addWidget(banner_title)
-        banner_layout.addWidget(banner_sub)
-        chip_row = QHBoxLayout()
-        for chip in ["Local-only", "Research use", "Region-aware features", "Silero speech/pause timing", "Audit manifests"]:
-            chip_label = QLabel(chip)
-            chip_label.setObjectName("Chip")
-            chip_row.addWidget(chip_label)
-        chip_row.addStretch(1)
-        banner_layout.addLayout(chip_row)
-        banner.setMaximumHeight(142)
-        main_col.addWidget(banner)
+        branding_bar = self._build_branding_bar()
+        main_col.addWidget(branding_bar)
 
         tabs = QTabWidget()
         tabs.setUsesScrollButtons(True)
@@ -255,6 +241,52 @@ class AcousticPipelineWindow(QMainWindow):
 
         root.addLayout(main_col, stretch=1)
 
+
+    def _build_branding_bar(self) -> QFrame:
+        """Build a compact institutional branding strip without marketing copy.
+
+        Logos are optional. If these files exist, they are displayed:
+        - src/vslp/gui/assets/branding/speech_production_lab_logo.png
+        - src/vslp/gui/assets/branding/uoft_logo.png
+        """
+        bar = QFrame()
+        bar.setObjectName("BrandingBar")
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(12)
+
+        label = QLabel("VSLP Acoustic Pipeline")
+        label.setObjectName("BrandingTitle")
+        layout.addWidget(label)
+        layout.addStretch(1)
+
+        for logo_name, fallback in [
+            ("speech_production_lab_logo.png", "Speech Production Lab"),
+            ("uoft_logo.png", "University of Toronto"),
+        ]:
+            logo_widget = self._logo_or_text(logo_name, fallback)
+            layout.addWidget(logo_widget)
+
+        bar.setMaximumHeight(58)
+        return bar
+
+    def _logo_or_text(self, logo_file: str, fallback: str) -> QLabel:
+        assets_dir = Path(__file__).resolve().parents[1] / "assets" / "branding"
+        logo_path = assets_dir / logo_file
+        widget = QLabel()
+        widget.setObjectName("LogoPlaceholder")
+        widget.setAlignment(Qt.AlignCenter)
+        widget.setMinimumWidth(150)
+        widget.setMaximumHeight(42)
+        if logo_path.exists():
+            pixmap = QPixmap(str(logo_path))
+            if not pixmap.isNull():
+                widget.setPixmap(pixmap.scaledToHeight(34, Qt.SmoothTransformation))
+                widget.setToolTip(str(logo_path))
+                return widget
+        widget.setText(fallback)
+        widget.setToolTip(f"Optional logo file not found: {logo_path}")
+        return widget
 
     # ---------------------------- VISUAL HELPERS ----------------------------
     def _info_panel(self, title: str, body: str) -> QFrame:
@@ -317,10 +349,9 @@ class AcousticPipelineWindow(QMainWindow):
     def _build_setup_tab(self) -> QWidget:
         container = QWidget()
         layout = QVBoxLayout(container)
-        layout.addWidget(self._info_panel(
-            "Scientific workflow rationale",
-            "The acoustic workflow is intentionally ordered. Metadata establishes subject/session/task identity; ingest verifies file format and duration using ffprobe; preprocessing creates non-destructive canonical WAVs; segmentation defines speech and pause regions; features and QC are then computed from auditable upstream artifacts."
-        ))
+#        layout.addWidget(self._info_panel(
+#           "The acoustic workflow is intentionally ordered. Metadata establishes subject/session/task identity; ingest verifies file format and duration using ffprobe; preprocessing creates non-destructive canonical WAVs; segmentation defines speech and pause regions; features and QC are then computed from auditable upstream artifacts."
+#       ))
 
         paths_group = QGroupBox("Project and Input Paths")
         form = QGridLayout(paths_group)
@@ -346,25 +377,25 @@ class AcousticPipelineWindow(QMainWindow):
         form.addWidget(QLabel("Project name"), 2, 0)
         form.addWidget(self.project_name_edit, 2, 1, 1, 2)
 
-        guidance = QGroupBox("Recommended run order")
+        guidance = QGroupBox("")
         guidance_layout = QVBoxLayout(guidance)
         self.dependency_label = QLabel(
-            "1) Metadata → 2) Ingest → 3) Preprocess → 4) Silero Segmentation → 5) Region-aware Feature Extraction → 6) Aggregation → 7) QC Dashboard.\n"
-            "Most signal features should be computed on speech regions, not blindly over the full file. Downstream outputs may become stale if upstream settings change."
+            #"1) Metadata → 2) Ingest → 3) Preprocess → 4) Silero Segmentation → 5) Region-aware Feature Extraction → 6) Aggregation → 7) QC Dashboard.\n"
+            #"Most signal features should be computed on speech regions, not blindly over the full file. Downstream outputs may become stale if upstream settings change."
         )
         self.dependency_label.setWordWrap(True)
         self.dependency_label.setObjectName("SubtitleLabel")
         guidance_layout.addWidget(self.dependency_label)
 
-        metric_row = QHBoxLayout()
-        for label, value, tip in [
-            ("Default segmentation SR", "16 kHz", "Silero-compatible analysis WAV; feature WAV can preserve original SR."),
-            ("Feature region default", "speech_only", "Signal features avoid leading/trailing silence by default."),
-            ("QC SNR flag", "< 10 dB", "Estimated SNR proxy; flag for review, not automatic exclusion."),
-            ("Pause minimum", "150 ms", "Starting internal pause threshold for speech timing features."),
-        ]:
-            metric_row.addWidget(self._metric_card(label, value, tip))
-        guidance_layout.addLayout(metric_row)
+    #    metric_row = QHBoxLayout()
+    #    for label, value, tip in [
+    #        ("Default segmentation SR", "16 kHz", "Silero-compatible analysis WAV; feature WAV can preserve original SR."),
+    #        ("Feature region default", "speech_only", "Signal features avoid leading/trailing silence by default."),
+    #        ("QC SNR flag", "< 10 dB", "Estimated SNR proxy; flag for review, not automatic exclusion."),
+    #        ("Pause minimum", "150 ms", "Starting internal pause threshold for speech timing features."),
+    #    ]:
+    #        metric_row.addWidget(self._metric_card(label, value, tip))
+    #    guidance_layout.addLayout(metric_row)
 
         btn_row = QHBoxLayout()
         init_btn = QPushButton("Initialize Project")
@@ -387,10 +418,10 @@ class AcousticPipelineWindow(QMainWindow):
         container = QWidget()
         layout = QVBoxLayout(container)
 
-        layout.addWidget(self._info_panel(
-            "Why metadata comes first",
-            "Metadata prevents leakage and preserves longitudinal structure. The minimum clinically useful identity is subject_id, session_id, iteration, task, recording_date, diagnosis, severity_score, severity_bin, and file_name. If no CSV is provided, VSLP parses filenames conservatively and leaves clinical labels blank."
-        ))
+      #  layout.addWidget(self._info_panel(
+      #      "Why metadata comes first",
+      #      "Metadata prevents leakage and preserves longitudinal structure. The minimum clinically useful identity is subject_id, session_id, iteration, task, recording_date, diagnosis, severity_score, severity_bin, and file_name. If no CSV is provided, VSLP parses filenames conservatively and leaves clinical labels blank."
+      #  ))
 
         group = QGroupBox("Demographics / metadata CSV")
         grid = QGridLayout(group)
@@ -425,7 +456,7 @@ class AcousticPipelineWindow(QMainWindow):
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.addWidget(self._info_panel(
-            "Preprocessing rationale and default values",
+            "Info",
             "Original files are never modified. VSLP creates canonical mono WAVs, removes DC offset, estimates SNR/clipping/powerline interference, and creates a 16 kHz segmentation WAV for Silero. Feature WAVs preserve the original sampling rate by default because some acoustic features can be sensitive to resampling."
         ))
 
@@ -471,7 +502,7 @@ class AcousticPipelineWindow(QMainWindow):
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.addWidget(self._info_panel(
-            "Segmentation rationale and default values",
+            "Info",
             "Silero estimates speech-active regions. VSLP converts these to speech and nonspeech segments, frame tables, boundary tables, and diagnostic plots. Defaults are conservative for remote speech recordings: threshold 0.50, minimum speech 250 ms, minimum silence 100 ms, speech padding 50 ms, and 30 ms diagnostic frames."
         ))
         group = QGroupBox("Silero segmentation parameters")
@@ -493,7 +524,7 @@ class AcousticPipelineWindow(QMainWindow):
         form.addRow("Speech pad (ms)", self.speech_pad_spin)
         form.addRow("Diagnostic frame size (ms)", self.frame_ms_spin)
         form.addRow("Advanced", self.force_reload_check)
-        run_btn = QPushButton("Run Silero Segmentation")
+        run_btn = QPushButton("Run Data Segmentation")
         run_btn.setObjectName("RunButton")
         run_btn.clicked.connect(self.run_segmentation)
         layout.addWidget(group)
@@ -505,7 +536,7 @@ class AcousticPipelineWindow(QMainWindow):
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.addWidget(self._info_panel(
-            "Region-aware feature extraction",
+            "Info",
             "Many acoustic features should not be computed over the full file. Timing and pause features use Silero speech/nonspeech segments. Signal features default to speech_only regions so leading silence, trailing silence, instructions, and dead time do not contaminate the measurement. Pending features remain explicit NaN placeholders until validated."
         ))
 
@@ -573,7 +604,7 @@ class AcousticPipelineWindow(QMainWindow):
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.addWidget(self._info_panel(
-            "Aggregation rationale",
+            "Info",
             "Aggregation converts per-file feature outputs into analysis-ready tables while preserving subject/session/iteration/task structure. The default grouping is designed for longitudinal clinical monitoring and ML leakage control."
         ))
         group = QGroupBox("Aggregation configuration")
@@ -601,7 +632,7 @@ class AcousticPipelineWindow(QMainWindow):
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.addWidget(self._info_panel(
-            "QC rationale",
+            "Info",
             "QC flags recordings for review; it does not reject data automatically. Thresholds are intentionally visible and editable because acceptable quality depends on task, device, patient speech impairment, and study design."
         ))
         group = QGroupBox("QC dashboard thresholds")
@@ -776,8 +807,8 @@ class AcousticPipelineWindow(QMainWindow):
             ("Open Ingest Summary CSV", lambda: self._open_stage_file("ingest", "summary")),
             ("Open Preprocess Summary CSV", lambda: self._open_stage_file("preprocess", "summary")),
             ("Open Preprocess HTML Report", lambda: self._open_stage_file("preprocess", "report")),
-            ("Open Segmentation Summary CSV", lambda: self._open_stage_file("segment", "summary")),
-            ("Open Segmentation HTML Report", lambda: self._open_stage_file("segment", "report")),
+            ("Open Data Segmentation Summary CSV", lambda: self._open_stage_file("segment", "summary")),
+            ("Open Data Segmentation HTML Report", lambda: self._open_stage_file("segment", "report")),
             ("Open Feature Table CSV", lambda: self._open_stage_file("features", "summary")),
             ("Open Feature HTML Report", lambda: self._open_stage_file("features", "report")),
             ("Open Aggregated Feature CSV", lambda: self._open_stage_file("aggregate", "summary")),
