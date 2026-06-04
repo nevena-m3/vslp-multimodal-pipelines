@@ -1333,6 +1333,15 @@ class AcousticPipelineWindow(QMainWindow):
             self.preprocess_feedback.setPlainText(f"Could not summarize preprocessing outputs: {exc}")
 
 
+    def _read_csv_safe(self, path: Path) -> pd.DataFrame:
+        """Read a CSV if it exists and is non-empty; otherwise return an empty DataFrame."""
+        if not path.exists() or path.stat().st_size == 0:
+            return pd.DataFrame()
+        try:
+            return pd.read_csv(path)
+        except pd.errors.EmptyDataError:
+            return pd.DataFrame()
+
     def _update_segmentation_feedback(self) -> None:
         if not hasattr(self, "segmentation_feedback"):
             return
@@ -1342,17 +1351,22 @@ class AcousticPipelineWindow(QMainWindow):
             self.segmentation_feedback.setPlainText("Run data segmentation to summarize speech/pause regions, segment counts, speech fraction, and output tables.")
             return
         try:
-            df = pd.read_csv(main_path)
-            err_n = len(pd.read_csv(errors_path)) if errors_path.exists() else 0
+            df = self._read_csv_safe(main_path)
+            err_df = self._read_csv_safe(errors_path)
+            err_n = len(err_df)
             n = len(df)
-            speech_fraction = pd.to_numeric(df.get("speech_fraction"), errors="coerce")
-            speech_segments = pd.to_numeric(df.get("n_speech_segments"), errors="coerce")
-            internal_pause = pd.to_numeric(df.get("n_internal_nonspeech_segments"), errors="coerce")
-            longest_pause = pd.to_numeric(df.get("longest_internal_nonspeech_sec"), errors="coerce")
             lines = [
                 f"Files segmented: {n}",
                 f"Files failed: {err_n}",
             ]
+            if n == 0:
+                lines.append("No successful segmentation rows were available. Check the segmentation errors table for details.")
+                self.segmentation_feedback.setPlainText("\n".join(lines))
+                return
+            speech_fraction = pd.to_numeric(df.get("speech_fraction"), errors="coerce")
+            speech_segments = pd.to_numeric(df.get("n_speech_segments"), errors="coerce")
+            internal_pause = pd.to_numeric(df.get("n_internal_nonspeech_segments"), errors="coerce")
+            longest_pause = pd.to_numeric(df.get("longest_internal_nonspeech_sec"), errors="coerce")
             if speech_fraction.notna().any():
                 lines.append(f"Median speech fraction: {speech_fraction.median():.3f}")
             if speech_segments.notna().any():

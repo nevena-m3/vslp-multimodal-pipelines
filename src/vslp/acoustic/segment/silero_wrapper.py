@@ -1,7 +1,8 @@
 from pathlib import Path
 import numpy as np
 import pandas as pd
-import torch
+# Torch is imported lazily inside Silero execution so that tests, GUI startup,
+# and non-Silero stages do not require PyTorch to be installed.
 
 
 # --------------------------------------------------
@@ -200,6 +201,14 @@ def build_silero_stage_from_audio(
 
     if sr not in {8000, 16000}:
         raise ValueError(f"Silero VAD usually expects 8000 or 16000 Hz, got {sr}")
+
+    try:
+        import torch  # noqa: PLC0415
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "Silero segmentation requires PyTorch. Activate the VSLP environment and run: "
+            "pip install -e '.[silero]'"
+        ) from exc
 
     wav_tensor = torch.from_numpy(x)
 
