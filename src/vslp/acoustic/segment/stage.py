@@ -199,33 +199,45 @@ def run_acoustic_segmentation_silero(
     )
 
 
+MAIN_SEGMENTATION_SUMMARY_COLUMNS = [
+    "file_name",
+    "status",
+    "method",
+    "duration_sec",
+    "sample_rate_analysis",
+    "n_segments_total",
+    "n_speech_segments",
+    "n_internal_nonspeech_segments",
+    "speech_fraction",
+    "leading_nonspeech_sec",
+    "trailing_nonspeech_sec",
+    "longest_internal_nonspeech_sec",
+    "rms_db_median",
+    "rms_db_std",
+    "frame_csv_path",
+    "segments_csv_path",
+    "boundaries_csv_path",
+    "plot_png_path",
+]
+
+
 def _write_main_segmentation_summary(summary_df: pd.DataFrame, path: Path) -> None:
-    """Write a compact user-facing segmentation summary table."""
+    """Write a compact user-facing segmentation summary table.
+
+    Even when no files segment successfully, this function writes a valid CSV
+    with headers. The GUI can then summarize the stage as 0 segmented files
+    instead of crashing with pandas.errors.EmptyDataError.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     if summary_df.empty:
-        pd.DataFrame().to_csv(path, index=False)
+        pd.DataFrame(columns=MAIN_SEGMENTATION_SUMMARY_COLUMNS).to_csv(path, index=False)
         return
-    preferred = [
-        "file_name",
-        "status",
-        "method",
-        "duration_sec",
-        "sample_rate_analysis",
-        "n_segments_total",
-        "n_speech_segments",
-        "n_internal_nonspeech_segments",
-        "speech_fraction",
-        "leading_nonspeech_sec",
-        "trailing_nonspeech_sec",
-        "longest_internal_nonspeech_sec",
-        "rms_db_median",
-        "rms_db_std",
-        "frame_csv_path",
-        "segments_csv_path",
-        "boundaries_csv_path",
-        "plot_png_path",
-    ]
-    cols = [c for c in preferred if c in summary_df.columns]
+    cols = [c for c in MAIN_SEGMENTATION_SUMMARY_COLUMNS if c in summary_df.columns]
+    # Guarantee a readable table even if a future segmentation method returns
+    # only a minimal status row.
+    if not cols:
+        pd.DataFrame(columns=MAIN_SEGMENTATION_SUMMARY_COLUMNS).to_csv(path, index=False)
+        return
     summary_df.loc[:, cols].to_csv(path, index=False)
 
 
