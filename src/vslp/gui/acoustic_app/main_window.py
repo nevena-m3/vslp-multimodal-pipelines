@@ -351,12 +351,7 @@ class AcousticPipelineWindow(QMainWindow):
         layout = QVBoxLayout(container)
         layout.setSpacing(12)
 
-        layout.addWidget(self._info_panel(
-            "Project setup",
-            "Start here. Select the raw input folder and the output project folder, then initialize the project. Ingest is locked until a project manifest exists. VSLP searches the selected input folder recursively, so files inside subfolders are included. For clean interpretation, one task per input folder is recommended."
-        ))
-
-        paths_group = QGroupBox("1. Select folders and project identity")
+        paths_group = QGroupBox("Project setup")
         form = QGridLayout(paths_group)
 
         self.input_edit = QLineEdit()
@@ -382,12 +377,8 @@ class AcousticPipelineWindow(QMainWindow):
 
         workflow_group = QGroupBox("2. Project gate")
         workflow_layout = QVBoxLayout(workflow_group)
-        self.project_gate_label = QLabel(
-            "Required order on this screen: Initialize Project → Run Ingest. Metadata is handled on the Metadata tab after files have been ingested."
-        )
-        self.project_gate_label.setObjectName("SubtitleLabel")
-        self.project_gate_label.setWordWrap(True)
-        workflow_layout.addWidget(self.project_gate_label)
+        self.project_gate_label = QLabel("")
+        self.project_gate_label.setVisible(False)
 
         btn_row = QHBoxLayout()
         self.init_project_btn = QPushButton("Initialize Project")
@@ -416,13 +407,6 @@ class AcousticPipelineWindow(QMainWindow):
         self.ingest_format_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.ingest_format_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         ingest_layout.addWidget(self.ingest_format_table)
-
-        note = QLabel(
-            "Design note: VSLP does not trust file extensions. A .wav file that is internally WebM/Opus is identified by ffprobe and handled as media, not by suffix alone."
-        )
-        note.setObjectName("SubtitleLabel")
-        note.setWordWrap(True)
-        ingest_layout.addWidget(note)
 
         layout.addWidget(paths_group)
         layout.addWidget(workflow_group)
@@ -1008,14 +992,7 @@ class AcousticPipelineWindow(QMainWindow):
         if not hasattr(self, "project_gate_label"):
             return
         if self._is_project_initialized():
-            self.project_gate_label.setText(
-                "Project initialized. You can now run ingest. Metadata is handled on the Metadata tab after ingest."
-            )
             self.stage_records["project"].status = "detected"
-        else:
-            self.project_gate_label.setText(
-                "Required order on this screen: Initialize Project → Run Ingest. Metadata is handled on the Metadata tab after files have been ingested."
-            )
         self._refresh_stage_cards()
 
     def _update_ingest_feedback(self) -> None:
@@ -1023,6 +1000,7 @@ class AcousticPipelineWindow(QMainWindow):
             return
         summary_path = self._stage_path("ingest", "summary")
         errors_path = self._output_root() / "acoustic" / "001_ingest" / "errors" / "audio_ingest_errors.csv"
+        duplicates_path = self._output_root() / "acoustic" / "001_ingest" / "tables" / "audio_ingest_skipped_duplicates.csv"
         if not summary_path.exists():
             self.ingest_summary_label.setText(
                 "No ingest results yet. After ingest, this panel will show total files loaded, failed files, and the detected format/codec distribution."
@@ -1041,6 +1019,12 @@ class AcousticPipelineWindow(QMainWindow):
                 n_failed = len(pd.read_csv(errors_path))
             except Exception:
                 n_failed = 0
+        duplicate_skipped_count = 0
+        if duplicates_path.exists():
+            try:
+                duplicate_skipped_count = len(pd.read_csv(duplicates_path))
+            except Exception:
+                duplicate_skipped_count = 0
         subfolder_count = 0
         try:
             input_root = Path(self.input_edit.text().strip()).expanduser().resolve()
@@ -1052,7 +1036,7 @@ class AcousticPipelineWindow(QMainWindow):
         suffix_counts = df["suffix"].astype(str).value_counts().to_dict() if "suffix" in df.columns else {}
         suffix_txt = ", ".join(f"{k}: {v}" for k, v in suffix_counts.items()) if suffix_counts else "not available"
         self.ingest_summary_label.setText(
-            f"Loaded/probed files: {n_ok} | Failed files: {n_failed} | Subfolders represented: {subfolder_count}\n"
+            f"Loaded/probed files: {n_ok} | Failed files: {n_failed} | Duplicate files skipped: {duplicate_skipped_count} | Subfolders represented: {subfolder_count}\n"
             f"File extensions found: {suffix_txt}"
         )
 
