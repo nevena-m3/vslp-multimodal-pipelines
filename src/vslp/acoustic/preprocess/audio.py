@@ -66,6 +66,25 @@ def dc_offset_remove(x: np.ndarray) -> np.ndarray:
     return x - np.nanmean(x, axis=0)
 
 
+def peak_normalize(x: np.ndarray, target_peak: float = 0.95) -> tuple[np.ndarray, dict]:
+    """Peak-normalize a waveform without changing silent files.
+
+    Normalization is optional because it can alter amplitude/intensity features.
+    It is provided mainly for controlled ML experiments where scale normalization
+    is explicitly desired and documented.
+    """
+    x = np.asarray(x, dtype=np.float32)
+    peak = float(np.max(np.abs(x))) if x.size else 0.0
+    target_peak = float(target_peak)
+    if peak <= 0 or not np.isfinite(peak):
+        return x, {"normalization_applied": False, "normalization_reason": "silent_or_invalid_peak", "original_peak_abs": peak, "target_peak_abs": target_peak, "gain": 1.0}
+    if target_peak <= 0 or target_peak > 1.0:
+        raise ValueError("target_peak must be in (0, 1]")
+    gain = target_peak / peak
+    y = np.clip(x * gain, -1.0, 1.0).astype(np.float32)
+    return y, {"normalization_applied": True, "normalization_reason": "peak_normalization", "original_peak_abs": peak, "target_peak_abs": target_peak, "gain": float(gain)}
+
+
 def choose_best_mono_channel(x: np.ndarray) -> tuple[np.ndarray, dict]:
     """Select mono channel.
 
