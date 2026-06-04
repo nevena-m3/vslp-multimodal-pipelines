@@ -385,7 +385,7 @@ def _write_preprocess_plots(plot_dir: Path, rows: list[dict[str, Any]]) -> None:
         if not vals.empty:
             fig = plt.figure(figsize=(7, 5))
             ax = fig.add_subplot(111)
-            ax.boxplot([vals["Raw DC offset"].dropna(), vals["Processed DC offset"].dropna()], labels=["Raw", "Processed"])
+            ax.boxplot([vals["Raw DC offset"].dropna(), vals["Processed DC offset"].dropna()], tick_labels=["Raw", "Processed"])
             ax.set_title("DC offset before and after preprocessing")
             ax.set_ylabel("Mean amplitude offset")
             fig.tight_layout()

@@ -18,6 +18,7 @@ from vslp.acoustic.pipeline.run_preprocess_to_segmentation import run_acoustic_i
 from vslp.acoustic.preprocess.stage import FilterConfig, PreprocessConfig, run_acoustic_preprocess
 from vslp.acoustic.segment.stage import run_acoustic_segmentation_silero
 from vslp.acoustic.qc.stage import AcousticQCConfig, run_acoustic_qc_dashboard
+from vslp.acoustic.quality.stage import QualityControlConfig, run_acoustic_quality_control
 from vslp.core.project import initialize_project
 from vslp.core.doctor import run_doctor
 
@@ -160,6 +161,30 @@ def acoustic_run_v1(
             typer.echo(f"{name}: skipped")
         else:
             typer.echo(f"{name}: {result.status} | summary={result.summary_table} | manifest={result.manifest_path}")
+
+
+@acoustic_app.command("quality-control")
+def acoustic_quality_control(
+    segmentation_summary_csv: Path,
+    output_root: Path,
+    selected_families: str = "additive_interference,gain_dynamics,reverberation_echo,channel_device,nonlinear_distortion,temporal_discontinuity",
+    minimum_internal_pause_sec: float = 0.15,
+):
+    """Extract segmentation-informed acoustic quality-control feature families."""
+    cfg = QualityControlConfig(
+        selected_families=[x.strip() for x in selected_families.split(",") if x.strip()],
+        minimum_internal_pause_sec=minimum_internal_pause_sec,
+    )
+    result = run_acoustic_quality_control(
+        segmentation_summary_csv=segmentation_summary_csv,
+        output_root=output_root,
+        config=cfg,
+    )
+    typer.echo(f"Status: {result.status}")
+    typer.echo(f"Quality features: {result.summary_table}")
+    typer.echo(f"Errors: {result.error_table}")
+    typer.echo(f"Report: {result.report_path}")
+    typer.echo(f"Manifest: {result.manifest_path}")
 
 
 @acoustic_app.command("extract-features")

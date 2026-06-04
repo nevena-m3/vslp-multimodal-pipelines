@@ -14,7 +14,7 @@ def build_dark_stylesheet() -> str:
     QWidget {
         background-color: #0B1624;
         color: #EEF6FC;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+        font-family: "Helvetica Neue", Arial, sans-serif;
         font-size: 13px;
     }
     QMainWindow, QDialog { background-color: #0B1624; }
