@@ -1,14 +1,12 @@
 """Acoustic preprocessing stage.
 
-This stage is intentionally conservative and non-destructive:
+Conservative policy:
 - source files are never modified;
-- every successfully decoded input receives canonical PCM WAV outputs;
-- QC metrics are written as CSV/JSON artifacts;
-- failures are recorded and the batch continues.
-
-The preprocessing stage creates two canonical audio files per input by default:
-1. feature WAV: mono, DC-offset removed, original sample rate preserved unless configured otherwise.
-2. segmentation WAV: mono, DC-offset removed, resampled to 16 kHz for Silero/segmentation.
+- QC is always measured;
+- DC-offset removal is enabled by default;
+- amplitude normalization and filters are optional and explicitly documented;
+- feature WAVs preserve the original sampling rate unless resampling is requested;
+- segmentation WAVs default to 16 kHz for Silero.
 """
 
 from __future__ import annotations
@@ -18,6 +16,9 @@ from pathlib import Path
 from typing import Any
 import json
 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import soundfile as sf
@@ -31,6 +32,7 @@ from vslp.acoustic.preprocess.audio import (
     decode_audio_ffmpeg,
     detect_powerline_interference,
     estimate_snr_db_low_energy,
+    peak_normalize,
     summarize_audio_quality,
 )
 from vslp.core.io import discover_files
@@ -41,12 +43,7 @@ from vslp.core.schemas import ArtifactRef, StageManifest, StageResult
 
 @dataclass(frozen=True)
 class FilterConfig:
-    """Optional offline filtering configuration.
-
-    Filters are disabled by default. When enabled, they are applied with zero-phase
-    second-order sections using scipy.signal.sosfiltfilt, which is suitable for
-    offline research analysis but not for real-time causal inference.
-    """
+    """Optional offline filter configuration."""
 
     enabled: bool = False
     kind: str = "none"  # none, lpf, hpf, bpf, notch
@@ -66,17 +63,17 @@ class PreprocessConfig:
     make_segmentation_wav: bool = True
     make_feature_wav: bool = True
     remove_dc_offset: bool = True
-    mono_policy: str = "best_channel"  # v1 supports best_channel
+    normalize_peak: bool = False
+    normalize_peak_target_abs: float = 0.95
+    mono_policy: str = "best_channel"
     filter: FilterConfig = FilterConfig()
     ffmpeg_bin: str = "ffmpeg"
 
     def to_dict(self) -> dict[str, Any]:
-        d = asdict(self)
-        return d
+        return asdict(self)
 
 
 def safe_stem(path: str | Path) -> str:
-    """Create a filesystem-safe stem while preserving enough human readability."""
     stem = Path(path).stem
     keep = []
     for ch in stem:
@@ -88,7 +85,6 @@ def safe_stem(path: str | Path) -> str:
 
 
 def _apply_optional_filter(x: np.ndarray, sr: int, cfg: FilterConfig) -> tuple[np.ndarray, list[str]]:
-    """Apply optional LPF/HPF/BPF/notch filtering and return warnings."""
     warnings: list[str] = []
     x = np.asarray(x, dtype=np.float32)
     if not cfg.enabled or cfg.kind == "none":
@@ -96,7 +92,6 @@ def _apply_optional_filter(x: np.ndarray, sr: int, cfg: FilterConfig) -> tuple[n
 
     nyq = sr / 2.0
     kind = cfg.kind.lower()
-
     try:
         if kind == "lpf":
             if cfg.high_hz is None or not (0 < cfg.high_hz < nyq):
@@ -123,7 +118,7 @@ def _apply_optional_filter(x: np.ndarray, sr: int, cfg: FilterConfig) -> tuple[n
             return signal.filtfilt(b, a, x).astype(np.float32), warnings
 
         raise ValueError(f"Unknown filter kind: {cfg.kind}")
-    except Exception as exc:  # noqa: BLE001 - keep stage running but record the problem
+    except Exception as exc:  # noqa: BLE001
         warnings.append(f"optional filter failed; unfiltered audio used instead: {exc}")
         return x, warnings
 
@@ -133,9 +128,13 @@ def _write_wav(path: Path, x: np.ndarray, sr: int) -> None:
     sf.write(path, np.asarray(x, dtype=np.float32), sr, subtype="PCM_16")
 
 
+def _resample_if_needed(x: np.ndarray, sr_from: int, sr_to: int) -> np.ndarray:
+    if int(sr_from) == int(sr_to):
+        return np.asarray(x, dtype=np.float32)
+    return signal.resample_poly(np.asarray(x, dtype=np.float32), up=int(sr_to), down=int(sr_from)).astype(np.float32)
+
+
 def _preprocess_one(path: Path, folders: dict[str, Path], cfg: PreprocessConfig) -> dict[str, Any]:
-    """Preprocess one file and return one summary row."""
-    # Decode without forcing mono first, so our selected-channel policy is documented.
     x_raw, sr_raw = decode_audio_ffmpeg(path, target_sr=None, mono=False, ffmpeg_bin=cfg.ffmpeg_bin)
     raw_qc = summarize_audio_quality(x_raw, sr_raw).to_dict()
 
@@ -143,52 +142,60 @@ def _preprocess_one(path: Path, folders: dict[str, Path], cfg: PreprocessConfig)
         raise NotImplementedError(f"Unsupported mono_policy for v1: {cfg.mono_policy}")
     x_mono, mono_info = choose_best_mono_channel(x_raw)
 
-    x_processed = dc_offset_remove(x_mono) if cfg.remove_dc_offset else np.asarray(x_mono, dtype=np.float32)
+    x_processed = np.asarray(x_mono, dtype=np.float32)
+    dc_removed = False
+    if cfg.remove_dc_offset:
+        x_processed = dc_offset_remove(x_processed)
+        dc_removed = True
+
     filter_warnings: list[str]
     x_processed, filter_warnings = _apply_optional_filter(x_processed, sr_raw, cfg.filter)
+
+    normalization_info = {
+        "normalization_applied": False,
+        "normalization_reason": "disabled",
+        "original_peak_abs": float(np.max(np.abs(x_processed))) if len(x_processed) else np.nan,
+        "target_peak_abs": cfg.normalize_peak_target_abs,
+        "gain": 1.0,
+    }
+    if cfg.normalize_peak:
+        x_processed, normalization_info = peak_normalize(x_processed, target_peak=cfg.normalize_peak_target_abs)
+
     x_processed = np.clip(np.nan_to_num(x_processed, nan=0.0, posinf=0.0, neginf=0.0), -1.0, 1.0)
 
     stem = safe_stem(path)
-    source_hash_short = sha256_file(path)[:12]
-    base_name = f"{stem}__{source_hash_short}"
+    source_hash = sha256_file(path)
+    base_name = f"{stem}__{source_hash[:12]}"
 
     feature_wav_path: Path | None = None
     segmentation_wav_path: Path | None = None
 
     feature_sr = sr_raw if cfg.feature_sample_rate_hz is None else int(cfg.feature_sample_rate_hz)
     if cfg.make_feature_wav:
-        if feature_sr != sr_raw:
-            x_feature = signal.resample_poly(x_processed, up=feature_sr, down=sr_raw).astype(np.float32)
-        else:
-            x_feature = x_processed
+        x_feature = _resample_if_needed(x_processed, sr_raw, feature_sr)
         feature_wav_path = folders["artifacts"] / "feature_wav" / f"{base_name}__feature.wav"
         _write_wav(feature_wav_path, x_feature, feature_sr)
-    else:
-        x_feature = x_processed
 
+    segmentation_sr = int(cfg.segmentation_sample_rate_hz)
     if cfg.make_segmentation_wav:
-        segmentation_sr = int(cfg.segmentation_sample_rate_hz)
-        if segmentation_sr != sr_raw:
-            x_seg = signal.resample_poly(x_processed, up=segmentation_sr, down=sr_raw).astype(np.float32)
-        else:
-            x_seg = x_processed
+        x_seg = _resample_if_needed(x_processed, sr_raw, segmentation_sr)
         segmentation_wav_path = folders["artifacts"] / "segmentation_wav" / f"{base_name}__seg16k.wav"
         _write_wav(segmentation_wav_path, x_seg, segmentation_sr)
-    else:
-        x_seg = x_processed
-        segmentation_sr = sr_raw
 
     processed_qc = summarize_audio_quality(x_processed, sr_raw).to_dict()
     power_flags = detect_powerline_interference(x_processed, sr_raw)
     snr = estimate_snr_db_low_energy(x_processed, sr=sr_raw)
+    clipping_fraction = float(np.mean(np.abs(x_processed) >= 0.98)) if len(x_processed) else np.nan
+    clipping_runs = count_clipping_runs(x_processed)
 
     qc_json_path = folders["reports"] / "per_file_qc_json" / f"{base_name}__qc.json"
     qc_payload = {
         "source_file": str(path),
-        "source_sha256": sha256_file(path),
+        "source_sha256": source_hash,
         "raw_qc": raw_qc,
         "processed_qc": processed_qc,
         "mono_selection": mono_info,
+        "normalization": normalization_info,
         "filter_warnings": filter_warnings,
         "config": cfg.to_dict(),
     }
@@ -198,7 +205,7 @@ def _preprocess_one(path: Path, folders: dict[str, Path], cfg: PreprocessConfig)
     return {
         "file_name": path.name,
         "file_path": str(path),
-        "source_sha256": qc_payload["source_sha256"],
+        "source_sha256": source_hash,
         "status": "ok",
         "raw_sample_rate_hz": sr_raw,
         "raw_duration_sec": raw_qc["duration_sec"],
@@ -207,20 +214,77 @@ def _preprocess_one(path: Path, folders: dict[str, Path], cfg: PreprocessConfig)
         "processed_dc_offset": processed_qc["dc_offset"],
         "processed_peak_abs": processed_qc["peak_abs"],
         "processed_rms": processed_qc["rms"],
-        "clipping_fraction_near_full_scale": float(np.mean(np.abs(x_processed) >= 0.98)) if len(x_processed) else np.nan,
-        "clipping_run_count": count_clipping_runs(x_processed),
+        "clipping_fraction_near_full_scale": clipping_fraction,
+        "clipping_run_count": clipping_runs,
         "snr_db_estimate": snr,
         "powerline_50hz_flag": power_flags["powerline_50hz_flag"],
         "powerline_60hz_flag": power_flags["powerline_60hz_flag"],
+        "dc_offset_removed": dc_removed,
+        "normalize_peak": cfg.normalize_peak,
+        "normalization_applied": normalization_info.get("normalization_applied"),
+        "normalization_gain": normalization_info.get("gain"),
+        "normalization_target_peak_abs": cfg.normalize_peak_target_abs,
+        "filter_enabled": cfg.filter.enabled,
+        "filter_kind": cfg.filter.kind,
+        "filter_low_hz": cfg.filter.low_hz,
+        "filter_high_hz": cfg.filter.high_hz,
+        "filter_notch_hz": cfg.filter.notch_hz,
+        "filter_order": cfg.filter.order,
         "mono_policy": mono_info.get("stereo_policy"),
         "selected_channel": mono_info.get("selected_channel"),
         "feature_wav_path": str(feature_wav_path) if feature_wav_path else None,
         "feature_sample_rate_hz": feature_sr if cfg.make_feature_wav else None,
+        "feature_resampled": bool(cfg.make_feature_wav and feature_sr != sr_raw),
         "segmentation_wav_path": str(segmentation_wav_path) if segmentation_wav_path else None,
         "segmentation_sample_rate_hz": segmentation_sr if cfg.make_segmentation_wav else None,
+        "segmentation_resampled": bool(cfg.make_segmentation_wav and segmentation_sr != sr_raw),
         "qc_json_path": str(qc_json_path),
         "filter_warning": "; ".join(filter_warnings),
     }
+
+
+def _build_main_summary(rows: list[dict[str, Any]]) -> pd.DataFrame:
+    cols = [
+        "file_name", "status", "raw_duration_sec", "raw_sample_rate_hz", "raw_n_channels",
+        "snr_db_estimate", "clipping_fraction_near_full_scale", "clipping_run_count",
+        "raw_dc_offset", "processed_dc_offset", "powerline_50hz_flag", "powerline_60hz_flag",
+        "dc_offset_removed", "normalize_peak", "filter_enabled", "filter_kind",
+        "feature_sample_rate_hz", "feature_resampled", "segmentation_sample_rate_hz", "segmentation_resampled",
+    ]
+    df = pd.DataFrame(rows)
+    for c in cols:
+        if c not in df.columns:
+            df[c] = np.nan
+    return df[cols]
+
+
+def _build_qc_flags(rows: list[dict[str, Any]]) -> pd.DataFrame:
+    out = []
+    for r in rows:
+        snr = r.get("snr_db_estimate")
+        clip = float(r.get("clipping_fraction_near_full_scale") or 0.0)
+        dc_raw = abs(float(r.get("raw_dc_offset") or 0.0))
+        dur = float(r.get("raw_duration_sec") or 0.0)
+        flags = []
+        if pd.notna(snr) and snr is not None and float(snr) < 10.0:
+            flags.append("low_snr")
+        if clip > 0:
+            flags.append("clipping")
+        if dc_raw > 0.01:
+            flags.append("dc_offset_present")
+        if bool(r.get("powerline_50hz_flag")):
+            flags.append("50hz_powerline")
+        if bool(r.get("powerline_60hz_flag")):
+            flags.append("60hz_powerline")
+        if dur < 1.0:
+            flags.append("very_short")
+        out.append({
+            "file_name": r.get("file_name"),
+            "qc_status": "review" if flags else "ok",
+            "flags": ";".join(flags),
+            "n_flags": len(flags),
+        })
+    return pd.DataFrame(out)
 
 
 def run_acoustic_preprocess(
@@ -229,11 +293,6 @@ def run_acoustic_preprocess(
     config: PreprocessConfig | None = None,
     extensions: list[str] | None = None,
 ) -> StageResult:
-    """Run acoustic preprocessing over a file/folder.
-
-    This accepts true WAV as well as mislabeled files such as WebM content saved with
-    a .wav suffix, because decoding is delegated to ffmpeg rather than filename trust.
-    """
     cfg = config or PreprocessConfig()
     extensions = extensions or DEFAULT_AUDIO_EXTENSIONS
     stage_dir = Path(output_root) / "acoustic" / "002_preprocess"
@@ -246,23 +305,31 @@ def run_acoustic_preprocess(
     for path in files:
         try:
             rows.append(_preprocess_one(path, folders, cfg))
-        except Exception as exc:  # noqa: BLE001 - batch should continue
+        except Exception as exc:  # noqa: BLE001
             errors.append({"file_name": path.name, "file_path": str(path), "status": "failed", "error": str(exc)})
 
-    summary_path = folders["tables"] / "acoustic_preprocess_summary.csv"
+    detailed_path = folders["tables"] / "acoustic_preprocess_summary.csv"
+    main_path = folders["tables"] / "acoustic_preprocess_main_summary.csv"
+    qc_flags_path = folders["tables"] / "acoustic_preprocess_qc_flags.csv"
     errors_path = folders["errors"] / "acoustic_preprocess_errors.csv"
-    pd.DataFrame(rows).to_csv(summary_path, index=False)
+
+    pd.DataFrame(rows).to_csv(detailed_path, index=False)
+    _build_main_summary(rows).to_csv(main_path, index=False)
+    _build_qc_flags(rows).to_csv(qc_flags_path, index=False)
     pd.DataFrame(errors).to_csv(errors_path, index=False)
 
+    _write_preprocess_plots(folders["plots"], rows)
     report_path = folders["reports"] / "acoustic_preprocess_report.html"
     _write_preprocess_html_report(report_path, rows, errors, cfg)
 
     manifest = StageManifest(
         stage_name="acoustic_preprocess",
-        stage_version="0.1.0",
+        stage_version="0.2.0",
         status="completed_with_warnings" if errors else "completed",
         output_artifacts=[
-            ArtifactRef(path=str(summary_path), role="preprocess_summary", media_type="text/csv"),
+            ArtifactRef(path=str(detailed_path), role="preprocess_detailed_summary", media_type="text/csv"),
+            ArtifactRef(path=str(main_path), role="preprocess_main_summary", media_type="text/csv"),
+            ArtifactRef(path=str(qc_flags_path), role="preprocess_qc_flags", media_type="text/csv"),
             ArtifactRef(path=str(errors_path), role="preprocess_errors", media_type="text/csv"),
             ArtifactRef(path=str(report_path), role="preprocess_html_report", media_type="text/html"),
         ],
@@ -272,7 +339,7 @@ def run_acoustic_preprocess(
         errors=errors,
         notes=[
             "SNR is estimated from low-energy frames and is QC-only, not reference SNR.",
-            "Powerline flags are detection-only. Notch filtering is optional and disabled unless configured.",
+            "Filters and normalization are optional because they can alter downstream acoustic features.",
         ],
     )
     manifest_path = folders["logs"] / "stage_manifest.json"
@@ -281,33 +348,73 @@ def run_acoustic_preprocess(
     return StageResult(
         status=manifest.status,
         manifest_path=manifest_path,
-        summary_table=summary_path,
+        summary_table=detailed_path,
         error_table=errors_path,
         report_path=report_path,
     )
 
 
+def _write_preprocess_plots(plot_dir: Path, rows: list[dict[str, Any]]) -> None:
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return
+
+    def save_hist(col: str, title: str, filename: str, xlabel: str) -> None:
+        vals = pd.to_numeric(df.get(col), errors="coerce").dropna()
+        if vals.empty:
+            return
+        fig = plt.figure(figsize=(7, 5))
+        ax = fig.add_subplot(111)
+        ax.hist(vals, bins=min(20, max(5, len(vals))))
+        ax.set_title(title)
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel("Files")
+        fig.tight_layout()
+        fig.savefig(plot_dir / filename, dpi=160)
+        plt.close(fig)
+
+    save_hist("snr_db_estimate", "Estimated SNR distribution", "preprocess_snr_distribution.png", "Estimated SNR (dB)")
+    save_hist("clipping_fraction_near_full_scale", "Clipping fraction distribution", "preprocess_clipping_distribution.png", "Fraction near full scale")
+
+    if {"raw_dc_offset", "processed_dc_offset"}.issubset(df.columns):
+        vals = pd.DataFrame({
+            "Raw DC offset": pd.to_numeric(df["raw_dc_offset"], errors="coerce"),
+            "Processed DC offset": pd.to_numeric(df["processed_dc_offset"], errors="coerce"),
+        }).dropna(how="all")
+        if not vals.empty:
+            fig = plt.figure(figsize=(7, 5))
+            ax = fig.add_subplot(111)
+            ax.boxplot([vals["Raw DC offset"].dropna(), vals["Processed DC offset"].dropna()], labels=["Raw", "Processed"])
+            ax.set_title("DC offset before and after preprocessing")
+            ax.set_ylabel("Mean amplitude offset")
+            fig.tight_layout()
+            fig.savefig(plot_dir / "preprocess_dc_offset_before_after.png", dpi=160)
+            plt.close(fig)
+
+
 def _write_preprocess_html_report(path: Path, rows: list[dict[str, Any]], errors: list[dict[str, Any]], cfg: PreprocessConfig) -> None:
-    """Write a small dependency-free HTML report for v1."""
     path.parent.mkdir(parents=True, exist_ok=True)
     ok = len(rows)
     failed = len(errors)
     flags_50 = sum(bool(r.get("powerline_50hz_flag")) for r in rows)
     flags_60 = sum(bool(r.get("powerline_60hz_flag")) for r in rows)
     clipped = sum(float(r.get("clipping_fraction_near_full_scale") or 0) > 0 for r in rows)
+    normed = sum(bool(r.get("normalization_applied")) for r in rows)
+    filtered = sum(bool(r.get("filter_enabled")) for r in rows)
     html = f"""<!doctype html>
 <html><head><meta charset='utf-8'><title>VSLP Acoustic Preprocess Report</title>
 <style>
 body {{ font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; background:#071A2D; color:#EAF2F8; margin:32px; }}
 .card {{ background:#0B253D; border:1px solid #315D7C; border-radius:12px; padding:18px; margin:14px 0; }}
 table {{ border-collapse: collapse; width: 100%; font-size: 13px; }} th, td {{ border-bottom:1px solid #315D7C; padding:8px; text-align:left; }}
-.badge {{ display:inline-block; padding:4px 8px; border-radius:6px; background:#0E3A5B; margin-right:8px; }}
+.badge {{ display:inline-block; padding:4px 8px; border-radius:6px; background:#0E3A5B; margin-right:8px; margin-bottom:6px; }}
+pre {{ white-space: pre-wrap; }}
 </style></head><body>
 <h1>VSLP Acoustic Preprocess Report</h1>
 <div class='card'>
-<span class='badge'>Processed: {ok}</span><span class='badge'>Failed: {failed}</span><span class='badge'>50 Hz flags: {flags_50}</span><span class='badge'>60 Hz flags: {flags_60}</span><span class='badge'>Clipping flags: {clipped}</span>
+<span class='badge'>Processed: {ok}</span><span class='badge'>Failed: {failed}</span><span class='badge'>Clipping flags: {clipped}</span><span class='badge'>50 Hz flags: {flags_50}</span><span class='badge'>60 Hz flags: {flags_60}</span><span class='badge'>Normalized: {normed}</span><span class='badge'>Filtered: {filtered}</span>
 </div>
 <div class='card'><h2>Configuration</h2><pre>{json.dumps(cfg.to_dict(), indent=2)}</pre></div>
-<div class='card'><h2>Notes</h2><p>SNR is estimated from low-energy frames and should be interpreted as a QC proxy only.</p><p>Source files are never modified. Canonical WAV files are written under <code>artifacts/</code>.</p></div>
 </body></html>"""
     path.write_text(html, encoding="utf-8")
