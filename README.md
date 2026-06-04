@@ -129,3 +129,8 @@ Launch:
 ```bash
 vslp gui acoustic
 ```
+
+
+## v0.17 Setup workflow note
+
+The Acoustic GUI Setup screen now enforces project initialization before ingest. The input folder is searched recursively, including subfolders, but one task per input folder remains the recommended clean workflow. Metadata is run from the Metadata tab, not Setup.

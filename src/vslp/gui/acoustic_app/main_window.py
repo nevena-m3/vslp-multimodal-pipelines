@@ -1,6 +1,6 @@
-"""VSLP Acoustic Pipeline GUI v0.16.
+"""VSLP Acoustic Pipeline GUI v0.17.
 
-V0.16 branding/product-design correction:
+V0.17 Setup/Ingest refinement:
 - stage-aware workflow guidance with scientific rationale;
 - embedded CSV and plot previews;
 - latest-output detection;
@@ -148,10 +148,10 @@ class AcousticPipelineWindow(QMainWindow):
 
         title = QLabel("VSLP")
         title.setObjectName("AppTitleLabel")
-        subtitle = QLabel("Acoustic Pipeline GUI v0.16")
+        subtitle = QLabel("Acoustic Pipeline GUI v0.17")
         subtitle.setObjectName("SubtitleLabel")
         ip_notice = QLabel(
-            "© 2026 Nevena Musikic & Yana Yunusova\n"
+            "© 2026 Nevena Musikic and Jana Yunusova\n"
             "Speech Production Lab, University of Toronto"
         )
         ip_notice.setObjectName("IPNoticeLabel")
@@ -349,23 +349,26 @@ class AcousticPipelineWindow(QMainWindow):
     def _build_setup_tab(self) -> QWidget:
         container = QWidget()
         layout = QVBoxLayout(container)
-#        layout.addWidget(self._info_panel(
-#           "The acoustic workflow is intentionally ordered. Metadata establishes subject/session/task identity; ingest verifies file format and duration using ffprobe; preprocessing creates non-destructive canonical WAVs; segmentation defines speech and pause regions; features and QC are then computed from auditable upstream artifacts."
-#       ))
+        layout.setSpacing(12)
 
-        paths_group = QGroupBox("Project and Input Paths")
+        layout.addWidget(self._info_panel(
+            "Project setup",
+            "Start here. Select the raw input folder and the output project folder, then initialize the project. Ingest is locked until a project manifest exists. VSLP searches the selected input folder recursively, so files inside subfolders are included. For clean interpretation, one task per input folder is recommended."
+        ))
+
+        paths_group = QGroupBox("1. Select folders and project identity")
         form = QGridLayout(paths_group)
 
         self.input_edit = QLineEdit()
         self.output_edit = QLineEdit()
         self.project_name_edit = QLineEdit("VSLP Acoustic Project")
-        self._set_tooltip(self.input_edit, "Folder containing raw audio/video files. Extensions are not trusted; ffprobe detects true media format.")
-        self._set_tooltip(self.output_edit, "Root folder where VSLP writes stage outputs, logs, reports, plots, tables, and manifests.")
-        self._set_tooltip(self.project_name_edit, "Human-readable project label stored in the project manifest.")
+        self._set_tooltip(self.input_edit, "Folder containing raw audio/video files. Subfolders are searched recursively. Recommendation: process one speech task at a time when possible.")
+        self._set_tooltip(self.output_edit, "Root folder where VSLP writes all outputs: tables, plots, reports, logs, errors, artifacts, and manifests.")
+        self._set_tooltip(self.project_name_edit, "Human-readable project label stored in project_manifest.json.")
 
         browse_in = QPushButton("Browse Input Folder")
         browse_in.clicked.connect(self.browse_input_dir)
-        browse_out = QPushButton("Browse Output Project Folder")
+        browse_out = QPushButton("Browse Output Folder")
         browse_out.clicked.connect(self.browse_output_dir)
 
         form.addWidget(QLabel("Input audio folder"), 0, 0)
@@ -377,40 +380,53 @@ class AcousticPipelineWindow(QMainWindow):
         form.addWidget(QLabel("Project name"), 2, 0)
         form.addWidget(self.project_name_edit, 2, 1, 1, 2)
 
-        guidance = QGroupBox("")
-        guidance_layout = QVBoxLayout(guidance)
-        self.dependency_label = QLabel(
-            #"1) Metadata → 2) Ingest → 3) Preprocess → 4) Silero Segmentation → 5) Region-aware Feature Extraction → 6) Aggregation → 7) QC Dashboard.\n"
-            #"Most signal features should be computed on speech regions, not blindly over the full file. Downstream outputs may become stale if upstream settings change."
+        workflow_group = QGroupBox("2. Project gate")
+        workflow_layout = QVBoxLayout(workflow_group)
+        self.project_gate_label = QLabel(
+            "Required order on this screen: Initialize Project → Run Ingest. Metadata is handled on the Metadata tab after files have been ingested."
         )
-        self.dependency_label.setWordWrap(True)
-        self.dependency_label.setObjectName("SubtitleLabel")
-        guidance_layout.addWidget(self.dependency_label)
-
-    #    metric_row = QHBoxLayout()
-    #    for label, value, tip in [
-    #        ("Default segmentation SR", "16 kHz", "Silero-compatible analysis WAV; feature WAV can preserve original SR."),
-    #        ("Feature region default", "speech_only", "Signal features avoid leading/trailing silence by default."),
-    #        ("QC SNR flag", "< 10 dB", "Estimated SNR proxy; flag for review, not automatic exclusion."),
-    #        ("Pause minimum", "150 ms", "Starting internal pause threshold for speech timing features."),
-    #    ]:
-    #        metric_row.addWidget(self._metric_card(label, value, tip))
-    #    guidance_layout.addLayout(metric_row)
+        self.project_gate_label.setObjectName("SubtitleLabel")
+        self.project_gate_label.setWordWrap(True)
+        workflow_layout.addWidget(self.project_gate_label)
 
         btn_row = QHBoxLayout()
-        init_btn = QPushButton("Initialize Project")
-        init_btn.clicked.connect(self.run_project_init)
-        metadata_btn = QPushButton("Run Metadata")
-        metadata_btn.clicked.connect(self.run_metadata)
-        ingest_btn = QPushButton("Run Ingest")
-        ingest_btn.clicked.connect(self.run_ingest)
-        btn_row.addWidget(init_btn)
-        btn_row.addWidget(metadata_btn)
-        btn_row.addWidget(ingest_btn)
+        self.init_project_btn = QPushButton("Initialize Project")
+        self.init_project_btn.setObjectName("RunButton")
+        self.init_project_btn.clicked.connect(self.run_project_init)
+        self.ingest_btn = QPushButton("Run Ingest")
+        self.ingest_btn.clicked.connect(self.run_ingest)
+        self.ingest_btn.setToolTip("Runs ffprobe-based media digest. Requires project initialization first.")
+        btn_row.addWidget(self.init_project_btn)
+        btn_row.addWidget(self.ingest_btn)
+        workflow_layout.addLayout(btn_row)
+
+        ingest_group = QGroupBox("3. Ingest summary")
+        ingest_layout = QVBoxLayout(ingest_group)
+        self.ingest_summary_label = QLabel(
+            "No ingest results yet. After ingest, this panel will show total files loaded, failed files, and the detected format/codec distribution."
+        )
+        self.ingest_summary_label.setWordWrap(True)
+        self.ingest_summary_label.setObjectName("SubtitleLabel")
+        ingest_layout.addWidget(self.ingest_summary_label)
+
+        self.ingest_format_table = QTableWidget(0, 3)
+        self.ingest_format_table.setHorizontalHeaderLabels(["Detected format", "Audio codec", "Files"])
+        self.ingest_format_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.ingest_format_table.setMaximumHeight(170)
+        self.ingest_format_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.ingest_format_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        ingest_layout.addWidget(self.ingest_format_table)
+
+        note = QLabel(
+            "Design note: VSLP does not trust file extensions. A .wav file that is internally WebM/Opus is identified by ffprobe and handled as media, not by suffix alone."
+        )
+        note.setObjectName("SubtitleLabel")
+        note.setWordWrap(True)
+        ingest_layout.addWidget(note)
 
         layout.addWidget(paths_group)
-        layout.addWidget(guidance)
-        layout.addLayout(btn_row)
+        layout.addWidget(workflow_group)
+        layout.addWidget(ingest_group)
         layout.addStretch(1)
         return self._scrollable(container)
 
@@ -418,10 +434,10 @@ class AcousticPipelineWindow(QMainWindow):
         container = QWidget()
         layout = QVBoxLayout(container)
 
-      #  layout.addWidget(self._info_panel(
-      #      "Why metadata comes first",
-      #      "Metadata prevents leakage and preserves longitudinal structure. The minimum clinically useful identity is subject_id, session_id, iteration, task, recording_date, diagnosis, severity_score, severity_bin, and file_name. If no CSV is provided, VSLP parses filenames conservatively and leaves clinical labels blank."
-      #  ))
+        layout.addWidget(self._info_panel(
+            "Why metadata comes first",
+            "Metadata prevents leakage and preserves longitudinal structure. The minimum clinically useful identity is subject_id, session_id, iteration, task, recording_date, diagnosis, severity_score, severity_bin, and file_name. If no CSV is provided, VSLP parses filenames conservatively and leaves clinical labels blank."
+        ))
 
         group = QGroupBox("Demographics / metadata CSV")
         grid = QGridLayout(group)
@@ -456,7 +472,7 @@ class AcousticPipelineWindow(QMainWindow):
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.addWidget(self._info_panel(
-            "Info",
+            "Preprocessing rationale and default values",
             "Original files are never modified. VSLP creates canonical mono WAVs, removes DC offset, estimates SNR/clipping/powerline interference, and creates a 16 kHz segmentation WAV for Silero. Feature WAVs preserve the original sampling rate by default because some acoustic features can be sensitive to resampling."
         ))
 
@@ -502,7 +518,7 @@ class AcousticPipelineWindow(QMainWindow):
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.addWidget(self._info_panel(
-            "Info",
+            "Segmentation rationale and default values",
             "Silero estimates speech-active regions. VSLP converts these to speech and nonspeech segments, frame tables, boundary tables, and diagnostic plots. Defaults are conservative for remote speech recordings: threshold 0.50, minimum speech 250 ms, minimum silence 100 ms, speech padding 50 ms, and 30 ms diagnostic frames."
         ))
         group = QGroupBox("Silero segmentation parameters")
@@ -536,7 +552,7 @@ class AcousticPipelineWindow(QMainWindow):
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.addWidget(self._info_panel(
-            "Info",
+            "Region-aware feature extraction",
             "Many acoustic features should not be computed over the full file. Timing and pause features use Silero speech/nonspeech segments. Signal features default to speech_only regions so leading silence, trailing silence, instructions, and dead time do not contaminate the measurement. Pending features remain explicit NaN placeholders until validated."
         ))
 
@@ -604,7 +620,7 @@ class AcousticPipelineWindow(QMainWindow):
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.addWidget(self._info_panel(
-            "Info",
+            "Aggregation rationale",
             "Aggregation converts per-file feature outputs into analysis-ready tables while preserving subject/session/iteration/task structure. The default grouping is designed for longitudinal clinical monitoring and ML leakage control."
         ))
         group = QGroupBox("Aggregation configuration")
@@ -632,7 +648,7 @@ class AcousticPipelineWindow(QMainWindow):
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.addWidget(self._info_panel(
-            "Info",
+            "QC rationale",
             "QC flags recordings for review; it does not reject data automatically. Thresholds are intentionally visible and editable because acceptable quality depends on task, device, patient speech impairment, and study design."
         ))
         group = QGroupBox("QC dashboard thresholds")
@@ -967,6 +983,92 @@ class AcousticPipelineWindow(QMainWindow):
     def _output_root(self) -> Path:
         return Path(self.output_edit.text().strip()).expanduser()
 
+
+    def _project_manifest_path(self) -> Path:
+        return self._output_root() / "project_manifest.json"
+
+    def _is_project_initialized(self) -> bool:
+        try:
+            return self._project_manifest_path().exists()
+        except Exception:
+            return False
+
+    def _require_project_initialized(self) -> bool:
+        if self._is_project_initialized():
+            return True
+        QMessageBox.warning(
+            self,
+            "Initialize project first",
+            "Please initialize the project before running this stage.\n\n"
+            "Go to Setup → select input/output folders → click Initialize Project.",
+        )
+        return False
+
+    def _refresh_project_gate(self) -> None:
+        if not hasattr(self, "project_gate_label"):
+            return
+        if self._is_project_initialized():
+            self.project_gate_label.setText(
+                "Project initialized. You can now run ingest. Metadata is handled on the Metadata tab after ingest."
+            )
+            self.stage_records["project"].status = "detected"
+        else:
+            self.project_gate_label.setText(
+                "Required order on this screen: Initialize Project → Run Ingest. Metadata is handled on the Metadata tab after files have been ingested."
+            )
+        self._refresh_stage_cards()
+
+    def _update_ingest_feedback(self) -> None:
+        if not hasattr(self, "ingest_summary_label"):
+            return
+        summary_path = self._stage_path("ingest", "summary")
+        errors_path = self._output_root() / "acoustic" / "001_ingest" / "errors" / "audio_ingest_errors.csv"
+        if not summary_path.exists():
+            self.ingest_summary_label.setText(
+                "No ingest results yet. After ingest, this panel will show total files loaded, failed files, and the detected format/codec distribution."
+            )
+            self.ingest_format_table.setRowCount(0)
+            return
+        try:
+            df = pd.read_csv(summary_path)
+        except Exception as exc:  # noqa: BLE001
+            self.ingest_summary_label.setText(f"Ingest summary exists but could not be read: {exc}")
+            return
+        n_ok = len(df)
+        n_failed = 0
+        if errors_path.exists():
+            try:
+                n_failed = len(pd.read_csv(errors_path))
+            except Exception:
+                n_failed = 0
+        subfolder_count = 0
+        try:
+            input_root = Path(self.input_edit.text().strip()).expanduser().resolve()
+            if input_root.exists() and input_root.is_dir() and "file_path" in df.columns:
+                parents = {Path(str(p)).expanduser().resolve().parent for p in df["file_path"].dropna()}
+                subfolder_count = sum(1 for parent in parents if parent != input_root)
+        except Exception:
+            subfolder_count = 0
+        suffix_counts = df["suffix"].astype(str).value_counts().to_dict() if "suffix" in df.columns else {}
+        suffix_txt = ", ".join(f"{k}: {v}" for k, v in suffix_counts.items()) if suffix_counts else "not available"
+        self.ingest_summary_label.setText(
+            f"Loaded/probed files: {n_ok} | Failed files: {n_failed} | Subfolders represented: {subfolder_count}\n"
+            f"File extensions found: {suffix_txt}"
+        )
+
+        group_cols = [c for c in ["format_name", "audio_codec"] if c in df.columns]
+        if group_cols:
+            fmt = df.groupby(group_cols, dropna=False).size().reset_index(name="files")
+        else:
+            fmt = pd.DataFrame({"format_name": ["unknown"], "audio_codec": ["unknown"], "files": [n_ok]})
+        self.ingest_format_table.setRowCount(len(fmt))
+        self.ingest_format_table.setColumnCount(3)
+        self.ingest_format_table.setHorizontalHeaderLabels(["Detected format", "Audio codec", "Files"])
+        for r, row in fmt.iterrows():
+            self.ingest_format_table.setItem(r, 0, QTableWidgetItem(str(row.get("format_name", ""))))
+            self.ingest_format_table.setItem(r, 1, QTableWidgetItem(str(row.get("audio_codec", ""))))
+            self.ingest_format_table.setItem(r, 2, QTableWidgetItem(str(row.get("files", ""))))
+
     def _preprocess_summary_path(self) -> Path:
         return self._output_root() / "acoustic" / "002_preprocess" / "tables" / "acoustic_preprocess_summary.csv"
 
@@ -1001,6 +1103,8 @@ class AcousticPipelineWindow(QMainWindow):
         if not self.output_edit.text().strip():
             QMessageBox.information(self, "No output folder", "Select an output project folder first.")
             return
+        if self._project_manifest_path().exists():
+            self.stage_records["project"].status = "detected"
         known = {
             "metadata": (self._stage_path("metadata", "summary"), self._stage_path("metadata", "report")),
             "ingest": (self._stage_path("ingest", "summary"), None),
@@ -1019,6 +1123,8 @@ class AcousticPipelineWindow(QMainWindow):
                 rec.report_path = str(report)
             self.stage_records[stage] = rec
         self._refresh_stage_cards()
+        self._refresh_project_gate()
+        self._update_ingest_feedback()
         self.append_log("Refreshed latest output paths from disk.")
 
     def preview_csv(self, path: Path) -> None:
@@ -1203,24 +1309,24 @@ class AcousticPipelineWindow(QMainWindow):
     def run_metadata(self) -> None:
         paths = self._require_paths()
         if paths is None: return
+        if not self._require_project_initialized(): return
         input_path, output_root = paths
         demo_text = self.demographics_csv_edit.text().strip() if hasattr(self, "demographics_csv_edit") else ""
         cfg = MetadataConfig(demographics_csv=demo_text or None)
-        initialize_project(output_root=output_root, project_name=self.project_name_edit.text().strip() or "VSLP Acoustic Project")
         self._run_worker("metadata", run_acoustic_metadata, {"input_path": input_path, "output_root": output_root, "config": cfg})
 
     def run_ingest(self) -> None:
         paths = self._require_paths()
         if paths is None: return
+        if not self._require_project_initialized(): return
         input_path, output_root = paths
-        initialize_project(output_root=output_root, project_name=self.project_name_edit.text().strip() or "VSLP Acoustic Project")
         self._run_worker("ingest", run_acoustic_ingest, {"input_path": input_path, "output_root": output_root})
 
     def run_preprocess(self) -> None:
         paths = self._require_paths()
         if paths is None: return
+        if not self._require_project_initialized(): return
         input_path, output_root = paths
-        initialize_project(output_root=output_root, project_name=self.project_name_edit.text().strip() or "VSLP Acoustic Project")
         feature_sr_text = self.feature_sr_edit.text().strip()
         feature_sr = int(feature_sr_text) if feature_sr_text else None
         filter_kind = self.filter_kind_combo.currentText()
@@ -1237,6 +1343,7 @@ class AcousticPipelineWindow(QMainWindow):
     def run_segmentation(self) -> None:
         paths = self._require_paths()
         if paths is None: return
+        if not self._require_project_initialized(): return
         _input_path, output_root = paths
         preprocess_summary = self._preprocess_summary_path()
         if not preprocess_summary.exists():
@@ -1255,6 +1362,7 @@ class AcousticPipelineWindow(QMainWindow):
     def run_features(self) -> None:
         paths = self._require_paths()
         if paths is None: return
+        if not self._require_project_initialized(): return
         _input_path, output_root = paths
         segmentation_summary = self._segmentation_summary_path()
         if not segmentation_summary.exists():
@@ -1277,6 +1385,7 @@ class AcousticPipelineWindow(QMainWindow):
     def run_aggregation(self) -> None:
         paths = self._require_paths()
         if paths is None: return
+        if not self._require_project_initialized(): return
         _input_path, output_root = paths
         features_csv = self._stage_path("features", "summary")
         if not features_csv.exists():
@@ -1293,6 +1402,7 @@ class AcousticPipelineWindow(QMainWindow):
     def run_qc_dashboard(self) -> None:
         paths = self._require_paths()
         if paths is None: return
+        if not self._require_project_initialized(): return
         _input_path, output_root = paths
         preprocess_csv = self._stage_path("preprocess", "summary")
         if not preprocess_csv.exists():
@@ -1309,8 +1419,8 @@ class AcousticPipelineWindow(QMainWindow):
     def run_all(self) -> None:
         paths = self._require_paths()
         if paths is None: return
+        if not self._require_project_initialized(): return
         input_path, output_root = paths
-        initialize_project(output_root=output_root, project_name=self.project_name_edit.text().strip() or "VSLP Acoustic Project")
 
         selected_features = self._selected_feature_names()
         def full_run(input_path: Path, output_root: Path):
@@ -1387,4 +1497,10 @@ class AcousticPipelineWindow(QMainWindow):
         self.append_log(f"{name} completed with status: {status}")
         if report: self.append_log(f"Report: {report}")
         if summary: self.append_log(f"Summary: {summary}")
+        if name == "project":
+            self._refresh_project_gate()
+        if name == "ingest":
+            self._update_ingest_feedback()
+            if errors:
+                self.append_log(f"Ingest errors: {errors}")
         self.refresh_latest_outputs()
