@@ -138,12 +138,30 @@ def build_acoustic_feature_registry() -> pd.DataFrame:
         ("P0prom", "P0 prominence over local spectral baseline", "dB", "P0 amplitude - local baseline", "sentence", "C"),
         ("P1amp", "~1 kHz nasal pole amplitude", "dB", "spectral amplitude near P1", "sentence", "C"),
     ]
+    reson_note = (
+        "Implemented v0.30 with conservative single-microphone spectral screening on selected speech regions. "
+        "A1-P0/A1-P1/A3-P0 are computed from smoothed frame spectra using P0 (~180--500 Hz), P1 (~790--1100 Hz), "
+        "and F1/F2/F3 spectral/formant support windows. Raw A1-P0/A1-P1/A3-P0 are the primary validated-local outputs. "
+        "Compensated variants are emitted as local proxies pending exact Chen/Praat-style reference validation. "
+        "Interpretation is task/vowel dependent and strongly affected by F0 harmonic placement, recording quality, and vowel targeting."
+    )
     for name, meaning, unit, formula, task, tier in reson:
-        add_feature(name, "resonatory", meaning, unit, "Pending validated nasality implementation; depends strongly on vowel/task and F0/harmonic placement.", formula, task, tier, None, None, "hypernasality generally lowers A1-P0/A1-P1/A3-P0 and increases pole amplitudes", "not_implemented_yet")
+        status = "computed_proxy" if name in {"A1P0comp", "A1P1comp"} else "implemented"
+        add_feature(name, "resonatory", meaning, unit, reson_note, formula, task, tier, None, None, "hypernasality generally lowers A1-P0/A1-P1/A3-P0 and increases pole amplitudes", status)
+    support_units = {
+        "F1freq": "Hz", "F2freq": "Hz", "F3freq": "Hz",
+        "F1amp": "dB", "F2amp": "dB", "F3amp": "dB",
+        "F1width": "Hz", "F2width": "Hz", "F3width": "Hz",
+        "RMSamp": "a.u.",
+    }
+    support_formula = {
+        "F1freq": "spectral/LPC support peak in F1 band", "F2freq": "spectral/LPC support peak in F2 band", "F3freq": "spectral/LPC support peak in F3 band",
+        "F1amp": "A1 = spectral amplitude near F1", "F2amp": "spectral amplitude near F2", "F3amp": "A3 = spectral amplitude near F3",
+        "F1width": "approximate -3 dB spectral width around F1", "F2width": "approximate -3 dB spectral width around F2", "F3width": "approximate -3 dB spectral width around F3",
+        "RMSamp": "sqrt(mean(x^2))",
+    }
     for name in ["F1freq", "F1amp", "F1width", "F2freq", "F2amp", "F2width", "F3freq", "F3amp", "F3width", "RMSamp"]:
-        status = "implemented" if name == "RMSamp" else "not_implemented_yet"
-        subsystem = "resonatory" if name != "RMSamp" else "rhythm"
-        add_feature(name, subsystem, f"Sentence spectral/nasality support feature: {name}", "varies", "Part of sentence/nasality spectral analysis; validate formulas before clinical use.", "see feature map", "sentence", "C", None, None, "task dependent", status)
+        add_feature(name, "resonatory", f"Sentence spectral/nasality support feature: {name}", support_units[name], reson_note, support_formula[name], "sentence/oral speech regions", "C", None, None, "task dependent; support variable for nasality measures", "implemented")
 
     # Coordination.
     for name, meaning in [
