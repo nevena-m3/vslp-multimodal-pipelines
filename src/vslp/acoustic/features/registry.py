@@ -83,20 +83,26 @@ def build_acoustic_feature_registry() -> pd.DataFrame:
     add_feature("f0_std", "phonatory", "Standard deviation of voiced F0", "Hz", "Current backend uses local autocorrelation proxy; semitone scaling is recommended for cross-speaker analysis.", "std(f0(t))", "vowel/speech voiced regions", "B", 0, 120, "decreases with monopitch", "computed_proxy")
     add_feature("CPP_mean", "phonatory", "Mean cepstral peak prominence proxy", "dB-like", "Current backend computes a local CPP proxy. Validate against line-normalized CPP/CPPS reference before clinical interpretation.", "cepstral peak - fitted baseline", "vowel and connected speech", "B", 0, 30, "decreases with dysphonia", "computed_proxy")
 
-    # Rhythm / envelope modulation.
+    # Rhythm / envelope modulation — validated v0.27.
     rhythm = [
-        ("intensity_CV", "Coefficient of variation of RMS intensity", "unitless", "std(RMS)/mean(RMS)", 0, 5, "increases with instability"),
-        ("fft_peaks1", "Strongest envelope modulation frequency", "Hz", "argmax(|FFT(envelope)|)", 0, 10, "slows/shifts"),
-        ("fft_peaks2", "Second strongest envelope modulation frequency", "Hz", "second peak of envelope spectrum", 0, 10, "varies"),
-        ("fft_ampli1", "Amplitude at strongest envelope modulation peak", "a.u.", "|FFT(envelope)| at peak 1", 0, None, "decreases with weaker rhythm"),
-        ("fft_ampli2", "Amplitude at second envelope modulation peak", "a.u.", "|FFT(envelope)| at peak 2", 0, None, "varies"),
-        ("nrj_below_boundary", "Envelope modulation energy below 4 Hz", "proportion", "sum energy 0-4 Hz", 0, 1, "increases"),
-        ("nrj_above_boundary", "Envelope modulation energy from 4 to 10 Hz", "proportion", "sum energy 4-10 Hz", 0, 1, "decreases"),
-        ("nrj_3_6", "Envelope modulation energy from 3 to 6 Hz", "proportion", "sum energy 3-6 Hz", 0, 1, "varies"),
-        ("ratio_below_above", "Energy below 4 Hz divided by energy 4-10 Hz", "ratio", "energy(0-4)/energy(4-10)", 0, 100, "increases"),
+        ("intensity_CV", "Coefficient of variation of frame RMS intensity over the effective task interval", "unitless", "std(RMS_frames)/mean(RMS_frames)", 0, 5, "increases with loudness instability or pause-heavy delivery"),
+        ("fft_peaks1", "Dominant 0--10 Hz envelope-modulation frequency", "Hz", "argmax_f |FFT(envelope)(f)|, f in (0,10]", 0, 10, "slows/shifts toward lower modulation rates"),
+        ("fft_peaks2", "Second dominant 0--10 Hz envelope-modulation frequency", "Hz", "second-largest local maximum of |FFT(envelope)|", 0, 10, "varies"),
+        ("fft_ampli1", "Normalized amplitude at the dominant modulation peak", "normalized", "peak_amplitude / RMS_modulation_magnitude", 0, None, "decreases when rhythmic modulation weakens"),
+        ("fft_ampli2", "Normalized amplitude at the second modulation peak", "normalized", "peak_amplitude_2 / RMS_modulation_magnitude", 0, None, "varies"),
+        ("nrj_below_boundary", "Proportion of envelope-modulation energy below 4 Hz", "proportion", "sum(power_0_to_4Hz) / sum(power_0_to_10Hz)", 0, 1, "increases with slowed/phrase-level modulation"),
+        ("nrj_above_boundary", "Proportion of envelope-modulation energy from 4 to 10 Hz", "proportion", "sum(power_4_to_10Hz) / sum(power_0_to_10Hz)", 0, 1, "decreases when fast syllabic modulation weakens"),
+        ("nrj_3_6", "Proportion of envelope-modulation energy in the 3--6 Hz syllabic band", "proportion", "sum(power_3_to_6Hz) / sum(power_0_to_10Hz)", 0, 1, "varies with syllabic rhythmic concentration"),
+        ("ratio_below_above", "Slow-to-fast envelope-modulation energy ratio", "ratio", "energy_0_to_4Hz / energy_4_to_10Hz", 0, 100, "increases when rhythm shifts toward slower modulation"),
     ]
+    rhythm_note = (
+        "Validated v0.27 EMS implementation. Default analysis region is effective_task rather than concatenated speech_only "
+        "because internal pauses are part of connected-speech rhythm. Envelope is extracted after 300--1000 Hz "
+        "Butterworth speech-band prefilter, Hilbert magnitude, 100 Hz envelope resampling, Tukey windowing, and 0--10 Hz FFT. "
+        "Band energies are proportions of total 0--10 Hz modulation power; boundary is 4 Hz. Not a syllable/DDK counter."
+    )
     for name, meaning, unit, formula, lo, hi, direction in rhythm:
-        add_feature(name, "rhythm", meaning, unit, "Envelope modulation spectrum from speech-region/effective-task amplitude envelope.", formula, "passage/connected speech", "B" if name in {"nrj_below_boundary", "nrj_above_boundary", "ratio_below_above", "fft_peaks1"} else "C", lo, hi, direction, "implemented")
+        add_feature(name, "rhythm", meaning, unit, rhythm_note, formula, "passage/connected speech", "B" if name in {"nrj_below_boundary", "nrj_above_boundary", "ratio_below_above", "fft_peaks1"} else "C", lo, hi, direction, "implemented")
 
     # Resonatory/nasality and sentence spectral block.
     reson = [
