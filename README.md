@@ -1,39 +1,95 @@
 # VSLP Multimodal Pipelines
 
-**VSLP** is a local-first research software platform for reproducible acoustic and facial-kinematic analysis in clinical speech and motor assessment studies.
+**VSLP Multimodal Pipelines** is a local research software platform for reproducible acoustic and facial-kinematic analysis in clinical speech and motor-assessment studies. The current completed application is the **VSLP Acoustic Pipeline GUI**, designed for local processing of speech recordings from remote or lab-based clinical research workflows.
 
-The current design target is remote longitudinal monitoring of ALS and related neuromotor populations using speech/audio recordings and camera-derived facial kinematics.
+This repository is currently for **research use only**. It is not a validated medical device and must not be used for clinical decision-making without formal validation, documentation lock, risk management, and the appropriate regulatory pathway.
 
-> Status: early scaffold. This repository is not a validated medical device. Research use only.
+## Current acoustic GUI workflow
 
-## Core design principles
+The Acoustic Pipeline GUI currently supports this workflow:
 
-1. Local-only processing of sensitive patient data.
-2. Non-destructive ingest and preprocessing.
-3. Stage-level modularity: every stage has explicit input, config, output, logs, reports, and manifests.
-4. Audit-grade provenance: hashes, configuration, software versions, timestamps, warnings, and errors.
-5. Subject-level split enforcement for ML to prevent leakage across longitudinal sessions.
-6. GUI-first usability, CLI-first reproducibility.
+```text
+Setup
+→ Metadata
+→ Preprocess
+→ Data Segmentation
+→ Quality Control
+→ Feature Extraction
+→ Inspector
+→ Reports & Outputs
+```
 
-## Four applications
+The removed Aggregation tab is intentional. Feature Extraction now performs feature-specific scalar reduction from each feature's native measurement scale into one file-level value. Cross-file, cross-session, longitudinal, or ML-oriented aggregation should be handled later in the Feature Analysis GUI or ML GUI.
 
-1. **Acoustic Pipeline GUI**: ingest, preprocessing, segmentation, QC, feature extraction, aggregation.
-2. **Kinematic Pipeline GUI**: video ingest, MediaPipe landmarks, normalization, QC, kinematic features, aggregation.
-3. **Feature Analysis GUI**: missingness, distributions, correlations, outliers, reliability, task/diagnosis stratification.
-4. **ML GUI**: classical ML training, pretrained local inference, evaluation, explainability, model registry.
+## What each stage does
+
+### Setup
+
+Selects the input audio folder, output project folder, project name, and task being analyzed. Subfolders are searched recursively. One task per input folder is recommended when possible. The task field is used only as a fallback when task information is not available from metadata or filename parsing.
+
+### Metadata
+
+Optionally links recordings to a metadata CSV. The metadata table may contain many more rows than the uploaded audio subset. VSLP detects flexible column names such as `SubjectID`, `ID`, `Clinical Visit ID`, `Protocol ID`, `Task Name`, `Recording date`, `ALSFRS total score`, and related variants. If no metadata CSV is supplied, VSLP continues with filename parsing and leaves clinical labels blank when they cannot be inferred.
+
+### Preprocess
+
+Creates non-destructive processed audio derivatives. Originals are never modified. The default behavior removes DC offset, creates a 16 kHz segmentation WAV for Silero, and creates a feature WAV while preserving the source sample rate unless the user explicitly enables resampling. Optional peak normalization, Butterworth high-pass/low-pass/band-pass filtering, and 50/60 Hz notch filtering are available but off by default.
+
+Preprocess outputs include estimated SNR, clipping, DC offset before/after correction, powerline flags, generated WAV paths, plots, and reports.
+
+### Data Segmentation
+
+Runs speech/pause segmentation. Silero VAD is currently implemented. SPA, Energy/RMS, and custom segmentation are reserved plugin slots for future methods. Segmentation outputs speech regions, pause regions, segment summaries, plots, and reports.
+
+### Quality Control
+
+Computes segmentation-informed audio-quality features after segmentation and before feature extraction. It includes six artifact families: additive interference, gain dynamics, reverberation/echo, channel/device, nonlinear distortion, and temporal discontinuity. Outputs include QC feature tables, warnings, recommendations, family scores, review rankings, descriptive plots, and reports. These are screening aids, not automatic exclusion rules.
+
+### Feature Extraction
+
+Computes acoustic features by subsystem:
+
+```text
+respiratory/timing
+rhythm / envelope modulation
+phonatory
+articulatory / formant
+resonatory / nasality
+coordination
+```
+
+The Feature Extraction stage outputs one row per file, but each scalar is produced by a documented feature-specific computation policy. The GUI and audit tables record native scale, analysis region, scalar reduction, computation mode, validity warnings, and implementation status.
+
+Examples:
+
+```text
+Timing/respiratory: speech/pause event summaries
+Rhythm/EMS: effective task region, preserving internal pauses
+Phonatory: voiced-frame support
+Articulatory/formant: valid LPC formant trajectories
+Resonatory/nasality: valid spectral frames
+Coordination: aligned CPP/F1/F2 trajectories and lagged eigenspectrum summaries
+```
+
+### Inspector
+
+Provides in-GUI preview of key tables and plots.
+
+### Reports & Outputs
+
+Opens generated reports, primary tables, stage folders, and creates the final run-summary manifest.
 
 ## Installation
 
-Recommended Python: **3.11**.
+Recommended Python version: **3.11**.
 
 ```bash
 python3.11 -m venv .venv
-source .venv/bin/activate  # macOS/Linux
-# .venv\Scripts\activate   # Windows
-pip install -e ".[dev,gui,silero,kinematic]"
+source .venv/bin/activate
+pip install -e '.[dev,gui,silero]'
 ```
 
-Install FFmpeg/FFprobe before running ingest. The code checks for them and records the detected versions in manifests.
+Install FFmpeg/FFprobe before running the pipeline.
 
 macOS:
 
@@ -41,111 +97,102 @@ macOS:
 brew install ffmpeg
 ```
 
-Windows recommendation: install FFmpeg via winget/chocolatey or bundle a vetted binary in a future packaged release.
+Windows users should install FFmpeg/FFprobe using a trusted package manager or a vetted binary distribution.
 
-## First local development run
+## Launching the Acoustic GUI
 
-Detailed instructions are in `docs/development_first_run.md`. The shortest path is:
-
-```bash
-# 1) Create optional synthetic local test files.
-python scripts/create_test_audio.py
-
-# 2) Create a project/output folder.
-vslp project init examples/test_runs/run_001 --project-name "VSLP smoke test"
-
-# 3) Digest the media files with ffprobe.
-vslp acoustic ingest examples/test_data/audio_inputs examples/test_runs/run_001
-
-# 4) Decode/canonicalize/preprocess with ffmpeg and write QC outputs.
-vslp acoustic preprocess examples/test_data/audio_inputs examples/test_runs/run_001
-
-# 5) Run Silero segmentation after installing the optional Silero dependency.
-vslp acoustic segment-silero \
-  examples/test_runs/run_001/acoustic/002_preprocess/tables/acoustic_preprocess_summary.csv \
-  examples/test_runs/run_001
-```
-
-For initial development without Silero, run:
+From the repository root:
 
 ```bash
-vslp acoustic run-v1 examples/test_data/audio_inputs examples/test_runs/run_002 --skip-segmentation
+source .venv/bin/activate
+vslp gui acoustic
 ```
+
+## Full-pipeline behavior
+
+The **Run Full Acoustic Workflow** button runs:
+
+```text
+Metadata
+→ Ingest
+→ Preprocess
+→ Data Segmentation
+→ Quality Control
+→ Feature Extraction
+→ Run Summary
+```
+
+If no metadata CSV is selected, the GUI asks whether the user wants to select metadata or continue without it. The pipeline can run without metadata, but diagnosis, severity, and other clinical labels remain blank unless they can be parsed or are provided later.
+
+## Primary output folders
+
+Each project output folder contains stage-organized outputs under:
+
+```text
+acoustic/000_metadata/
+acoustic/001_ingest/
+acoustic/002_preprocess/
+acoustic/003_segmentation/
+acoustic/003_quality_control/
+acoustic/004_features/
+acoustic/007_run_summary/
+```
+
+Each stage writes some combination of:
+
+```text
+tables/
+plots/
+reports/
+logs/
+errors/
+manifests/
+artifacts/
+```
+
+## Main acoustic feature outputs
+
+The most important feature outputs are:
+
+```text
+acoustic/004_features/tables/acoustic_features_per_file.csv
+acoustic/004_features/tables/acoustic_feature_status_long.csv
+acoustic/004_features/tables/acoustic_feature_scalar_reduction_audit.csv
+acoustic/004_features/tables/acoustic_feature_computation_policy.csv
+acoustic/004_features/reports/acoustic_feature_report.html
+```
+
+## Project principles
+
+1. Local processing of sensitive data.
+2. Non-destructive audio handling.
+3. Explicit stage inputs and outputs.
+4. Reproducibility through manifests and audit tables.
+5. Conservative preprocessing defaults.
+6. Segmentation-informed QC.
+7. Feature-specific computation policies.
+8. No automatic clinical interpretation or exclusion.
+9. GUI usability with CLI reproducibility.
 
 ## Repository layout
 
 ```text
-src/vslp/core              Shared schemas, manifests, provenance, logging, project state
-src/vslp/acoustic          Acoustic ingest/preprocess/segment/QC/features/aggregation
-src/vslp/kinematic         Video/MediaPipe/landmark normalization/kinematic features
-src/vslp/feature_analysis  Cross-modal feature analysis
-src/vslp/ml                Classical ML, pretrained local inference, explainability
-src/vslp/gui               Four PySide6 GUI applications
-src/vslp/cli               Reproducible command-line interface
+src/vslp/core              Shared schemas, manifests, project utilities
+src/vslp/acoustic          Acoustic metadata, ingest, preprocess, segmentation, QC, features
+src/vslp/gui               PySide6 GUI applications
+src/vslp/cli               Command-line interface
+configs                    Task and feature configuration files
+docs                       User and developer documentation
+tests                      Unit and integration tests
 ```
 
-## Clinical/product caution
+## Citation / attribution
 
-This software is currently designed for research workflows. It should not be used for clinical decision-making until validated, locked, risk-managed, and documented under the appropriate regulatory pathway.
+Current GUI attribution:
 
-
-## Launch the acoustic desktop GUI
-
-Install GUI dependencies:
-
-```bash
-pip install -e '.[gui,silero]'
+```text
+© 2026 Nevena Musikic & Yana Yunusova
+Speech Production Lab, University of Toronto
 ```
 
-Launch:
-
-```bash
-vslp gui acoustic
-```
-
-See `docs/gui_first_run.md` for step-by-step instructions.
-
-
-## Acoustic GUI feature layer
-
-V0.5 adds an Acoustic GUI **Features** tab and a conservative backend feature-extraction stage. It computes the validated timing/respiratory subset from Silero segments and writes all registered but pending features as explicit NaN placeholders with status metadata. See `docs/acoustic_gui_feature_layer_v05.md`.
-
-
-## Acoustic GUI v0.9
-
-V0.9 adds feature-level selection, embedded table previews, embedded plot previews, latest-output detection, and clearer stage workflow guidance.
-
-See `docs/acoustic_gui_v09.md` for details.
-
-
-## VSLP v0.12 acoustic pipeline status
-
-The acoustic GUI now supports metadata indexing, ingest, preprocessing, Silero segmentation, region-aware feature extraction, aggregation, QC dashboard generation, embedded table/plot previews, and feature-level selection.
-
-Key principle: most signal features should not be computed blindly over the full file. Timing features use Silero speech/nonspeech segments. Phonatory, rhythm, and baseline intensity features default to `speech_only` analysis regions, with expert options for `effective_task` and `full_file`.
-
-Launch:
-
-```bash
-vslp gui acoustic
-```
-
-
-## v0.17 Setup workflow note
-
-The Acoustic GUI Setup screen now enforces project initialization before ingest. The input folder is searched recursively, including subfolders, but one task per input folder remains the recommended clean workflow. Metadata is run from the Metadata tab, not Setup.
-
-
-## v0.26 respiratory/timing validation
-
-Respiratory/timing acoustic features are now validated against explicit segment-table formulas. See `docs/acoustic_features_v026_timing_validation.md`.
-
-
-## v0.33 feature computation strategy
-
-The Aggregation GUI stage has been removed. Feature Extraction now owns the physiologic reduction strategy from native scale to one file-level value. See `docs/acoustic_gui_v033_remove_aggregation_feature_strategy.md`.
-
-
-## v0.35 Feature Extraction completion pass
-
-Feature Extraction now includes explicit computation-mode controls and writes `acoustic_feature_scalar_reduction_audit.csv`, documenting how each selected file-level scalar was produced from its native measurement scale. See `docs/acoustic_gui_v035_feature_extraction_conclusion.md`.
+Final ownership, licensing, distribution, and release wording should be confirmed with the Speech Production Lab and University of Toronto policies before public release.

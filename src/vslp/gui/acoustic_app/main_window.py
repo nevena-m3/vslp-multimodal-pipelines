@@ -1,6 +1,6 @@
-"""VSLP Acoustic Pipeline GUI v0.36.
+"""VSLP Acoustic Pipeline GUI v0.38.
 
-V0.17 Setup/Ingest refinement:
+V0.38 final polish:
 - stage-aware workflow guidance with scientific rationale;
 - embedded CSV and plot previews;
 - latest-output detection;
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import json
 from typing import Callable
 import traceback
 
@@ -155,7 +156,7 @@ class AcousticPipelineWindow(QMainWindow):
 
         title = QLabel("VSLP")
         title.setObjectName("AppTitleLabel")
-        subtitle = QLabel("Acoustic Pipeline GUI v0.36")
+        subtitle = QLabel("Acoustic Pipeline GUI v0.38")
         subtitle.setObjectName("SubtitleLabel")
         ip_notice = QLabel(
             "© 2026 Nevena Musikic & Yana Yunusova\n"
@@ -219,6 +220,7 @@ class AcousticPipelineWindow(QMainWindow):
         main_col.addWidget(branding_bar)
 
         tabs = QTabWidget()
+        self.tabs = tabs
         tabs.setUsesScrollButtons(True)
         tabs.setElideMode(Qt.ElideRight)
         tabs.addTab(self._build_setup_tab(), "Setup")
@@ -266,28 +268,28 @@ class AcousticPipelineWindow(QMainWindow):
         layout.addWidget(label)
         layout.addStretch(1)
 
-        for logo_name, fallback in [
-            ("speech_production_lab_logo.png", "Speech Production Lab"),
-            ("uoft_logo.png", "University of Toronto"),
-        ]:
-            logo_widget = self._logo_or_text(logo_name, fallback)
-            layout.addWidget(logo_widget)
+        lab_logo = self._logo_or_text("speech_production_lab_logo.png", "Speech Production Lab", max_width=260, max_height=64)
+        uoft_logo = self._logo_or_text("uoft_logo.png", "University of Toronto", max_width=300, max_height=60)
+        layout.addWidget(lab_logo)
+        layout.addWidget(uoft_logo)
 
-        bar.setMaximumHeight(58)
+        bar.setMaximumHeight(86)
         return bar
 
-    def _logo_or_text(self, logo_file: str, fallback: str) -> QLabel:
+    def _logo_or_text(self, logo_file: str, fallback: str, max_width: int = 170, max_height: int = 42) -> QLabel:
         assets_dir = Path(__file__).resolve().parents[1] / "assets" / "branding"
         logo_path = assets_dir / logo_file
         widget = QLabel()
         widget.setObjectName("LogoPlaceholder")
         widget.setAlignment(Qt.AlignCenter)
-        widget.setMinimumWidth(150)
-        widget.setMaximumHeight(42)
+        widget.setMinimumWidth(min(max_width, 220))
+        widget.setMaximumWidth(max_width)
+        widget.setMaximumHeight(max_height)
         if logo_path.exists():
             pixmap = QPixmap(str(logo_path))
             if not pixmap.isNull():
-                widget.setPixmap(pixmap.scaledToHeight(34, Qt.SmoothTransformation))
+                widget.setObjectName("LogoImage")
+                widget.setPixmap(pixmap.scaled(max_width, max_height, Qt.KeepAspectRatio, Qt.SmoothTransformation))
                 widget.setToolTip(str(logo_path))
                 return widget
         widget.setText(fallback)
@@ -363,9 +365,12 @@ class AcousticPipelineWindow(QMainWindow):
         self.input_edit = QLineEdit()
         self.output_edit = QLineEdit()
         self.project_name_edit = QLineEdit("VSLP Acoustic Project")
+        self.task_name_edit = QLineEdit()
+        self.task_name_edit.setPlaceholderText("e.g., Bamboo passage, DDK-pa, DDK-pataka, sustained vowel /a/, Buy Bobby a Puppy")
         self._set_tooltip(self.input_edit, "Folder containing raw audio/video files. Subfolders are searched recursively. Recommendation: process one speech task at a time when possible.")
         self._set_tooltip(self.output_edit, "Root folder where VSLP writes all outputs: tables, plots, reports, logs, errors, artifacts, and manifests.")
         self._set_tooltip(self.project_name_edit, "Human-readable project label stored in project_manifest.json.")
+        self._set_tooltip(self.task_name_edit, "Optional but recommended when the input folder contains one task. Used as a metadata fallback only when task cannot be linked or parsed.")
 
         browse_in = QPushButton("Browse Input Folder")
         browse_in.clicked.connect(self.browse_input_dir)
@@ -380,6 +385,12 @@ class AcousticPipelineWindow(QMainWindow):
         form.addWidget(browse_out, 1, 2)
         form.addWidget(QLabel("Project name"), 2, 0)
         form.addWidget(self.project_name_edit, 2, 1, 1, 2)
+        form.addWidget(QLabel("Task being analyzed"), 3, 0)
+        form.addWidget(self.task_name_edit, 3, 1, 1, 2)
+        task_hint = QLabel("Examples: Bamboo passage, DDK-pa, DDK-pataka, sustained vowel /a/, Buy Bobby a Puppy")
+        task_hint.setObjectName("SubtitleLabel")
+        task_hint.setWordWrap(True)
+        form.addWidget(task_hint, 4, 1, 1, 2)
 
         workflow_group = QGroupBox("2. Project gate")
         workflow_layout = QVBoxLayout(workflow_group)
@@ -400,7 +411,7 @@ class AcousticPipelineWindow(QMainWindow):
         ingest_group = QGroupBox("3. Ingest summary")
         ingest_layout = QVBoxLayout(ingest_group)
         self.ingest_summary_label = QLabel(
-            "No ingest results yet. After ingest, this panel will show total files loaded, failed files, and the detected format/codec distribution."
+            "No ingest results yet."
         )
         self.ingest_summary_label.setWordWrap(True)
         self.ingest_summary_label.setObjectName("SubtitleLabel")
@@ -1506,7 +1517,7 @@ class AcousticPipelineWindow(QMainWindow):
         duplicates_path = self._output_root() / "acoustic" / "001_ingest" / "tables" / "audio_ingest_skipped_duplicates.csv"
         if not summary_path.exists():
             self.ingest_summary_label.setText(
-                "No ingest results yet. After ingest, this panel will show total files loaded, failed files, and the detected format/codec distribution."
+                "No ingest results yet."
             )
             self.ingest_format_table.setRowCount(0)
             return
@@ -1900,11 +1911,35 @@ class AcousticPipelineWindow(QMainWindow):
         p = Path(out).expanduser(); p.mkdir(parents=True, exist_ok=True); open_path(p)
 
     # ---------------------------- ACTIONS ----------------------------
+    def _task_fallback_from_gui(self) -> str | None:
+        task = self.task_name_edit.text().strip() if hasattr(self, "task_name_edit") else ""
+        return task or None
+
+    def _initialize_project_with_task(self, output_root: Path, project_name: str, task_fallback: str | None = None):
+        result = initialize_project(output_root=output_root, project_name=project_name)
+        manifest_path = Path(output_root) / "project_manifest.json"
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except Exception:
+            manifest = {"project_name": project_name}
+        manifest["primary_task"] = task_fallback or ""
+        manifest["pipeline_gui_version"] = "0.38"
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        return result
+
     def run_project_init(self) -> None:
         paths = self._require_paths()
         if paths is None: return
         _input_path, output_root = paths
-        self._run_worker("project", initialize_project, {"output_root": output_root, "project_name": self.project_name_edit.text().strip() or "VSLP Acoustic Project"})
+        self._run_worker(
+            "project",
+            self._initialize_project_with_task,
+            {
+                "output_root": output_root,
+                "project_name": self.project_name_edit.text().strip() or "VSLP Acoustic Project",
+                "task_fallback": self._task_fallback_from_gui(),
+            },
+        )
 
     def run_metadata(self) -> None:
         paths = self._require_paths()
@@ -1912,7 +1947,7 @@ class AcousticPipelineWindow(QMainWindow):
         if not self._require_project_initialized(): return
         input_path, output_root = paths
         demo_text = self.demographics_csv_edit.text().strip() if hasattr(self, "demographics_csv_edit") else ""
-        cfg = MetadataConfig(demographics_csv=demo_text or None)
+        cfg = MetadataConfig(demographics_csv=demo_text or None, task_fallback=self._task_fallback_from_gui())
         self._run_worker("metadata", run_acoustic_metadata, {"input_path": input_path, "output_root": output_root, "config": cfg})
 
     def run_ingest(self) -> None:
@@ -2171,7 +2206,14 @@ class AcousticPipelineWindow(QMainWindow):
             except Exception:
                 return "available"
 
+        task_value = "not specified"
+        try:
+            manifest = json.loads((output_root / "project_manifest.json").read_text(encoding="utf-8"))
+            task_value = manifest.get("primary_task") or "not specified"
+        except Exception:
+            pass
         metrics = [
+            ("Primary task", task_value),
             ("Ingested files", csv_count(self._stage_path("ingest", "summary"))),
             ("Metadata-linked files", csv_count(self._stage_path("metadata", "summary"))),
             ("Segmented files", csv_count(self._stage_path("segment", "main_summary"))),
@@ -2195,7 +2237,7 @@ table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{border-bottom:
 .ok{{color:#8ef2c6}} .warn{{color:#ffd98e}}
 </style></head><body>
 <h1>VSLP Acoustic Run Summary</h1>
-<div class='card'><p>This report indexes the outputs produced by the current acoustic pipeline run. It is an output review layer, not an additional QC algorithm.</p>
+<div class='card'><p>This report indexes the outputs produced by the current acoustic pipeline run.</p>
 <p><b>Available artifacts:</b> <span class='ok'>{available}</span> / {total}</p></div>
 <div class='card'><h2>Stage counts</h2><table><tr><th>Item</th><th>Count/status</th></tr>{metric_rows}</table></div>
 <div class='card'><h2>Output manifest</h2><table><tr><th>Stage</th><th>Artifact</th><th>Kind</th><th>Exists</th><th>Path</th></tr>{artifact_rows}</table></div>
@@ -2203,7 +2245,7 @@ table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{border-bottom:
 """, encoding="utf-8")
         manifest = StageManifest(
             stage_name="acoustic_run_summary",
-            stage_version="0.36.0",
+            stage_version="0.38.0",
             status="completed",
             output_artifacts=[
                 ArtifactRef(path=str(manifest_csv), role="output_manifest", media_type="text/csv"),
@@ -2214,16 +2256,51 @@ table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{border-bottom:
         manifest_path = manifest.write_json(manifest_dir / "stage_manifest.json")
         return StageResult(status="completed", manifest_path=manifest_path, summary_table=manifest_csv, report_path=report_path)
 
+    def _metadata_decision_before_full_run(self) -> bool:
+        """Return True if the full workflow may proceed.
+
+        Metadata is recommended but not required. This helper avoids large backend
+        errors by asking the user what to do before the run starts.
+        """
+        demo_text = self.demographics_csv_edit.text().strip() if hasattr(self, "demographics_csv_edit") else ""
+        if demo_text:
+            return True
+
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Question)
+        msg.setWindowTitle("Metadata not selected")
+        msg.setText("No metadata CSV is selected.")
+        msg.setInformativeText(
+            "If you have metadata, please upload it before running. "
+            "If not, VSLP can continue using filename parsing and the Setup task field; "
+            "clinical labels such as diagnosis and severity will remain blank."
+        )
+        upload_btn = msg.addButton("Select Metadata CSV", QMessageBox.ActionRole)
+        run_btn = msg.addButton("Run Without Metadata", QMessageBox.AcceptRole)
+        cancel_btn = msg.addButton("Cancel", QMessageBox.RejectRole)
+        msg.setDefaultButton(upload_btn)
+        msg.exec()
+        clicked = msg.clickedButton()
+        if clicked == upload_btn:
+            self.browse_demographics_csv()
+            if getattr(self, "tabs", None) is not None:
+                self.tabs.setCurrentIndex(1)
+            return bool(self.demographics_csv_edit.text().strip())
+        if clicked == run_btn:
+            return True
+        return False
+
     def run_all(self) -> None:
         paths = self._require_paths()
         if paths is None: return
         if not self._require_project_initialized(): return
+        if not self._metadata_decision_before_full_run(): return
         input_path, output_root = paths
 
         selected_features = self._selected_feature_names()
         def full_run(input_path: Path, output_root: Path):
             demo_text = self.demographics_csv_edit.text().strip() if hasattr(self, "demographics_csv_edit") else ""
-            metadata_result = run_acoustic_metadata(input_path=input_path, output_root=output_root, config=MetadataConfig(demographics_csv=demo_text or None))
+            metadata_result = run_acoustic_metadata(input_path=input_path, output_root=output_root, config=MetadataConfig(demographics_csv=demo_text or None, task_fallback=self._task_fallback_from_gui()))
             ingest_result = run_acoustic_ingest(input_path=input_path, output_root=output_root)
             preprocess_cfg = self._preprocess_config_from_gui()
             preprocess_result = run_acoustic_preprocess(input_path=input_path, output_root=output_root, config=preprocess_cfg)
@@ -2255,7 +2332,7 @@ table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{border-bottom:
                 config=FeatureExtractionConfig(
                     selected_features=selected_features,
                     minimum_pause_duration_sec=float(self.min_pause_feature_spin.value()),
-                    metadata_csv=str(output_root / "acoustic" / "000_metadata" / "tables" / "project_file_index.csv"),
+                    metadata_csv=str(output_root / "acoustic" / "000_metadata" / "tables" / "project_file_index.csv") if (output_root / "acoustic" / "000_metadata" / "tables" / "project_file_index.csv").exists() else None,
                     acoustic_region_policy=self.region_policy_combo.currentText(),
                     computation_mode=self.computation_mode_combo.currentText(),
                 ),
