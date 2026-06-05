@@ -195,12 +195,14 @@ def acoustic_extract_features(
     minimum_pause_duration_sec: float = 0.15,
     metadata_csv: Path | None = None,
     acoustic_region_policy: str = "speech_only",
+    computation_mode: str = "validated_default",
 ):
     """Extract acoustic features from region-aware segmentation outputs."""
     cfg = FeatureExtractionConfig(
         minimum_pause_duration_sec=minimum_pause_duration_sec,
         metadata_csv=str(metadata_csv) if metadata_csv else None,
         acoustic_region_policy=acoustic_region_policy,
+        computation_mode=computation_mode,
     )
     result = run_acoustic_feature_extraction(
         segmentation_summary_csv=segmentation_summary_csv,

@@ -976,8 +976,8 @@ class AcousticPipelineWindow(QMainWindow):
         """Build a compact, GUI-facing feature computation policy table."""
         df = build_feature_family_policy_summary()
         table = QTableWidget()
-        columns = ["family", "best_tasks", "native_scale", "default_region", "scalar_reduction", "core_rule"]
-        headers = ["Feature family", "Best tasks", "Native scale", "Default region", "Scalar reduction", "Rule"]
+        columns = ["family", "best_tasks", "native_scale", "default_region", "scalar_reduction", "selectable_modes", "core_rule"]
+        headers = ["Feature family", "Best tasks", "Native scale", "Default region", "Scalar reduction", "Selectable modes", "Rule"]
         table.setColumnCount(len(columns))
         table.setRowCount(len(df))
         table.setHorizontalHeaderLabels(headers)
@@ -999,7 +999,8 @@ class AcousticPipelineWindow(QMainWindow):
         table.setColumnWidth(1, 210)
         table.setColumnWidth(2, 190)
         table.setColumnWidth(3, 210)
-        table.setColumnWidth(4, 270)
+        table.setColumnWidth(4, 260)
+        table.setColumnWidth(5, 230)
         return table
 
     def _build_features_tab(self) -> QWidget:
@@ -1051,21 +1052,23 @@ class AcousticPipelineWindow(QMainWindow):
         form = QFormLayout(param_group)
         self.min_pause_feature_spin = QDoubleSpinBox(); self.min_pause_feature_spin.setDecimals(2); self.min_pause_feature_spin.setRange(0.0, 5.0); self.min_pause_feature_spin.setSingleStep(0.05); self.min_pause_feature_spin.setValue(0.15)
         self._set_tooltip(self.min_pause_feature_spin, "Minimum internal nonspeech duration counted as a pause. 150 ms is a conservative starting point for speech pause analysis.")
+        self.computation_mode_combo = QComboBox(); self.computation_mode_combo.addItems([
+            "validated_default",
+            "speech_only_concatenated",
+            "effective_task_with_pauses",
+            "per_segment_robust",
+            "full_file_exploratory",
+        ])
+        self._set_tooltip(self.computation_mode_combo, "Validated default is recommended. Other modes are applied only where scientifically valid and are recorded in the scalar-reduction audit table.")
         self.region_policy_combo = QComboBox(); self.region_policy_combo.addItems(["speech_only", "effective_task", "full_file"])
-        self._set_tooltip(self.region_policy_combo, "Default speech_only computes signal features from detected speech regions. effective_task includes internal pauses. full_file is exploratory only.")
+        self._set_tooltip(self.region_policy_combo, "Family defaults override this where needed. This is kept as a low-level fallback for signal features.")
         form.addRow("Minimum internal pause duration (s)", self.min_pause_feature_spin)
-        form.addRow("Signal-feature analysis region", self.region_policy_combo)
-        region_note = QLabel("Recommended default: speech_only. Timing features always use speech/pause segments. Use full_file only for explicit full-recording exploratory features.")
-        region_note.setWordWrap(True); region_note.setObjectName("SubtitleLabel")
-        form.addRow("Region guidance", region_note)
+        form.addRow("Computation mode", self.computation_mode_combo)
+        form.addRow("Fallback signal region", self.region_policy_combo)
         right_layout.addWidget(param_group)
 
         strategy_group = QGroupBox("Computation policy")
         strategy_layout = QVBoxLayout(strategy_group)
-        strategy_intro = QLabel("For each feature family, VSLP defines the native measurement scale, the default analysis region, and the scalar-reduction rule used to create one file-level value.")
-        strategy_intro.setWordWrap(True)
-        strategy_intro.setObjectName("SubtitleLabel")
-        strategy_layout.addWidget(strategy_intro)
         strategy_layout.addWidget(self._build_feature_policy_table())
         right_layout.addWidget(strategy_group)
 
@@ -1172,6 +1175,7 @@ class AcousticPipelineWindow(QMainWindow):
             ("Feature expected-range flags", lambda: self.preview_csv(self._stage_path("features", "range_flags"))),
             ("Feature measurement scales", lambda: self.preview_csv(self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_feature_measurement_scale_registry.csv")),
             ("Feature computation policy", lambda: self.preview_csv(self._stage_path("features", "computation_policy"))),
+            ("Feature scalar-reduction audit", lambda: self.preview_csv(self._stage_path("features", "reduction_audit"))),
             ("Native segment events", lambda: self.preview_csv(self._output_root() / "acoustic" / "004_features" / "tables" / "native_measurements" / "acoustic_native_segment_events.csv")),
             ("QC dashboard", lambda: self.preview_csv(self._stage_path("qc", "summary"))),
         ]
@@ -1604,6 +1608,7 @@ class AcousticPipelineWindow(QMainWindow):
             ("features", "audit"): self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_feature_distribution_audit.csv",
             ("features", "range_flags"): self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_feature_expected_range_flags.csv",
             ("features", "computation_policy"): self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_feature_computation_policy.csv",
+            ("features", "reduction_audit"): self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_feature_scalar_reduction_audit.csv",
             ("qc", "summary"): self._output_root() / "acoustic" / "006_qc_dashboard" / "tables" / "acoustic_qc_dashboard.csv",
             ("qc", "report"): self._output_root() / "acoustic" / "006_qc_dashboard" / "reports" / "acoustic_qc_dashboard.html",
         }
@@ -2110,6 +2115,7 @@ class AcousticPipelineWindow(QMainWindow):
             minimum_pause_duration_sec=float(self.min_pause_feature_spin.value()),
             metadata_csv=str(metadata_index) if metadata_index.exists() else None,
             acoustic_region_policy=self.region_policy_combo.currentText(),
+            computation_mode=self.computation_mode_combo.currentText(),
         )
         self._run_worker("features", run_acoustic_feature_extraction, {"segmentation_summary_csv": segmentation_summary, "output_root": output_root, "config": cfg})
 
@@ -2162,6 +2168,7 @@ class AcousticPipelineWindow(QMainWindow):
                     minimum_pause_duration_sec=float(self.min_pause_feature_spin.value()),
                     metadata_csv=str(output_root / "acoustic" / "000_metadata" / "tables" / "project_file_index.csv"),
                     acoustic_region_policy=self.region_policy_combo.currentText(),
+                    computation_mode=self.computation_mode_combo.currentText(),
                 ),
             )
             qc_result = run_acoustic_qc_dashboard(

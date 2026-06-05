@@ -160,6 +160,7 @@ def build_feature_computation_policy(feature_registry: pd.DataFrame | None = Non
             "native_measurements": "speech segment events; internal pause events; first-speech to last-speech effective task interval",
             "file_level_reduction": "sums, counts, durations, percent of effective task, mean/CV over segment-event distributions",
             "why_this_is_scientific": "Pausing and phrase timing are event-level respiratory/speech-planning phenomena; waveform concatenation would remove the pause physiology.",
+            "supported_modes": "locked_segment_events",
             "avoid": "Do not compute from concatenated speech waveform; do not treat leading/trailing silence as internal pause burden.",
         },
         "Rhythm / EMS": {
@@ -168,6 +169,7 @@ def build_feature_computation_policy(feature_registry: pd.DataFrame | None = Non
             "native_measurements": "amplitude envelope over first speech onset to last speech offset with internal pauses preserved; 0-10 Hz modulation spectrum",
             "file_level_reduction": "dominant modulation frequencies, peak amplitudes, normalized band powers, slow/fast band ratio, RMS intensity CV",
             "why_this_is_scientific": "Connected-speech rhythm depends on syllabic amplitude modulation plus pause timing; speech-only concatenation distorts low-frequency rhythm.",
+            "supported_modes": "validated_default; effective_task_with_pauses; full_file_exploratory",
             "avoid": "Do not concatenate speech segments for EMS rhythm; do not pool across tasks with very different elicitation designs without task labels.",
         },
         "Phonatory": {
@@ -176,6 +178,7 @@ def build_feature_computation_policy(feature_registry: pd.DataFrame | None = Non
             "native_measurements": "voiced F0/period track, RMS-amplitude track, cepstral/HNR frame support, internal voicing gaps",
             "file_level_reduction": "F0 mean/SD across voiced support; perturbation formulas over period/amplitude tracks; CPP/HNR robust summary; voice-break count",
             "why_this_is_scientific": "Phonation features describe vocal-fold vibration and voiced support; silence and unvoiced consonants should not dominate the scalar value.",
+            "supported_modes": "validated_default; speech_only_concatenated; full_file_exploratory; per_segment_robust_planned",
             "avoid": "Do not compute jitter/shimmer over unvoiced or low-voicing support; do not interpret without F0/voicing QC.",
         },
         "Articulatory / formant": {
@@ -184,6 +187,7 @@ def build_feature_computation_policy(feature_registry: pd.DataFrame | None = Non
             "native_measurements": "LPC-derived F1-F5 and bandwidth trajectories with valid-frame filters",
             "file_level_reduction": "median formants/bandwidths, 5-95% robust ranges, derivative/slope medians and 5th/95th percentiles",
             "why_this_is_scientific": "Articulatory features are trajectory summaries of tongue/jaw/lip-related vocal-tract resonances; robust medians/ranges reduce bad-frame influence.",
+            "supported_modes": "validated_default; speech_only_concatenated; full_file_exploratory; per_segment_robust_planned",
             "avoid": "Do not use blind means over invalid LPC roots; do not ignore valid-frame fraction.",
         },
         "Resonatory / nasality": {
@@ -192,6 +196,7 @@ def build_feature_computation_policy(feature_registry: pd.DataFrame | None = Non
             "native_measurements": "smoothed spectral-frame estimates of A1/A3, P0/P1, F1-F3 support, bandwidths, RMS",
             "file_level_reduction": "median spectral contrasts and support variables with P0-F1 overlap and valid-frame warnings",
             "why_this_is_scientific": "Single-microphone nasality is spectral-frame and vowel dependent; robust spectral contrasts are safer than full-file averages.",
+            "supported_modes": "validated_default; speech_only_concatenated; full_file_exploratory; per_segment_robust_planned",
             "avoid": "Do not interpret as nasometer-equivalent; do not ignore vowel/F0 harmonic placement effects.",
         },
         "Coordination": {
@@ -200,6 +205,7 @@ def build_feature_computation_policy(feature_registry: pd.DataFrame | None = Non
             "native_measurements": "time-aligned CPP, F1, and F2 trajectories; lagged correlation matrices over short delays",
             "file_level_reduction": "normalized participation-ratio eigenspectrum summary for each pairwise trajectory coupling",
             "why_this_is_scientific": "Coordination features summarize coupling structure across speech subsystems, not the average value of either trajectory.",
+            "supported_modes": "validated_default; effective_task_with_pauses; full_file_exploratory",
             "avoid": "Do not interpret as a monotonic severity score; do not compute when trajectory support is sparse or rank-deficient.",
         },
         "Other / pending": {
@@ -208,6 +214,7 @@ def build_feature_computation_policy(feature_registry: pd.DataFrame | None = Non
             "native_measurements": "not finalized",
             "file_level_reduction": "not finalized",
             "why_this_is_scientific": "Feature remains registered but needs explicit native-scale policy before interpretation.",
+            "supported_modes": "locked_pending",
             "avoid": "Do not use for ML until policy and implementation are validated.",
         },
     }
@@ -239,6 +246,7 @@ def build_feature_family_policy_summary() -> pd.DataFrame:
             "native_scale": "speech/pause events",
             "default_region": "segment table",
             "scalar_reduction": "sum, count, percent, mean/CV of events",
+            "selectable_modes": "Locked: segment events only",
             "core_rule": "Never concatenate speech for pause physiology.",
         },
         {
@@ -247,6 +255,7 @@ def build_feature_family_policy_summary() -> pd.DataFrame:
             "native_scale": "effective-task envelope",
             "default_region": "first speech → last speech, pauses preserved",
             "scalar_reduction": "modulation peaks and normalized band powers",
+            "selectable_modes": "Default: effective task; optional: full file",
             "core_rule": "Internal pauses are part of rhythm.",
         },
         {
@@ -255,6 +264,7 @@ def build_feature_family_policy_summary() -> pd.DataFrame:
             "native_scale": "voiced frames / period support",
             "default_region": "speech + voiced-frame filter",
             "scalar_reduction": "voiced mean/SD, perturbation formulas, CPP/HNR summaries",
+            "selectable_modes": "Default: voiced speech; optional exploratory: full file",
             "core_rule": "Silence and unvoiced support should not drive voice features.",
         },
         {
@@ -263,6 +273,7 @@ def build_feature_family_policy_summary() -> pd.DataFrame:
             "native_scale": "valid LPC formant trajectories",
             "default_region": "valid speech frames",
             "scalar_reduction": "medians, 5-95 ranges, slope percentiles",
+            "selectable_modes": "Default: valid speech frames; optional exploratory: full file",
             "core_rule": "Use robust trajectory summaries and validity flags.",
         },
         {
@@ -271,6 +282,7 @@ def build_feature_family_policy_summary() -> pd.DataFrame:
             "native_scale": "valid spectral frames",
             "default_region": "valid spectral speech frames",
             "scalar_reduction": "median A1/P0/P1/A3 contrasts + warnings",
+            "selectable_modes": "Default: valid spectral speech frames; optional exploratory: full file",
             "core_rule": "Treat as vowel-, F0-, and device-sensitive.",
         },
         {
@@ -279,6 +291,7 @@ def build_feature_family_policy_summary() -> pd.DataFrame:
             "native_scale": "aligned multitrajectory windows",
             "default_region": "effective-task trajectories",
             "scalar_reduction": "lagged correlation eigenspectrum complexity",
+            "selectable_modes": "Default: effective task; optional exploratory: full file",
             "core_rule": "Not a monotonic severity score; require valid support.",
         },
     ]
