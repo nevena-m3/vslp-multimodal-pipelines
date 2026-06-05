@@ -1,3 +1,8 @@
+"""VSLP Feature Analysis GUI.
+
+Professional, modality-neutral feature audit interface for acoustic, kinematic,
+multimodal, and generic feature tables.
+"""
 from __future__ import annotations
 
 import sys
@@ -7,568 +12,632 @@ from typing import Optional
 import pandas as pd
 
 try:
-    from PySide6.QtCore import Qt, QThread, Signal, QSize
-    from PySide6.QtGui import QPixmap
+    from PySide6.QtCore import Qt, QSize
+    from PySide6.QtGui import QPixmap, QFont
     from PySide6.QtWidgets import (
-        QApplication, QComboBox, QFileDialog, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
-        QLabel, QLineEdit, QListWidget, QMessageBox, QPushButton, QSplitter, QTabWidget,
-        QTableWidget, QTableWidgetItem, QTextEdit, QVBoxLayout, QWidget, QMainWindow,
-        QHeaderView, QAbstractItemView, QSizePolicy, QScrollArea
+        QApplication, QComboBox, QFileDialog, QFrame, QGridLayout, QGroupBox,
+        QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox,
+        QPushButton, QSizePolicy, QStackedWidget, QTableWidget, QTableWidgetItem,
+        QTextEdit, QVBoxLayout, QWidget, QSplitter, QScrollArea
     )
 except Exception as exc:  # pragma: no cover
-    raise RuntimeError("PySide6 is required for the Feature Analysis GUI. Install the gui extras first.") from exc
+    raise RuntimeError("Feature Analysis GUI requires PySide6. Install with pip install -e '.[gui]'.") from exc
 
-from vslp.analysis.features import AnalysisInputs, run_feature_analysis
-from vslp.analysis.features.loaders import read_table
-from vslp.analysis.features.column_mapping import infer_column_roles
+from vslp.analysis.features.column_mapping import (
+    ROLE_OPTIONS, classify_columns, infer_table_kind, role_lists, summarize_roles
+)
+from vslp.analysis.features.audit import (
+    read_table, dataset_inventory, feature_distribution_summary,
+    feature_qc_correlations, reliability_screen
+)
 
+APP_VERSION = "v0.41"
 
-NAVY = "#07172b"
-NAVY2 = "#0b223d"
-NAVY3 = "#123b63"
-TEXT = "#e8edf7"
-MUTED = "#a8bad6"
-TEAL = "#14b8a6"
-WHITE = "#ffffff"
-INK = "#0b1f3a"
-
-APP_STYLE = f"""
-QMainWindow, QWidget {{ background: {NAVY}; color: {TEXT}; font-family: Arial; font-size: 13px; }}
-QFrame#BrandBar {{ background: #ffffff; border: 1px solid #d6dbe4; border-radius: 10px; }}
-QFrame#SideBar {{ background: #051124; border: 1px solid #17385c; border-radius: 12px; }}
-QFrame#Card {{ background: #0a1b32; border: 1px solid #254161; border-radius: 12px; }}
-QLabel#AppTitle {{ color: #ffffff; font-size: 20px; font-weight: 700; }}
-QLabel#AppSubTitle {{ color: #bdd0ee; font-size: 12px; }}
-QLabel#BrandTitle {{ color: {INK}; font-size: 19px; font-weight: 700; }}
-QLabel#BrandSubTitle {{ color: #344054; font-size: 12px; }}
-QLabel#SectionTitle {{ color: #ffffff; font-size: 16px; font-weight: 700; }}
-QLabel#FinePrint {{ color: #9fb4d4; font-size: 11px; }}
-QLabel#InfoText {{ color: #c8d7ee; font-size: 12px; }}
-QLabel#DarkOnLight {{ color: {INK}; font-size: 12px; }}
-QGroupBox {{ border: 1px solid #254161; border-radius: 10px; margin-top: 10px; padding: 12px; font-weight: 600; color: #e8edf7; }}
-QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 4px; color: #b7cdf0; }}
-QPushButton {{ background: {NAVY3}; color: #ffffff; border: 1px solid #2d5f91; border-radius: 8px; padding: 8px 12px; min-height: 26px; }}
-QPushButton:hover {{ background: #174c7e; }}
-QPushButton#Primary {{ background: #0f766e; border-color: {TEAL}; font-weight: 700; }}
-QPushButton#NavButton {{ text-align: left; background: #071b33; color: #c7d7ef; border: 1px solid #183a5d; border-radius: 8px; padding: 8px 10px; }}
-QPushButton#NavButton:checked {{ background: #0f766e; color: white; border-color: {TEAL}; font-weight: 700; }}
-QLineEdit, QComboBox, QTextEdit, QTableWidget, QListWidget {{ background: {NAVY2}; color: {TEXT}; border: 1px solid #254161; border-radius: 6px; padding: 5px; selection-background-color: #0f766e; }}
-QComboBox {{ min-height: 30px; min-width: 170px; padding-left: 8px; }}
-QComboBox QAbstractItemView {{ background: #ffffff; color: {INK}; border: 1px solid #8ca3c3; selection-background-color: #dbeafe; selection-color: {INK}; padding: 4px; outline: 0px; }}
-QTabWidget::pane {{ border: 1px solid #254161; border-radius: 8px; top: -1px; }}
-QTabBar::tab {{ background: {NAVY2}; color: #c6d4e8; padding: 8px 12px; border-top-left-radius: 7px; border-top-right-radius: 7px; min-width: 110px; }}
-QTabBar::tab:selected {{ background: {NAVY3}; color: #ffffff; }}
-QHeaderView::section {{ background: {NAVY3}; color: #ffffff; padding: 5px; border: 0px; }}
-QTableWidget {{ gridline-color: #254161; }}
-QScrollArea {{ border: 0px; }}
-"""
+NAVY = "#071A33"
+NAVY2 = "#0B2442"
+INK = "#0E1726"
+PANEL = "#102A49"
+CARD = "#FFFFFF"
+SOFT = "#F4F7FB"
+LINE = "#D9E2EF"
+TEAL = "#2DB7B0"
+GOLD = "#B68B2D"
+RED = "#B42318"
+MUTED = "#607089"
 
 
-def _find_asset(name: str) -> Optional[Path]:
-    candidates = [
-        Path(__file__).resolve().parents[2] / "assets" / "branding" / name,
-        Path.cwd() / "src" / "vslp" / "gui" / "assets" / "branding" / name,
-    ]
-    for p in candidates:
-        if p.exists():
+def repo_root_guess() -> Path:
+    here = Path(__file__).resolve()
+    for p in here.parents:
+        if (p / "src" / "vslp").exists() or (p / "pyproject.toml").exists():
             return p
-    return None
+    return Path.cwd()
 
 
-def _fit_pixmap(path: Path, width: int, height: int) -> QPixmap:
-    pix = QPixmap(str(path))
-    if pix.isNull():
-        return pix
-    return pix.scaled(QSize(width, height), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+def asset_path(*parts: str) -> Path:
+    root = repo_root_guess()
+    candidates = [
+        root / "src" / "vslp" / "gui" / "assets" / "branding" / Path(*parts),
+        root / "src" / "vslp" / "gui" / "features" / "assets" / Path(*parts),
+        root / Path(*parts),
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    return candidates[0]
 
 
-def _set_table(widget: QTableWidget, df: pd.DataFrame, max_rows: int = 500) -> None:
-    widget.clear()
-    if df is None or df.empty:
-        widget.setRowCount(0)
-        widget.setColumnCount(0)
-        return
-    show = df.head(max_rows).copy()
-    widget.setRowCount(show.shape[0])
-    widget.setColumnCount(show.shape[1])
-    widget.setHorizontalHeaderLabels([str(c) for c in show.columns])
-    for r in range(show.shape[0]):
-        for c in range(show.shape[1]):
-            val = show.iat[r, c]
-            widget.setItem(r, c, QTableWidgetItem("" if pd.isna(val) else str(val)))
-    widget.resizeColumnsToContents()
-    widget.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+def set_app_style(app: QApplication) -> None:
+    app.setStyleSheet(f"""
+    QWidget {{
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 13px;
+        color: {INK};
+    }}
+    QMainWindow {{ background: {SOFT}; }}
+    QLineEdit, QTextEdit, QComboBox {{
+        background: #FFFFFF;
+        border: 1px solid {LINE};
+        border-radius: 8px;
+        padding: 7px 10px;
+        min-height: 28px;
+        color: {INK};
+        selection-background-color: {TEAL};
+    }}
+    QComboBox {{ min-width: 220px; }}
+    QComboBox::drop-down {{
+        border: none;
+        width: 28px;
+    }}
+    QComboBox QAbstractItemView {{
+        background: #FFFFFF;
+        color: {INK};
+        border: 1px solid {LINE};
+        selection-background-color: #DDF6F4;
+        selection-color: {INK};
+        padding: 6px;
+        outline: none;
+        min-width: 260px;
+    }}
+    QPushButton {{
+        background: {NAVY};
+        color: white;
+        border: 1px solid #12385E;
+        border-radius: 9px;
+        padding: 8px 14px;
+        font-weight: 600;
+    }}
+    QPushButton:hover {{ background: #0E3156; }}
+    QPushButton:pressed {{ background: #061426; }}
+    QPushButton:disabled {{ background: #B8C3D3; color: #EDF1F7; border-color: #B8C3D3; }}
+    QPushButton[secondary="true"] {{
+        background: #FFFFFF;
+        color: {NAVY};
+        border: 1px solid {LINE};
+    }}
+    QPushButton[secondary="true"]:hover {{ background: #F3F8FF; }}
+    QTableWidget {{
+        background: #FFFFFF;
+        border: 1px solid {LINE};
+        border-radius: 8px;
+        gridline-color: #EDF2F7;
+        alternate-background-color: #F8FBFE;
+        selection-background-color: #DDF6F4;
+        selection-color: {INK};
+    }}
+    QHeaderView::section {{
+        background: #EEF4FA;
+        color: {NAVY};
+        border: none;
+        border-right: 1px solid {LINE};
+        border-bottom: 1px solid {LINE};
+        padding: 7px;
+        font-weight: 700;
+    }}
+    QGroupBox {{
+        border: 1px solid {LINE};
+        border-radius: 12px;
+        margin-top: 14px;
+        padding: 14px;
+        background: #FFFFFF;
+        font-weight: 700;
+        color: {NAVY};
+    }}
+    QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 6px; }}
+    QScrollArea {{ border: none; background: transparent; }}
+    """)
 
 
-class AnalysisWorker(QThread):
-    finished_ok = Signal(object)
-    failed = Signal(str)
-
-    def __init__(self, inputs: AnalysisInputs):
+class LogoBar(QFrame):
+    def __init__(self) -> None:
         super().__init__()
-        self.inputs = inputs
+        self.setObjectName("LogoBar")
+        self.setStyleSheet(f"""
+        QFrame#LogoBar {{
+            background: #FFFFFF;
+            border-bottom: 1px solid {LINE};
+        }}
+        QLabel#Title {{ color: {NAVY}; font-size: 22px; font-weight: 800; letter-spacing: 0.5px; }}
+        QLabel#Subtitle {{ color: {MUTED}; font-size: 12px; font-weight: 500; }}
+        """)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(18, 10, 18, 10)
+        layout.setSpacing(18)
 
-    def run(self):
-        try:
-            result = run_feature_analysis(self.inputs)
-            self.finished_ok.emit(result)
-        except Exception as exc:
-            self.failed.emit(str(exc))
-
-
-class FeatureAnalysisWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("VSLP Feature Analysis GUI")
-        self.resize(1480, 920)
-        self.result = None
-        self.worker = None
-        self.nav_buttons: list[QPushButton] = []
-        self.status_labels: dict[str, QLabel] = {}
-        self._build()
-
-    def _build(self):
-        root = QWidget()
-        outer = QHBoxLayout(root)
-        outer.setContentsMargins(12, 12, 12, 12)
-        outer.setSpacing(12)
-
-        outer.addWidget(self._sidebar())
-
-        main = QWidget()
-        main_layout = QVBoxLayout(main)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(10)
-        main_layout.addWidget(self._brand_bar())
-        self.tabs = QTabWidget()
-        main_layout.addWidget(self.tabs, 1)
-        outer.addWidget(main, 1)
-
-        self._build_project_tab()
-        self._build_mapping_tab()
-        self._build_overview_tab()
-        self._build_missing_tab()
-        self._build_dist_tab()
-        self._build_qc_tab()
-        self._build_reliability_tab()
-        self._build_export_tab()
-        self._wire_nav_buttons()
-        self.setCentralWidget(root)
-
-    def _sidebar(self):
-        side = QFrame()
-        side.setObjectName("SideBar")
-        side.setFixedWidth(255)
-        lay = QVBoxLayout(side)
-        lay.setContentsMargins(14, 16, 14, 16)
-        lay.setSpacing(9)
-
-        title = QLabel("VSLP")
-        title.setObjectName("AppTitle")
-        subtitle = QLabel("Feature Analysis GUI v0.40")
-        subtitle.setObjectName("AppSubTitle")
-        lay.addWidget(title)
-        lay.addWidget(subtitle)
-
-        credit = QLabel("© 2026 Nevena Musikic & Yana Yunusova\nSpeech Production Lab, University of Toronto")
-        credit.setObjectName("FinePrint")
-        credit.setWordWrap(True)
-        lay.addWidget(credit)
-
-        lay.addSpacing(10)
-        steps = [
-            ("Project", "Upload & project setup"),
-            ("Column Mapping", "Column roles"),
-            ("Overview", "Dataset inventory"),
-            ("Missingness", "Coverage audit"),
-            ("Distributions", "Outliers & ranges"),
-            ("QC Integration", "Feature-QC links"),
-            ("Reliability", "Review screen"),
-            ("Export", "Report & outputs"),
-        ]
-        for i, (name, hint) in enumerate(steps):
-            btn = QPushButton(f"{i+1}. {name}")
-            btn.setObjectName("NavButton")
-            btn.setCheckable(True)
-            btn.setToolTip(hint)
-            self.nav_buttons.append(btn)
-            lay.addWidget(btn)
-            status = QLabel("○ not run")
-            status.setObjectName("FinePrint")
-            self.status_labels[name] = status
-            lay.addWidget(status)
-
-        lay.addStretch(1)
-        note = QLabel("Feature audit only. Model training belongs in the separate ML GUI.")
-        note.setObjectName("FinePrint")
-        note.setWordWrap(True)
-        lay.addWidget(note)
-        return side
-
-    def _wire_nav_buttons(self):
-        for i, btn in enumerate(self.nav_buttons):
-            btn.clicked.connect(lambda checked=False, ix=i: self.tabs.setCurrentIndex(ix))
-        self.tabs.currentChanged.connect(self._sync_nav)
-        self._sync_nav(0)
-
-    def _sync_nav(self, index: int):
-        for i, btn in enumerate(self.nav_buttons):
-            btn.setChecked(i == index)
-
-    def _brand_bar(self):
-        bar = QFrame()
-        bar.setObjectName("BrandBar")
-        bar.setFixedHeight(104)
-        h = QHBoxLayout(bar)
-        h.setContentsMargins(16, 10, 16, 10)
-        h.setSpacing(16)
-
-        lab_logo = QLabel()
-        lab_logo.setFixedSize(210, 72)
-        lab_logo.setAlignment(Qt.AlignCenter)
-        uoft_logo = QLabel()
-        uoft_logo.setFixedSize(235, 72)
-        uoft_logo.setAlignment(Qt.AlignCenter)
-
-        lab_path = _find_asset("speech_production_lab_logo.png") or _find_asset("Lab_logo_final.jpg")
-        uoft_path = _find_asset("uoft_logo.png") or _find_asset("University-of-Toronto.png.webp.png")
-        if lab_path:
-            lab_logo.setPixmap(_fit_pixmap(lab_path, 205, 68))
-        else:
-            lab_logo.setText("Speech Production Lab")
-            lab_logo.setObjectName("DarkOnLight")
-        if uoft_path:
-            uoft_logo.setPixmap(_fit_pixmap(uoft_path, 230, 68))
-        else:
-            uoft_logo.setText("University of Toronto")
-            uoft_logo.setObjectName("DarkOnLight")
+        self.lab_logo = QLabel()
+        self.lab_logo.setFixedSize(170, 58)
+        self.lab_logo.setAlignment(Qt.AlignCenter)
+        self._set_logo(self.lab_logo, ["Lab_logo_final.jpg", "lab_logo_for_doc.png", "speech_production_lab_logo.png"])
 
         title_box = QVBoxLayout()
-        title = QLabel("VSLP Feature Analysis")
-        title.setObjectName("BrandTitle")
-        sub = QLabel("Feature audit · QC integration · missingness · distributions · reliability screening")
-        sub.setObjectName("BrandSubTitle")
-        title_box.addStretch(1)
+        title = QLabel("VSLP Feature Analysis GUI")
+        title.setObjectName("Title")
+        sub = QLabel("Feature audit · QC integration · reliability screening · export")
+        sub.setObjectName("Subtitle")
         title_box.addWidget(title)
         title_box.addWidget(sub)
         title_box.addStretch(1)
 
-        h.addWidget(lab_logo)
-        h.addLayout(title_box, 1)
-        h.addWidget(uoft_logo)
-        return bar
+        self.uoft_logo = QLabel()
+        self.uoft_logo.setFixedSize(230, 58)
+        self.uoft_logo.setAlignment(Qt.AlignCenter)
+        self._set_logo(self.uoft_logo, ["University-of-Toronto.png.webp.png", "uoft_logo_for_doc.png", "uoft_logo.png"])
 
-    def _path_row(self, label, line, button_text, callback, tooltip: str | None = None):
-        row = QHBoxLayout()
+        layout.addWidget(self.lab_logo)
+        layout.addLayout(title_box, 1)
+        layout.addWidget(self.uoft_logo)
+
+    def _set_logo(self, label: QLabel, names: list[str]) -> None:
+        for name in names:
+            p = asset_path(name)
+            if p.exists():
+                pix = QPixmap(str(p))
+                if not pix.isNull():
+                    label.setPixmap(pix.scaled(label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                    return
+        label.setText("Logo")
+        label.setStyleSheet(f"color:{MUTED}; border:1px solid {LINE}; border-radius:8px;")
+
+
+class Sidebar(QFrame):
+    def __init__(self, on_select) -> None:
+        super().__init__()
+        self.on_select = on_select
+        self.buttons: dict[str, QPushButton] = {}
+        self.setFixedWidth(250)
+        self.setStyleSheet(f"""
+        QFrame {{ background: {NAVY}; color: #FFFFFF; }}
+        QLabel#Brand {{ color: #FFFFFF; font-size: 26px; font-weight: 900; letter-spacing: 2px; }}
+        QLabel#Sub {{ color: #C9D6E6; font-size: 12px; }}
+        QLabel#Credit {{ color: #AFC0D5; font-size: 11px; }}
+        QPushButton {{
+            text-align: left;
+            background: transparent;
+            color: #D9E6F5;
+            border: 1px solid transparent;
+            border-radius: 10px;
+            padding: 10px 12px;
+            font-weight: 600;
+        }}
+        QPushButton:hover {{ background: #0F2D4F; border-color: #1C4E7E; }}
+        QPushButton[active="true"] {{ background: #123A63; border-color: {TEAL}; color: #FFFFFF; }}
+        """)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 18, 16, 16)
+        layout.setSpacing(8)
+        brand = QLabel("VSLP")
+        brand.setObjectName("Brand")
+        sub = QLabel(f"Feature Analysis GUI {APP_VERSION}")
+        sub.setObjectName("Sub")
+        credit = QLabel("© 2026 Nevena Musikic & Yana Yunusova\nSpeech Production Lab\nUniversity of Toronto")
+        credit.setObjectName("Credit")
+        credit.setWordWrap(True)
+        layout.addWidget(brand)
+        layout.addWidget(sub)
+        layout.addSpacing(8)
+        layout.addWidget(credit)
+        layout.addSpacing(18)
+        for key, text in [
+            ("project", "○  Project"),
+            ("mapping", "○  Column Mapping"),
+            ("overview", "○  Overview"),
+            ("missing", "○  Missingness"),
+            ("dist", "○  Distributions"),
+            ("qc", "○  QC Integration"),
+            ("reliability", "○  Reliability"),
+            ("export", "○  Export / Report"),
+        ]:
+            b = QPushButton(text)
+            b.clicked.connect(lambda _=False, k=key: self.on_select(k))
+            layout.addWidget(b)
+            self.buttons[key] = b
+        layout.addStretch(1)
+
+    def set_active(self, key: str) -> None:
+        for k, b in self.buttons.items():
+            b.setProperty("active", k == key)
+            prefix = "●" if k == key else "○"
+            b.setText(prefix + b.text()[1:])
+            b.style().unpolish(b); b.style().polish(b)
+
+
+class Card(QFrame):
+    def __init__(self, title: str, subtitle: str | None = None) -> None:
+        super().__init__()
+        self.setStyleSheet(f"""
+        QFrame {{ background: #FFFFFF; border: 1px solid {LINE}; border-radius: 14px; }}
+        QLabel#CardTitle {{ color: {NAVY}; font-size: 17px; font-weight: 800; border: none; }}
+        QLabel#CardSubtitle {{ color: {MUTED}; font-size: 12px; border: none; }}
+        """)
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(16, 14, 16, 16)
+        self.layout.setSpacing(10)
+        title_label = QLabel(title)
+        title_label.setObjectName("CardTitle")
+        self.layout.addWidget(title_label)
+        if subtitle:
+            st = QLabel(subtitle)
+            st.setObjectName("CardSubtitle")
+            st.setWordWrap(True)
+            self.layout.addWidget(st)
+
+
+class FilePicker(QWidget):
+    def __init__(self, label: str, optional: bool = False) -> None:
+        super().__init__()
+        self.path_edit = QLineEdit()
+        self.path_edit.setPlaceholderText("Optional" if optional else "Required")
+        self.button = QPushButton("Browse")
+        self.button.setProperty("secondary", True)
+        self.button.clicked.connect(self.pick_file)
+        layout = QGridLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
         lab = QLabel(label)
-        lab.setMinimumWidth(185)
-        row.addWidget(lab)
-        row.addWidget(line, 1)
-        btn = QPushButton(button_text)
-        btn.clicked.connect(callback)
-        if tooltip:
-            lab.setToolTip(tooltip)
-            line.setToolTip(tooltip)
-            btn.setToolTip(tooltip)
-        row.addWidget(btn)
-        return row
+        lab.setStyleSheet(f"color:{NAVY}; font-weight:700;")
+        layout.addWidget(lab, 0, 0)
+        layout.addWidget(self.path_edit, 1, 0)
+        layout.addWidget(self.button, 1, 1)
 
-    def _card(self, title: str) -> tuple[QFrame, QVBoxLayout]:
-        frame = QFrame()
-        frame.setObjectName("Card")
-        lay = QVBoxLayout(frame)
-        lay.setContentsMargins(14, 12, 14, 12)
-        lab = QLabel(title)
-        lab.setObjectName("SectionTitle")
-        lay.addWidget(lab)
-        return frame, lay
+    def pick_file(self) -> None:
+        p, _ = QFileDialog.getOpenFileName(self, "Select table", "", "Tables (*.csv *.tsv *.txt *.parquet);;All files (*.*)")
+        if p:
+            self.path_edit.setText(p)
 
-    def _scrollable(self, widget: QWidget) -> QScrollArea:
-        area = QScrollArea()
-        area.setWidgetResizable(True)
-        area.setWidget(widget)
-        return area
+    @property
+    def path(self) -> str:
+        return self.path_edit.text().strip()
 
-    def _build_project_tab(self):
-        page = QWidget()
-        lay = QVBoxLayout(page)
-        lay.setContentsMargins(14, 14, 14, 14)
-        lay.setSpacing(12)
 
-        card, b = self._card("Project setup")
-        self.feature_path = QLineEdit()
-        self.qc_path = QLineEdit()
-        self.meta_path = QLineEdit()
-        self.registry_path = QLineEdit()
-        self.output_path = QLineEdit()
-        b.addLayout(self._path_row("Primary feature table", self.feature_path, "Browse", lambda: self._browse_file(self.feature_path), "Required. Main features table from acoustic, kinematic, mixed, or generic source."))
-        b.addLayout(self._path_row("Optional QC table", self.qc_path, "Browse", lambda: self._browse_file(self.qc_path), "Optional. Quality-control metrics linked to the feature table."))
-        b.addLayout(self._path_row("Optional metadata table", self.meta_path, "Browse", lambda: self._browse_file(self.meta_path), "Optional. Subject/session/task/diagnosis/severity covariates."))
-        b.addLayout(self._path_row("Optional feature registry / policy", self.registry_path, "Browse", lambda: self._browse_file(self.registry_path), "Optional. Feature definitions, subsystem labels, units, computation policy, expected ranges, and implementation status."))
-        b.addLayout(self._path_row("Output folder", self.output_path, "Browse", lambda: self._browse_dir(self.output_path), "Required. Feature-analysis reports, plots, and audit tables are written here."))
+class FeatureAnalysisGUI(QMainWindow):
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWindowTitle(f"VSLP Feature Analysis GUI {APP_VERSION}")
+        self.resize(1400, 880)
+        self.feature_df: Optional[pd.DataFrame] = None
+        self.qc_df: Optional[pd.DataFrame] = None
+        self.meta_df: Optional[pd.DataFrame] = None
+        self.registry_df: Optional[pd.DataFrame] = None
+        self.mapping_df = pd.DataFrame()
+        self.outputs: dict[str, pd.DataFrame] = {}
+        self.output_dir: Optional[Path] = None
+        self.page_keys = ["project", "mapping", "overview", "missing", "dist", "qc", "reliability", "export"]
 
-        config = QHBoxLayout()
-        self.modality = QComboBox()
-        self.modality.addItems(["auto", "acoustic", "kinematic", "mixed", "generic"])
-        self.modality.setMinimumWidth(200)
-        self.modality.setMaxVisibleItems(8)
-        self.modality.setToolTip("Use auto for VSLP outputs. Select generic for external feature tables.")
-        self.join_key = QLineEdit("auto")
-        self.join_key.setMinimumWidth(220)
-        self.join_key.setToolTip("Join key for feature/QC/metadata tables. Use auto unless you need to force file_name, record_key, or subject_id.")
-        config.addWidget(QLabel("Modality"))
-        config.addWidget(self.modality)
-        config.addSpacing(14)
-        config.addWidget(QLabel("Join key"))
-        config.addWidget(self.join_key)
-        config.addStretch(1)
-        b.addLayout(config)
+        root = QWidget()
+        self.setCentralWidget(root)
+        outer = QVBoxLayout(root)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+        outer.addWidget(LogoBar())
 
-        info = QLabel("Feature registry/policy is optional. When supplied, it improves labeling, subsystem grouping, expected-range review, and interpretation. For VSLP acoustic outputs, use the feature computation policy or registry table from acoustic/004_features/tables.")
-        info.setObjectName("InfoText")
-        info.setWordWrap(True)
-        b.addWidget(info)
+        content = QHBoxLayout()
+        content.setContentsMargins(0, 0, 0, 0)
+        content.setSpacing(0)
+        outer.addLayout(content, 1)
 
-        run = QPushButton("Run Feature Analysis")
-        run.setObjectName("Primary")
-        run.clicked.connect(self.run_analysis)
-        b.addWidget(run)
-        lay.addWidget(card)
+        self.sidebar = Sidebar(self.show_page)
+        content.addWidget(self.sidebar)
+        self.stack = QStackedWidget()
+        content.addWidget(self.stack, 1)
 
-        log_card, log_lay = self._card("Run log")
-        self.project_log = QTextEdit()
-        self.project_log.setReadOnly(True)
-        self.project_log.setMinimumHeight(160)
-        self.project_log.setPlainText("Load a feature table, optionally add QC/metadata/registry tables, choose an output folder, then run analysis.")
-        log_lay.addWidget(self.project_log)
-        lay.addWidget(log_card, 1)
-        self.tabs.addTab(self._scrollable(page), "Project")
+        self.pages = {
+            "project": self._project_page(),
+            "mapping": self._mapping_page(),
+            "overview": self._table_page("Overview", "Dataset inventory and role counts."),
+            "missing": self._table_page("Missingness", "Feature-level and row-level missingness summaries."),
+            "dist": self._table_page("Distributions / Outliers", "Distribution summaries and robust outlier screening."),
+            "qc": self._table_page("QC Integration", "Feature-QC association screening, when a QC table is supplied."),
+            "reliability": self._table_page("Reliability", "Initial reliability screen for downstream analysis."),
+            "export": self._export_page(),
+        }
+        for key in self.page_keys:
+            self.stack.addWidget(self.pages[key])
+        self.show_page("project")
 
-    def _build_mapping_tab(self):
-        tab = QWidget()
-        lay = QVBoxLayout(tab)
-        lay.setContentsMargins(14, 14, 14, 14)
-        top, top_lay = self._card("Column role mapping")
-        txt = QLabel("Preview how VSLP classifies columns as identifiers, features, QC variables, targets, covariates, task variables, time variables, or ignored fields.")
-        txt.setObjectName("InfoText")
-        txt.setWordWrap(True)
-        top_lay.addWidget(txt)
-        btn = QPushButton("Preview column mapping")
-        btn.clicked.connect(self.preview_mapping)
-        top_lay.addWidget(btn)
-        lay.addWidget(top)
-        self.mapping_table = QTableWidget()
-        self.mapping_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        lay.addWidget(self.mapping_table, 1)
-        self.tabs.addTab(tab, "Column Mapping")
+    def show_page(self, key: str) -> None:
+        self.stack.setCurrentIndex(self.page_keys.index(key))
+        self.sidebar.set_active(key)
 
-    def _simple_table_tab(self, name, description: str = ""):
-        tab = QWidget()
-        lay = QVBoxLayout(tab)
-        lay.setContentsMargins(14, 14, 14, 14)
-        if description:
-            card, card_lay = self._card(name)
-            info = QLabel(description)
-            info.setObjectName("InfoText")
-            info.setWordWrap(True)
-            card_lay.addWidget(info)
-            lay.addWidget(card)
-        tbl = QTableWidget()
-        tbl.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        lay.addWidget(tbl, 1)
-        self.tabs.addTab(tab, name)
-        return tbl
+    def _wrap_scroll(self, widget: QWidget) -> QScrollArea:
+        sc = QScrollArea()
+        sc.setWidgetResizable(True)
+        sc.setWidget(widget)
+        return sc
 
-    def _build_overview_tab(self):
-        self.overview_table = self._simple_table_tab("Overview", "Dataset inventory: rows, columns, detected feature variables, identifiers, targets, task variables, and QC columns.")
+    def _project_page(self) -> QWidget:
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
 
-    def _build_missing_tab(self):
-        tab = QWidget()
-        lay = QVBoxLayout(tab)
-        lay.setContentsMargins(14, 14, 14, 14)
-        card, card_lay = self._card("Missingness and availability")
-        info = QLabel("Review feature coverage before modeling. High missingness may indicate task incompatibility, failed signal tracking, severe impairment, or recording quality problems.")
-        info.setObjectName("InfoText")
-        info.setWordWrap(True)
-        card_lay.addWidget(info)
-        lay.addWidget(card)
-        sp = QSplitter(Qt.Horizontal)
-        self.missing_table = QTableWidget()
-        self.missing_plot = QLabel("Run analysis to preview missingness plot.")
-        self.missing_plot.setAlignment(Qt.AlignCenter)
-        self.missing_plot.setMinimumSize(420, 360)
-        sp.addWidget(self.missing_table)
-        sp.addWidget(self.missing_plot)
-        sp.setSizes([620, 620])
-        lay.addWidget(sp, 1)
-        self.tabs.addTab(tab, "Missingness")
+        intro = Card("Project", "Upload a feature table and optional QC, metadata, and registry/policy tables. The analysis is local and does not modify inputs.")
+        grid = QGridLayout()
+        self.feature_picker = FilePicker("Primary feature table", optional=False)
+        self.qc_picker = FilePicker("Optional QC table", optional=True)
+        self.meta_picker = FilePicker("Optional metadata table", optional=True)
+        self.registry_picker = FilePicker("Optional feature registry / policy", optional=True)
+        grid.addWidget(self.feature_picker, 0, 0)
+        grid.addWidget(self.qc_picker, 0, 1)
+        grid.addWidget(self.meta_picker, 1, 0)
+        grid.addWidget(self.registry_picker, 1, 1)
+        intro.layout.addLayout(grid)
 
-    def _build_dist_tab(self):
-        tab = QWidget()
-        lay = QVBoxLayout(tab)
-        lay.setContentsMargins(14, 14, 14, 14)
-        card, card_lay = self._card("Distributions and outliers")
-        info = QLabel("Inspect robust distribution summaries and outlier flags. This screen is descriptive; it does not automatically exclude features.")
-        info.setObjectName("InfoText")
-        info.setWordWrap(True)
-        card_lay.addWidget(info)
-        lay.addWidget(card)
-        sp = QSplitter(Qt.Horizontal)
-        self.dist_table = QTableWidget()
-        self.dist_plot = QLabel("Run analysis to preview distribution plot.")
-        self.dist_plot.setAlignment(Qt.AlignCenter)
-        self.dist_plot.setMinimumSize(420, 360)
-        sp.addWidget(self.dist_table)
-        sp.addWidget(self.dist_plot)
-        sp.setSizes([620, 620])
-        lay.addWidget(sp, 1)
-        self.tabs.addTab(tab, "Distributions")
+        policy_note = QLabel("Registry / policy files help the GUI understand feature names, subsystems, units, expected ranges, computation policies, and implementation status. If omitted, VSLP uses conservative automatic column-role detection.")
+        policy_note.setWordWrap(True)
+        policy_note.setStyleSheet(f"color:{MUTED}; background:#F7FAFD; border:1px solid {LINE}; border-radius:8px; padding:10px;")
+        intro.layout.addWidget(policy_note)
 
-    def _build_qc_tab(self):
-        self.qc_table = self._simple_table_tab("QC Integration", "Feature-QC correlations help identify variables that may be strongly influenced by recording quality, segmentation quality, noise, clipping, reverberation, or other artifact domains.")
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Modality:"))
+        self.modality_combo = QComboBox()
+        self.modality_combo.addItems(["Auto-detect", "Acoustic", "Kinematic", "Mixed acoustic + kinematic", "Generic"])
+        self.modality_combo.setMinimumWidth(290)
+        row.addWidget(self.modality_combo)
+        row.addSpacing(16)
+        row.addWidget(QLabel("Output folder:"))
+        self.output_edit = QLineEdit()
+        self.output_edit.setPlaceholderText("Required output folder for analysis results")
+        row.addWidget(self.output_edit, 1)
+        out_button = QPushButton("Browse")
+        out_button.setProperty("secondary", True)
+        out_button.clicked.connect(self.pick_output_folder)
+        row.addWidget(out_button)
+        intro.layout.addLayout(row)
 
-    def _build_reliability_tab(self):
-        self.rel_table = self._simple_table_tab("Reliability", "Initial feature reliability screen based on missingness, zero variance, robust outliers, and QC association. Recommendations are review aids, not automatic scientific decisions.")
+        actions = QHBoxLayout()
+        load_btn = QPushButton("Load and Map Tables")
+        load_btn.clicked.connect(self.load_and_map)
+        run_btn = QPushButton("Run Feature Analysis")
+        run_btn.clicked.connect(self.run_analysis)
+        actions.addWidget(load_btn)
+        actions.addWidget(run_btn)
+        actions.addStretch(1)
+        intro.layout.addLayout(actions)
 
-    def _build_export_tab(self):
-        tab = QWidget()
-        lay = QVBoxLayout(tab)
-        lay.setContentsMargins(14, 14, 14, 14)
-        card, card_lay = self._card("Reports and outputs")
-        self.report_label = QLabel("Run analysis to create report and export tables.")
-        self.report_label.setObjectName("InfoText")
-        self.report_label.setWordWrap(True)
-        card_lay.addWidget(self.report_label)
+        self.project_status = QTextEdit()
+        self.project_status.setReadOnly(True)
+        self.project_status.setMinimumHeight(170)
+        self.project_status.setPlaceholderText("Status messages will appear here.")
+        intro.layout.addWidget(self.project_status)
+        layout.addWidget(intro)
+        layout.addStretch(1)
+        return self._wrap_scroll(body)
+
+    def _mapping_page(self) -> QWidget:
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(24, 24, 24, 24)
+        card = Card("Column Mapping", "Review detected roles. Numeric primary-table columns are treated as features unless a stronger rule identifies them as identifiers, QC variables, audit/status fields, or exact clinical labels.")
+        self.mapping_table = QTableWidget(0, 7)
+        self.mapping_table.setHorizontalHeaderLabels(["Column", "Role", "Confidence", "Reason", "dtype", "Missing", "Unique"])
+        self.mapping_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.mapping_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.mapping_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.mapping_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        self.mapping_table.setAlternatingRowColors(True)
+        card.layout.addWidget(self.mapping_table)
         btns = QHBoxLayout()
-        open_report = QPushButton("Open HTML Report")
-        open_report.clicked.connect(self.open_report)
-        open_folder = QPushButton("Open Output Folder")
-        open_folder.clicked.connect(self.open_output_folder)
-        btns.addWidget(open_report)
-        btns.addWidget(open_folder)
+        refresh = QPushButton("Refresh Mapping")
+        refresh.clicked.connect(self.refresh_mapping_table)
+        btns.addWidget(refresh)
         btns.addStretch(1)
-        card_lay.addLayout(btns)
-        lay.addWidget(card)
-        self.export_log = QTextEdit()
-        self.export_log.setReadOnly(True)
-        lay.addWidget(self.export_log, 1)
-        self.tabs.addTab(tab, "Export")
+        card.layout.addLayout(btns)
+        layout.addWidget(card)
+        return self._wrap_scroll(body)
 
-    def _browse_file(self, line):
-        p, _ = QFileDialog.getOpenFileName(self, "Select table", str(Path.home()), "Tables (*.csv *.tsv *.txt *.parquet);;All files (*)")
+    def _table_page(self, title: str, subtitle: str) -> QWidget:
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(24, 24, 24, 24)
+        card = Card(title, subtitle)
+        table = QTableWidget(0, 0)
+        table.setAlternatingRowColors(True)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        table.setObjectName(title.replace(" ", "_").lower())
+        card.layout.addWidget(table)
+        setattr(self, f"table_{table.objectName()}", table)
+        layout.addWidget(card)
+        return self._wrap_scroll(body)
+
+    def _export_page(self) -> QWidget:
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(24, 24, 24, 24)
+        card = Card("Export / Report", "Write analysis tables and a compact HTML report to disk.")
+        self.export_status = QTextEdit()
+        self.export_status.setReadOnly(True)
+        self.export_status.setMinimumHeight(360)
+        card.layout.addWidget(self.export_status)
+        btn = QPushButton("Open Output Folder")
+        btn.clicked.connect(self.open_output_folder)
+        btn.setProperty("secondary", True)
+        card.layout.addWidget(btn)
+        layout.addWidget(card)
+        return self._wrap_scroll(body)
+
+    def pick_output_folder(self) -> None:
+        p = QFileDialog.getExistingDirectory(self, "Select output folder")
         if p:
-            line.setText(p)
+            self.output_edit.setText(p)
 
-    def _browse_dir(self, line):
-        p = QFileDialog.getExistingDirectory(self, "Select output folder", str(Path.home()))
-        if p:
-            line.setText(p)
+    def log(self, text: str) -> None:
+        self.project_status.append(text)
+        self.export_status.append(text)
 
-    def preview_mapping(self):
-        if not self.feature_path.text().strip():
-            QMessageBox.warning(self, "Missing feature table", "Please select a primary feature table first.")
-            return
+    def load_and_map(self) -> None:
         try:
-            df = read_table(Path(self.feature_path.text().strip()))
-            mapping = infer_column_roles(df, "features")
-            _set_table(self.mapping_table, mapping)
-            self._set_stage_status("Column Mapping", "● previewed")
+            if not self.feature_picker.path:
+                QMessageBox.warning(self, "Missing feature table", "Please select a primary feature table.")
+                return
+            self.feature_df = read_table(self.feature_picker.path)
+            self.qc_df = read_table(self.qc_picker.path) if self.qc_picker.path else None
+            self.meta_df = read_table(self.meta_picker.path) if self.meta_picker.path else None
+            self.registry_df = read_table(self.registry_picker.path) if self.registry_picker.path else None
+            kind = infer_table_kind(self.feature_picker.path, explicit="feature")
+            self.mapping_df = classify_columns(self.feature_df, table_kind=kind, registry=self.registry_df)
+            self.refresh_mapping_table()
+            roles = summarize_roles(self.mapping_df)
+            self.log(f"Loaded feature table: {self.feature_df.shape[0]} rows × {self.feature_df.shape[1]} columns")
+            if self.qc_df is not None:
+                self.log(f"Loaded QC table: {self.qc_df.shape[0]} rows × {self.qc_df.shape[1]} columns")
+            if self.meta_df is not None:
+                self.log(f"Loaded metadata table: {self.meta_df.shape[0]} rows × {self.meta_df.shape[1]} columns")
+            if self.registry_df is not None:
+                self.log(f"Loaded registry/policy table: {self.registry_df.shape[0]} rows × {self.registry_df.shape[1]} columns")
+            self.log("Role counts:\n" + roles.to_string(index=False))
+            self.show_page("mapping")
         except Exception as exc:
-            QMessageBox.critical(self, "Mapping failed", str(exc))
+            QMessageBox.critical(self, "Load failed", str(exc))
 
-    def run_analysis(self):
-        if not self.feature_path.text().strip():
-            QMessageBox.warning(self, "Missing feature table", "Please select a primary feature table.")
+    def refresh_mapping_table(self) -> None:
+        if self.mapping_df.empty:
             return
-        if not self.output_path.text().strip():
-            QMessageBox.warning(self, "Missing output folder", "Please select an output folder.")
-            return
-        inputs = AnalysisInputs(
-            feature_table=Path(self.feature_path.text().strip()),
-            qc_table=Path(self.qc_path.text().strip()) if self.qc_path.text().strip() else None,
-            metadata_table=Path(self.meta_path.text().strip()) if self.meta_path.text().strip() else None,
-            feature_registry=Path(self.registry_path.text().strip()) if self.registry_path.text().strip() else None,
-            output_root=Path(self.output_path.text().strip()),
-            modality=self.modality.currentText(),
-            join_key=self.join_key.text().strip() or "auto",
-        )
-        self.project_log.append("Running feature analysis...")
-        self._set_stage_status("Project", "● running")
-        self.worker = AnalysisWorker(inputs)
-        self.worker.finished_ok.connect(self._analysis_done)
-        self.worker.failed.connect(self._analysis_failed)
-        self.worker.start()
+        df = self.mapping_df.copy()
+        self.mapping_table.setRowCount(len(df))
+        self.mapping_table.setColumnCount(7)
+        for i, r in df.iterrows():
+            self.mapping_table.setItem(i, 0, QTableWidgetItem(str(r["column"])))
+            combo = QComboBox()
+            combo.addItems(ROLE_OPTIONS)
+            combo.setCurrentText(str(r["role"]))
+            self.mapping_table.setCellWidget(i, 1, combo)
+            self.mapping_table.setItem(i, 2, QTableWidgetItem(f"{float(r['confidence']):.2f}"))
+            self.mapping_table.setItem(i, 3, QTableWidgetItem(str(r["reason"])))
+            self.mapping_table.setItem(i, 4, QTableWidgetItem(str(r["dtype"])))
+            self.mapping_table.setItem(i, 5, QTableWidgetItem(f"{float(r['missing_fraction']):.3f}"))
+            self.mapping_table.setItem(i, 6, QTableWidgetItem(str(r["unique_values"])))
+        self.mapping_table.resizeRowsToContents()
 
-    def _analysis_failed(self, msg):
-        QMessageBox.critical(self, "Feature analysis failed", msg)
-        self.project_log.append("FAILED: " + msg)
-        self._set_stage_status("Project", "● failed")
+    def collect_mapping_from_table(self) -> pd.DataFrame:
+        if self.mapping_df.empty:
+            return self.mapping_df
+        df = self.mapping_df.copy()
+        roles = []
+        for i in range(self.mapping_table.rowCount()):
+            widget = self.mapping_table.cellWidget(i, 1)
+            roles.append(widget.currentText() if isinstance(widget, QComboBox) else df.iloc[i]["role"])
+        df["role"] = roles
+        self.mapping_df = df
+        return df
 
-    def _set_stage_status(self, name: str, status: str):
-        lab = self.status_labels.get(name)
-        if lab:
-            lab.setText(status)
-
-    def _analysis_done(self, result):
-        self.result = result
-        self.project_log.append(f"Done. Report: {result.report_path}")
-        self.report_label.setText(str(result.report_path))
-        self.export_log.setPlainText("\n".join([f"{k}: {v}" for k, v in {**result.tables, **result.plots}.items()]))
-        self._load_outputs()
-        for name in ["Project", "Overview", "Missingness", "Distributions", "QC Integration", "Reliability", "Export"]:
-            self._set_stage_status(name, "● completed")
-        if result.tables.get("feature_column_mapping"):
-            self._set_stage_status("Column Mapping", "● completed")
-        QMessageBox.information(self, "Analysis complete", "Feature analysis completed successfully.")
-
-    def _read_table(self, key):
-        if not self.result or key not in self.result.tables:
-            return pd.DataFrame()
+    def run_analysis(self) -> None:
         try:
-            return pd.read_csv(self.result.tables[key])
-        except Exception:
-            return pd.DataFrame()
+            if self.feature_df is None:
+                self.load_and_map()
+                if self.feature_df is None:
+                    return
+            if not self.output_edit.text().strip():
+                QMessageBox.warning(self, "Missing output folder", "Please select an output folder for the Feature Analysis results.")
+                return
+            self.output_dir = Path(self.output_edit.text().strip()) / "feature_analysis"
+            tables_dir = self.output_dir / "tables"
+            reports_dir = self.output_dir / "reports"
+            tables_dir.mkdir(parents=True, exist_ok=True)
+            reports_dir.mkdir(parents=True, exist_ok=True)
 
-    def _show_plot(self, label, key):
-        if not self.result or key not in self.result.plots:
+            mapping = self.collect_mapping_from_table()
+            roles = role_lists(mapping)
+            feature_cols = roles.get("Feature", [])
+            inventory = dataset_inventory(self.feature_df, self.qc_df, self.meta_df, mapping)
+            dist = feature_distribution_summary(self.feature_df, feature_cols)
+            row_missing = pd.DataFrame({
+                "row_index": range(len(self.feature_df)),
+                "missing_fraction_all_columns": self.feature_df.isna().mean(axis=1).values,
+                "missing_fraction_feature_columns": self.feature_df[feature_cols].isna().mean(axis=1).values if feature_cols else [],
+            }) if feature_cols else pd.DataFrame({"row_index": range(len(self.feature_df)), "missing_fraction_all_columns": self.feature_df.isna().mean(axis=1).values})
+            qc_corr = feature_qc_correlations(self.feature_df, self.qc_df, feature_cols)
+            reliability = reliability_screen(dist, qc_corr)
+
+            outputs = {
+                "dataset_inventory": inventory,
+                "feature_column_mapping": mapping,
+                "feature_distribution_summary": dist,
+                "missingness_by_row": row_missing,
+                "feature_qc_spearman_correlation": qc_corr,
+                "feature_reliability_screen": reliability,
+            }
+            self.outputs = outputs
+            for name, df in outputs.items():
+                df.to_csv(tables_dir / f"{name}.csv", index=False)
+            self.write_report(reports_dir / "vslp_feature_analysis_report.html", outputs)
+            self.populate_output_tables(outputs)
+            self.log(f"Analysis complete. Outputs written to: {self.output_dir}")
+            self.show_page("overview")
+        except Exception as exc:
+            QMessageBox.critical(self, "Analysis failed", str(exc))
+
+    def populate_output_tables(self, outputs: dict[str, pd.DataFrame]) -> None:
+        targets = {
+            "overview": "dataset_inventory",
+            "missing": "missingness_by_row",
+            "distributions___outliers": "feature_distribution_summary",
+            "qc_integration": "feature_qc_spearman_correlation",
+            "reliability": "feature_reliability_screen",
+        }
+        for obj_suffix, key in targets.items():
+            table = getattr(self, f"table_{obj_suffix}", None)
+            if table is not None and key in outputs:
+                self._fill_table(table, outputs[key])
+
+    def _fill_table(self, table: QTableWidget, df: pd.DataFrame, max_rows: int = 500) -> None:
+        show = df.head(max_rows).copy()
+        table.setRowCount(len(show))
+        table.setColumnCount(len(show.columns))
+        table.setHorizontalHeaderLabels([str(c) for c in show.columns])
+        for i in range(len(show)):
+            for j, c in enumerate(show.columns):
+                table.setItem(i, j, QTableWidgetItem(str(show.iloc[i, j])))
+        table.resizeRowsToContents()
+
+    def write_report(self, path: Path, outputs: dict[str, pd.DataFrame]) -> None:
+        inv = outputs.get("dataset_inventory", pd.DataFrame()).to_html(index=False, escape=False)
+        roles = summarize_roles(outputs.get("feature_column_mapping", pd.DataFrame())).to_html(index=False, escape=False)
+        rel = outputs.get("feature_reliability_screen", pd.DataFrame()).head(80).to_html(index=False, escape=False)
+        html = f"""<!doctype html><html><head><meta charset='utf-8'><title>VSLP Feature Analysis Report</title>
+        <style>body{{font-family:Arial,sans-serif;margin:32px;color:#0E1726}} h1,h2{{color:#071A33}} table{{border-collapse:collapse;width:100%;font-size:12px;margin-bottom:24px}} td,th{{border:1px solid #D9E2EF;padding:6px}} th{{background:#EEF4FA}}</style></head><body>
+        <h1>VSLP Feature Analysis Report</h1><p>Version {APP_VERSION}. Descriptive feature audit only; not a diagnostic or ML-training report.</p>
+        <h2>Dataset inventory</h2>{inv}<h2>Column-role summary</h2>{roles}<h2>Initial feature reliability screen</h2>{rel}</body></html>"""
+        path.write_text(html, encoding="utf-8")
+
+    def open_output_folder(self) -> None:
+        if not self.output_dir or not self.output_dir.exists():
+            QMessageBox.information(self, "No output folder", "Run Feature Analysis first.")
             return
-        pix = QPixmap(str(self.result.plots[key]))
-        if not pix.isNull():
-            label.setPixmap(pix.scaled(label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        if self.result:
-            self._show_plot(self.missing_plot, "missingness_top_features")
-            self._show_plot(self.dist_plot, "feature_distribution_grid")
-
-    def _load_outputs(self):
-        _set_table(self.overview_table, self._read_table("dataset_inventory"))
-        _set_table(self.missing_table, self._read_table("feature_distribution_summary"))
-        _set_table(self.dist_table, self._read_table("robust_outlier_flags"))
-        _set_table(self.qc_table, self._read_table("feature_qc_spearman_correlation"))
-        _set_table(self.rel_table, self._read_table("feature_reliability_screen"))
-        self._show_plot(self.missing_plot, "missingness_top_features")
-        self._show_plot(self.dist_plot, "feature_distribution_grid")
-
-    def open_report(self):
-        if self.result:
-            import subprocess
-            subprocess.run(["open", str(self.result.report_path)], check=False)
-
-    def open_output_folder(self):
-        if self.result:
-            import subprocess
-            subprocess.run(["open", str(self.result.output_root)], check=False)
+        import subprocess, platform
+        if platform.system() == "Darwin":
+            subprocess.run(["open", str(self.output_dir)], check=False)
+        elif platform.system() == "Windows":
+            subprocess.run(["explorer", str(self.output_dir)], check=False)
+        else:
+            subprocess.run(["xdg-open", str(self.output_dir)], check=False)
 
 
-def main():
-    app = QApplication(sys.argv)
-    app.setStyleSheet(APP_STYLE)
-    win = FeatureAnalysisWindow()
+def main() -> int:
+    app = QApplication.instance() or QApplication(sys.argv)
+    set_app_style(app)
+    win = FeatureAnalysisGUI()
     win.show()
-    sys.exit(app.exec())
+    return app.exec()
 
 
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())
