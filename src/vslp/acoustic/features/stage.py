@@ -231,10 +231,22 @@ def run_acoustic_feature_extraction(
     subsystem_plot = folders["plots"] / "feature_subsystem_implementation_status.png"
     distribution_plot = folders["plots"] / "implemented_feature_distributions.png"
     task_plot = folders["plots"] / "task_feature_overview.png"
+    range_plot = folders["plots"] / "feature_expected_range_flags.png"
+    audit_plot = folders["plots"] / "feature_distribution_audit.png"
+    corr_plot = folders["plots"] / "feature_correlation_heatmap.png"
+    subsystem_dist_plot = folders["plots"] / "feature_subsystem_distributions.png"
+
     _plot_feature_missingness(features_path, registry, missingness_plot)
     _plot_subsystem_status(status_path, subsystem_plot)
     _plot_implemented_feature_distributions(features_path, registry, distribution_plot)
     _plot_task_feature_overview(features_path, task_plot)
+    range_flags_path = folders["tables"] / "acoustic_feature_expected_range_flags.csv"
+    distribution_audit_path = folders["tables"] / "acoustic_feature_distribution_audit.csv"
+    _write_feature_distribution_audit(features_path, registry, distribution_audit_path, range_flags_path)
+    _plot_expected_range_flags(range_flags_path, range_plot)
+    _plot_feature_distribution_audit(features_path, registry, audit_plot)
+    _plot_feature_correlation_heatmap(features_path, registry, corr_plot)
+    _plot_subsystem_distribution_summary(features_path, registry, subsystem_dist_plot)
 
     report_path = folders["reports"] / "acoustic_feature_report.html"
     _write_feature_html_report(
@@ -247,6 +259,10 @@ def run_acoustic_feature_extraction(
         subsystem_plot,
         distribution_plot,
         task_plot,
+        range_plot,
+        audit_plot,
+        corr_plot,
+        subsystem_dist_plot,
     )
 
     computed_statuses = {"computed", "computed_proxy"}
@@ -269,6 +285,8 @@ def run_acoustic_feature_extraction(
             ArtifactRef(path=str(features_path), role="features_per_file", media_type="text/csv"),
             ArtifactRef(path=str(status_path), role="feature_status_long", media_type="text/csv"),
             ArtifactRef(path=str(registry_path), role="selected_feature_registry", media_type="text/csv"),
+            ArtifactRef(path=str(range_flags_path), role="expected_range_flags", media_type="text/csv"),
+            ArtifactRef(path=str(distribution_audit_path), role="distribution_audit", media_type="text/csv"),
             ArtifactRef(path=str(report_path), role="feature_html_report", media_type="text/html"),
         ],
         config=cfg.to_dict(),
@@ -279,6 +297,7 @@ def run_acoustic_feature_extraction(
             "Feature extraction now uses subsystem plugins and a region-aware signal policy.",
             f"Computed feature families in this pass: {computed_features}",
             "Registered-but-not-yet-implemented features remain explicit NaN placeholders.",
+            "Expected-range flags are descriptive screening aids, not clinical cutoffs.",
         ],
     )
     manifest_path = folders["logs"] / "stage_manifest.json"
@@ -379,6 +398,172 @@ def _plot_task_feature_overview(features_csv: Path, output_path: Path) -> None:
     plt.close(fig)
 
 
+
+def _numeric_feature_frame(features_csv: Path, registry: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    df = pd.read_csv(features_csv)
+    feature_names = [str(f) for f in registry["feature"].tolist() if str(f) in df.columns]
+    if not feature_names:
+        return df, pd.DataFrame()
+    numeric = pd.DataFrame({name: pd.to_numeric(df[name], errors="coerce") for name in feature_names})
+    return df, numeric
+
+
+def _write_feature_distribution_audit(features_csv: Path, registry: pd.DataFrame, audit_path: Path, flags_path: Path) -> None:
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    df, numeric = _numeric_feature_frame(features_csv, registry)
+    rows: list[dict[str, Any]] = []
+    flag_rows: list[dict[str, Any]] = []
+    meta = registry.set_index("feature", drop=False)
+    for name in numeric.columns:
+        vals = numeric[name].dropna()
+        r = meta.loc[name] if name in meta.index else pd.Series(dtype=object)
+        lo = pd.to_numeric(pd.Series([r.get("expected_low")]), errors="coerce").iloc[0] if "expected_low" in r.index else np.nan
+        hi = pd.to_numeric(pd.Series([r.get("expected_high")]), errors="coerce").iloc[0] if "expected_high" in r.index else np.nan
+        below = int((vals < lo).sum()) if np.isfinite(lo) and not vals.empty else 0
+        above = int((vals > hi).sum()) if np.isfinite(hi) and not vals.empty else 0
+        out = below + above
+        rows.append({
+            "feature": name,
+            "subsystem": r.get("subsystem", ""),
+            "unit": r.get("unit", ""),
+            "n_available": int(vals.size),
+            "missing_fraction": float(numeric[name].isna().mean()) if len(numeric) else np.nan,
+            "mean": float(vals.mean()) if vals.size else np.nan,
+            "median": float(vals.median()) if vals.size else np.nan,
+            "sd": float(vals.std(ddof=0)) if vals.size else np.nan,
+            "q05": float(vals.quantile(0.05)) if vals.size else np.nan,
+            "q25": float(vals.quantile(0.25)) if vals.size else np.nan,
+            "q75": float(vals.quantile(0.75)) if vals.size else np.nan,
+            "q95": float(vals.quantile(0.95)) if vals.size else np.nan,
+            "expected_low": lo,
+            "expected_high": hi,
+            "n_below_expected": below,
+            "n_above_expected": above,
+            "out_of_expected_fraction": float(out / vals.size) if vals.size else np.nan,
+            "screening_note": "descriptive expected range only; rederive study-specific ranges" if np.isfinite(lo) or np.isfinite(hi) else "no expected range configured",
+        })
+        if out > 0:
+            flag_rows.append({
+                "feature": name,
+                "subsystem": r.get("subsystem", ""),
+                "n_flagged": out,
+                "n_available": int(vals.size),
+                "flagged_fraction": float(out / vals.size) if vals.size else np.nan,
+                "expected_low": lo,
+                "expected_high": hi,
+                "note": "values outside orientation range; inspect distribution and acquisition/QC before interpretation",
+            })
+    pd.DataFrame(rows).to_csv(audit_path, index=False)
+    pd.DataFrame(flag_rows, columns=["feature","subsystem","n_flagged","n_available","flagged_fraction","expected_low","expected_high","note"]).to_csv(flags_path, index=False)
+
+
+def _plot_expected_range_flags(flags_csv: Path, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if not flags_csv.exists() or flags_csv.stat().st_size == 0:
+        return
+    df = pd.read_csv(flags_csv)
+    if df.empty or "flagged_fraction" not in df.columns:
+        return
+    df = df.sort_values("flagged_fraction", ascending=True).tail(25)
+    fig, ax = plt.subplots(figsize=(10, max(4, 0.35 * len(df) + 1)))
+    ax.barh(df["feature"], df["flagged_fraction"])
+    ax.set_xlim(0, 1)
+    ax.set_xlabel("Fraction of available values outside orientation range")
+    ax.set_title("Feature expected-range review flags")
+    ax.axvline(0.20, linestyle="--", linewidth=1)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=180)
+    plt.close(fig)
+
+
+def _plot_feature_distribution_audit(features_csv: Path, registry: pd.DataFrame, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    _df, numeric = _numeric_feature_frame(features_csv, registry)
+    meta = registry.set_index("feature", drop=False)
+    available = [c for c in numeric.columns if numeric[c].notna().sum() >= 2]
+    if not available:
+        return
+    # Prioritize computed/proxy features with expected ranges, then high-coverage features.
+    def score(name: str) -> tuple[int, int]:
+        r = meta.loc[name] if name in meta.index else pd.Series(dtype=object)
+        has_range = int(pd.notna(r.get("expected_low", np.nan)) or pd.notna(r.get("expected_high", np.nan)))
+        return (has_range, int(numeric[name].notna().sum()))
+    chosen = sorted(available, key=score, reverse=True)[:12]
+    ncols = 3
+    nrows = int(np.ceil(len(chosen) / ncols))
+    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(14, max(4, 3.2 * nrows)))
+    axes_arr = np.asarray(axes).reshape(-1)
+    for ax, name in zip(axes_arr, chosen, strict=False):
+        vals = numeric[name].dropna().values.astype(float)
+        r = meta.loc[name] if name in meta.index else pd.Series(dtype=object)
+        lo = pd.to_numeric(pd.Series([r.get("expected_low")]), errors="coerce").iloc[0] if "expected_low" in r.index else np.nan
+        hi = pd.to_numeric(pd.Series([r.get("expected_high")]), errors="coerce").iloc[0] if "expected_high" in r.index else np.nan
+        bins = min(20, max(5, int(np.sqrt(vals.size) + 2)))
+        ax.hist(vals, bins=bins, alpha=0.85)
+        if np.isfinite(lo):
+            ax.axvline(lo, linestyle="--", linewidth=1)
+        if np.isfinite(hi):
+            ax.axvline(hi, linestyle="--", linewidth=1)
+        out_frac = np.nan
+        if vals.size:
+            mask = np.zeros(vals.shape, dtype=bool)
+            if np.isfinite(lo): mask |= vals < lo
+            if np.isfinite(hi): mask |= vals > hi
+            out_frac = float(mask.mean())
+        title = name if not np.isfinite(out_frac) or out_frac == 0 else f"{name}  REVIEW {out_frac:.0%}"
+        ax.set_title(title, fontsize=9)
+        ax.tick_params(axis="both", labelsize=8)
+    for ax in axes_arr[len(chosen):]:
+        ax.axis("off")
+    fig.suptitle("Acoustic feature distribution audit", fontsize=14)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=180)
+    plt.close(fig)
+
+
+def _plot_feature_correlation_heatmap(features_csv: Path, registry: pd.DataFrame, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    _df, numeric = _numeric_feature_frame(features_csv, registry)
+    cols = [c for c in numeric.columns if numeric[c].notna().sum() >= 3 and numeric[c].nunique(dropna=True) >= 2]
+    if len(cols) < 2:
+        return
+    cols = cols[:30]
+    corr = numeric[cols].corr(method="spearman", min_periods=3)
+    fig, ax = plt.subplots(figsize=(max(8, 0.35 * len(cols) + 3), max(7, 0.35 * len(cols) + 3)))
+    im = ax.imshow(corr.values, vmin=-1, vmax=1, aspect="auto")
+    ax.set_xticks(range(len(cols))); ax.set_xticklabels(cols, rotation=90, fontsize=7)
+    ax.set_yticks(range(len(cols))); ax.set_yticklabels(cols, fontsize=7)
+    ax.set_title("Spearman correlation among available acoustic features")
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=180)
+    plt.close(fig)
+
+
+def _plot_subsystem_distribution_summary(features_csv: Path, registry: pd.DataFrame, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    _df, numeric = _numeric_feature_frame(features_csv, registry)
+    if numeric.empty:
+        return
+    meta = registry.set_index("feature", drop=False)
+    rows = []
+    for name in numeric.columns:
+        r = meta.loc[name] if name in meta.index else pd.Series(dtype=object)
+        vals = numeric[name]
+        rows.append({"feature": name, "subsystem": r.get("subsystem", "unknown"), "coverage": float(vals.notna().mean())})
+    cov = pd.DataFrame(rows)
+    if cov.empty:
+        return
+    summary = cov.groupby("subsystem")["coverage"].mean().sort_values()
+    fig, ax = plt.subplots(figsize=(9, 4.8))
+    ax.barh(summary.index.astype(str), summary.values)
+    ax.set_xlim(0, 1)
+    ax.set_xlabel("Mean feature availability within subsystem")
+    ax.set_title("Feature coverage by subsystem")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=180)
+    plt.close(fig)
+
 def _write_feature_html_report(
     path: Path,
     rows: list[dict[str, Any]],
@@ -389,6 +574,10 @@ def _write_feature_html_report(
     subsystem_plot: Path,
     distribution_plot: Path,
     task_plot: Path,
+    range_plot: Path,
+    audit_plot: Path,
+    corr_plot: Path,
+    subsystem_dist_plot: Path,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     status_df = pd.DataFrame(status_rows)
@@ -424,6 +613,10 @@ img {{ max-width:100%; border-radius:10px; border:1px solid #315D7C; background:
 {img_block('Subsystem implementation status', subsystem_plot)}
 {img_block('Implemented feature distributions', distribution_plot)}
 {img_block('Task overview', task_plot)}
+{img_block('Expected-range flags', range_plot)}
+{img_block('Feature distribution audit', audit_plot)}
+{img_block('Feature correlation heatmap', corr_plot)}
+{img_block('Subsystem distribution summary', subsystem_dist_plot)}
 <div class='card'><h2>Configuration</h2><pre>{json.dumps(cfg.to_dict(), indent=2)}</pre></div>
 </body></html>"""
     path.write_text(html, encoding="utf-8")
