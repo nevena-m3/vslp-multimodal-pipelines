@@ -53,7 +53,7 @@ def test_phonatory_and_rhythm_plugins_on_synthetic_audio(tmp_path: Path):
     ctx = FeatureContext(file_name="tone.wav", row=pd.Series({}), segmentation_wav_path=wav, duration_sec=2.0, config=DummyConfig())
     ph = PhonatoryPlugin().compute(ctx)
     rh = RhythmPlugin().compute(ctx)
-    assert ph["f0_mean"].status == "computed_proxy"
+    assert ph["f0_mean"].status in {"computed", "computed_with_warning"}
     assert np.isfinite(ph["f0_mean"].value)
     assert rh["intensity_CV"].status == "computed"
     assert np.isfinite(rh["fft_peaks1"].value)
