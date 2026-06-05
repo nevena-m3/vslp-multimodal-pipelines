@@ -168,11 +168,13 @@ def acoustic_quality_control(
     segmentation_summary_csv: Path,
     output_root: Path,
     selected_families: str = "additive_interference,gain_dynamics,reverberation_echo,channel_device,nonlinear_distortion,temporal_discontinuity",
+    selected_features: str | None = None,
     minimum_internal_pause_sec: float = 0.15,
 ):
     """Extract segmentation-informed acoustic quality-control feature families."""
     cfg = QualityControlConfig(
         selected_families=[x.strip() for x in selected_families.split(",") if x.strip()],
+        selected_features=[x.strip() for x in selected_features.split(",") if x.strip()] if selected_features else None,
         minimum_internal_pause_sec=minimum_internal_pause_sec,
     )
     result = run_acoustic_quality_control(

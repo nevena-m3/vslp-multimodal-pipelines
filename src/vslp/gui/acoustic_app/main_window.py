@@ -66,7 +66,13 @@ from vslp.acoustic.metadata.stage import MetadataConfig, run_acoustic_metadata
 from vslp.acoustic.preprocess.stage import FilterConfig, PreprocessConfig, run_acoustic_preprocess
 from vslp.acoustic.segment.stage import run_acoustic_segmentation_silero
 from vslp.acoustic.qc.stage import AcousticQCConfig, run_acoustic_qc_dashboard
-from vslp.acoustic.quality.stage import QC_FAMILIES, QualityControlConfig, run_acoustic_quality_control
+from vslp.acoustic.quality.stage import (
+    QC_FAMILIES,
+    FAMILY_FEATURES,
+    QualityControlConfig,
+    quality_feature_registry,
+    run_acoustic_quality_control,
+)
 from vslp.core.project import initialize_project
 from vslp.gui.common.utils import open_in_browser, open_path
 
@@ -640,56 +646,208 @@ class AcousticPipelineWindow(QMainWindow):
         layout = QVBoxLayout(container)
         layout.addWidget(self._info_panel(
             "Info",
-            "Quality Control extracts segmentation-informed quality features before acoustic biomarkers are computed. Select one or more artifact families. These measures flag recordings for review; they do not reject data automatically."
+            "Quality Control extracts artifact-oriented features from segmented recordings. Select QC families or individual QC features. Results are screening metrics for researcher review; they do not reject recordings automatically."
         ))
 
-        family_group = QGroupBox("QC feature families")
-        family_layout = QVBoxLayout(family_group)
-        self.qc_family_checks = {}
-        family_descriptions = {
-            "additive_interference": "Background noise or hum added to the signal, especially during pauses.",
-            "gain_dynamics": "Amplitude instability, level drift, or automatic-gain-control effects during speech.",
-            "reverberation_echo": "Speech tails continuing into pauses, suggesting echo or room reverberation.",
-            "channel_device": "Device/channel spectral coloration, bandwidth limitation, or microphone response differences.",
-            "nonlinear_distortion": "Clipping, saturation, peak flattening, or overload at high levels.",
-            "temporal_discontinuity": "Dropouts, silent holes, frozen windows, or abrupt waveform breaks.",
-        }
-        for family, meta in QC_FAMILIES.items():
-            cb = QCheckBox(meta.get("label", family.replace("_", " ")))
-            cb.setChecked(True)
-            cb.setToolTip(family_descriptions.get(family, ""))
-            self.qc_family_checks[family] = cb
-            desc = QLabel(family_descriptions.get(family, ""))
-            desc.setObjectName("SubtitleLabel")
-            desc.setWordWrap(True)
-            row = QFrame(); row.setObjectName("Card")
-            row_layout = QVBoxLayout(row); row_layout.setContentsMargins(10, 8, 10, 8)
-            row_layout.addWidget(cb); row_layout.addWidget(desc)
-            family_layout.addWidget(row)
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.setChildrenCollapsible(False)
+
+        left = QWidget(); left_layout = QVBoxLayout(left)
+        selector_group = QGroupBox("QC feature selector")
+        selector_layout = QVBoxLayout(selector_group)
+        quick = QHBoxLayout()
+        for label, callback in [
+            ("All", self.select_all_qc_features),
+            ("Recommended", self.select_recommended_qc_features),
+            ("Clear", self.clear_qc_features),
+        ]:
+            btn = QPushButton(label)
+            btn.clicked.connect(callback)
+            quick.addWidget(btn)
+        selector_layout.addLayout(quick)
+
+        self.qc_feature_tree = QTreeWidget()
+        self.qc_feature_tree.setHeaderLabels(["QC family / feature", "Role", "Parameters"])
+        self.qc_feature_tree.setMinimumHeight(390)
+        self.qc_feature_tree.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.qc_feature_tree.itemChanged.connect(self._on_qc_tree_item_changed)
+        self.qc_feature_tree.itemSelectionChanged.connect(self._update_qc_feature_detail)
+        self.qc_family_items: dict[str, QTreeWidgetItem] = {}
+        self.qc_feature_items: dict[str, QTreeWidgetItem] = {}
+        self._populate_qc_feature_tree()
+        selector_layout.addWidget(self.qc_feature_tree)
+        left_layout.addWidget(selector_group)
+
+        right = QWidget(); right_layout = QVBoxLayout(right)
+        self.qc_count_label = QLabel("")
+        self.qc_count_label.setObjectName("SectionHeader")
+        right_layout.addWidget(self.qc_count_label)
+        self.qc_feature_detail_box = QPlainTextEdit()
+        self.qc_feature_detail_box.setReadOnly(True)
+        self.qc_feature_detail_box.setMinimumHeight(145)
+        self.qc_feature_detail_box.setMaximumHeight(210)
+        right_layout.addWidget(self.qc_feature_detail_box)
 
         param_group = QGroupBox("QC parameters")
         form = QFormLayout(param_group)
         self.qc_pause_sec_spin = QDoubleSpinBox(); self.qc_pause_sec_spin.setDecimals(2); self.qc_pause_sec_spin.setRange(0.0, 5.0); self.qc_pause_sec_spin.setSingleStep(0.05); self.qc_pause_sec_spin.setValue(0.15)
+        self.qc_pause_sec_spin.setToolTip("Minimum internal nonspeech duration used as a pause-support region for additive interference and reverberation features.")
         self.qc_high_level_spin = QDoubleSpinBox(); self.qc_high_level_spin.setDecimals(1); self.qc_high_level_spin.setRange(50.0, 99.9); self.qc_high_level_spin.setSingleStep(1.0); self.qc_high_level_spin.setValue(90.0)
+        self.qc_high_level_spin.setToolTip("Speech-frame percentile used to define high-level windows for gain and nonlinear-distortion features.")
         self.qc_hard_clip_spin = QDoubleSpinBox(); self.qc_hard_clip_spin.setDecimals(3); self.qc_hard_clip_spin.setRange(0.5, 1.0); self.qc_hard_clip_spin.setSingleStep(0.005); self.qc_hard_clip_spin.setValue(0.995)
+        self.qc_hard_clip_spin.setToolTip("Absolute waveform threshold used to mark hard clipping or digital saturation in normalized audio.")
         self.qc_near_clip_spin = QDoubleSpinBox(); self.qc_near_clip_spin.setDecimals(3); self.qc_near_clip_spin.setRange(0.5, 1.0); self.qc_near_clip_spin.setSingleStep(0.005); self.qc_near_clip_spin.setValue(0.950)
+        self.qc_near_clip_spin.setToolTip("Absolute waveform threshold used to mark near-clipping / overload risk.")
         form.addRow("Minimum internal pause (s)", self.qc_pause_sec_spin)
         form.addRow("High-level speech percentile", self.qc_high_level_spin)
         form.addRow("Hard clipping threshold", self.qc_hard_clip_spin)
         form.addRow("Near-clipping threshold", self.qc_near_clip_spin)
+        right_layout.addWidget(param_group)
 
+        output_group = QGroupBox("QC output summary")
+        output_layout = QVBoxLayout(output_group)
         self.quality_summary_label = QLabel("Quality Control has not been run.")
         self.quality_summary_label.setObjectName("SubtitleLabel")
         self.quality_summary_label.setWordWrap(True)
+        output_layout.addWidget(self.quality_summary_label)
+        right_layout.addWidget(output_group)
+
         run_btn = QPushButton("Run Quality Control")
         run_btn.setObjectName("RunButton")
         run_btn.clicked.connect(self.run_quality_control)
-        layout.addWidget(family_group)
-        layout.addWidget(param_group)
-        layout.addWidget(run_btn)
-        layout.addWidget(self.quality_summary_label)
-        layout.addStretch(1)
+        right_layout.addWidget(run_btn)
+        right_layout.addStretch(1)
+
+        splitter.addWidget(left); splitter.addWidget(right); splitter.setSizes([760, 450]); splitter.setMinimumHeight(560)
+        layout.addWidget(splitter)
+        self._refresh_qc_count_label()
         return self._scrollable(container)
+
+
+    def _populate_qc_feature_tree(self) -> None:
+        self.qc_feature_tree.blockSignals(True)
+        self.qc_feature_tree.clear()
+        self.qc_family_items = {}
+        self.qc_feature_items = {}
+        registry = quality_feature_registry()
+        for family, meta in QC_FAMILIES.items():
+            fam_item = QTreeWidgetItem([meta.get("label", family), "family", ""])
+            fam_item.setFlags(fam_item.flags() | Qt.ItemIsUserCheckable)
+            fam_item.setCheckState(0, Qt.Checked)
+            fam_item.setData(0, Qt.UserRole, {"kind": "family", "family": family})
+            self.qc_feature_tree.addTopLevelItem(fam_item)
+            self.qc_family_items[family] = fam_item
+            sub = registry[registry["family"].eq(family)]
+            for _, r in sub.iterrows():
+                feat = str(r["feature"])
+                role = str(r["role"])
+                params = str(r["parameter_dependencies"])
+                child = QTreeWidgetItem([feat, role, params])
+                child.setFlags(child.flags() | Qt.ItemIsUserCheckable)
+                child.setCheckState(0, Qt.Checked if bool(r.get("default_selected", True)) or role == "support" else Qt.Unchecked)
+                if role == "support":
+                    child.setForeground(1, QBrush(QColor("#9CB3C9")))
+                child.setData(0, Qt.UserRole, {"kind": "feature", "family": family, "feature": feat, "meaning": str(r["meaning"]), "params": params, "role": role})
+                fam_item.addChild(child)
+                self.qc_feature_items[feat] = child
+            fam_item.setExpanded(False)
+        self.qc_feature_tree.resizeColumnToContents(0)
+        self.qc_feature_tree.blockSignals(False)
+
+    def _on_qc_tree_item_changed(self, item: QTreeWidgetItem, column: int) -> None:
+        data = item.data(0, Qt.UserRole) or {}
+        if data.get("kind") == "family":
+            state = item.checkState(0)
+            self.qc_feature_tree.blockSignals(True)
+            for i in range(item.childCount()):
+                item.child(i).setCheckState(0, state)
+            self.qc_feature_tree.blockSignals(False)
+        elif data.get("kind") == "feature":
+            family = data.get("family")
+            fam_item = self.qc_family_items.get(family)
+            if fam_item:
+                checked = sum(1 for i in range(fam_item.childCount()) if fam_item.child(i).checkState(0) == Qt.Checked)
+                self.qc_feature_tree.blockSignals(True)
+                fam_item.setCheckState(0, Qt.Checked if checked else Qt.Unchecked)
+                self.qc_feature_tree.blockSignals(False)
+        self._refresh_qc_count_label()
+
+    def _selected_qc_features(self) -> list[str]:
+        selected = []
+        for feat, item in getattr(self, "qc_feature_items", {}).items():
+            data = item.data(0, Qt.UserRole) or {}
+            if item.checkState(0) == Qt.Checked and data.get("role") != "support":
+                selected.append(feat)
+        return selected
+
+    def _selected_qc_families(self) -> list[str]:
+        selected_features = set(self._selected_qc_features())
+        families = []
+        for family, feats in FAMILY_FEATURES.items():
+            numeric = [f for f in feats if not f.endswith("_status") and not f.endswith("_flags")]
+            if any(f in selected_features for f in numeric):
+                families.append(family)
+        return families
+
+    def _refresh_qc_count_label(self) -> None:
+        if not hasattr(self, "qc_count_label"):
+            return
+        n_features = len(self._selected_qc_features()) if hasattr(self, "qc_feature_items") else 0
+        n_families = len(self._selected_qc_families()) if hasattr(self, "qc_feature_items") else 0
+        self.qc_count_label.setText(f"Selected QC features: {n_features} across {n_families} families")
+
+    def _update_qc_feature_detail(self) -> None:
+        if not hasattr(self, "qc_feature_detail_box"):
+            return
+        items = self.qc_feature_tree.selectedItems() if hasattr(self, "qc_feature_tree") else []
+        if not items:
+            self.qc_feature_detail_box.setPlainText("Select a QC family or feature to inspect its meaning and parameter dependencies.")
+            return
+        data = items[0].data(0, Qt.UserRole) or {}
+        if data.get("kind") == "family":
+            fam = data.get("family")
+            meta = QC_FAMILIES.get(fam, {})
+            text = f"Family: {meta.get('label', fam)}\n\nMeaning: {meta.get('meaning', '')}\n\nTypical use: review whether this artifact family may affect downstream acoustic features."
+        else:
+            text = (
+                f"Feature: {data.get('feature')}\n"
+                f"Family: {QC_FAMILIES.get(data.get('family'), {}).get('label', data.get('family'))}\n"
+                f"Role: {data.get('role')}\n"
+                f"Parameter dependencies: {data.get('params')}\n\n"
+                f"Meaning: {data.get('meaning')}"
+            )
+        self.qc_feature_detail_box.setPlainText(text)
+
+    def select_all_qc_features(self) -> None:
+        self.qc_feature_tree.blockSignals(True)
+        for item in self.qc_feature_items.values():
+            item.setCheckState(0, Qt.Checked)
+        for item in self.qc_family_items.values():
+            item.setCheckState(0, Qt.Checked)
+        self.qc_feature_tree.blockSignals(False)
+        self._refresh_qc_count_label()
+
+    def select_recommended_qc_features(self) -> None:
+        registry = quality_feature_registry()
+        recommended = set(registry.loc[registry["default_selected"].eq(True), "feature"].astype(str))
+        self.qc_feature_tree.blockSignals(True)
+        for feat, item in self.qc_feature_items.items():
+            item.setCheckState(0, Qt.Checked if feat in recommended or feat.endswith("_status") or feat.endswith("_flags") else Qt.Unchecked)
+        for family, fam_item in self.qc_family_items.items():
+            checked = sum(1 for i in range(fam_item.childCount()) if fam_item.child(i).checkState(0) == Qt.Checked)
+            fam_item.setCheckState(0, Qt.Checked if checked else Qt.Unchecked)
+        self.qc_feature_tree.blockSignals(False)
+        self._refresh_qc_count_label()
+
+    def clear_qc_features(self) -> None:
+        self.qc_feature_tree.blockSignals(True)
+        for item in self.qc_feature_items.values():
+            item.setCheckState(0, Qt.Unchecked)
+        for item in self.qc_family_items.values():
+            item.setCheckState(0, Qt.Unchecked)
+        self.qc_feature_tree.blockSignals(False)
+        self._refresh_qc_count_label()
+
 
     def _build_features_tab(self) -> QWidget:
         container = QWidget()
@@ -862,6 +1020,10 @@ class AcousticPipelineWindow(QMainWindow):
             ("Preprocess QC flags", lambda: self.preview_csv(self._stage_path("preprocess", "qc_flags"))),
             ("Segmentation summary", lambda: self.preview_csv(self._stage_path("segment", "summary"))),
             ("Quality features", lambda: self.preview_csv(self._stage_path("quality", "summary"))),
+            ("Quality main summary", lambda: self.preview_csv(self._stage_path("quality", "main_summary"))),
+            ("Quality feature registry", lambda: self.preview_csv(self._stage_path("quality", "feature_registry"))),
+            ("Quality warnings", lambda: self.preview_csv(self._stage_path("quality", "warnings"))),
+            ("Quality recommendations", lambda: self.preview_csv(self._stage_path("quality", "recommendations"))),
             ("Quality family status", lambda: self.preview_csv(self._stage_path("quality", "family_status"))),
             ("Feature table", lambda: self.preview_csv(self._stage_path("features", "summary"))),
             ("Aggregated table", lambda: self.preview_csv(self._stage_path("aggregate", "summary"))),
@@ -883,6 +1045,9 @@ class AcousticPipelineWindow(QMainWindow):
             ("Preprocess DC offset", lambda: self.preview_image(self._output_root() / "acoustic" / "002_preprocess" / "plots" / "preprocess_dc_offset_before_after.png")),
             ("Quality family status", lambda: self.preview_image(self._output_root() / "acoustic" / "003_quality_control" / "plots" / "quality_family_status.png")),
             ("Quality overview", lambda: self.preview_image(self._output_root() / "acoustic" / "003_quality_control" / "plots" / "quality_main_features_overview.png")),
+            ("Quality feature distributions", lambda: self.preview_image(self._output_root() / "acoustic" / "003_quality_control" / "plots" / "quality_feature_distributions.png")),
+            ("Quality warning heatmap", lambda: self.preview_image(self._output_root() / "acoustic" / "003_quality_control" / "plots" / "quality_warning_heatmap.png")),
+            ("Quality recommendations", lambda: self.preview_image(self._output_root() / "acoustic" / "003_quality_control" / "plots" / "quality_recommendation_summary.png")),
             ("Feature missingness", lambda: self.preview_image(self._features_plot_path("feature_missingness.png"))),
             ("Feature implementation status", lambda: self.preview_image(self._features_plot_path("feature_subsystem_implementation_status.png"))),
             ("Feature distributions", lambda: self.preview_image(self._features_plot_path("implemented_feature_distributions.png"))),
@@ -1257,6 +1422,9 @@ class AcousticPipelineWindow(QMainWindow):
             ("quality", "main_summary"): self._output_root() / "acoustic" / "003_quality_control" / "tables" / "acoustic_quality_main_summary.csv",
             ("quality", "family_status"): self._output_root() / "acoustic" / "003_quality_control" / "tables" / "acoustic_quality_family_status.csv",
             ("quality", "family_summary"): self._output_root() / "acoustic" / "003_quality_control" / "tables" / "acoustic_quality_family_summary.csv",
+            ("quality", "feature_registry"): self._output_root() / "acoustic" / "003_quality_control" / "tables" / "acoustic_quality_feature_registry.csv",
+            ("quality", "warnings"): self._output_root() / "acoustic" / "003_quality_control" / "tables" / "acoustic_quality_warnings.csv",
+            ("quality", "recommendations"): self._output_root() / "acoustic" / "003_quality_control" / "tables" / "acoustic_quality_recommendations.csv",
             ("quality", "report"): self._output_root() / "acoustic" / "003_quality_control" / "reports" / "acoustic_quality_control_report.html",
             ("features", "summary"): self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_features_per_file.csv",
             ("features", "report"): self._output_root() / "acoustic" / "004_features" / "reports" / "acoustic_feature_report.html",
@@ -1679,12 +1847,14 @@ class AcousticPipelineWindow(QMainWindow):
         if not segmentation_summary.exists():
             QMessageBox.warning(self, "Segmentation required", "Run Data Segmentation first. Quality Control uses segmentation frames and segment tables.")
             return
-        selected = [family for family, cb in getattr(self, "qc_family_checks", {}).items() if cb.isChecked()]
-        if not selected:
-            QMessageBox.warning(self, "No QC families selected", "Select at least one QC family.")
+        selected_features = self._selected_qc_features()
+        selected_families = self._selected_qc_families()
+        if not selected_features or not selected_families:
+            QMessageBox.warning(self, "No QC features selected", "Select at least one QC feature.")
             return
         cfg = QualityControlConfig(
-            selected_families=selected,
+            selected_families=selected_families,
+            selected_features=selected_features,
             minimum_internal_pause_sec=float(self.qc_pause_sec_spin.value()),
             high_level_percentile=float(self.qc_high_level_spin.value()),
             hard_clip_threshold=float(self.qc_hard_clip_spin.value()),

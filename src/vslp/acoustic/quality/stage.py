@@ -100,6 +100,7 @@ FAMILY_FEATURES: dict[str, list[str]] = {
 @dataclass(frozen=True)
 class QualityControlConfig:
     selected_families: list[str] | None = None
+    selected_features: list[str] | None = None
     minimum_internal_pause_sec: float = 0.15
     high_level_percentile: float = 90.0
     hard_clip_threshold: float = 0.995
@@ -109,6 +110,57 @@ class QualityControlConfig:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def quality_feature_registry() -> pd.DataFrame:
+    """Return a transparent registry of QC features, families, and parameter dependencies."""
+    rows: list[dict[str, Any]] = []
+    parameter_map = {
+        "additive_interference": "minimum_internal_pause_sec",
+        "gain_dynamics": "high_level_percentile",
+        "reverberation_echo": "minimum_internal_pause_sec",
+        "channel_device": "none",
+        "nonlinear_distortion": "high_level_percentile; hard_clip_threshold; near_clip_threshold",
+        "temporal_discontinuity": "zero_threshold; abrupt_jump_db",
+    }
+    for family, features in FAMILY_FEATURES.items():
+        for feat in features:
+            role = "support" if feat.endswith("_status") or feat.endswith("_flags") else "quality_feature"
+            rows.append({
+                "family": family,
+                "family_label": QC_FAMILIES[family]["label"],
+                "feature": feat,
+                "role": role,
+                "default_selected": bool(role == "quality_feature"),
+                "parameter_dependencies": parameter_map.get(family, "none"),
+                "meaning": _infer_feature_meaning(feat),
+            })
+    return pd.DataFrame(rows)
+
+
+def _infer_feature_meaning(feature: str) -> str:
+    f = feature.lower()
+    if f.endswith("_status"):
+        return "Computation status for this QC family."
+    if f.endswith("_flags"):
+        return "Semicolon-delimited support or warning flags for this QC family."
+    if "pause" in f and "rms" in f:
+        return "Pause-region level/noise estimate; higher values can indicate additive background contamination."
+    if "speech_pause" in f:
+        return "Contrast between speech and pause levels; low contrast can indicate noise or weak signal separation."
+    if "hum50" in f or "hum60" in f:
+        return "Relative power near 50/60 Hz during pauses; higher values suggest line-frequency interference."
+    if "rms_db_std" in f or "instability" in f or "slope" in f:
+        return "Amplitude variability/drift proxy; high values may reflect gain changes or unstable recording level."
+    if "tail" in f or "reverb" in f or "blur" in f:
+        return "Post-speech energy persistence proxy; high values may reflect reverberation or echo."
+    if "centroid" in f or "rolloff" in f or "band" in f or "tilt" in f:
+        return "Spectral/device response proxy; useful for detecting bandwidth or channel differences."
+    if "clip" in f or "flat" in f or "pileup" in f or "asymmetry" in f:
+        return "Nonlinear distortion or clipping proxy; higher values indicate potential overload."
+    if "dropout" in f or "zero" in f or "jump" in f or "frozen" in f or "continuity" in f:
+        return "Temporal discontinuity proxy; higher values suggest dropouts, glitches, or waveform breaks."
+    return "Segmentation-informed acoustic quality feature."
 
 
 def _safe_float(x: Any) -> float:
@@ -457,6 +509,95 @@ def _compute_one(row: pd.Series, cfg: QualityControlConfig, families: list[str])
     return out, status_rows
 
 
+def _apply_feature_selection(feat_df: pd.DataFrame, cfg: QualityControlConfig) -> pd.DataFrame:
+    """Mask unselected numeric QC features while preserving status/flags for audit."""
+    selected = set(cfg.selected_features or [])
+    if not selected:
+        return feat_df
+    registry = quality_feature_registry()
+    quality_features = registry.loc[registry["role"].eq("quality_feature"), "feature"].tolist()
+    for feat in quality_features:
+        if feat in feat_df.columns and feat not in selected:
+            feat_df[feat] = np.nan
+    return feat_df
+
+
+def _quality_warning_rows(feat_df: pd.DataFrame) -> pd.DataFrame:
+    """Generate conservative per-file QC warnings from interpretable proxy thresholds.
+
+    Thresholds are intentionally screening defaults. They are not clinical rejection criteria.
+    """
+    rows: list[dict[str, Any]] = []
+    rules = [
+        ("additive_interference", "qadd_speech_pause_level_diff_db", "low", 10.0, "Low speech-pause level contrast; speech/pause separation may be noisy."),
+        ("additive_interference", "qadd_pause_hum50_ratio", "high", 0.05, "Elevated 50 Hz pause-region energy; possible line interference."),
+        ("additive_interference", "qadd_pause_hum60_ratio", "high", 0.05, "Elevated 60 Hz pause-region energy; possible line interference."),
+        ("gain_dynamics", "qgain_speech_rms_db_std", "high", 6.0, "High speech-level variability; possible gain instability or variable distance."),
+        ("reverberation_echo", "qrev_post_offset_tail_db_above_floor", "high", 6.0, "Post-offset speech tail above floor; possible reverberation/echo."),
+        ("nonlinear_distortion", "qdist_near_clipped_sample_fraction", "high", 0.01, "Near-clipped samples present in high-level speech frames."),
+        ("temporal_discontinuity", "qtemp_waveform_continuity_break_score", "high", 0.02, "Waveform continuity-break proxy elevated; possible dropout/glitch."),
+    ]
+    if feat_df.empty:
+        return pd.DataFrame(columns=["file_name", "family", "feature", "value", "threshold", "direction", "warning", "severity"])
+    for _, row in feat_df.iterrows():
+        fn = row.get("file_name", "")
+        for family, feat, direction, thr, msg in rules:
+            if feat not in feat_df.columns:
+                continue
+            val = _safe_float(row.get(feat))
+            if not np.isfinite(val):
+                continue
+            triggered = val > thr if direction == "high" else val < thr
+            if not triggered:
+                continue
+            severity = "review"
+            if direction == "high" and val > thr * 2:
+                severity = "strong_review"
+            if direction == "low" and val < max(0.0, thr / 2):
+                severity = "strong_review"
+            rows.append({
+                "file_name": fn,
+                "family": family,
+                "feature": feat,
+                "value": val,
+                "threshold": thr,
+                "direction": direction,
+                "warning": msg,
+                "severity": severity,
+            })
+    return pd.DataFrame(rows, columns=["file_name", "family", "feature", "value", "threshold", "direction", "warning", "severity"])
+
+
+def _quality_recommendations(warnings_df: pd.DataFrame, n_files: int) -> pd.DataFrame:
+    rows: list[dict[str, Any]] = []
+    family_guidance = {
+        "additive_interference": "Inspect noise-sensitive spectral, phonatory, and low-energy timing features. Pause-derived measures may be contaminated.",
+        "gain_dynamics": "Use caution with amplitude/intensity and energy-envelope features; consider reporting gain instability alongside biomarkers.",
+        "reverberation_echo": "Use caution with pause duration, pause energy, timing boundaries, and rhythm/prosody features sensitive to speech tails.",
+        "channel_device": "Use caution comparing spectral/formant/channel-sensitive features across devices or microphones.",
+        "nonlinear_distortion": "Use caution with amplitude, CPP, spectral, and phonatory features; clipped files may need exclusion or sensitivity analysis.",
+        "temporal_discontinuity": "Use caution with temporal/rhythm and signal-continuity-sensitive features; inspect files with dropouts/glitches.",
+    }
+    if n_files <= 0:
+        return pd.DataFrame(columns=["family", "n_files_flagged", "fraction_files_flagged", "recommendation"])
+    if warnings_df.empty:
+        return pd.DataFrame([{
+            "family": "overall",
+            "n_files_flagged": 0,
+            "fraction_files_flagged": 0.0,
+            "recommendation": "No QC warning thresholds were triggered. Continue feature extraction, but still inspect plots and metadata.",
+        }])
+    for fam, grp in warnings_df.groupby("family"):
+        n = int(grp["file_name"].nunique())
+        rows.append({
+            "family": fam,
+            "n_files_flagged": n,
+            "fraction_files_flagged": n / n_files,
+            "recommendation": family_guidance.get(fam, "Review affected files before interpreting downstream acoustic features."),
+        })
+    return pd.DataFrame(rows)
+
+
 def run_acoustic_quality_control(segmentation_summary_csv: str | Path, output_root: str | Path, config: QualityControlConfig | None=None) -> StageResult:
     cfg=config or QualityControlConfig()
     families=cfg.selected_families or list(QC_FAMILIES.keys())
@@ -475,33 +616,72 @@ def run_acoustic_quality_control(segmentation_summary_csv: str | Path, output_ro
     main_csv=folders["tables"]/"acoustic_quality_main_summary.csv"
     status_csv=folders["tables"]/"acoustic_quality_family_status.csv"
     family_csv=folders["tables"]/"acoustic_quality_family_summary.csv"
+    registry_csv=folders["tables"]/"acoustic_quality_feature_registry.csv"
+    warnings_csv=folders["tables"]/"acoustic_quality_warnings.csv"
+    recommendations_csv=folders["tables"]/"acoustic_quality_recommendations.csv"
     errors_csv=folders["errors"]/"acoustic_quality_errors.csv"
+
     feat_df=pd.DataFrame(rows)
     for fam, keys in FAMILY_FEATURES.items():
         for k in keys:
             if k not in feat_df.columns: feat_df[k]=np.nan
+    feat_df = _apply_feature_selection(feat_df, cfg)
+
+    warnings_df = _quality_warning_rows(feat_df)
+    recommendations_df = _quality_recommendations(warnings_df, n_files=len(feat_df))
+
+    # attach compact review summary to per-file table
+    if not feat_df.empty:
+        warn_counts = warnings_df.groupby("file_name").size().to_dict() if not warnings_df.empty else {}
+        warn_fams = warnings_df.groupby("file_name")["family"].apply(lambda s: ";".join(sorted(set(map(str, s))))).to_dict() if not warnings_df.empty else {}
+        feat_df["quality_n_warnings"] = feat_df["file_name"].map(warn_counts).fillna(0).astype(int) if "file_name" in feat_df else 0
+        feat_df["quality_warning_families"] = feat_df["file_name"].map(warn_fams).fillna("") if "file_name" in feat_df else ""
+        feat_df["quality_review_level"] = np.where(feat_df["quality_n_warnings"] >= 2, "review", np.where(feat_df["quality_n_warnings"] == 1, "minor_review", "no_threshold_warning"))
+
+    registry_df = quality_feature_registry()
+    if cfg.selected_features:
+        selected_set = set(cfg.selected_features)
+        registry_df["selected_in_run"] = registry_df["feature"].isin(selected_set) | registry_df["role"].eq("support")
+    else:
+        registry_df["selected_in_run"] = registry_df["default_selected"] | registry_df["role"].eq("support")
+
     feat_df.to_csv(features_csv,index=False)
+    registry_df.to_csv(registry_csv,index=False)
+    warnings_df.to_csv(warnings_csv,index=False)
+    recommendations_df.to_csv(recommendations_csv,index=False)
     status_df=pd.DataFrame(status_rows, columns=["file_name","family","family_label","status","flags"])
     status_df.to_csv(status_csv,index=False)
     pd.DataFrame(errors).to_csv(errors_csv,index=False)
     fam_summary=status_df.groupby(["family","family_label","status"]).size().reset_index(name="count") if not status_df.empty else pd.DataFrame(columns=["family","family_label","status","count"])
     fam_summary.to_csv(family_csv,index=False)
-    main_cols=["file_name","duration_sec","sample_rate_hz","qadd_pause_rms_db_median","qadd_speech_pause_level_diff_db","qgain_speech_rms_db_std","qrev_post_offset_tail_db_above_floor","qchan_speech_centroid_hz","qdist_near_clipped_sample_fraction","qtemp_waveform_continuity_break_score"]
+    main_cols=["file_name","quality_review_level","quality_n_warnings","quality_warning_families","duration_sec","sample_rate_hz","qadd_pause_rms_db_median","qadd_speech_pause_level_diff_db","qgain_speech_rms_db_std","qrev_post_offset_tail_db_above_floor","qchan_speech_centroid_hz","qdist_near_clipped_sample_fraction","qtemp_waveform_continuity_break_score"]
     for c in main_cols:
         if c not in feat_df.columns: feat_df[c]=np.nan
     feat_df[main_cols].to_csv(main_csv,index=False)
     # plots
-    p1=folders["plots"]/"quality_family_status.png"; p2=folders["plots"]/"quality_main_features_overview.png"
+    p1=folders["plots"]/"quality_family_status.png"
+    p2=folders["plots"]/"quality_main_features_overview.png"
+    p3=folders["plots"]/"quality_feature_distributions.png"
+    p4=folders["plots"]/"quality_warning_heatmap.png"
+    p5=folders["plots"]/"quality_recommendation_summary.png"
     _plot_family_status(status_df,p1); _plot_overview(feat_df,p2)
+    _plot_feature_distributions(feat_df,p3); _plot_warning_heatmap(warnings_df, feat_df, p4); _plot_recommendations(recommendations_df,p5)
     report=folders["reports"]/"acoustic_quality_control_report.html"
-    _write_report(report, feat_df, fam_summary, cfg, p1, p2)
+    _write_report(report, feat_df, fam_summary, cfg, p1, p2, p3, p4, p5, recommendations_df)
     manifest=StageManifest(
         stage_name="acoustic_quality_control",
-        stage_version="0.21.0",
+        stage_version="0.22.0",
         status="completed_with_warnings" if errors else "completed",
         input_artifacts=[ArtifactRef(path=str(segmentation_summary_csv), role="segmentation_summary", media_type="text/csv")],
-        output_artifacts=[ArtifactRef(path=str(features_csv), role="quality_features", media_type="text/csv"), ArtifactRef(path=str(main_csv), role="quality_main_summary", media_type="text/csv"), ArtifactRef(path=str(report), role="quality_report", media_type="text/html")],
-        config=cfg.to_dict() | {"selected_families": families},
+        output_artifacts=[
+            ArtifactRef(path=str(features_csv), role="quality_features", media_type="text/csv"),
+            ArtifactRef(path=str(main_csv), role="quality_main_summary", media_type="text/csv"),
+            ArtifactRef(path=str(registry_csv), role="quality_feature_registry", media_type="text/csv"),
+            ArtifactRef(path=str(warnings_csv), role="quality_warnings", media_type="text/csv"),
+            ArtifactRef(path=str(recommendations_csv), role="quality_recommendations", media_type="text/csv"),
+            ArtifactRef(path=str(report), role="quality_report", media_type="text/html"),
+        ],
+        config=cfg.to_dict() | {"selected_families": families, "selected_features": cfg.selected_features},
         environment={"python": python_environment()},
         errors=errors,
         notes=["Quality features are screening/proxy measurements; they do not automatically reject recordings."],
@@ -538,14 +718,102 @@ def _plot_overview(df: pd.DataFrame, path: Path) -> None:
     fig.tight_layout(); fig.savefig(path,dpi=170); plt.close(fig)
 
 
-def _write_report(path: Path, feat_df: pd.DataFrame, fam_summary: pd.DataFrame, cfg: QualityControlConfig, p1: Path, p2: Path) -> None:
+def _plot_feature_distributions(df: pd.DataFrame, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cols = [
+        ("qadd_speech_pause_level_diff_db", "Speech-pause\ncontrast (dB)", "low", 10.0),
+        ("qgain_speech_rms_db_std", "Speech level\nSD (dB)", "high", 6.0),
+        ("qrev_post_offset_tail_db_above_floor", "Reverb tail\nabove floor (dB)", "high", 6.0),
+        ("qdist_near_clipped_sample_fraction", "Near-clipped\nsample fraction", "high", 0.01),
+        ("qtemp_waveform_continuity_break_score", "Continuity\nbreak score", "high", 0.02),
+    ]
+    fig, axes = plt.subplots(1, len(cols), figsize=(15, 4.2))
+    if not isinstance(axes, np.ndarray):
+        axes = np.asarray([axes])
+    for ax, (col, label, direction, thr) in zip(axes, cols, strict=False):
+        vals = pd.to_numeric(df[col], errors="coerce").dropna() if col in df.columns else pd.Series(dtype=float)
+        if vals.empty:
+            ax.text(0.5, 0.5, "No data", ha="center", va="center")
+            ax.set_axis_off()
+            continue
+        y = vals.values
+        x = np.zeros_like(y, dtype=float)
+        rng = np.random.default_rng(13)
+        jitter = rng.normal(0, 0.035, size=len(y))
+        bad = y > thr if direction == "high" else y < thr
+        ax.scatter(x[~bad] + jitter[~bad], y[~bad], s=46, alpha=0.82, label="within screen")
+        ax.scatter(x[bad] + jitter[bad], y[bad], s=58, alpha=0.90, label="review")
+        ax.axhline(thr, linestyle="--", linewidth=1.2)
+        ax.set_xticks([])
+        ax.set_title(label, fontsize=9)
+        ax.grid(axis="y", alpha=0.25)
+    fig.suptitle("QC feature distributions across uploaded recordings", fontsize=13)
+    fig.tight_layout()
+    fig.savefig(path, dpi=180)
+    plt.close(fig)
+
+
+def _plot_warning_heatmap(warnings_df: pd.DataFrame, feat_df: pd.DataFrame, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    families = list(QC_FAMILIES.keys())
+    files = feat_df["file_name"].astype(str).tolist() if "file_name" in feat_df.columns else []
+    mat = np.zeros((len(files), len(families)))
+    if not warnings_df.empty and files:
+        f_index = {f: i for i, f in enumerate(files)}
+        fam_index = {f: i for i, f in enumerate(families)}
+        for _, r in warnings_df.iterrows():
+            fi = f_index.get(str(r.get("file_name", "")))
+            fj = fam_index.get(str(r.get("family", "")))
+            if fi is not None and fj is not None:
+                mat[fi, fj] += 1
+    fig, ax = plt.subplots(figsize=(10, max(3.5, 0.35 * max(1, len(files)))))
+    if not files:
+        ax.text(0.5, 0.5, "No files evaluated", ha="center", va="center"); ax.axis("off")
+    else:
+        im = ax.imshow(mat, aspect="auto")
+        ax.set_yticks(range(len(files))); ax.set_yticklabels(files, fontsize=7)
+        ax.set_xticks(range(len(families))); ax.set_xticklabels([QC_FAMILIES[f]["label"] for f in families], rotation=35, ha="right", fontsize=8)
+        ax.set_title("QC warning heatmap by file and artifact family")
+        for i in range(mat.shape[0]):
+            for j in range(mat.shape[1]):
+                if mat[i, j] > 0:
+                    ax.text(j, i, int(mat[i, j]), ha="center", va="center", fontsize=8)
+        fig.colorbar(im, ax=ax, shrink=0.75, label="warning count")
+    fig.tight_layout(); fig.savefig(path, dpi=180); plt.close(fig)
+
+
+def _plot_recommendations(rec_df: pd.DataFrame, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(9, 4.5))
+    if rec_df.empty or "family" not in rec_df.columns:
+        ax.text(0.5, 0.5, "No QC recommendations", ha="center", va="center"); ax.axis("off")
+    else:
+        df = rec_df[rec_df["family"].ne("overall")].copy()
+        if df.empty:
+            ax.text(0.5, 0.5, "No warning thresholds triggered", ha="center", va="center"); ax.axis("off")
+        else:
+            df = df.sort_values("fraction_files_flagged")
+            labels = [QC_FAMILIES.get(f, {}).get("label", f) for f in df["family"]]
+            ax.barh(labels, df["fraction_files_flagged"].astype(float) * 100)
+            ax.set_xlabel("Files flagged (%)")
+            ax.set_title("QC families most likely to affect downstream acoustic features")
+            ax.set_xlim(0, max(100, float(df["fraction_files_flagged"].max() * 100) * 1.15))
+    fig.tight_layout(); fig.savefig(path, dpi=180); plt.close(fig)
+
+
+def _write_report(path: Path, feat_df: pd.DataFrame, fam_summary: pd.DataFrame, cfg: QualityControlConfig, p1: Path, p2: Path, p3: Path, p4: Path, p5: Path, recommendations_df: pd.DataFrame) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     n=len(feat_df)
     family_rows="".join(f"<tr><td>{r.family_label}</td><td>{r.status}</td><td>{r['count']}</td></tr>" for _,r in fam_summary.iterrows()) if not fam_summary.empty else "<tr><td colspan='3'>No family rows</td></tr>"
+    rec_rows="".join(f"<tr><td>{r.family}</td><td>{r.n_files_flagged}</td><td>{r.fraction_files_flagged:.2f}</td><td>{r.recommendation}</td></tr>" for _,r in recommendations_df.iterrows()) if not recommendations_df.empty else "<tr><td colspan='4'>No recommendation rows</td></tr>"
     html=f"""<!doctype html><html><head><meta charset='utf-8'><title>VSLP Acoustic Quality Control</title>
 <style>body{{font-family:Arial,sans-serif;background:#0B1624;color:#EEF6FC;margin:28px}}.card{{background:#122235;border:1px solid #253B52;border-radius:12px;padding:16px;margin:14px 0}}img{{max-width:100%;background:#fff;border-radius:8px}}table{{border-collapse:collapse;width:100%}}td,th{{border-bottom:1px solid #30495F;padding:6px;text-align:left}}</style></head><body>
 <h1>VSLP Acoustic Quality Control</h1><div class='card'><b>Files evaluated:</b> {n}<br><b>Selected families:</b> {', '.join(cfg.selected_families or QC_FAMILIES.keys())}</div>
 <div class='card'><h2>Family summary</h2><table><tr><th>Family</th><th>Status</th><th>Count</th></tr>{family_rows}</table></div>
+<div class='card'><h2>Recommendations</h2><table><tr><th>Family</th><th>Files flagged</th><th>Fraction</th><th>Recommendation</th></tr>{rec_rows}</table></div>
+<div class='card'><h2>QC feature distributions</h2><img src='../plots/{p3.name}'></div>
+<div class='card'><h2>QC warning heatmap</h2><img src='../plots/{p4.name}'></div>
+<div class='card'><h2>QC recommendation summary</h2><img src='../plots/{p5.name}'></div>
 <div class='card'><h2>QC family coverage</h2><img src='../plots/{p1.name}'></div><div class='card'><h2>QC overview</h2><img src='../plots/{p2.name}'></div>
 </body></html>"""
     path.write_text(html, encoding="utf-8")
