@@ -59,6 +59,10 @@ class FeatureExtractionConfig:
     metadata_csv: str | None = None
     minimum_pause_duration_sec: float = 0.15
     acoustic_region_policy: str = "speech_only"  # speech_only, effective_task, full_file
+    rhythm_region_policy: str = "effective_task"  # rhythm needs internal pauses preserved
+    rhythm_envelope_bandpass_low_hz: float = 300.0
+    rhythm_envelope_bandpass_high_hz: float = 1000.0
+    rhythm_envelope_sample_rate_hz: float = 100.0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -294,7 +298,9 @@ def run_acoustic_feature_extraction(
         warnings=warnings,
         errors=errors,
         notes=[
-            "Feature extraction now uses subsystem plugins and a region-aware signal policy.",
+            "Feature extraction uses subsystem plugins and region-aware signal policy.",
+            "Respiratory/timing features were validated in v0.26 from segmentation tables.",
+            "Rhythm/EMS features were validated in v0.27 from effective-task envelope modulation spectrum.",
             f"Computed feature families in this pass: {computed_features}",
             "Registered-but-not-yet-implemented features remain explicit NaN placeholders.",
             "Expected-range flags are descriptive screening aids, not clinical cutoffs.",
