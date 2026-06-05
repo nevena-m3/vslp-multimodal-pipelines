@@ -5,7 +5,7 @@ from __future__ import annotations
 from vslp.acoustic.features.plugins.base import AcousticFeaturePlugin
 from vslp.acoustic.features.plugins.articulatory import ArticulatoryPlugin
 from vslp.acoustic.features.plugins.phonatory import PhonatoryPlugin
-from vslp.acoustic.features.plugins.resonatory import ResonatoryBaselinePlugin
+from vslp.acoustic.features.plugins.resonatory import ResonatoryPlugin
 from vslp.acoustic.features.plugins.rhythm import RhythmPlugin
 from vslp.acoustic.features.plugins.timing import TimingPlugin
 
@@ -16,7 +16,7 @@ def build_default_plugins() -> list[AcousticFeaturePlugin]:
         PhonatoryPlugin(),
         ArticulatoryPlugin(),
         RhythmPlugin(),
-        ResonatoryBaselinePlugin(),
+        ResonatoryPlugin(),
     ]
 
 
