@@ -146,6 +146,7 @@ class MetadataConfig:
     filename_iteration_pattern: str = r"(?i)(ITERATION|ITER|VISIT|V)[_-]?(?P<iteration>[0-9]+)"
     metadata_stem_match: bool = True
     preserve_all_metadata_columns: bool = True
+    task_fallback: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -299,6 +300,15 @@ def _parse_filename_metadata(file_name: str, cfg: MetadataConfig, file_index: in
     out["metadata_notes"] = "; ".join(notes)
     return out
 
+
+
+def _normalize_task_fallback(value: str | None) -> str | None:
+    if value is None:
+        return None
+    value = str(value).strip()
+    if not value:
+        return None
+    return _normalize_task_value(value)
 
 def _prepare_demographics(path: Path, cfg: MetadataConfig) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
     warnings: list[str] = []
@@ -483,6 +493,17 @@ def run_acoustic_metadata(
         _normalize_task_value(v, fallback_file_name=f)
         for v, f in zip(index_df["task"], index_df["file_name"])
     ]
+    task_fallback = _normalize_task_fallback(cfg.task_fallback)
+    if task_fallback:
+        unknown_mask = index_df["task"].isna() | index_df["task"].astype(str).str.lower().isin(["unknown_task", "nan", "none", "<na>"])
+        if unknown_mask.any():
+            index_df.loc[unknown_mask, "task"] = task_fallback
+            existing_notes = index_df.loc[unknown_mask, "metadata_notes"].fillna("").astype(str)
+            index_df.loc[unknown_mask, "metadata_notes"] = [
+                (note + "; " if note else "") + f"task fallback from project setup: {task_fallback}"
+                for note in existing_notes
+            ]
+            warnings.append(f"task fallback from project setup applied to {int(unknown_mask.sum())} file(s)")
 
     index_df["record_key"] = (
         index_df["subject_id"].astype(str) + "__" +
