@@ -979,8 +979,8 @@ class AcousticPipelineWindow(QMainWindow):
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.addWidget(self._info_panel(
-            "Region-aware feature extraction",
-            "Many acoustic features should not be computed over the full file. Timing and pause features use Silero speech/nonspeech segments. Signal features default to speech_only regions so leading silence, trailing silence, instructions, and dead time do not contaminate the measurement. Pending features remain explicit NaN placeholders until validated."
+            "Info",
+            "Features are organized by speech subsystem and task compatibility. Timing features use segment tables; signal features use the selected region policy. Features marked proxy or pending require validation before clinical interpretation."
         ))
 
         splitter = QSplitter(Qt.Horizontal)
@@ -1000,7 +1000,7 @@ class AcousticPipelineWindow(QMainWindow):
         selector_layout.addLayout(quick)
 
         self.feature_tree = QTreeWidget()
-        self.feature_tree.setHeaderLabels(["Feature / subsystem", "Status", "Unit"])
+        self.feature_tree.setHeaderLabels(["Feature / subsystem", "Status", "Tier", "Task / unit"])
         self.feature_tree.setMinimumHeight(360)
         self.feature_tree.setSelectionMode(QAbstractItemView.SingleSelection)
         self.feature_tree.itemChanged.connect(self._on_feature_tree_item_changed)
@@ -1157,6 +1157,10 @@ class AcousticPipelineWindow(QMainWindow):
             ("Quality PCA variance", lambda: self.preview_csv(self._stage_path("quality", "pca_variance"))),
             ("Quality family status", lambda: self.preview_csv(self._stage_path("quality", "family_status"))),
             ("Feature table", lambda: self.preview_csv(self._stage_path("features", "summary"))),
+            ("Feature registry", lambda: self.preview_csv(self._stage_path("features", "registry"))),
+            ("Feature status", lambda: self.preview_csv(self._stage_path("features", "status"))),
+            ("Feature distribution audit", lambda: self.preview_csv(self._stage_path("features", "audit"))),
+            ("Feature expected-range flags", lambda: self.preview_csv(self._stage_path("features", "range_flags"))),
             ("Aggregated table", lambda: self.preview_csv(self._stage_path("aggregate", "summary"))),
             ("QC dashboard", lambda: self.preview_csv(self._stage_path("qc", "summary"))),
         ]
@@ -1190,6 +1194,10 @@ class AcousticPipelineWindow(QMainWindow):
             ("Feature missingness", lambda: self.preview_image(self._features_plot_path("feature_missingness.png"))),
             ("Feature implementation status", lambda: self.preview_image(self._features_plot_path("feature_subsystem_implementation_status.png"))),
             ("Feature distributions", lambda: self.preview_image(self._features_plot_path("implemented_feature_distributions.png"))),
+            ("Feature distribution audit", lambda: self.preview_image(self._features_plot_path("feature_distribution_audit.png"))),
+            ("Feature expected-range flags", lambda: self.preview_image(self._features_plot_path("feature_expected_range_flags.png"))),
+            ("Feature correlation heatmap", lambda: self.preview_image(self._features_plot_path("feature_correlation_heatmap.png"))),
+            ("Feature subsystem coverage", lambda: self.preview_image(self._features_plot_path("feature_subsystem_distributions.png"))),
             ("Aggregation missingness", lambda: self.preview_image(self._output_root() / "acoustic" / "005_aggregation" / "plots" / "aggregation_missingness_top30.png")),
             ("Aggregation group counts", lambda: self.preview_image(self._output_root() / "acoustic" / "005_aggregation" / "plots" / "aggregation_group_counts.png")),
             ("QC flag counts", lambda: self.preview_image(self._output_root() / "acoustic" / "006_qc_dashboard" / "plots" / "qc_flag_counts.png")),
@@ -1330,19 +1338,27 @@ class AcousticPipelineWindow(QMainWindow):
             for _, row in sdf.sort_values("feature").iterrows():
                 feature = str(row["feature"])
                 status = self._feature_status(feature)
-                item = QTreeWidgetItem([feature, status, str(row.get("unit", ""))])
+                tier = str(row.get("evidence_tier", ""))
+                unit = str(row.get("unit", ""))
+                task = str(row.get("task_scope", ""))
+                task_unit = f"{task} | {unit}" if task and unit else (task or unit)
+                item = QTreeWidgetItem([feature, status, tier, task_unit])
                 item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
                 item.setCheckState(0, Qt.Checked)
                 item.setData(0, Qt.UserRole, feature)
                 item.setToolTip(0, str(row.get("meaning", "")))
                 item.setToolTip(1, "implemented = computed; proxy = engineering estimate needing validation; pending = explicit NaN placeholder")
+                item.setToolTip(2, "Evidence tier from the feature map: A established, B strong, C inconsistent/exploratory, D low priority.")
+                item.setToolTip(3, "Task compatibility and units.")
                 if status == "implemented":
                     color = QColor("#8EF2C6")
                 elif status == "proxy":
                     color = QColor("#FFD98E")
                 else:
                     color = QColor("#8FA9BD")
+                tier_color = {"A": QColor("#8EF2C6"), "B": QColor("#5FD3C4"), "C": QColor("#FFD98E"), "D": QColor("#D77A6A")}.get(tier, QColor("#8FA9BD"))
                 item.setForeground(1, QBrush(color))
+                item.setForeground(2, QBrush(tier_color))
                 item.setForeground(0, QBrush(QColor("#EAF2F8")))
                 parent.addChild(item)
                 self.feature_items[feature] = item
@@ -1576,6 +1592,10 @@ class AcousticPipelineWindow(QMainWindow):
             ("quality", "report"): self._output_root() / "acoustic" / "003_quality_control" / "reports" / "acoustic_quality_control_report.html",
             ("features", "summary"): self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_features_per_file.csv",
             ("features", "report"): self._output_root() / "acoustic" / "004_features" / "reports" / "acoustic_feature_report.html",
+            ("features", "registry"): self._output_root() / "acoustic" / "004_features" / "tables" / "selected_acoustic_feature_registry.csv",
+            ("features", "status"): self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_feature_status_long.csv",
+            ("features", "audit"): self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_feature_distribution_audit.csv",
+            ("features", "range_flags"): self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_feature_expected_range_flags.csv",
             ("aggregate", "summary"): self._output_root() / "acoustic" / "005_aggregation" / "tables" / "acoustic_features_aggregated.csv",
             ("aggregate", "report"): self._output_root() / "acoustic" / "005_aggregation" / "reports" / "acoustic_aggregation_report.html",
             ("qc", "summary"): self._output_root() / "acoustic" / "006_qc_dashboard" / "tables" / "acoustic_qc_dashboard.csv",
