@@ -134,3 +134,8 @@ vslp gui acoustic
 ## v0.17 Setup workflow note
 
 The Acoustic GUI Setup screen now enforces project initialization before ingest. The input folder is searched recursively, including subfolders, but one task per input folder remains the recommended clean workflow. Metadata is run from the Metadata tab, not Setup.
+
+
+## v0.26 respiratory/timing validation
+
+Respiratory/timing acoustic features are now validated against explicit segment-table formulas. See `docs/acoustic_features_v026_timing_validation.md`.
