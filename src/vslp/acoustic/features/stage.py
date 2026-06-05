@@ -33,7 +33,7 @@ from vslp.core.provenance import python_environment
 from vslp.core.schemas import ArtifactRef, StageManifest, StageResult
 
 IMPLEMENTED_FEATURES = implemented_feature_names()
-PROXY_FEATURES = {"f0_mean", "f0_std", "CPP_mean"}
+PROXY_FEATURES = set()
 
 
 @dataclass(frozen=True)
@@ -269,7 +269,7 @@ def run_acoustic_feature_extraction(
         subsystem_dist_plot,
     )
 
-    computed_statuses = {"computed", "computed_proxy"}
+    computed_statuses = {"computed", "computed_proxy", "computed_with_warning"}
     status_df = pd.DataFrame(long_status_rows)
     computed_features = sorted(status_df.loc[status_df["status"].isin(computed_statuses), "feature"].unique().tolist()) if not status_df.empty else []
     proxy_features = sorted(status_df.loc[status_df["status"].eq("computed_proxy"), "feature"].unique().tolist()) if not status_df.empty else []
@@ -587,12 +587,12 @@ def _write_feature_html_report(
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     status_df = pd.DataFrame(status_rows)
-    computed = int(status_df["status"].isin(["computed", "computed_proxy"]).sum()) if not status_df.empty else 0
+    computed = int(status_df["status"].isin(["computed", "computed_proxy", "computed_with_warning"]).sum()) if not status_df.empty else 0
     proxies = int((status_df["status"] == "computed_proxy").sum()) if not status_df.empty else 0
     pending = int((status_df["status"] == "not_implemented_yet").sum()) if not status_df.empty else 0
     files_ok = int(sum(1 for r in rows if r.get("feature_extraction_status") == "ok"))
     failed = len(errors)
-    implemented = sorted(status_df.loc[status_df["status"].isin(["computed", "computed_proxy"]), "feature"].unique().tolist()) if not status_df.empty else []
+    implemented = sorted(status_df.loc[status_df["status"].isin(["computed", "computed_proxy", "computed_with_warning"]), "feature"].unique().tolist()) if not status_df.empty else []
 
     def img_block(title: str, image_path: Path) -> str:
         if not image_path.exists():

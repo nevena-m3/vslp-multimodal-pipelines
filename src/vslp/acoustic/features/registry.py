@@ -78,10 +78,32 @@ def build_acoustic_feature_registry() -> pd.DataFrame:
     for i in range(1, 4):
         add_feature(f"f{i}_range", "articulatory", f"Robust F{i} range: 95th minus 5th percentile", "Hz", "Computed over speech-region formant tracks.", "P95(F)-P5(F)", "passage/sentence trajectories", "B" if i <= 2 else "C", 0, None, "decreases", "pending_validation")
 
-    # Phonatory.
-    add_feature("f0_mean", "phonatory", "Mean voiced fundamental frequency", "Hz", "Current backend uses local autocorrelation proxy; validate against reference/Praat-style F0 before clinical interpretation.", "mean(f0(t))", "vowel/speech voiced regions", "C", 60, 400, "mean is sex/age confounded", "computed_proxy")
-    add_feature("f0_std", "phonatory", "Standard deviation of voiced F0", "Hz", "Current backend uses local autocorrelation proxy; semitone scaling is recommended for cross-speaker analysis.", "std(f0(t))", "vowel/speech voiced regions", "B", 0, 120, "decreases with monopitch", "computed_proxy")
-    add_feature("CPP_mean", "phonatory", "Mean cepstral peak prominence proxy", "dB-like", "Current backend computes a local CPP proxy. Validate against line-normalized CPP/CPPS reference before clinical interpretation.", "cepstral peak - fitted baseline", "vowel and connected speech", "B", 0, 30, "decreases with dysphonia", "computed_proxy")
+    # Phonatory — implemented with transparent local algorithms in v0.28.
+    phonatory_note = (
+        "Implemented v0.28 with local auditable signal processing: frame autocorrelation F0/HNR, "
+        "line-normalized cepstral peak prominence, perturbation features from voiced-frame period and RMS-amplitude tracks, "
+        "and H1/H2 harmonic estimates from voiced-frame spectra. Formulas are explicit and internally tested; "
+        "external Praat/MDVP/reference validation is still recommended before clinical interpretation, especially for jitter/shimmer."
+    )
+    add_feature("f0_mean", "phonatory", "Mean voiced fundamental frequency", "Hz", phonatory_note, "mean(f0(t))", "vowel/speech voiced regions", "C", 60, 400, "mean is sex/age confounded", "implemented")
+    add_feature("f0_std", "phonatory", "Standard deviation of voiced F0", "Hz", phonatory_note + " Semitone scaling is recommended for cross-speaker analysis.", "std(f0(t))", "vowel/speech voiced regions", "B", 0, 120, "decreases with monopitch", "implemented")
+    add_feature("CPP_mean", "phonatory", "Mean line-normalized cepstral peak prominence", "dB-like", phonatory_note, "cepstral peak - linear quefrency baseline", "vowel and connected speech", "B", -80, 20, "decreases with dysphonia", "implemented")
+    add_feature("HNR", "phonatory", "Harmonics-to-noise ratio from autocorrelation periodicity", "dB", phonatory_note, "10*log10(r/(1-r))", "sustained vowel/speech voiced regions", "C", -20, 40, "decreases with breathiness/hoarseness", "implemented")
+    add_feature("localJitter", "phonatory", "Local jitter: consecutive period perturbation normalized by mean period", "%", phonatory_note, "mean(|T_i - T_{i+1}|)/mean(T)*100", "sustained vowel preferred", "C", 0, 10, "may increase with phonatory instability", "implemented")
+    add_feature("localabsoluteJitter", "phonatory", "Local absolute jitter: mean absolute consecutive period difference", "s", phonatory_note, "mean(|T_i - T_{i+1}|)", "sustained vowel preferred", "C", 0, 0.005, "may increase with phonatory instability", "implemented")
+    add_feature("rapJitter", "phonatory", "Relative average perturbation jitter over three-period windows", "%", phonatory_note, "mean(|T_i - mean(T_{i-1:i+1})|)/mean(T)*100", "sustained vowel preferred", "C", 0, 10, "may increase with phonatory instability", "implemented")
+    add_feature("ppq5Jitter", "phonatory", "Five-point period perturbation quotient", "%", phonatory_note, "mean(|T_i - mean(T_{i-2:i+2})|)/mean(T)*100", "sustained vowel preferred", "C", 0, 10, "may increase with phonatory instability", "implemented")
+    add_feature("ddpJitter", "phonatory", "Difference-of-differences of periods; conventionally 3 × RAP", "%", phonatory_note, "3*RAP", "sustained vowel preferred", "C", 0, 30, "may increase with phonatory instability", "implemented")
+    add_feature("localShimmer", "phonatory", "Local shimmer: consecutive amplitude perturbation normalized by mean amplitude", "%", phonatory_note, "mean(|A_i - A_{i+1}|)/mean(A)*100", "sustained vowel preferred", "C", 0, 50, "may increase with breathiness/roughness", "implemented")
+    add_feature("localdbShimmer", "phonatory", "Local shimmer in dB", "dB", phonatory_note, "mean(|20*log10(A_{i+1}/A_i)|)", "sustained vowel preferred", "C", 0, 5, "may increase with amplitude instability", "implemented")
+    add_feature("apq3Shimmer", "phonatory", "Three-point amplitude perturbation quotient", "%", phonatory_note, "mean(|A_i - mean(A_{i-1:i+1})|)/mean(A)*100", "sustained vowel preferred", "C", 0, 50, "may increase with amplitude instability", "implemented")
+    add_feature("apq5Shimmer", "phonatory", "Five-point amplitude perturbation quotient", "%", phonatory_note, "mean(|A_i - mean(A_{i-2:i+2})|)/mean(A)*100", "sustained vowel preferred", "C", 0, 50, "may increase with amplitude instability", "implemented")
+    add_feature("apq11Shimmer", "phonatory", "Eleven-point amplitude perturbation quotient", "%", phonatory_note, "mean(|A_i - mean(A_{i-5:i+5})|)/mean(A)*100", "sustained vowel preferred; requires longer stable phonation", "C", 0, 50, "may increase with sustained amplitude instability", "implemented")
+    add_feature("num_voicebreaks", "phonatory", "Number of internal unvoiced breaks inside voiced phonation region", "count", phonatory_note, "count(unvoiced_runs_between_voiced_regions >= threshold)", "sustained vowel preferred", "C", 0, 100, "may increase with phonatory instability", "implemented")
+    add_feature("H1freq", "phonatory", "First harmonic frequency estimate", "Hz", phonatory_note, "frequency near f0 with local spectral maximum", "voiced speech/sentence/nasality support", "C", 60, 400, "anchors H1/H2 spectral tilt", "implemented")
+    add_feature("H1amp", "phonatory", "First harmonic amplitude estimate", "dB", phonatory_note, "spectral amplitude near f0", "voiced speech/sentence/nasality support", "C", -160, 20, "supports H1-H2 spectral tilt", "implemented")
+    add_feature("H2freq", "phonatory", "Second harmonic frequency estimate", "Hz", phonatory_note, "frequency near 2*f0 with local spectral maximum", "voiced speech/sentence/nasality support", "C", 120, 800, "supports H1-H2 spectral tilt", "implemented")
+    add_feature("H2amp", "phonatory", "Second harmonic amplitude estimate", "dB", phonatory_note, "spectral amplitude near 2*f0", "voiced speech/sentence/nasality support", "C", -160, 20, "supports H1-H2 spectral tilt", "implemented")
 
     # Rhythm / envelope modulation — validated v0.27.
     rhythm = [
@@ -118,7 +140,7 @@ def build_acoustic_feature_registry() -> pd.DataFrame:
     ]
     for name, meaning, unit, formula, task, tier in reson:
         add_feature(name, "resonatory", meaning, unit, "Pending validated nasality implementation; depends strongly on vowel/task and F0/harmonic placement.", formula, task, tier, None, None, "hypernasality generally lowers A1-P0/A1-P1/A3-P0 and increases pole amplitudes", "not_implemented_yet")
-    for name in ["F1freq", "F1amp", "F1width", "F2freq", "F2amp", "F2width", "F3freq", "F3amp", "F3width", "H1freq", "H1amp", "H2freq", "H2amp", "RMSamp"]:
+    for name in ["F1freq", "F1amp", "F1width", "F2freq", "F2amp", "F2width", "F3freq", "F3amp", "F3width", "RMSamp"]:
         status = "implemented" if name == "RMSamp" else "not_implemented_yet"
         subsystem = "resonatory" if name != "RMSamp" else "rhythm"
         add_feature(name, subsystem, f"Sentence spectral/nasality support feature: {name}", "varies", "Part of sentence/nasality spectral analysis; validate formulas before clinical use.", "see feature map", "sentence", "C", None, None, "task dependent", status)
