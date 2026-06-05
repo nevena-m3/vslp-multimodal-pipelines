@@ -121,3 +121,165 @@ def build_feature_scale_registry(feature_registry: pd.DataFrame | None = None) -
             })
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+
+def build_feature_computation_policy(feature_registry: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Return the v0.34 scientific computation policy for acoustic features.
+
+    This table is intentionally user-facing. It answers: for a single audio file,
+    what signal/segment support does a feature use and exactly how is the native
+    multi-value representation reduced to one file-level scalar?
+    """
+    reg = feature_registry.copy() if feature_registry is not None else pd.DataFrame()
+    features = reg["feature"].astype(str).tolist() if "feature" in reg.columns else []
+
+    timing = {
+        "total_dur", "speech_dur", "percent_pause", "num_pause", "mean_pause_dur", "mean_phrase_dur",
+        "cv_pause_dur", "cv_phrase_dur", "total_pause_dur", "speech_rate",
+    }
+    rhythm = {"intensity_CV", "fft_peaks1", "fft_peaks2", "fft_ampli1", "fft_ampli2", "nrj_below_boundary", "nrj_above_boundary", "nrj_3_6", "ratio_below_above"}
+    phon = {"f0_mean", "f0_std", "CPP_mean", "HNR", "localJitter", "localabsoluteJitter", "rapJitter", "ppq5Jitter", "ddpJitter", "localShimmer", "localdbShimmer", "apq3Shimmer", "apq5Shimmer", "apq11Shimmer", "num_voicebreaks", "H1freq", "H1amp", "H2freq", "H2amp"}
+    formant = {f"f{i}" for i in range(1, 6)} | {f"f{i}_bw" for i in range(1, 6)} | {f"f{i}_range" for i in range(1, 4)} | {f"f{i}_{suffix}" for i in range(1, 4) for suffix in ["d_dx_median", "d_dx_prc_5", "d_dx_prc_95", "d_dx_prc_5_95"]}
+    reson = {"A1P0", "A1P0comp", "A1P1", "A1P1comp", "A3P0", "P0freq", "P0amp", "P0prom", "P1amp", "F1freq", "F1amp", "F1width", "F2freq", "F2amp", "F2width", "F3freq", "F3amp", "F3width", "RMSamp"}
+    coord = {"CPP_F1_comp", "CPP_F2_comp", "F1_F2_comp"}
+
+    def family_of(feature: str) -> str:
+        if feature in timing: return "Timing / respiratory"
+        if feature in rhythm: return "Rhythm / EMS"
+        if feature in phon: return "Phonatory"
+        if feature in formant: return "Articulatory / formant"
+        if feature in reson: return "Resonatory / nasality"
+        if feature in coord: return "Coordination"
+        return "Other / pending"
+
+    family_policy = {
+        "Timing / respiratory": {
+            "recommended_tasks": "Connected speech / passage / sentence; not sustained vowel except duration metadata",
+            "default_region": "Silero speech + internal pause segment table",
+            "native_measurements": "speech segment events; internal pause events; first-speech to last-speech effective task interval",
+            "file_level_reduction": "sums, counts, durations, percent of effective task, mean/CV over segment-event distributions",
+            "why_this_is_scientific": "Pausing and phrase timing are event-level respiratory/speech-planning phenomena; waveform concatenation would remove the pause physiology.",
+            "avoid": "Do not compute from concatenated speech waveform; do not treat leading/trailing silence as internal pause burden.",
+        },
+        "Rhythm / EMS": {
+            "recommended_tasks": "Connected speech / passages / sentence reading; not isolated vowel",
+            "default_region": "effective_task",
+            "native_measurements": "amplitude envelope over first speech onset to last speech offset with internal pauses preserved; 0-10 Hz modulation spectrum",
+            "file_level_reduction": "dominant modulation frequencies, peak amplitudes, normalized band powers, slow/fast band ratio, RMS intensity CV",
+            "why_this_is_scientific": "Connected-speech rhythm depends on syllabic amplitude modulation plus pause timing; speech-only concatenation distorts low-frequency rhythm.",
+            "avoid": "Do not concatenate speech segments for EMS rhythm; do not pool across tasks with very different elicitation designs without task labels.",
+        },
+        "Phonatory": {
+            "recommended_tasks": "Sustained vowel for perturbation; connected speech acceptable for F0/CPP/HNR summaries with caution",
+            "default_region": "speech_only with voiced-frame filtering",
+            "native_measurements": "voiced F0/period track, RMS-amplitude track, cepstral/HNR frame support, internal voicing gaps",
+            "file_level_reduction": "F0 mean/SD across voiced support; perturbation formulas over period/amplitude tracks; CPP/HNR robust summary; voice-break count",
+            "why_this_is_scientific": "Phonation features describe vocal-fold vibration and voiced support; silence and unvoiced consonants should not dominate the scalar value.",
+            "avoid": "Do not compute jitter/shimmer over unvoiced or low-voicing support; do not interpret without F0/voicing QC.",
+        },
+        "Articulatory / formant": {
+            "recommended_tasks": "Vowels, sentences, passage speech; DDK only if formant tracking is task-justified",
+            "default_region": "valid speech frames",
+            "native_measurements": "LPC-derived F1-F5 and bandwidth trajectories with valid-frame filters",
+            "file_level_reduction": "median formants/bandwidths, 5-95% robust ranges, derivative/slope medians and 5th/95th percentiles",
+            "why_this_is_scientific": "Articulatory features are trajectory summaries of tongue/jaw/lip-related vocal-tract resonances; robust medians/ranges reduce bad-frame influence.",
+            "avoid": "Do not use blind means over invalid LPC roots; do not ignore valid-frame fraction.",
+        },
+        "Resonatory / nasality": {
+            "recommended_tasks": "Controlled sentences / oral-nasal contrasts / vowel-targeted frames; task and vowel context are critical",
+            "default_region": "valid spectral speech frames",
+            "native_measurements": "smoothed spectral-frame estimates of A1/A3, P0/P1, F1-F3 support, bandwidths, RMS",
+            "file_level_reduction": "median spectral contrasts and support variables with P0-F1 overlap and valid-frame warnings",
+            "why_this_is_scientific": "Single-microphone nasality is spectral-frame and vowel dependent; robust spectral contrasts are safer than full-file averages.",
+            "avoid": "Do not interpret as nasometer-equivalent; do not ignore vowel/F0 harmonic placement effects.",
+        },
+        "Coordination": {
+            "recommended_tasks": "Connected speech / sentence / passage with enough valid CPP and formant trajectory support",
+            "default_region": "effective_task aligned trajectories",
+            "native_measurements": "time-aligned CPP, F1, and F2 trajectories; lagged correlation matrices over short delays",
+            "file_level_reduction": "normalized participation-ratio eigenspectrum summary for each pairwise trajectory coupling",
+            "why_this_is_scientific": "Coordination features summarize coupling structure across speech subsystems, not the average value of either trajectory.",
+            "avoid": "Do not interpret as a monotonic severity score; do not compute when trajectory support is sparse or rank-deficient.",
+        },
+        "Other / pending": {
+            "recommended_tasks": "Depends on final feature definition",
+            "default_region": "not finalized",
+            "native_measurements": "not finalized",
+            "file_level_reduction": "not finalized",
+            "why_this_is_scientific": "Feature remains registered but needs explicit native-scale policy before interpretation.",
+            "avoid": "Do not use for ML until policy and implementation are validated.",
+        },
+    }
+
+    rows = []
+    for feature in features:
+        fam = family_of(feature)
+        policy = family_policy[fam]
+        reg_row = pd.Series(dtype=object)
+        if not reg.empty and "feature" in reg.columns and feature in set(reg["feature"].astype(str)):
+            reg_row = reg.loc[reg["feature"].astype(str).eq(feature)].iloc[0]
+        rows.append({
+            "feature": feature,
+            "subsystem": reg_row.get("subsystem", fam),
+            "family_policy": fam,
+            "task_scope": reg_row.get("task_scope", ""),
+            "unit": reg_row.get("unit", ""),
+            **policy,
+        })
+    return pd.DataFrame(rows)
+
+
+def build_feature_family_policy_summary() -> pd.DataFrame:
+    """Compact GUI-facing policy summary by feature family."""
+    rows = [
+        {
+            "family": "Timing / respiratory",
+            "best_tasks": "Bamboo, passage, reading, free speech",
+            "native_scale": "speech/pause events",
+            "default_region": "segment table",
+            "scalar_reduction": "sum, count, percent, mean/CV of events",
+            "core_rule": "Never concatenate speech for pause physiology.",
+        },
+        {
+            "family": "Rhythm / EMS",
+            "best_tasks": "Connected speech",
+            "native_scale": "effective-task envelope",
+            "default_region": "first speech → last speech, pauses preserved",
+            "scalar_reduction": "modulation peaks and normalized band powers",
+            "core_rule": "Internal pauses are part of rhythm.",
+        },
+        {
+            "family": "Phonatory",
+            "best_tasks": "Sustained vowel; voiced connected speech with caution",
+            "native_scale": "voiced frames / period support",
+            "default_region": "speech + voiced-frame filter",
+            "scalar_reduction": "voiced mean/SD, perturbation formulas, CPP/HNR summaries",
+            "core_rule": "Silence and unvoiced support should not drive voice features.",
+        },
+        {
+            "family": "Articulatory / formant",
+            "best_tasks": "Vowels, sentences, passage",
+            "native_scale": "valid LPC formant trajectories",
+            "default_region": "valid speech frames",
+            "scalar_reduction": "medians, 5-95 ranges, slope percentiles",
+            "core_rule": "Use robust trajectory summaries and validity flags.",
+        },
+        {
+            "family": "Resonatory / nasality",
+            "best_tasks": "Controlled sentences / vowel-targeted frames",
+            "native_scale": "valid spectral frames",
+            "default_region": "valid spectral speech frames",
+            "scalar_reduction": "median A1/P0/P1/A3 contrasts + warnings",
+            "core_rule": "Treat as vowel-, F0-, and device-sensitive.",
+        },
+        {
+            "family": "Coordination",
+            "best_tasks": "Connected speech with stable CPP/F1/F2 tracks",
+            "native_scale": "aligned multitrajectory windows",
+            "default_region": "effective-task trajectories",
+            "scalar_reduction": "lagged correlation eigenspectrum complexity",
+            "core_rule": "Not a monotonic severity score; require valid support.",
+        },
+    ]
+    return pd.DataFrame(rows)
