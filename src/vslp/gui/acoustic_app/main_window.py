@@ -642,18 +642,35 @@ class AcousticPipelineWindow(QMainWindow):
                 self.segmentation_method_status.setText("Silero is fully implemented and recommended for passages, sentences, and free speech.")
 
     def _build_quality_tab(self) -> QWidget:
+        """Build the segmentation-informed Quality Control workstation."""
         container = QWidget()
         layout = QVBoxLayout(container)
+        layout.setSpacing(10)
         layout.addWidget(self._info_panel(
             "Info",
-            "Quality Control extracts artifact-oriented features from segmented recordings. Select QC families or individual QC features. Results are screening metrics for researcher review; they do not reject recordings automatically."
+            "Quality Control extracts artifact-oriented features from segmented recordings. Use this block to select QC families/features, tune transparent screening parameters, and review recording-quality outputs before acoustic feature extraction."
         ))
+
+        qc_tabs = QTabWidget()
+        qc_tabs.addTab(self._build_quality_configure_panel(), "Configure")
+        qc_tabs.addTab(self._build_quality_outputs_panel(), "Outputs")
+        layout.addWidget(qc_tabs, stretch=1)
+        self._refresh_qc_count_label()
+        self._update_qc_parameter_relevance()
+        return self._scrollable(container)
+
+    def _build_quality_configure_panel(self) -> QWidget:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
 
         splitter = QSplitter(Qt.Horizontal)
         splitter.setChildrenCollapsible(False)
 
-        left = QWidget(); left_layout = QVBoxLayout(left)
-        selector_group = QGroupBox("QC feature selector")
+        left = QWidget()
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 8, 0)
+        selector_group = QGroupBox("QC feature selection")
         selector_layout = QVBoxLayout(selector_group)
         quick = QHBoxLayout()
         for label, callback in [
@@ -668,49 +685,58 @@ class AcousticPipelineWindow(QMainWindow):
 
         self.qc_feature_tree = QTreeWidget()
         self.qc_feature_tree.setHeaderLabels(["QC family / feature", "Role", "Parameters"])
-        self.qc_feature_tree.setMinimumHeight(390)
+        self.qc_feature_tree.setMinimumHeight(430)
         self.qc_feature_tree.setSelectionMode(QAbstractItemView.SingleSelection)
         self.qc_feature_tree.itemChanged.connect(self._on_qc_tree_item_changed)
         self.qc_feature_tree.itemSelectionChanged.connect(self._update_qc_feature_detail)
         self.qc_family_items: dict[str, QTreeWidgetItem] = {}
         self.qc_feature_items: dict[str, QTreeWidgetItem] = {}
         self._populate_qc_feature_tree()
-        selector_layout.addWidget(self.qc_feature_tree)
+        selector_layout.addWidget(self.qc_feature_tree, stretch=1)
         left_layout.addWidget(selector_group)
 
-        right = QWidget(); right_layout = QVBoxLayout(right)
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        right_layout.setContentsMargins(8, 0, 0, 0)
+
+        plan_group = QGroupBox("QC plan")
+        plan_layout = QVBoxLayout(plan_group)
         self.qc_count_label = QLabel("")
         self.qc_count_label.setObjectName("SectionHeader")
-        right_layout.addWidget(self.qc_count_label)
+        self.qc_parameter_relevance_label = QLabel("")
+        self.qc_parameter_relevance_label.setObjectName("SubtitleLabel")
+        self.qc_parameter_relevance_label.setWordWrap(True)
+        plan_layout.addWidget(self.qc_count_label)
+        plan_layout.addWidget(self.qc_parameter_relevance_label)
+        right_layout.addWidget(plan_group)
+
+        detail_group = QGroupBox("Selected feature / family")
+        detail_layout = QVBoxLayout(detail_group)
         self.qc_feature_detail_box = QPlainTextEdit()
         self.qc_feature_detail_box.setReadOnly(True)
-        self.qc_feature_detail_box.setMinimumHeight(145)
-        self.qc_feature_detail_box.setMaximumHeight(210)
-        right_layout.addWidget(self.qc_feature_detail_box)
+        self.qc_feature_detail_box.setMinimumHeight(150)
+        self.qc_feature_detail_box.setMaximumHeight(220)
+        detail_layout.addWidget(self.qc_feature_detail_box)
+        right_layout.addWidget(detail_group)
 
-        param_group = QGroupBox("QC parameters")
+        param_group = QGroupBox("Computation parameters")
         form = QFormLayout(param_group)
         self.qc_pause_sec_spin = QDoubleSpinBox(); self.qc_pause_sec_spin.setDecimals(2); self.qc_pause_sec_spin.setRange(0.0, 5.0); self.qc_pause_sec_spin.setSingleStep(0.05); self.qc_pause_sec_spin.setValue(0.15)
-        self.qc_pause_sec_spin.setToolTip("Minimum internal nonspeech duration used as a pause-support region for additive interference and reverberation features.")
+        self.qc_pause_sec_spin.setToolTip("Pause-support threshold. Pauses shorter than this are ignored for pause-region noise and reverberation estimates.")
         self.qc_high_level_spin = QDoubleSpinBox(); self.qc_high_level_spin.setDecimals(1); self.qc_high_level_spin.setRange(50.0, 99.9); self.qc_high_level_spin.setSingleStep(1.0); self.qc_high_level_spin.setValue(90.0)
-        self.qc_high_level_spin.setToolTip("Speech-frame percentile used to define high-level windows for gain and nonlinear-distortion features.")
+        self.qc_high_level_spin.setToolTip("Speech energy percentile used to identify high-level speech frames for gain and nonlinear-distortion screening.")
         self.qc_hard_clip_spin = QDoubleSpinBox(); self.qc_hard_clip_spin.setDecimals(3); self.qc_hard_clip_spin.setRange(0.5, 1.0); self.qc_hard_clip_spin.setSingleStep(0.005); self.qc_hard_clip_spin.setValue(0.995)
-        self.qc_hard_clip_spin.setToolTip("Absolute waveform threshold used to mark hard clipping or digital saturation in normalized audio.")
+        self.qc_hard_clip_spin.setToolTip("Absolute waveform threshold for severe clipping/saturation in normalized audio.")
         self.qc_near_clip_spin = QDoubleSpinBox(); self.qc_near_clip_spin.setDecimals(3); self.qc_near_clip_spin.setRange(0.5, 1.0); self.qc_near_clip_spin.setSingleStep(0.005); self.qc_near_clip_spin.setValue(0.950)
-        self.qc_near_clip_spin.setToolTip("Absolute waveform threshold used to mark near-clipping / overload risk.")
+        self.qc_near_clip_spin.setToolTip("Softer overload-risk threshold for near-clipping detection.")
         form.addRow("Minimum internal pause (s)", self.qc_pause_sec_spin)
         form.addRow("High-level speech percentile", self.qc_high_level_spin)
         form.addRow("Hard clipping threshold", self.qc_hard_clip_spin)
         form.addRow("Near-clipping threshold", self.qc_near_clip_spin)
+        reset_btn = QPushButton("Reset defaults")
+        reset_btn.clicked.connect(self.reset_qc_parameters)
+        form.addRow("", reset_btn)
         right_layout.addWidget(param_group)
-
-        output_group = QGroupBox("QC output summary")
-        output_layout = QVBoxLayout(output_group)
-        self.quality_summary_label = QLabel("Quality Control has not been run.")
-        self.quality_summary_label.setObjectName("SubtitleLabel")
-        self.quality_summary_label.setWordWrap(True)
-        output_layout.addWidget(self.quality_summary_label)
-        right_layout.addWidget(output_group)
 
         run_btn = QPushButton("Run Quality Control")
         run_btn.setObjectName("RunButton")
@@ -718,11 +744,78 @@ class AcousticPipelineWindow(QMainWindow):
         right_layout.addWidget(run_btn)
         right_layout.addStretch(1)
 
-        splitter.addWidget(left); splitter.addWidget(right); splitter.setSizes([760, 450]); splitter.setMinimumHeight(560)
+        splitter.addWidget(left)
+        splitter.addWidget(right)
+        splitter.setSizes([760, 520])
+        splitter.setMinimumHeight(620)
         layout.addWidget(splitter)
-        self._refresh_qc_count_label()
-        return self._scrollable(container)
+        return panel
 
+    def _build_quality_outputs_panel(self) -> QWidget:
+        panel = QWidget()
+        layout = QHBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(12)
+
+        left = QGroupBox("Output previews")
+        left_layout = QVBoxLayout(left)
+        self.quality_summary_label = QLabel("Quality Control has not been run.")
+        self.quality_summary_label.setObjectName("SubtitleLabel")
+        self.quality_summary_label.setWordWrap(True)
+        left_layout.addWidget(self.quality_summary_label)
+
+        tables_group = QGroupBox("Tables")
+        tables_layout = QGridLayout(tables_group)
+        table_buttons = [
+            ("Features", lambda: self.preview_csv(self._stage_path("quality", "summary"))),
+            ("Main summary", lambda: self.preview_csv(self._stage_path("quality", "main_summary"))),
+            ("Warnings", lambda: self.preview_csv(self._stage_path("quality", "warnings"))),
+            ("Recommendations", lambda: self.preview_csv(self._stage_path("quality", "recommendations"))),
+            ("Family scores", lambda: self.preview_csv(self._stage_path("quality", "family_scores"))),
+            ("Review rank", lambda: self.preview_csv(self._stage_path("quality", "review_rank"))),
+        ]
+        for i, (label, callback) in enumerate(table_buttons):
+            btn = QPushButton(label)
+            btn.clicked.connect(callback)
+            tables_layout.addWidget(btn, i // 2, i % 2)
+        left_layout.addWidget(tables_group)
+
+        plots_group = QGroupBox("Plots")
+        plots_layout = QGridLayout(plots_group)
+        plot_buttons = [
+            ("Family burden", "quality_family_score_distributions.png"),
+            ("Review ranking", "quality_recording_review_rank.png"),
+            ("Warning heatmap", "quality_warning_heatmap.png"),
+            ("Recommendations", "quality_recommendation_summary.png"),
+            ("Feature correlations", "quality_feature_correlation_heatmap.png"),
+            ("Family correlations", "quality_family_correlation_heatmap.png"),
+            ("Feature coverage", "quality_missingness_feature_coverage.png"),
+            ("PCA embedding", "quality_pca_embedding.png"),
+        ]
+        for i, (label, filename) in enumerate(plot_buttons):
+            btn = QPushButton(label)
+            btn.clicked.connect(lambda _checked=False, fn=filename: self.preview_image(self._output_root() / "acoustic" / "003_quality_control" / "plots" / fn))
+            plots_layout.addWidget(btn, i // 2, i % 2)
+        left_layout.addWidget(plots_group)
+
+        open_report = QPushButton("Open QC HTML report")
+        open_report.setObjectName("OpenButton")
+        open_report.clicked.connect(lambda: self._open_stage_file("quality", "report"))
+        left_layout.addWidget(open_report)
+        left_layout.addStretch(1)
+
+        right = QGroupBox("Interpretation notes")
+        right_layout = QVBoxLayout(right)
+        self.quality_interpretation_box = QPlainTextEdit()
+        self.quality_interpretation_box.setReadOnly(True)
+        self.quality_interpretation_box.setPlainText(
+            "Run Quality Control to generate artifact-family scores, warning summaries, and recording review rankings.\n\n"
+            "Interpretation is descriptive: warnings identify recordings/families for review and should not be treated as automatic exclusion rules."
+        )
+        right_layout.addWidget(self.quality_interpretation_box)
+        layout.addWidget(left, stretch=1)
+        layout.addWidget(right, stretch=1)
+        return panel
 
     def _populate_qc_feature_tree(self) -> None:
         self.qc_feature_tree.blockSignals(True)
@@ -795,6 +888,7 @@ class AcousticPipelineWindow(QMainWindow):
         n_features = len(self._selected_qc_features()) if hasattr(self, "qc_feature_items") else 0
         n_families = len(self._selected_qc_families()) if hasattr(self, "qc_feature_items") else 0
         self.qc_count_label.setText(f"Selected QC features: {n_features} across {n_families} families")
+        self._update_qc_parameter_relevance()
 
     def _update_qc_feature_detail(self) -> None:
         if not hasattr(self, "qc_feature_detail_box"):
@@ -848,6 +942,38 @@ class AcousticPipelineWindow(QMainWindow):
         self.qc_feature_tree.blockSignals(False)
         self._refresh_qc_count_label()
 
+
+
+    def reset_qc_parameters(self) -> None:
+        """Reset QC computation parameters to conservative v1 defaults."""
+        self.qc_pause_sec_spin.setValue(0.15)
+        self.qc_high_level_spin.setValue(90.0)
+        self.qc_hard_clip_spin.setValue(0.995)
+        self.qc_near_clip_spin.setValue(0.950)
+        self._update_qc_parameter_relevance()
+
+    def _update_qc_parameter_relevance(self) -> None:
+        """Show which QC parameters are currently relevant to selected features."""
+        if not hasattr(self, "qc_parameter_relevance_label") or not hasattr(self, "qc_feature_items"):
+            return
+        selected = self._selected_qc_features()
+        registry = quality_feature_registry()
+        if not selected:
+            self.qc_parameter_relevance_label.setText("No QC features selected.")
+            return
+        deps = []
+        if not registry.empty and "feature" in registry.columns:
+            sub = registry[registry["feature"].astype(str).isin(selected)]
+            for value in sub.get("parameter_dependencies", pd.Series(dtype=str)).astype(str):
+                for part in value.split(";"):
+                    part = part.strip()
+                    if part and part.lower() != "none":
+                        deps.append(part)
+        deps = sorted(set(deps))
+        if not deps:
+            self.qc_parameter_relevance_label.setText("Selected QC features do not require adjustable parameters.")
+        else:
+            self.qc_parameter_relevance_label.setText("Active parameter dependencies: " + ", ".join(deps))
 
     def _build_features_tab(self) -> QWidget:
         container = QWidget()
@@ -1837,12 +1963,20 @@ class AcousticPipelineWindow(QMainWindow):
     def _update_quality_feedback(self) -> None:
         if not hasattr(self, "quality_summary_label"):
             return
-        path = self._stage_path("quality", "family_status")
-        if not path.exists():
+        family_status_path = self._stage_path("quality", "family_status")
+        warnings_path = self._stage_path("quality", "warnings")
+        recommendations_path = self._stage_path("quality", "recommendations")
+        review_path = self._stage_path("quality", "review_rank")
+        if not family_status_path.exists():
             self.quality_summary_label.setText("Quality Control has not been run.")
+            if hasattr(self, "quality_interpretation_box"):
+                self.quality_interpretation_box.setPlainText(
+                    "Run Quality Control to generate artifact-family scores, warning summaries, and recording review rankings.\n\n"
+                    "Interpretation is descriptive: warnings identify recordings/families for review and should not be treated as automatic exclusion rules."
+                )
             return
         try:
-            df = pd.read_csv(path)
+            df = pd.read_csv(family_status_path)
         except Exception as exc:  # noqa: BLE001
             self.quality_summary_label.setText(f"Could not summarize QC outputs: {exc}")
             return
@@ -1853,12 +1987,60 @@ class AcousticPipelineWindow(QMainWindow):
         computed = int(df["status"].astype(str).str.contains("computed", na=False).sum()) if "status" in df.columns else 0
         failed = int((df["status"].astype(str) == "failed").sum()) if "status" in df.columns else 0
         selected = int((df["status"].astype(str) != "not_selected").sum()) if "status" in df.columns else len(df)
+
+        n_warning_rows = 0
+        n_flagged_files = 0
+        top_families = "none"
+        if warnings_path.exists():
+            try:
+                wdf = pd.read_csv(warnings_path)
+                n_warning_rows = len(wdf)
+                if not wdf.empty:
+                    n_flagged_files = wdf["file_name"].nunique() if "file_name" in wdf.columns else 0
+                    if "family" in wdf.columns:
+                        fam_counts = wdf["family"].astype(str).value_counts().head(3)
+                        top_families = ", ".join(f"{k} ({v})" for k, v in fam_counts.items())
+            except Exception:
+                pass
+
+        n_rec = 0
+        rec_families = "none"
+        if recommendations_path.exists():
+            try:
+                rdf = pd.read_csv(recommendations_path)
+                n_rec = len(rdf)
+                if not rdf.empty and "family" in rdf.columns:
+                    rec_families = ", ".join(rdf["family"].astype(str).head(4).tolist())
+            except Exception:
+                pass
+
+        top_review = "not available"
+        if review_path.exists():
+            try:
+                rnk = pd.read_csv(review_path)
+                if not rnk.empty:
+                    top_names = rnk["file_name"].astype(str).head(3).tolist() if "file_name" in rnk.columns else []
+                    top_review = ", ".join(top_names) if top_names else "not available"
+            except Exception:
+                pass
+
         self.quality_summary_label.setText(
             f"Files evaluated: {n_files}\n"
             f"Selected family evaluations: {selected}\n"
             f"Computed/proxy evaluations: {computed}\n"
-            f"Failed evaluations: {failed}"
+            f"Failed evaluations: {failed}\n"
+            f"Warning rows: {n_warning_rows} across {n_flagged_files} recordings"
         )
+        if hasattr(self, "quality_interpretation_box"):
+            self.quality_interpretation_box.setPlainText(
+                "Dataset-level QC snapshot\n"
+                f"• Files evaluated: {n_files}\n"
+                f"• Recordings with QC warning rows: {n_flagged_files}\n"
+                f"• Most frequent warning families: {top_families}\n"
+                f"• Recommendation families: {rec_families}\n"
+                f"• Highest-priority recordings for review: {top_review}\n\n"
+                "Use the plots in this tab to inspect artifact burden distributions, warning heatmaps, and QC feature correlation structure. These outputs are descriptive screening tools and should guide review/sensitivity analysis, not automatic exclusion."
+            )
 
     def run_quality_control(self) -> None:
         paths = self._require_paths()
