@@ -63,6 +63,16 @@ class FeatureExtractionConfig:
     rhythm_envelope_bandpass_low_hz: float = 300.0
     rhythm_envelope_bandpass_high_hz: float = 1000.0
     rhythm_envelope_sample_rate_hz: float = 100.0
+    coordination_region_policy: str = "effective_task"
+    coordination_frame_ms: float = 40.0
+    coordination_hop_ms: float = 10.0
+    coordination_max_lag_ms: float = 250.0
+    coordination_min_valid_fraction: float = 0.35
+    formant_lpc_target_sr_hz: int = 10000
+    formant_lpc_order: int | None = None
+    formant_preemphasis: float = 0.97
+    phonatory_f0_min_hz: float = 60.0
+    phonatory_f0_max_hz: float = 400.0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -302,6 +312,7 @@ def run_acoustic_feature_extraction(
             "Respiratory/timing features were validated in v0.26 from segmentation tables.",
             "Rhythm/EMS features were validated in v0.27 from effective-task envelope modulation spectrum.",
             f"Computed feature families in this pass: {computed_features}",
+            "Coordination features were validated in v0.31 as time-delay cross-correlation eigenspectrum complexity over CPP/F1/F2 trajectories.",
             "Registered-but-not-yet-implemented features remain explicit NaN placeholders.",
             "Expected-range flags are descriptive screening aids, not clinical cutoffs.",
         ],

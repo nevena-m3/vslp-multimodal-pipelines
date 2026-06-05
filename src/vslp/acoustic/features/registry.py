@@ -163,13 +163,32 @@ def build_acoustic_feature_registry() -> pd.DataFrame:
     for name in ["F1freq", "F1amp", "F1width", "F2freq", "F2amp", "F2width", "F3freq", "F3amp", "F3width", "RMSamp"]:
         add_feature(name, "resonatory", f"Sentence spectral/nasality support feature: {name}", support_units[name], reson_note, support_formula[name], "sentence/oral speech regions", "C", None, None, "task dependent; support variable for nasality measures", "implemented")
 
-    # Coordination.
+    # Coordination — validated-local v0.31.
+    coord_note = (
+        "Implemented v0.31 as normalized participation-ratio eigenspectrum complexity from time-delay correlation matrices. "
+        "The plugin builds aligned CPP, F1, and F2 frame trajectories over the effective-task region, preserves internal pauses where present, "
+        "robustly scales trajectories, builds lagged correlation matrices over ±250 ms by default, and summarizes the eigenvalue spectrum. "
+        "This is a coupling-complexity descriptor, not a diagnostic cutoff; interpretation is task-, trajectory-, and validity-dependent."
+    )
     for name, meaning in [
         ("CPP_F1_comp", "CPP-F1 coordination complexity"),
         ("CPP_F2_comp", "CPP-F2 coordination complexity"),
         ("F1_F2_comp", "F1-F2 articulatory coordination complexity"),
     ]:
-        add_feature(name, "coordination", meaning, "index", "Pending validated time-delay cross-correlation/eigenspectrum implementation.", "eigenspectrum of time-delay correlation matrix", "sentence/passage trajectories", "C", None, None, "altered coupling/complexity", "not_implemented_yet")
+        add_feature(
+            name,
+            "coordination",
+            meaning,
+            "normalized index",
+            coord_note,
+            "PR_norm = ((Σλ)^2 / Σλ^2) / K, where λ are eigenvalues of the lagged correlation matrix and K is matrix dimension",
+            "sentence/passage trajectories",
+            "C",
+            0,
+            1,
+            "altered coupling/complexity; direction is not disease-specific without task/context validation",
+            "implemented",
+        )
 
 
     return pd.DataFrame(rows)
