@@ -1,4 +1,4 @@
-"""VSLP Acoustic Pipeline GUI v0.33.
+"""VSLP Acoustic Pipeline GUI v0.34.
 
 V0.17 Setup/Ingest refinement:
 - stage-aware workflow guidance with scientific rationale;
@@ -54,6 +54,7 @@ from PySide6.QtWidgets import (
 )
 
 from vslp.acoustic.features.registry import build_acoustic_feature_registry
+from vslp.acoustic.features.scales import build_feature_family_policy_summary
 from vslp.acoustic.features.stage import (
     IMPLEMENTED_FEATURES,
     PROXY_FEATURES,
@@ -154,7 +155,7 @@ class AcousticPipelineWindow(QMainWindow):
 
         title = QLabel("VSLP")
         title.setObjectName("AppTitleLabel")
-        subtitle = QLabel("Acoustic Pipeline GUI v0.33")
+        subtitle = QLabel("Acoustic Pipeline GUI v0.34")
         subtitle.setObjectName("SubtitleLabel")
         ip_notice = QLabel(
             "© 2026 Nevena Musikic & Yana Yunusova\n"
@@ -971,12 +972,42 @@ class AcousticPipelineWindow(QMainWindow):
         else:
             self.qc_parameter_relevance_label.setText("Active parameter dependencies: " + ", ".join(deps))
 
+    def _build_feature_policy_table(self) -> QTableWidget:
+        """Build a compact, GUI-facing feature computation policy table."""
+        df = build_feature_family_policy_summary()
+        table = QTableWidget()
+        columns = ["family", "best_tasks", "native_scale", "default_region", "scalar_reduction", "core_rule"]
+        headers = ["Feature family", "Best tasks", "Native scale", "Default region", "Scalar reduction", "Rule"]
+        table.setColumnCount(len(columns))
+        table.setRowCount(len(df))
+        table.setHorizontalHeaderLabels(headers)
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table.setWordWrap(True)
+        table.verticalHeader().setVisible(False)
+        table.setMinimumHeight(260)
+        table.setMaximumHeight(360)
+        for r, (_, row) in enumerate(df.iterrows()):
+            for c, col in enumerate(columns):
+                item = QTableWidgetItem(str(row.get(col, "")))
+                item.setToolTip(str(row.get(col, "")))
+                table.setItem(r, c, item)
+        table.resizeColumnsToContents()
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        table.horizontalHeader().setStretchLastSection(True)
+        table.setColumnWidth(0, 170)
+        table.setColumnWidth(1, 210)
+        table.setColumnWidth(2, 190)
+        table.setColumnWidth(3, 210)
+        table.setColumnWidth(4, 270)
+        return table
+
     def _build_features_tab(self) -> QWidget:
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.addWidget(self._info_panel(
             "Info",
-            "Features are organized by speech subsystem and task compatibility. Timing features use segment tables; signal features use the selected region policy. Features marked proxy or pending require validation before clinical interpretation."
+            "Select feature families or individual features. Each feature has a defined native measurement scale, analysis region, and scalar-reduction rule."
         ))
 
         splitter = QSplitter(Qt.Horizontal)
@@ -1029,21 +1060,13 @@ class AcousticPipelineWindow(QMainWindow):
         form.addRow("Region guidance", region_note)
         right_layout.addWidget(param_group)
 
-        strategy_group = QGroupBox("Computation strategy")
+        strategy_group = QGroupBox("Computation policy")
         strategy_layout = QVBoxLayout(strategy_group)
-        strategy_text = QPlainTextEdit()
-        strategy_text.setReadOnly(True)
-        strategy_text.setMaximumHeight(210)
-        strategy_text.setPlainText(
-            "Timing/respiratory: computed from speech and pause segment events; no waveform concatenation.\n"
-            "Rhythm/EMS: computed over effective task region, first speech onset to last speech offset, preserving internal pauses.\n"
-            "Phonatory: computed from speech/voiced-frame tracks; scalar values summarize voiced support, not full-file silence.\n"
-            "Articulatory/formant: computed from valid speech-frame LPC trajectories; medians, ranges, and slope summaries are trajectory summaries.\n"
-            "Resonatory/nasality: computed from valid spectral frames; values are median spectral contrasts with validity warnings.\n"
-            "Coordination: computed from aligned CPP/F1/F2 trajectories and lagged correlation eigenspectrum summaries.\n\n"
-            "The Feature Extraction stage is where native measurements are reduced to one file-level value. The removed Aggregation tab should not be used for this decision."
-        )
-        strategy_layout.addWidget(strategy_text)
+        strategy_intro = QLabel("For each feature family, VSLP defines the native measurement scale, the default analysis region, and the scalar-reduction rule used to create one file-level value.")
+        strategy_intro.setWordWrap(True)
+        strategy_intro.setObjectName("SubtitleLabel")
+        strategy_layout.addWidget(strategy_intro)
+        strategy_layout.addWidget(self._build_feature_policy_table())
         right_layout.addWidget(strategy_group)
 
         run_btn = QPushButton("Run Feature Extraction")
@@ -1148,6 +1171,7 @@ class AcousticPipelineWindow(QMainWindow):
             ("Feature distribution audit", lambda: self.preview_csv(self._stage_path("features", "audit"))),
             ("Feature expected-range flags", lambda: self.preview_csv(self._stage_path("features", "range_flags"))),
             ("Feature measurement scales", lambda: self.preview_csv(self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_feature_measurement_scale_registry.csv")),
+            ("Feature computation policy", lambda: self.preview_csv(self._stage_path("features", "computation_policy"))),
             ("Native segment events", lambda: self.preview_csv(self._output_root() / "acoustic" / "004_features" / "tables" / "native_measurements" / "acoustic_native_segment_events.csv")),
             ("QC dashboard", lambda: self.preview_csv(self._stage_path("qc", "summary"))),
         ]
@@ -1579,6 +1603,7 @@ class AcousticPipelineWindow(QMainWindow):
             ("features", "status"): self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_feature_status_long.csv",
             ("features", "audit"): self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_feature_distribution_audit.csv",
             ("features", "range_flags"): self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_feature_expected_range_flags.csv",
+            ("features", "computation_policy"): self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_feature_computation_policy.csv",
             ("qc", "summary"): self._output_root() / "acoustic" / "006_qc_dashboard" / "tables" / "acoustic_qc_dashboard.csv",
             ("qc", "report"): self._output_root() / "acoustic" / "006_qc_dashboard" / "reports" / "acoustic_qc_dashboard.html",
         }

@@ -28,7 +28,7 @@ import pandas as pd
 from vslp.acoustic.features.plugins import build_default_plugins, implemented_feature_names
 from vslp.acoustic.features.plugins.base import FeatureContext, FeatureValue
 from vslp.acoustic.features.registry import build_acoustic_feature_registry
-from vslp.acoustic.features.scales import build_feature_scale_registry
+from vslp.acoustic.features.scales import build_feature_computation_policy, build_feature_scale_registry
 from vslp.core.project import ensure_stage_folders
 from vslp.core.provenance import python_environment
 from vslp.core.schemas import ArtifactRef, StageManifest, StageResult
@@ -236,6 +236,7 @@ def run_acoustic_feature_extraction(
     status_path = folders["tables"] / "acoustic_feature_status_long.csv"
     registry_path = folders["tables"] / "selected_acoustic_feature_registry.csv"
     scale_registry_path = folders["tables"] / "acoustic_feature_measurement_scale_registry.csv"
+    computation_policy_path = folders["tables"] / "acoustic_feature_computation_policy.csv"
     native_segments_path = folders["tables"] / "native_measurements" / "acoustic_native_segment_events.csv"
     errors_path = folders["errors"] / "acoustic_feature_errors.csv"
 
@@ -243,6 +244,7 @@ def run_acoustic_feature_extraction(
     pd.DataFrame(long_status_rows).to_csv(status_path, index=False)
     registry.to_csv(registry_path, index=False)
     build_feature_scale_registry(registry).to_csv(scale_registry_path, index=False)
+    build_feature_computation_policy(registry).to_csv(computation_policy_path, index=False)
     _write_native_segment_events(seg_summary, native_segments_path)
     pd.DataFrame(errors).to_csv(errors_path, index=False)
 
@@ -305,6 +307,7 @@ def run_acoustic_feature_extraction(
             ArtifactRef(path=str(status_path), role="feature_status_long", media_type="text/csv"),
             ArtifactRef(path=str(registry_path), role="selected_feature_registry", media_type="text/csv"),
             ArtifactRef(path=str(scale_registry_path), role="feature_measurement_scale_registry", media_type="text/csv"),
+            ArtifactRef(path=str(computation_policy_path), role="feature_computation_policy", media_type="text/csv"),
             ArtifactRef(path=str(native_segments_path), role="native_segment_events", media_type="text/csv"),
             ArtifactRef(path=str(range_flags_path), role="expected_range_flags", media_type="text/csv"),
             ArtifactRef(path=str(distribution_audit_path), role="distribution_audit", media_type="text/csv"),
@@ -320,7 +323,8 @@ def run_acoustic_feature_extraction(
             "Rhythm/EMS features were validated in v0.27 from effective-task envelope modulation spectrum.",
             f"Computed feature families in this pass: {computed_features}",
             "Coordination features were validated in v0.31 as time-delay cross-correlation eigenspectrum complexity over CPP/F1/F2 trajectories.",
-            "Feature measurement scale metadata is written to document the native physiologic scale and recommended reducers before ML aggregation.",
+            "Feature measurement scale metadata is written to document the native physiologic scale and recommended reducers.",
+            "Feature computation policy is written to define, for each feature, the default analysis region and exact file-level scalar reduction strategy.",
             "Native segment-event measurements are preserved for timing features; frame/trajectory persistence for signal features is planned as the next architecture extension.",
             "Registered-but-not-yet-implemented features remain explicit NaN placeholders.",
             "Expected-range flags are descriptive screening aids, not clinical cutoffs.",
