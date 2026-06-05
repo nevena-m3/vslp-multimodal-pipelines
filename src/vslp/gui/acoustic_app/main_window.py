@@ -1,4 +1,4 @@
-"""VSLP Acoustic Pipeline GUI v0.20.
+"""VSLP Acoustic Pipeline GUI v0.29.
 
 V0.17 Setup/Ingest refinement:
 - stage-aware workflow guidance with scientific rationale;
@@ -156,7 +156,7 @@ class AcousticPipelineWindow(QMainWindow):
 
         title = QLabel("VSLP")
         title.setObjectName("AppTitleLabel")
-        subtitle = QLabel("Acoustic Pipeline GUI v0.21")
+        subtitle = QLabel("Acoustic Pipeline GUI v0.29")
         subtitle.setObjectName("SubtitleLabel")
         ip_notice = QLabel(
             "© 2026 Nevena Musikic & Yana Yunusova\n"

@@ -64,9 +64,9 @@ def build_acoustic_feature_registry() -> pd.DataFrame:
     # Formants and articulatory dynamics.
     for i in range(1, 6):
         lo_hi = {1: (150, 1200), 2: (500, 3500), 3: (1200, 4500), 4: (2500, 6000), 5: (3500, 7500)}[i]
-        add_feature(f"f{i}", "articulatory", f"Median F{i}; vocal-tract resonance related to articulatory configuration", "Hz", "LPC root tracking; requires validation against reference notebook/Praat-style formants.", "F_k = fs/(2π) angle(z_k)", "vowel/sentence/passage speech regions", "B" if i <= 2 else "C", lo_hi[0], lo_hi[1], "centralization/compression", "pending_validation")
+        add_feature(f"f{i}", "articulatory", f"Median F{i}; vocal-tract resonance related to articulatory configuration", "Hz", "Implemented v0.29 with conservative LPC root tracking on speech regions, downsampled to ~10 kHz when appropriate, Hamming-windowed pre-emphasized frames, autocorrelation LPC coefficients, root-derived frequencies/bandwidths, and broad plausibility filters. External Praat/reference validation remains recommended before clinical interpretation.", "F_k = fs/(2π) angle(z_k)", "vowel/sentence/passage speech regions", "B" if i <= 2 else "C", lo_hi[0], lo_hi[1], "centralization/compression", "implemented")
     for i in range(1, 6):
-        add_feature(f"f{i}_bw", "articulatory", f"Median F{i} bandwidth; damping/coupling proxy", "Hz", "LPC root bandwidth. F1 bandwidth may also reflect nasality/damping.", "B_k = -fs/π log|z_k|", "vowel/sentence/passage speech regions", "C" if i == 1 else "D", 0, 1000, "may broaden", "pending_validation")
+        add_feature(f"f{i}_bw", "articulatory", f"Median F{i} bandwidth; damping/coupling proxy", "Hz", "Implemented v0.29 from LPC root radius-derived bandwidths with broad plausibility filters. F1 bandwidth may also reflect nasality/damping; external reference validation remains recommended.", "B_k = -fs/π log|z_k|", "vowel/sentence/passage speech regions", "C" if i == 1 else "D", 0, 1000, "may broaden", "implemented")
     for i in range(1, 4):
         for suffix, meaning, formula in [
             ("d_dx_median", "median first derivative of formant track", "median(dF/dt)"),
@@ -74,9 +74,9 @@ def build_acoustic_feature_registry() -> pd.DataFrame:
             ("d_dx_prc_95", "95th percentile of formant velocity", "P95(dF/dt)"),
             ("d_dx_prc_5_95", "robust velocity range", "P95(dF/dt)-P5(dF/dt)"),
         ]:
-            add_feature(f"f{i}_{suffix}", "articulatory", f"F{i} {meaning}", "Hz/s", "Requires validated formant trajectories and stable frame timing.", formula, "passage/sentence trajectories", "B" if i <= 2 and "5_95" in suffix else "C", None, None, "reduced absolute slope/range", "pending_validation")
+            add_feature(f"f{i}_{suffix}", "articulatory", f"F{i} {meaning}", "Hz/s", "Implemented v0.29 from smoothed LPC formant trajectories over speech regions; velocity values use dF/dt with outlier velocity clipping and should be interpreted cautiously when valid-frame fraction is low.", formula, "passage/sentence trajectories", "B" if i <= 2 and "5_95" in suffix else "C", None, None, "reduced absolute slope/range", "implemented")
     for i in range(1, 4):
-        add_feature(f"f{i}_range", "articulatory", f"Robust F{i} range: 95th minus 5th percentile", "Hz", "Computed over speech-region formant tracks.", "P95(F)-P5(F)", "passage/sentence trajectories", "B" if i <= 2 else "C", 0, None, "decreases", "pending_validation")
+        add_feature(f"f{i}_range", "articulatory", f"Robust F{i} range: 95th minus 5th percentile", "Hz", "Implemented v0.29 as robust 95th-minus-5th percentile range over valid speech-region LPC formant tracks.", "P95(F)-P5(F)", "passage/sentence trajectories", "B" if i <= 2 else "C", 0, None, "decreases", "implemented")
 
     # Phonatory — implemented with transparent local algorithms in v0.28.
     phonatory_note = (
