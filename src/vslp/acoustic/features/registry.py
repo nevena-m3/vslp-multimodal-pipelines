@@ -47,10 +47,10 @@ def build_acoustic_feature_registry() -> pd.DataFrame:
 
     # Respiratory/timing — segment-derived; strongest validated subset currently.
     timing = [
-        ("speech_rate", "Words/min from known task word count over effective task duration", "words/min", "60 * word_count / effective_duration", "passage/sentence when word count is known", "A", 40, 260, "decreases"),
+        ("speech_rate", "Words per minute from known task word count over effective analyzed duration", "words/min", "60 * word_count / effective_duration", "passage/sentence when task word count is explicitly provided", "A", 40, 260, "decreases"),
         ("total_dur", "Effective analyzed duration after trimming leading/trailing nonspeech", "s", "end_time - start_time excluding edge nonspeech", "connected speech", "B", 0.5, 1800, "increases with slowing"),
         ("speech_dur", "Total detected speech duration inside effective task interval", "s", "sum(speech segment durations)", "all segmented tasks", "B", 0.1, 1800, "variable"),
-        ("percent_pause", "Internal pause duration divided by effective duration", "proportion", "sum(internal pause duration) / effective_duration", "connected speech", "B", 0, 0.85, "increases"),
+        ("percent_pause", "Internal pause duration divided by effective analyzed duration", "%", "100 * sum(internal pause duration) / effective_duration", "connected speech", "B", 0, 85, "increases"),
         ("num_pause", "Number of internal pauses meeting minimum-pause threshold", "count", "count(internal nonspeech segments >= threshold)", "connected speech", "B", 0, 250, "increases"),
         ("mean_pause_dur", "Mean internal pause duration", "s", "mean(internal pause durations)", "connected speech", "B", 0, 10, "increases"),
         ("mean_phrase_dur", "Mean speech phrase duration between pauses", "s", "mean(speech segment durations)", "connected speech", "B", 0, 30, "decreases"),
@@ -59,7 +59,7 @@ def build_acoustic_feature_registry() -> pd.DataFrame:
         ("total_pause_dur", "Total internal pause duration", "s", "sum(internal pause durations)", "connected speech", "B", 0, 1800, "increases"),
     ]
     for name, meaning, unit, formula, task, tier, lo, hi, direction in timing:
-        add_feature(name, "respiratory_timing", meaning, unit, "Computed from Silero speech/nonspeech segments; does not use full-file audio amplitude.", formula, task, tier, lo, hi, direction, "implemented")
+        add_feature(name, "respiratory_timing", meaning, unit, "Validated v0.26 timing implementation computed from segmentation speech/nonspeech intervals; does not use full-file audio amplitude.", formula, task, tier, lo, hi, direction, "implemented")
 
     # Formants and articulatory dynamics.
     for i in range(1, 6):
