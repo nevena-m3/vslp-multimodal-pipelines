@@ -117,11 +117,15 @@ def run_acoustic_aggregation(
     out = out.merge(counts, on=group_cols, how="left")
 
     aggregated_path = folders["tables"] / "acoustic_features_aggregated.csv"
+    multistat_path = folders["tables"] / "acoustic_features_aggregated_multistat.csv"
+    strategy_path = folders["tables"] / "acoustic_aggregation_strategy.csv"
     missingness_path = folders["tables"] / "aggregation_missingness.csv"
     dropped_path = folders["tables"] / "aggregation_dropped_features.csv"
     errors_path = folders["errors"] / "acoustic_aggregation_errors.csv"
 
     out.to_csv(aggregated_path, index=False)
+    _build_multistat_aggregation(working, group_cols, feature_cols).to_csv(multistat_path, index=False)
+    _build_aggregation_strategy(Path(output_root), feature_cols).to_csv(strategy_path, index=False)
     feature_missing.rename("missing_fraction").rename_axis("feature").reset_index().to_csv(missingness_path, index=False)
     pd.DataFrame({"feature": dropped_features}).to_csv(dropped_path, index=False)
     pd.DataFrame(errors).to_csv(errors_path, index=False)
@@ -141,6 +145,8 @@ def run_acoustic_aggregation(
         input_artifacts=[ArtifactRef(path=str(features_csv), role="features_per_file", media_type="text/csv")],
         output_artifacts=[
             ArtifactRef(path=str(aggregated_path), role="aggregated_features", media_type="text/csv"),
+            ArtifactRef(path=str(multistat_path), role="aggregated_features_multistat", media_type="text/csv"),
+            ArtifactRef(path=str(strategy_path), role="aggregation_strategy", media_type="text/csv"),
             ArtifactRef(path=str(missingness_path), role="aggregation_missingness", media_type="text/csv"),
             ArtifactRef(path=str(report_path), role="aggregation_html_report", media_type="text/html"),
         ],
@@ -148,12 +154,63 @@ def run_acoustic_aggregation(
         environment={"python": python_environment()},
         warnings=warnings,
         errors=errors,
-        notes=["Aggregation is explicit and reproducible; missingness is not silently hidden."],
+        notes=["Aggregation is explicit and reproducible; missingness is not silently hidden.", "v0.32 adds multistat aggregation so mean/median are not the only ML-ready summary choices."],
     )
     manifest_path = folders["logs"] / "stage_manifest.json"
     manifest.write_json(manifest_path)
 
     return StageResult(status=manifest.status, manifest_path=manifest_path, summary_table=aggregated_path, error_table=errors_path, report_path=report_path)
+
+
+def _build_multistat_aggregation(working: pd.DataFrame, group_cols: list[str], feature_cols: list[str]) -> pd.DataFrame:
+    """Create distribution-preserving group summaries for ML and analysis.
+
+    This table intentionally keeps multiple summaries per feature. It prevents the
+    aggregation layer from collapsing all within-group information to a single
+    mean or median. For small groups, some statistics are naturally NaN.
+    """
+    if not feature_cols:
+        return working[group_cols].drop_duplicates().reset_index(drop=True)
+    rows: list[dict[str, Any]] = []
+    for key, grp in working.groupby(group_cols, dropna=False):
+        key_tuple = key if isinstance(key, tuple) else (key,)
+        out = {col: val for col, val in zip(group_cols, key_tuple, strict=False)}
+        out["n_files_aggregated"] = int(len(grp))
+        for feat in feature_cols:
+            vals = pd.to_numeric(grp[feat], errors="coerce").dropna()
+            prefix = feat
+            out[f"{prefix}__n"] = int(vals.size)
+            out[f"{prefix}__missing_fraction"] = float(1.0 - vals.size / len(grp)) if len(grp) else np.nan
+            if vals.size:
+                out[f"{prefix}__mean"] = float(vals.mean())
+                out[f"{prefix}__median"] = float(vals.median())
+                out[f"{prefix}__sd"] = float(vals.std(ddof=0)) if vals.size >= 2 else np.nan
+                out[f"{prefix}__iqr"] = float(vals.quantile(0.75) - vals.quantile(0.25)) if vals.size >= 2 else np.nan
+                out[f"{prefix}__q05"] = float(vals.quantile(0.05))
+                out[f"{prefix}__q25"] = float(vals.quantile(0.25))
+                out[f"{prefix}__q75"] = float(vals.quantile(0.75))
+                out[f"{prefix}__q95"] = float(vals.quantile(0.95))
+                out[f"{prefix}__min"] = float(vals.min())
+                out[f"{prefix}__max"] = float(vals.max())
+            else:
+                for stat in ["mean", "median", "sd", "iqr", "q05", "q25", "q75", "q95", "min", "max"]:
+                    out[f"{prefix}__{stat}"] = np.nan
+        rows.append(out)
+    return pd.DataFrame(rows)
+
+
+def _build_aggregation_strategy(output_root: Path, feature_cols: list[str]) -> pd.DataFrame:
+    """Merge feature scale metadata into an aggregation strategy table if available."""
+    scale_path = output_root / "acoustic" / "004_features" / "tables" / "acoustic_feature_measurement_scale_registry.csv"
+    if scale_path.exists():
+        try:
+            scale = pd.read_csv(scale_path)
+            scale = scale.loc[scale["feature"].astype(str).isin([str(c) for c in feature_cols])].copy()
+            if not scale.empty:
+                return scale[[c for c in ["feature", "subsystem", "native_scale", "physiologic_unit", "recommended_file_reducers", "recommended_group_reducers", "ml_recommendation", "interpretation_note"] if c in scale.columns]]
+        except Exception:
+            pass
+    return pd.DataFrame({"feature": feature_cols, "recommended_group_reducers": "median,iqr,q05,q95,n_nonmissing,missing_fraction"})
 
 
 def aggregate_features(input_csv: str | Path, output_csv: str | Path, group_columns: list[str], numeric_policy: str = "mean") -> Path:

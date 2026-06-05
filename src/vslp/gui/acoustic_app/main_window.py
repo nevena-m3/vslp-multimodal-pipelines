@@ -1047,8 +1047,8 @@ class AcousticPipelineWindow(QMainWindow):
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.addWidget(self._info_panel(
-            "Aggregation rationale",
-            "Aggregation converts per-file feature outputs into analysis-ready tables while preserving subject/session/iteration/task structure. The default grouping is designed for longitudinal clinical monitoring and ML leakage control."
+            "Info",
+            "Aggregation should preserve physiologic meaning. VSLP now writes both a compact table and a multi-stat table so downstream ML does not depend only on mean or median summaries."
         ))
         group = QGroupBox("Aggregation configuration")
         form = QFormLayout(group)
@@ -1060,7 +1060,7 @@ class AcousticPipelineWindow(QMainWindow):
         form.addRow("Numeric aggregation", self.agg_numeric_policy_combo)
         form.addRow("Missing-value policy", self.agg_missing_policy_combo)
         form.addRow("Max missing fraction", self.agg_missing_threshold_spin)
-        guidance = QLabel("Aggregation creates analysis-ready tables for the later Feature Analysis and ML GUIs. Default grouping is subject × session × iteration × task.")
+        guidance = QLabel("Outputs include: compact aggregation, multi-stat aggregation, missingness, and an aggregation strategy table describing each feature's native measurement scale.")
         guidance.setWordWrap(True); guidance.setObjectName("SubtitleLabel")
         run_btn = QPushButton("Run Aggregation")
         run_btn.setObjectName("RunButton")
@@ -1162,6 +1162,10 @@ class AcousticPipelineWindow(QMainWindow):
             ("Feature distribution audit", lambda: self.preview_csv(self._stage_path("features", "audit"))),
             ("Feature expected-range flags", lambda: self.preview_csv(self._stage_path("features", "range_flags"))),
             ("Aggregated table", lambda: self.preview_csv(self._stage_path("aggregate", "summary"))),
+            ("Aggregated multi-stat table", lambda: self.preview_csv(self._output_root() / "acoustic" / "005_aggregation" / "tables" / "acoustic_features_aggregated_multistat.csv")),
+            ("Aggregation strategy", lambda: self.preview_csv(self._output_root() / "acoustic" / "005_aggregation" / "tables" / "acoustic_aggregation_strategy.csv")),
+            ("Feature measurement scales", lambda: self.preview_csv(self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_feature_measurement_scale_registry.csv")),
+            ("Native segment events", lambda: self.preview_csv(self._output_root() / "acoustic" / "004_features" / "tables" / "native_measurements" / "acoustic_native_segment_events.csv")),
             ("QC dashboard", lambda: self.preview_csv(self._stage_path("qc", "summary"))),
         ]
         for label, callback in table_buttons:
