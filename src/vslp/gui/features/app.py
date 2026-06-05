@@ -18,7 +18,8 @@ try:
         QApplication, QComboBox, QFileDialog, QFrame, QGridLayout, QGroupBox,
         QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox,
         QPushButton, QSizePolicy, QStackedWidget, QTableWidget, QTableWidgetItem,
-        QTextEdit, QVBoxLayout, QWidget, QSplitter, QScrollArea, QAbstractItemView
+        QTextEdit, QVBoxLayout, QWidget, QSplitter, QScrollArea, QAbstractItemView,
+        QTabWidget
     )
 except Exception as exc:  # pragma: no cover
     raise RuntimeError("Feature Analysis GUI requires PySide6. Install with pip install -e '.[gui]'.") from exc
@@ -27,11 +28,16 @@ from vslp.analysis.features.column_mapping import (
     ROLE_OPTIONS, ROLE_FEATURE, ROLE_TARGET, ROLE_IDENTIFIER, ROLE_QC, ROLE_COVARIATE, ROLE_IGNORE, classify_columns, infer_table_kind, role_lists, summarize_roles
 )
 from vslp.analysis.features.audit import (
-    read_table, dataset_inventory, feature_distribution_summary,
+    read_table, dataset_inventory, role_summary, design_overview,
+    feature_family_overview, group_counts, feature_distribution_summary,
     feature_qc_correlations, reliability_screen
 )
+from vslp.analysis.features.plots import (
+    plot_role_counts, plot_group_counts, plot_feature_family_counts,
+    plot_missingness, plot_feature_availability_heatmap
+)
 
-APP_VERSION = "v0.42"
+APP_VERSION = "v0.43"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -342,7 +348,7 @@ class FeatureAnalysisGUI(QMainWindow):
         self.pages = {
             "project": self._project_page(),
             "mapping": self._mapping_page(),
-            "overview": self._table_page("Overview", "Dataset inventory and role counts."),
+            "overview": self._overview_page(),
             "missing": self._table_page("Missingness", "Feature-level and row-level missingness summaries."),
             "dist": self._table_page("Distributions / Outliers", "Distribution summaries and robust outlier screening."),
             "qc": self._table_page("QC Integration", "Feature-QC association screening, when a QC table is supplied."),
@@ -471,6 +477,115 @@ class FeatureAnalysisGUI(QMainWindow):
         layout.addWidget(card)
         return self._wrap_scroll(body)
 
+
+    def _overview_page(self) -> QWidget:
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
+
+        card = Card("Overview", "Dataset inventory, role counts, design structure, and first-pass readiness indicators.")
+
+        self.overview_metric_grid = QGridLayout()
+        self.overview_metric_grid.setHorizontalSpacing(12)
+        self.overview_metric_grid.setVerticalSpacing(12)
+        card.layout.addLayout(self.overview_metric_grid)
+
+        self.overview_note = QLabel("Load tables, review/accept column mapping, then run Feature Analysis to populate this dashboard.")
+        self.overview_note.setWordWrap(True)
+        self.overview_note.setStyleSheet(f"color:{MUTED}; background:#F7FAFD; border:1px solid {LINE}; border-radius:8px; padding:10px;")
+        card.layout.addWidget(self.overview_note)
+
+        tabs = QTabWidget()
+        tabs.setStyleSheet(f"QTabWidget::pane {{ border: 1px solid {LINE}; border-radius: 8px; background: #FFFFFF; }} QTabBar::tab {{ padding: 8px 14px; color: {NAVY}; }} QTabBar::tab:selected {{ background: #EAF8F7; border-bottom: 2px solid {TEAL}; }}")
+
+        self.overview_inventory_table = QTableWidget(0, 0)
+        self.overview_design_table = QTableWidget(0, 0)
+        self.overview_roles_table = QTableWidget(0, 0)
+        self.overview_family_table = QTableWidget(0, 0)
+        for t in [self.overview_inventory_table, self.overview_design_table, self.overview_roles_table, self.overview_family_table]:
+            t.setAlternatingRowColors(True)
+            t.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+
+        tabs.addTab(self.overview_inventory_table, "Inventory")
+        tabs.addTab(self.overview_roles_table, "Roles")
+        tabs.addTab(self.overview_design_table, "Design")
+        tabs.addTab(self.overview_family_table, "Feature families")
+        card.layout.addWidget(tabs)
+
+        plot_row = QHBoxLayout()
+        for label, attr in [
+            ("Open role-count plot", "role_counts"),
+            ("Open task/group-count plot", "group_counts"),
+            ("Open feature-family plot", "feature_family_counts"),
+            ("Open availability heatmap", "feature_availability_heatmap"),
+        ]:
+            b = QPushButton(label)
+            b.setProperty("secondary", True)
+            b.clicked.connect(lambda _=False, a=attr: self.open_plot(a))
+            plot_row.addWidget(b)
+        plot_row.addStretch(1)
+        card.layout.addLayout(plot_row)
+
+        layout.addWidget(card)
+        return self._wrap_scroll(body)
+
+    def _metric_tile(self, title: str, value: object, subtitle: str = "") -> QFrame:
+        tile = QFrame()
+        tile.setStyleSheet(f"QFrame {{ background:#F8FBFE; border:1px solid {LINE}; border-radius:12px; }} QLabel#MetricTitle {{ color:{MUTED}; font-size:11px; font-weight:700; text-transform:uppercase; border:none; }} QLabel#MetricValue {{ color:{NAVY}; font-size:24px; font-weight:900; border:none; }} QLabel#MetricSub {{ color:{MUTED}; font-size:11px; border:none; }}")
+        lay = QVBoxLayout(tile)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lab = QLabel(str(title)); lab.setObjectName("MetricTitle")
+        val = QLabel(str(value)); val.setObjectName("MetricValue")
+        sub = QLabel(str(subtitle)); sub.setObjectName("MetricSub"); sub.setWordWrap(True)
+        lay.addWidget(lab); lay.addWidget(val); lay.addWidget(sub)
+        return tile
+
+    def update_overview_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
+        # Clear metric grid.
+        while self.overview_metric_grid.count():
+            item = self.overview_metric_grid.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        inv = outputs.get("dataset_inventory", pd.DataFrame())
+        def metric_value(name: str, default: object = "—") -> object:
+            if inv.empty or "metric" not in inv.columns:
+                return default
+            row = inv.loc[inv["metric"].eq(name)]
+            return row["value"].iloc[0] if not row.empty else default
+        tiles = [
+            ("Rows", metric_value("feature_table_rows"), "records / files"),
+            ("Features", metric_value("detected_feature_columns"), "mapped feature columns"),
+            ("Numeric features", metric_value("numeric_feature_columns"), "usable for numeric audit"),
+            ("Subjects", metric_value("unique_subjects"), "if subject_id exists"),
+            ("Tasks", metric_value("unique_tasks"), "if task exists"),
+            ("QC table", "yes" if str(metric_value("qc_table_loaded", False)).lower() == "true" else "no", "optional quality table"),
+        ]
+        for idx, (title, value, subtitle) in enumerate(tiles):
+            self.overview_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx // 3, idx % 3)
+        self._fill_table(self.overview_inventory_table, outputs.get("dataset_inventory", pd.DataFrame()))
+        self._fill_table(self.overview_roles_table, outputs.get("feature_role_summary", pd.DataFrame()))
+        self._fill_table(self.overview_design_table, outputs.get("dataset_design_overview", pd.DataFrame()))
+        self._fill_table(self.overview_family_table, outputs.get("feature_family_overview", pd.DataFrame()))
+        self.overview_note.setText("Overview generated. Review row counts, mapped features, detected labels/covariates, task balance, and feature-family coverage before interpreting distributions or ML-readiness.")
+
+    def open_plot(self, key: str) -> None:
+        if not hasattr(self, "plot_paths") or key not in self.plot_paths:
+            QMessageBox.information(self, "Plot unavailable", "Run Feature Analysis first, or this plot was not generated for the current dataset.")
+            return
+        path = Path(self.plot_paths[key])
+        if not path.exists():
+            QMessageBox.information(self, "Plot unavailable", f"Plot file not found:\n{path}")
+            return
+        import subprocess, platform
+        if platform.system() == "Darwin":
+            subprocess.run(["open", str(path)], check=False)
+        elif platform.system() == "Windows":
+            subprocess.run(["explorer", str(path)], check=False)
+        else:
+            subprocess.run(["xdg-open", str(path)], check=False)
+
     def _table_page(self, title: str, subtitle: str) -> QWidget:
         body = QWidget()
         layout = QVBoxLayout(body)
@@ -479,7 +594,7 @@ class FeatureAnalysisGUI(QMainWindow):
         table = QTableWidget(0, 0)
         table.setAlternatingRowColors(True)
         table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        table.setObjectName(title.replace(" ", "_").lower())
+        table.setObjectName("".join(ch.lower() if ch.isalnum() else "_" for ch in title).strip("_"))
         card.layout.addWidget(table)
         setattr(self, f"table_{table.objectName()}", table)
         layout.addWidget(card)
@@ -618,24 +733,41 @@ class FeatureAnalysisGUI(QMainWindow):
             self.output_dir = Path(self.output_edit.text().strip()) / "feature_analysis"
             tables_dir = self.output_dir / "tables"
             reports_dir = self.output_dir / "reports"
+            plots_dir = self.output_dir / "plots"
             tables_dir.mkdir(parents=True, exist_ok=True)
             reports_dir.mkdir(parents=True, exist_ok=True)
+            plots_dir.mkdir(parents=True, exist_ok=True)
 
             mapping = self.collect_mapping_from_table()
             roles = role_lists(mapping)
             feature_cols = roles.get("Feature", [])
             inventory = dataset_inventory(self.feature_df, self.qc_df, self.meta_df, mapping)
+            role_sum = role_summary(mapping)
+            design = design_overview(self.feature_df, mapping)
+            family = feature_family_overview(self.feature_df, feature_cols, self.registry_df)
+            groups = group_counts(self.feature_df)
             dist = feature_distribution_summary(self.feature_df, feature_cols)
-            row_missing = pd.DataFrame({
-                "row_index": range(len(self.feature_df)),
-                "missing_fraction_all_columns": self.feature_df.isna().mean(axis=1).values,
-                "missing_fraction_feature_columns": self.feature_df[feature_cols].isna().mean(axis=1).values if feature_cols else [],
-            }) if feature_cols else pd.DataFrame({"row_index": range(len(self.feature_df)), "missing_fraction_all_columns": self.feature_df.isna().mean(axis=1).values})
+            if feature_cols:
+                row_missing = pd.DataFrame({
+                    "row_index": range(len(self.feature_df)),
+                    "missing_fraction_all_columns": self.feature_df.isna().mean(axis=1).values,
+                    "missing_fraction_feature_columns": self.feature_df[feature_cols].isna().mean(axis=1).values,
+                })
+            else:
+                row_missing = pd.DataFrame({
+                    "row_index": range(len(self.feature_df)),
+                    "missing_fraction_all_columns": self.feature_df.isna().mean(axis=1).values,
+                    "missing_fraction_feature_columns": float("nan"),
+                })
             qc_corr = feature_qc_correlations(self.feature_df, self.qc_df, feature_cols)
             reliability = reliability_screen(dist, qc_corr)
 
             outputs = {
                 "dataset_inventory": inventory,
+                "feature_role_summary": role_sum,
+                "dataset_design_overview": design,
+                "feature_family_overview": family,
+                "group_counts": groups,
                 "feature_column_mapping": mapping,
                 "feature_distribution_summary": dist,
                 "missingness_by_row": row_missing,
@@ -645,8 +777,17 @@ class FeatureAnalysisGUI(QMainWindow):
             self.outputs = outputs
             for name, df in outputs.items():
                 df.to_csv(tables_dir / f"{name}.csv", index=False)
+
+            self.plot_paths = {}
+            self.plot_paths["role_counts"] = str(plot_role_counts(role_sum, plots_dir / "overview_role_counts.png"))
+            self.plot_paths["group_counts"] = str(plot_group_counts(groups, plots_dir / "overview_group_counts.png"))
+            self.plot_paths["feature_family_counts"] = str(plot_feature_family_counts(family, plots_dir / "overview_feature_family_counts.png"))
+            self.plot_paths["missingness_top_features"] = str(plot_missingness(dist, plots_dir / "missingness_top_features.png"))
+            self.plot_paths["feature_availability_heatmap"] = str(plot_feature_availability_heatmap(self.feature_df, feature_cols, plots_dir / "feature_availability_heatmap.png"))
+
             self.write_report(reports_dir / "vslp_feature_analysis_report.html", outputs)
             self.populate_output_tables(outputs)
+            self.update_overview_dashboard(outputs)
             self.log(f"Analysis complete. Outputs written to: {self.output_dir}")
             self.show_page("overview")
         except Exception as exc:
@@ -677,12 +818,18 @@ class FeatureAnalysisGUI(QMainWindow):
 
     def write_report(self, path: Path, outputs: dict[str, pd.DataFrame]) -> None:
         inv = outputs.get("dataset_inventory", pd.DataFrame()).to_html(index=False, escape=False)
-        roles = summarize_roles(outputs.get("feature_column_mapping", pd.DataFrame())).to_html(index=False, escape=False)
+        roles = outputs.get("feature_role_summary", summarize_roles(outputs.get("feature_column_mapping", pd.DataFrame()))).to_html(index=False, escape=False)
+        design = outputs.get("dataset_design_overview", pd.DataFrame()).to_html(index=False, escape=False)
+        fam = outputs.get("feature_family_overview", pd.DataFrame()).to_html(index=False, escape=False)
         rel = outputs.get("feature_reliability_screen", pd.DataFrame()).head(80).to_html(index=False, escape=False)
         html = f"""<!doctype html><html><head><meta charset='utf-8'><title>VSLP Feature Analysis Report</title>
         <style>body{{font-family:Arial,sans-serif;margin:32px;color:#0E1726}} h1,h2{{color:#071A33}} table{{border-collapse:collapse;width:100%;font-size:12px;margin-bottom:24px}} td,th{{border:1px solid #D9E2EF;padding:6px}} th{{background:#EEF4FA}}</style></head><body>
         <h1>VSLP Feature Analysis Report</h1><p>Version {APP_VERSION}. Descriptive feature audit only; not a diagnostic or ML-training report.</p>
-        <h2>Dataset inventory</h2>{inv}<h2>Column-role summary</h2>{roles}<h2>Initial feature reliability screen</h2>{rel}</body></html>"""
+        <h2>Dataset inventory</h2>{inv}
+        <h2>Column-role summary</h2>{roles}
+        <h2>Dataset design overview</h2>{design}
+        <h2>Feature-family overview</h2>{fam}
+        <h2>Initial feature reliability screen</h2>{rel}</body></html>"""
         path.write_text(html, encoding="utf-8")
 
     def open_output_folder(self) -> None:

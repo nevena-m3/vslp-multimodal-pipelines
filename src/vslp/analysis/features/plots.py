@@ -83,3 +83,41 @@ def plot_outlier_counts(outliers: pd.DataFrame, path: Path) -> Path:
     ax.barh(counts.index.astype(str), counts.values)
     ax.invert_yaxis(); ax.set_xlabel("Outlier count"); ax.set_title("Robust outliers by feature")
     return _save(fig, path)
+
+
+def plot_role_counts(role_summary: pd.DataFrame, path: Path) -> Path:
+    if role_summary is None or role_summary.empty or "role" not in role_summary.columns:
+        fig, ax = plt.subplots(figsize=(8, 4)); ax.text(.5, .5, "No role summary", ha="center", va="center"); ax.axis("off"); return _save(fig, path)
+    df = role_summary.sort_values("n_columns", ascending=True)
+    fig, ax = plt.subplots(figsize=(8, max(4, 0.35 * len(df))))
+    ax.barh(df["role"].astype(str), df["n_columns"].astype(float))
+    ax.set_xlabel("Number of columns")
+    ax.set_title("Column roles after mapping")
+    return _save(fig, path)
+
+
+def plot_group_counts(group_counts: pd.DataFrame, path: Path, group_variable: str = "task") -> Path:
+    if group_counts is None or group_counts.empty:
+        fig, ax = plt.subplots(figsize=(8, 4)); ax.text(.5, .5, "No grouping columns detected", ha="center", va="center"); ax.axis("off"); return _save(fig, path)
+    df = group_counts[group_counts["group_variable"].astype(str).eq(group_variable)].copy()
+    if df.empty:
+        # Fall back to the first available grouping variable.
+        group_variable = str(group_counts["group_variable"].iloc[0])
+        df = group_counts[group_counts["group_variable"].astype(str).eq(group_variable)].copy()
+    df = df.sort_values("n_rows", ascending=True).tail(25)
+    fig, ax = plt.subplots(figsize=(9, max(4, 0.35 * len(df))))
+    ax.barh(df["level"].astype(str), df["n_rows"].astype(float))
+    ax.set_xlabel("Rows / recordings")
+    ax.set_title(f"Rows by {group_variable}")
+    return _save(fig, path)
+
+
+def plot_feature_family_counts(family_overview: pd.DataFrame, path: Path) -> Path:
+    if family_overview is None or family_overview.empty or "family_or_subsystem" not in family_overview.columns:
+        fig, ax = plt.subplots(figsize=(8, 4)); ax.text(.5, .5, "No feature-family registry supplied", ha="center", va="center"); ax.axis("off"); return _save(fig, path)
+    df = family_overview.sort_values("n_features", ascending=True)
+    fig, ax = plt.subplots(figsize=(9, max(4, 0.35 * len(df))))
+    ax.barh(df["family_or_subsystem"].astype(str), df["n_features"].astype(float))
+    ax.set_xlabel("Features")
+    ax.set_title("Feature count by family / subsystem")
+    return _save(fig, path)
