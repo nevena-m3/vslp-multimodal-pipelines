@@ -28,6 +28,7 @@ import pandas as pd
 from vslp.acoustic.features.plugins import build_default_plugins, implemented_feature_names
 from vslp.acoustic.features.plugins.base import FeatureContext, FeatureValue
 from vslp.acoustic.features.registry import build_acoustic_feature_registry
+from vslp.acoustic.features.scales import build_feature_scale_registry
 from vslp.core.project import ensure_stage_folders
 from vslp.core.provenance import python_environment
 from vslp.core.schemas import ArtifactRef, StageManifest, StageResult
@@ -234,11 +235,15 @@ def run_acoustic_feature_extraction(
     features_path = folders["tables"] / "acoustic_features_per_file.csv"
     status_path = folders["tables"] / "acoustic_feature_status_long.csv"
     registry_path = folders["tables"] / "selected_acoustic_feature_registry.csv"
+    scale_registry_path = folders["tables"] / "acoustic_feature_measurement_scale_registry.csv"
+    native_segments_path = folders["tables"] / "native_measurements" / "acoustic_native_segment_events.csv"
     errors_path = folders["errors"] / "acoustic_feature_errors.csv"
 
     pd.DataFrame(rows).to_csv(features_path, index=False)
     pd.DataFrame(long_status_rows).to_csv(status_path, index=False)
     registry.to_csv(registry_path, index=False)
+    build_feature_scale_registry(registry).to_csv(scale_registry_path, index=False)
+    _write_native_segment_events(seg_summary, native_segments_path)
     pd.DataFrame(errors).to_csv(errors_path, index=False)
 
     missingness_plot = folders["plots"] / "feature_missingness.png"
@@ -299,6 +304,8 @@ def run_acoustic_feature_extraction(
             ArtifactRef(path=str(features_path), role="features_per_file", media_type="text/csv"),
             ArtifactRef(path=str(status_path), role="feature_status_long", media_type="text/csv"),
             ArtifactRef(path=str(registry_path), role="selected_feature_registry", media_type="text/csv"),
+            ArtifactRef(path=str(scale_registry_path), role="feature_measurement_scale_registry", media_type="text/csv"),
+            ArtifactRef(path=str(native_segments_path), role="native_segment_events", media_type="text/csv"),
             ArtifactRef(path=str(range_flags_path), role="expected_range_flags", media_type="text/csv"),
             ArtifactRef(path=str(distribution_audit_path), role="distribution_audit", media_type="text/csv"),
             ArtifactRef(path=str(report_path), role="feature_html_report", media_type="text/html"),
@@ -313,6 +320,8 @@ def run_acoustic_feature_extraction(
             "Rhythm/EMS features were validated in v0.27 from effective-task envelope modulation spectrum.",
             f"Computed feature families in this pass: {computed_features}",
             "Coordination features were validated in v0.31 as time-delay cross-correlation eigenspectrum complexity over CPP/F1/F2 trajectories.",
+            "Feature measurement scale metadata is written to document the native physiologic scale and recommended reducers before ML aggregation.",
+            "Native segment-event measurements are preserved for timing features; frame/trajectory persistence for signal features is planned as the next architecture extension.",
             "Registered-but-not-yet-implemented features remain explicit NaN placeholders.",
             "Expected-range flags are descriptive screening aids, not clinical cutoffs.",
         ],
@@ -327,6 +336,51 @@ def run_acoustic_feature_extraction(
         error_table=errors_path,
         report_path=report_path,
     )
+
+
+def _write_native_segment_events(seg_summary: pd.DataFrame, output_path: Path) -> None:
+    """Persist segment-level native measurements used by timing features.
+
+    This is the first native-scale preservation table. It prevents the pipeline from
+    treating pause/phrase physiology as if it only ever existed as one file-level
+    mean. Signal-level track persistence for F0, CPP, formants, EMS, and
+    coordination is handled in the measurement-scale registry and planned as a
+    subsequent architecture extension.
+    """
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    rows: list[dict[str, Any]] = []
+    meta_cols = [
+        "file_name", "subject_id", "session_id", "iteration", "task",
+        "recording_date", "diagnosis", "severity_score", "severity_bin", "record_key",
+    ]
+    for _, file_row in seg_summary.iterrows():
+        seg_path_raw = file_row.get("segments_csv_path", "")
+        if not isinstance(seg_path_raw, str) or not seg_path_raw or seg_path_raw == "nan":
+            continue
+        seg_path = Path(seg_path_raw)
+        if not seg_path.exists():
+            continue
+        try:
+            segs = pd.read_csv(seg_path)
+        except Exception:
+            continue
+        if segs.empty:
+            continue
+        for idx, seg in segs.reset_index(drop=True).iterrows():
+            out = {c: file_row.get(c, np.nan) for c in meta_cols}
+            out.update({
+                "segment_index": int(idx),
+                "segment_type": seg.get("segment_type", np.nan),
+                "segment_role": seg.get("segment_role", np.nan),
+                "start_sec": seg.get("start_sec", np.nan),
+                "end_sec": seg.get("end_sec", np.nan),
+                "duration_sec": seg.get("duration_sec", np.nan),
+                "native_scale": "segment_event",
+                "physiologic_interpretation": "speech_phrase" if seg.get("segment_type", "") == "speech" else "pause_or_nonspeech",
+            })
+            rows.append(out)
+    cols = meta_cols + ["segment_index", "segment_type", "segment_role", "start_sec", "end_sec", "duration_sec", "native_scale", "physiologic_interpretation"]
+    pd.DataFrame(rows, columns=cols).to_csv(output_path, index=False)
 
 
 def _feature_names_in_table(features_csv: Path, registry: pd.DataFrame) -> list[str]:
