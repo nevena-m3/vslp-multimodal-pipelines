@@ -1,4 +1,4 @@
-"""VSLP Acoustic Pipeline GUI v0.29.
+"""VSLP Acoustic Pipeline GUI v0.33.
 
 V0.17 Setup/Ingest refinement:
 - stage-aware workflow guidance with scientific rationale;
@@ -7,7 +7,7 @@ V0.17 Setup/Ingest refinement:
 - feature-level selection inside each subsystem;
 - quick selectors for all / implemented / proxy / pending features;
 - region-aware feature extraction;
-- aggregation and QC dashboard stages;
+- QC dashboard stage;
 - clearer separation of clinical/simple controls and expert controls.
 """
 
@@ -53,7 +53,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vslp.acoustic.aggregate.stage import AggregationConfig, run_acoustic_aggregation
 from vslp.acoustic.features.registry import build_acoustic_feature_registry
 from vslp.acoustic.features.stage import (
     IMPLEMENTED_FEATURES,
@@ -130,7 +129,6 @@ class AcousticPipelineWindow(QMainWindow):
             "segment": StageRecord(),
             "quality": StageRecord(),
             "features": StageRecord(),
-            "aggregate": StageRecord(),
             "qc": StageRecord(),
         }
         self._thread: QThread | None = None
@@ -156,7 +154,7 @@ class AcousticPipelineWindow(QMainWindow):
 
         title = QLabel("VSLP")
         title.setObjectName("AppTitleLabel")
-        subtitle = QLabel("Acoustic Pipeline GUI v0.29")
+        subtitle = QLabel("Acoustic Pipeline GUI v0.33")
         subtitle.setObjectName("SubtitleLabel")
         ip_notice = QLabel(
             "© 2026 Nevena Musikic & Yana Yunusova\n"
@@ -178,7 +176,6 @@ class AcousticPipelineWindow(QMainWindow):
             ("segment", "Data Segmentation"),
             ("quality", "Quality Control"),
             ("features", "Feature Extraction"),
-            ("aggregate", "Aggregation"),
             ("qc", "QC Dashboard"),
         ]:
             card = QFrame()
@@ -202,7 +199,7 @@ class AcousticPipelineWindow(QMainWindow):
         self.refresh_outputs_btn.clicked.connect(self.refresh_latest_outputs)
         side_layout.addWidget(self.refresh_outputs_btn)
 
-        self.run_all_btn = QPushButton("Run Full Acoustic Backend")
+        self.run_all_btn = QPushButton("Run Full Acoustic Workflow")
         self.run_all_btn.setObjectName("RunButton")
         self.run_all_btn.clicked.connect(self.run_all)
         side_layout.addWidget(self.run_all_btn)
@@ -229,7 +226,6 @@ class AcousticPipelineWindow(QMainWindow):
         tabs.addTab(self._build_segment_tab(), "Segmentation")
         tabs.addTab(self._build_quality_tab(), "Quality Control")
         tabs.addTab(self._build_features_tab(), "Features")
-        tabs.addTab(self._build_aggregation_tab(), "Aggregation")
         tabs.addTab(self._build_qc_tab(), "QC Dashboard")
         tabs.addTab(self._build_inspector_tab(), "Inspector")
         tabs.addTab(self._build_reports_tab(), "Reports & Outputs")
@@ -1032,6 +1028,24 @@ class AcousticPipelineWindow(QMainWindow):
         region_note.setWordWrap(True); region_note.setObjectName("SubtitleLabel")
         form.addRow("Region guidance", region_note)
         right_layout.addWidget(param_group)
+
+        strategy_group = QGroupBox("Computation strategy")
+        strategy_layout = QVBoxLayout(strategy_group)
+        strategy_text = QPlainTextEdit()
+        strategy_text.setReadOnly(True)
+        strategy_text.setMaximumHeight(210)
+        strategy_text.setPlainText(
+            "Timing/respiratory: computed from speech and pause segment events; no waveform concatenation.\n"
+            "Rhythm/EMS: computed over effective task region, first speech onset to last speech offset, preserving internal pauses.\n"
+            "Phonatory: computed from speech/voiced-frame tracks; scalar values summarize voiced support, not full-file silence.\n"
+            "Articulatory/formant: computed from valid speech-frame LPC trajectories; medians, ranges, and slope summaries are trajectory summaries.\n"
+            "Resonatory/nasality: computed from valid spectral frames; values are median spectral contrasts with validity warnings.\n"
+            "Coordination: computed from aligned CPP/F1/F2 trajectories and lagged correlation eigenspectrum summaries.\n\n"
+            "The Feature Extraction stage is where native measurements are reduced to one file-level value. The removed Aggregation tab should not be used for this decision."
+        )
+        strategy_layout.addWidget(strategy_text)
+        right_layout.addWidget(strategy_group)
+
         run_btn = QPushButton("Run Feature Extraction")
         run_btn.setObjectName("RunButton")
         run_btn.clicked.connect(self.run_features)
@@ -1042,34 +1056,6 @@ class AcousticPipelineWindow(QMainWindow):
         self._refresh_feature_count_label()
         return self._scrollable(container)
 
-
-    def _build_aggregation_tab(self) -> QWidget:
-        container = QWidget()
-        layout = QVBoxLayout(container)
-        layout.addWidget(self._info_panel(
-            "Info",
-            "Aggregation should preserve physiologic meaning. VSLP now writes both a compact table and a multi-stat table so downstream ML does not depend only on mean or median summaries."
-        ))
-        group = QGroupBox("Aggregation configuration")
-        form = QFormLayout(group)
-        self.agg_group_columns_edit = QLineEdit("subject_id,session_id,iteration,task")
-        self.agg_numeric_policy_combo = QComboBox(); self.agg_numeric_policy_combo.addItems(["mean", "median"])
-        self.agg_missing_policy_combo = QComboBox(); self.agg_missing_policy_combo.addItems(["preserve", "drop_features_over_threshold", "impute_group_median"])
-        self.agg_missing_threshold_spin = QDoubleSpinBox(); self.agg_missing_threshold_spin.setDecimals(2); self.agg_missing_threshold_spin.setRange(0.0, 1.0); self.agg_missing_threshold_spin.setSingleStep(0.05); self.agg_missing_threshold_spin.setValue(0.40)
-        form.addRow("Group columns", self.agg_group_columns_edit)
-        form.addRow("Numeric aggregation", self.agg_numeric_policy_combo)
-        form.addRow("Missing-value policy", self.agg_missing_policy_combo)
-        form.addRow("Max missing fraction", self.agg_missing_threshold_spin)
-        guidance = QLabel("Outputs include: compact aggregation, multi-stat aggregation, missingness, and an aggregation strategy table describing each feature's native measurement scale.")
-        guidance.setWordWrap(True); guidance.setObjectName("SubtitleLabel")
-        run_btn = QPushButton("Run Aggregation")
-        run_btn.setObjectName("RunButton")
-        run_btn.clicked.connect(self.run_aggregation)
-        layout.addWidget(group)
-        layout.addWidget(guidance)
-        layout.addWidget(run_btn)
-        layout.addStretch(1)
-        return self._scrollable(container)
 
     def _build_qc_tab(self) -> QWidget:
         container = QWidget()
@@ -1161,9 +1147,6 @@ class AcousticPipelineWindow(QMainWindow):
             ("Feature status", lambda: self.preview_csv(self._stage_path("features", "status"))),
             ("Feature distribution audit", lambda: self.preview_csv(self._stage_path("features", "audit"))),
             ("Feature expected-range flags", lambda: self.preview_csv(self._stage_path("features", "range_flags"))),
-            ("Aggregated table", lambda: self.preview_csv(self._stage_path("aggregate", "summary"))),
-            ("Aggregated multi-stat table", lambda: self.preview_csv(self._output_root() / "acoustic" / "005_aggregation" / "tables" / "acoustic_features_aggregated_multistat.csv")),
-            ("Aggregation strategy", lambda: self.preview_csv(self._output_root() / "acoustic" / "005_aggregation" / "tables" / "acoustic_aggregation_strategy.csv")),
             ("Feature measurement scales", lambda: self.preview_csv(self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_feature_measurement_scale_registry.csv")),
             ("Native segment events", lambda: self.preview_csv(self._output_root() / "acoustic" / "004_features" / "tables" / "native_measurements" / "acoustic_native_segment_events.csv")),
             ("QC dashboard", lambda: self.preview_csv(self._stage_path("qc", "summary"))),
@@ -1202,8 +1185,6 @@ class AcousticPipelineWindow(QMainWindow):
             ("Feature expected-range flags", lambda: self.preview_image(self._features_plot_path("feature_expected_range_flags.png"))),
             ("Feature correlation heatmap", lambda: self.preview_image(self._features_plot_path("feature_correlation_heatmap.png"))),
             ("Feature subsystem coverage", lambda: self.preview_image(self._features_plot_path("feature_subsystem_distributions.png"))),
-            ("Aggregation missingness", lambda: self.preview_image(self._output_root() / "acoustic" / "005_aggregation" / "plots" / "aggregation_missingness_top30.png")),
-            ("Aggregation group counts", lambda: self.preview_image(self._output_root() / "acoustic" / "005_aggregation" / "plots" / "aggregation_group_counts.png")),
             ("QC flag counts", lambda: self.preview_image(self._output_root() / "acoustic" / "006_qc_dashboard" / "plots" / "qc_flag_counts.png")),
             ("QC SNR distribution", lambda: self.preview_image(self._output_root() / "acoustic" / "006_qc_dashboard" / "plots" / "qc_snr_distribution.png")),
             ("QC speech fraction", lambda: self.preview_image(self._output_root() / "acoustic" / "006_qc_dashboard" / "plots" / "qc_speech_fraction_distribution.png")),
@@ -1302,8 +1283,6 @@ class AcousticPipelineWindow(QMainWindow):
             ("Open Quality Control HTML Report", lambda: self._open_stage_file("quality", "report")),
             ("Open Feature Table CSV", lambda: self._open_stage_file("features", "summary")),
             ("Open Feature HTML Report", lambda: self._open_stage_file("features", "report")),
-            ("Open Aggregated Feature CSV", lambda: self._open_stage_file("aggregate", "summary")),
-            ("Open Aggregation HTML Report", lambda: self._open_stage_file("aggregate", "report")),
             ("Open QC Dashboard CSV", lambda: self._open_stage_file("qc", "summary")),
             ("Open QC Dashboard HTML", lambda: self._open_stage_file("qc", "report")),
             ("Open Acoustic Output Folder", self.open_output_root),
@@ -1600,8 +1579,6 @@ class AcousticPipelineWindow(QMainWindow):
             ("features", "status"): self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_feature_status_long.csv",
             ("features", "audit"): self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_feature_distribution_audit.csv",
             ("features", "range_flags"): self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_feature_expected_range_flags.csv",
-            ("aggregate", "summary"): self._output_root() / "acoustic" / "005_aggregation" / "tables" / "acoustic_features_aggregated.csv",
-            ("aggregate", "report"): self._output_root() / "acoustic" / "005_aggregation" / "reports" / "acoustic_aggregation_report.html",
             ("qc", "summary"): self._output_root() / "acoustic" / "006_qc_dashboard" / "tables" / "acoustic_qc_dashboard.csv",
             ("qc", "report"): self._output_root() / "acoustic" / "006_qc_dashboard" / "reports" / "acoustic_qc_dashboard.html",
         }
@@ -1623,7 +1600,6 @@ class AcousticPipelineWindow(QMainWindow):
             "segment": (self._stage_path("segment", "summary"), self._stage_path("segment", "report")),
             "quality": (self._stage_path("quality", "summary"), self._stage_path("quality", "report")),
             "features": (self._stage_path("features", "summary"), self._stage_path("features", "report")),
-            "aggregate": (self._stage_path("aggregate", "summary"), self._stage_path("aggregate", "report")),
             "qc": (self._stage_path("qc", "summary"), self._stage_path("qc", "report")),
         }
         for stage, (summary, report) in known.items():
@@ -2113,23 +2089,6 @@ class AcousticPipelineWindow(QMainWindow):
         self._run_worker("features", run_acoustic_feature_extraction, {"segmentation_summary_csv": segmentation_summary, "output_root": output_root, "config": cfg})
 
 
-    def run_aggregation(self) -> None:
-        paths = self._require_paths()
-        if paths is None: return
-        if not self._require_project_initialized(): return
-        _input_path, output_root = paths
-        features_csv = self._stage_path("features", "summary")
-        if not features_csv.exists():
-            QMessageBox.warning(self, "Features required", "Run feature extraction first. The feature table was not found.")
-            return
-        cfg = AggregationConfig(
-            group_columns=[c.strip() for c in self.agg_group_columns_edit.text().split(",") if c.strip()],
-            numeric_policy=self.agg_numeric_policy_combo.currentText(),
-            missing_policy=self.agg_missing_policy_combo.currentText(),
-            max_missing_fraction=float(self.agg_missing_threshold_spin.value()),
-        )
-        self._run_worker("aggregate", run_acoustic_aggregation, {"features_csv": features_csv, "output_root": output_root, "config": cfg})
-
     def run_qc_dashboard(self) -> None:
         paths = self._require_paths()
         if paths is None: return
@@ -2180,16 +2139,6 @@ class AcousticPipelineWindow(QMainWindow):
                     acoustic_region_policy=self.region_policy_combo.currentText(),
                 ),
             )
-            aggregate_result = run_acoustic_aggregation(
-                features_csv=output_root / "acoustic" / "004_features" / "tables" / "acoustic_features_per_file.csv",
-                output_root=output_root,
-                config=AggregationConfig(
-                    group_columns=[c.strip() for c in self.agg_group_columns_edit.text().split(",") if c.strip()],
-                    numeric_policy=self.agg_numeric_policy_combo.currentText(),
-                    missing_policy=self.agg_missing_policy_combo.currentText(),
-                    max_missing_fraction=float(self.agg_missing_threshold_spin.value()),
-                ),
-            )
             qc_result = run_acoustic_qc_dashboard(
                 output_root=output_root,
                 config=AcousticQCConfig(
@@ -2199,12 +2148,12 @@ class AcousticPipelineWindow(QMainWindow):
                     max_speech_fraction=float(self.qc_max_speech_spin.value()),
                 ),
             )
-            return {"metadata": metadata_result, "ingest": ingest_result, "preprocess": preprocess_result, "segment": segment_result, "features": features_result, "aggregate": aggregate_result, "qc": qc_result}
+            return {"metadata": metadata_result, "ingest": ingest_result, "preprocess": preprocess_result, "segment": segment_result, "features": features_result, "qc": qc_result}
         self._run_worker("full_run", full_run, {"input_path": input_path, "output_root": output_root})
 
     def _on_worker_finished(self, name: str, result: object) -> None:  # type: ignore[override]
         if name == "full_run" and isinstance(result, dict):
-            for stage_name in ["metadata", "ingest", "preprocess", "segment", "quality", "features", "aggregate", "qc"]:
+            for stage_name in ["metadata", "ingest", "preprocess", "segment", "quality", "features", "qc"]:
                 self._on_worker_finished(stage_name, result[stage_name])
             self.append_log("Full acoustic backend run finished.")
             return

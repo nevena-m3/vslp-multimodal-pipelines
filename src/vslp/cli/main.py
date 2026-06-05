@@ -9,7 +9,6 @@ from pathlib import Path
 
 import typer
 
-from vslp.acoustic.aggregate.stage import AggregationConfig, run_acoustic_aggregation
 from vslp.acoustic.features.registry import build_acoustic_feature_registry
 from vslp.acoustic.features.stage import FeatureExtractionConfig, run_acoustic_feature_extraction
 from vslp.acoustic.ingest.stage import run_acoustic_ingest
@@ -210,30 +209,6 @@ def acoustic_extract_features(
     )
     typer.echo(f"Status: {result.status}")
     typer.echo(f"Features: {result.summary_table}")
-    typer.echo(f"Errors: {result.error_table}")
-    typer.echo(f"Report: {result.report_path}")
-    typer.echo(f"Manifest: {result.manifest_path}")
-
-
-@acoustic_app.command("aggregate")
-def acoustic_aggregate(
-    features_csv: Path,
-    output_root: Path,
-    group_columns: str = "subject_id,session_id,iteration,task",
-    numeric_policy: str = "mean",
-    missing_policy: str = "preserve",
-    max_missing_fraction: float = 0.40,
-):
-    """Aggregate per-file acoustic features into analysis-ready tables."""
-    cfg = AggregationConfig(
-        group_columns=[c.strip() for c in group_columns.split(",") if c.strip()],
-        numeric_policy=numeric_policy,
-        missing_policy=missing_policy,
-        max_missing_fraction=max_missing_fraction,
-    )
-    result = run_acoustic_aggregation(features_csv=features_csv, output_root=output_root, config=cfg)
-    typer.echo(f"Status: {result.status}")
-    typer.echo(f"Aggregated features: {result.summary_table}")
     typer.echo(f"Errors: {result.error_table}")
     typer.echo(f"Report: {result.report_path}")
     typer.echo(f"Manifest: {result.manifest_path}")

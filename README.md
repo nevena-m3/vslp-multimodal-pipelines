@@ -139,3 +139,8 @@ The Acoustic GUI Setup screen now enforces project initialization before ingest.
 ## v0.26 respiratory/timing validation
 
 Respiratory/timing acoustic features are now validated against explicit segment-table formulas. See `docs/acoustic_features_v026_timing_validation.md`.
+
+
+## v0.33 feature computation strategy
+
+The Aggregation GUI stage has been removed. Feature Extraction now owns the physiologic reduction strategy from native scale to one file-level value. See `docs/acoustic_gui_v033_remove_aggregation_feature_strategy.md`.
