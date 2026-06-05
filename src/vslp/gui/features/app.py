@@ -18,20 +18,20 @@ try:
         QApplication, QComboBox, QFileDialog, QFrame, QGridLayout, QGroupBox,
         QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox,
         QPushButton, QSizePolicy, QStackedWidget, QTableWidget, QTableWidgetItem,
-        QTextEdit, QVBoxLayout, QWidget, QSplitter, QScrollArea
+        QTextEdit, QVBoxLayout, QWidget, QSplitter, QScrollArea, QAbstractItemView
     )
 except Exception as exc:  # pragma: no cover
     raise RuntimeError("Feature Analysis GUI requires PySide6. Install with pip install -e '.[gui]'.") from exc
 
 from vslp.analysis.features.column_mapping import (
-    ROLE_OPTIONS, classify_columns, infer_table_kind, role_lists, summarize_roles
+    ROLE_OPTIONS, ROLE_FEATURE, ROLE_TARGET, ROLE_IDENTIFIER, ROLE_QC, ROLE_COVARIATE, ROLE_IGNORE, classify_columns, infer_table_kind, role_lists, summarize_roles
 )
 from vslp.analysis.features.audit import (
     read_table, dataset_inventory, feature_distribution_summary,
     feature_qc_correlations, reliability_screen
 )
 
-APP_VERSION = "v0.41"
+APP_VERSION = "v0.42"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -157,8 +157,8 @@ class LogoBar(QFrame):
             background: #FFFFFF;
             border-bottom: 1px solid {LINE};
         }}
-        QLabel#Title {{ color: {NAVY}; font-size: 22px; font-weight: 800; letter-spacing: 0.5px; }}
-        QLabel#Subtitle {{ color: {MUTED}; font-size: 12px; font-weight: 500; }}
+        QLabel#Title {{ color: {NAVY}; background: transparent; border: none; font-size: 22px; font-weight: 800; letter-spacing: 0.5px; }}
+        QLabel#Subtitle {{ color: {MUTED}; background: transparent; border: none; font-size: 12px; font-weight: 500; }}
         """)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(18, 10, 18, 10)
@@ -369,7 +369,7 @@ class FeatureAnalysisGUI(QMainWindow):
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(16)
 
-        intro = Card("Project", "Upload a feature table and optional QC, metadata, and registry/policy tables. The analysis is local and does not modify inputs.")
+        intro = Card("Project", "Upload a primary feature table and optional QC, metadata, and feature-definition tables. The analysis is local and non-destructive.")
         grid = QGridLayout()
         self.feature_picker = FilePicker("Primary feature table", optional=False)
         self.qc_picker = FilePicker("Optional QC table", optional=True)
@@ -429,16 +429,43 @@ class FeatureAnalysisGUI(QMainWindow):
         card = Card("Column Mapping", "Review detected roles. Numeric primary-table columns are treated as features unless a stronger rule identifies them as identifiers, QC variables, audit/status fields, or exact clinical labels.")
         self.mapping_table = QTableWidget(0, 7)
         self.mapping_table.setHorizontalHeaderLabels(["Column", "Role", "Confidence", "Reason", "dtype", "Missing", "Unique"])
+        self.mapping_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.mapping_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.mapping_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.mapping_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.mapping_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         self.mapping_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
         self.mapping_table.setAlternatingRowColors(True)
         card.layout.addWidget(self.mapping_table)
+        self.mapping_summary_label = QLabel("Load a table to inspect proposed roles. You can accept the proposed mapping or manually change any row.")
+        self.mapping_summary_label.setWordWrap(True)
+        self.mapping_summary_label.setStyleSheet(f"color:{MUTED}; background:#F7FAFD; border:1px solid {LINE}; border-radius:8px; padding:9px;")
+        card.layout.addWidget(self.mapping_summary_label)
+
+        quick = QHBoxLayout()
+        for label, role in [
+            ("Set selected: Feature", ROLE_FEATURE),
+            ("Target", ROLE_TARGET),
+            ("Identifier", ROLE_IDENTIFIER),
+            ("QC", ROLE_QC),
+            ("Covariate", ROLE_COVARIATE),
+            ("Ignore / Exclude", ROLE_IGNORE),
+        ]:
+            b = QPushButton(label)
+            b.setProperty("secondary", True)
+            b.clicked.connect(lambda _=False, r=role: self.set_selected_role(r))
+            quick.addWidget(b)
+        quick.addStretch(1)
+        card.layout.addLayout(quick)
+
         btns = QHBoxLayout()
-        refresh = QPushButton("Refresh Mapping")
-        refresh.clicked.connect(self.refresh_mapping_table)
+        refresh = QPushButton("Refresh Proposed Mapping")
+        refresh.setProperty("secondary", True)
+        refresh.clicked.connect(self.reload_proposed_mapping)
+        accept = QPushButton("Accept Mapping and Continue")
+        accept.clicked.connect(self.accept_mapping_and_continue)
         btns.addWidget(refresh)
+        btns.addWidget(accept)
         btns.addStretch(1)
         card.layout.addLayout(btns)
         layout.addWidget(card)
@@ -503,7 +530,8 @@ class FeatureAnalysisGUI(QMainWindow):
                 self.log(f"Loaded metadata table: {self.meta_df.shape[0]} rows × {self.meta_df.shape[1]} columns")
             if self.registry_df is not None:
                 self.log(f"Loaded registry/policy table: {self.registry_df.shape[0]} rows × {self.registry_df.shape[1]} columns")
-            self.log("Role counts:\n" + roles.to_string(index=False))
+            self.log("Proposed role counts:\n" + roles.to_string(index=False))
+            self.log("Review Column Mapping, then click Accept Mapping and Continue or manually revise roles.")
             self.show_page("mapping")
         except Exception as exc:
             QMessageBox.critical(self, "Load failed", str(exc))
@@ -526,6 +554,7 @@ class FeatureAnalysisGUI(QMainWindow):
             self.mapping_table.setItem(i, 5, QTableWidgetItem(f"{float(r['missing_fraction']):.3f}"))
             self.mapping_table.setItem(i, 6, QTableWidgetItem(str(r["unique_values"])))
         self.mapping_table.resizeRowsToContents()
+        self.update_mapping_summary()
 
     def collect_mapping_from_table(self) -> pd.DataFrame:
         if self.mapping_df.empty:
@@ -537,7 +566,45 @@ class FeatureAnalysisGUI(QMainWindow):
             roles.append(widget.currentText() if isinstance(widget, QComboBox) else df.iloc[i]["role"])
         df["role"] = roles
         self.mapping_df = df
+        self.update_mapping_summary()
         return df
+
+    def set_selected_role(self, role: str) -> None:
+        rows = sorted({idx.row() for idx in self.mapping_table.selectedIndexes()})
+        if not rows:
+            QMessageBox.information(self, "No rows selected", "Select one or more rows in the mapping table first.")
+            return
+        for row in rows:
+            widget = self.mapping_table.cellWidget(row, 1)
+            if isinstance(widget, QComboBox):
+                widget.setCurrentText(role)
+        self.collect_mapping_from_table()
+        self.update_mapping_summary()
+
+    def reload_proposed_mapping(self) -> None:
+        if self.feature_df is None:
+            QMessageBox.information(self, "No table loaded", "Load a primary feature table first.")
+            return
+        self.mapping_df = classify_columns(self.feature_df, table_kind="feature", registry=self.registry_df)
+        self.refresh_mapping_table()
+
+    def accept_mapping_and_continue(self) -> None:
+        self.collect_mapping_from_table()
+        self.update_mapping_summary()
+        roles = role_lists(self.mapping_df)
+        n_features = len(roles.get(ROLE_FEATURE, []))
+        if n_features == 0:
+            QMessageBox.warning(self, "No feature columns selected", "At least one column must be assigned the role 'Feature' before analysis.")
+            return
+        self.log(f"Column mapping accepted: {n_features} feature columns selected.")
+        self.show_page("overview")
+
+    def update_mapping_summary(self) -> None:
+        if self.mapping_df.empty or not hasattr(self, "mapping_summary_label"):
+            return
+        summary = summarize_roles(self.mapping_df)
+        parts = [f"{r['role']}: {int(r['n_columns'])}" for _, r in summary.iterrows()]
+        self.mapping_summary_label.setText("Current mapping · " + " | ".join(parts))
 
     def run_analysis(self) -> None:
         try:
