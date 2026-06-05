@@ -14,7 +14,7 @@ approximation of clinical features.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 import json
@@ -60,6 +60,15 @@ class FeatureExtractionConfig:
     metadata_csv: str | None = None
     minimum_pause_duration_sec: float = 0.15
     acoustic_region_policy: str = "speech_only"  # speech_only, effective_task, full_file
+    # v0.35: explicit computation/reduction policy controls.
+    # validated_default keeps family-specific defaults. Other modes are applied only
+    # where scientifically allowed and are recorded in the reduction audit table.
+    computation_mode: str = "validated_default"
+    phonatory_mode: str = "voiced_default"
+    formant_mode: str = "valid_frame_default"
+    resonatory_mode: str = "valid_spectral_default"
+    rhythm_mode: str = "effective_task_default"
+    coordination_mode: str = "trajectory_default"
     rhythm_region_policy: str = "effective_task"  # rhythm needs internal pauses preserved
     rhythm_envelope_bandpass_low_hz: float = 300.0
     rhythm_envelope_bandpass_high_hz: float = 1000.0
@@ -165,13 +174,145 @@ def _metadata_prefix(row: pd.Series) -> dict[str, Any]:
     }
 
 
+
+
+def _normalize_computation_mode(value: str | None) -> str:
+    allowed = {
+        "validated_default",
+        "speech_only_concatenated",
+        "effective_task_with_pauses",
+        "per_segment_robust",
+        "full_file_exploratory",
+    }
+    text = str(value or "validated_default").strip().lower()
+    return text if text in allowed else "validated_default"
+
+
+def _apply_computation_mode_defaults(cfg: FeatureExtractionConfig) -> FeatureExtractionConfig:
+    """Apply v0.35 global computation-mode presets safely.
+
+    This function intentionally does *not* expose every possible mode to every
+    feature. Timing remains segment-event based. Rhythm remains effective-task
+    by default. Unsupported mode requests are recorded later in the audit table.
+    """
+    mode = _normalize_computation_mode(getattr(cfg, "computation_mode", "validated_default"))
+    updates: dict[str, object] = {"computation_mode": mode}
+    if mode == "validated_default":
+        return replace(cfg, **updates)
+    if mode == "speech_only_concatenated":
+        updates.update({
+            "acoustic_region_policy": "speech_only",
+            "phonatory_mode": "speech_only_concatenated",
+            "formant_mode": "speech_only_concatenated",
+            "resonatory_mode": "speech_only_concatenated",
+        })
+        return replace(cfg, **updates)
+    if mode == "effective_task_with_pauses":
+        updates.update({
+            "acoustic_region_policy": "effective_task",
+            "rhythm_region_policy": "effective_task",
+            "coordination_region_policy": "effective_task",
+            "phonatory_mode": "effective_task_exploratory",
+            "formant_mode": "effective_task_exploratory",
+            "resonatory_mode": "effective_task_exploratory",
+        })
+        return replace(cfg, **updates)
+    if mode == "full_file_exploratory":
+        updates.update({
+            "acoustic_region_policy": "full_file",
+            "rhythm_region_policy": "full_file",
+            "coordination_region_policy": "full_file",
+            "phonatory_mode": "full_file_exploratory",
+            "formant_mode": "full_file_exploratory",
+            "resonatory_mode": "full_file_exploratory",
+        })
+        return replace(cfg, **updates)
+    if mode == "per_segment_robust":
+        updates.update({
+            "phonatory_mode": "per_speech_segment_planned",
+            "formant_mode": "per_speech_segment_planned",
+            "resonatory_mode": "per_speech_segment_planned",
+        })
+        return replace(cfg, **updates)
+    return replace(cfg, **updates)
+
+def _feature_family(feature: str) -> str:
+    f = str(feature)
+    timing = {"total_dur", "speech_dur", "percent_pause", "num_pause", "mean_pause_dur", "mean_phrase_dur", "cv_pause_dur", "cv_phrase_dur", "total_pause_dur", "speech_rate"}
+    rhythm = {"intensity_CV", "fft_peaks1", "fft_peaks2", "fft_ampli1", "fft_ampli2", "nrj_below_boundary", "nrj_above_boundary", "nrj_3_6", "ratio_below_above"}
+    phon = {"f0_mean", "f0_std", "CPP_mean", "HNR", "localJitter", "localabsoluteJitter", "rapJitter", "ppq5Jitter", "ddpJitter", "localShimmer", "localdbShimmer", "apq3Shimmer", "apq5Shimmer", "apq11Shimmer", "num_voicebreaks", "H1freq", "H1amp", "H2freq", "H2amp"}
+    coord = {"CPP_F1_comp", "CPP_F2_comp", "F1_F2_comp"}
+    reson = {"A1P0", "A1P0comp", "A1P1", "A1P1comp", "A3P0", "P0freq", "P0amp", "P0prom", "P1amp", "F1freq", "F1amp", "F1width", "F2freq", "F2amp", "F2width", "F3freq", "F3amp", "F3width", "RMSamp"}
+    if f in timing: return "timing_respiratory"
+    if f in rhythm: return "rhythm_ems"
+    if f in phon: return "phonatory"
+    if f in coord: return "coordination"
+    if f in reson: return "resonatory_nasality"
+    return "articulatory_formant"
+
+
+def _build_reduction_audit(registry: pd.DataFrame, cfg: FeatureExtractionConfig) -> pd.DataFrame:
+    rows = []
+    for _, row in registry.iterrows():
+        feature = str(row.get("feature", ""))
+        family = _feature_family(feature)
+        mode = str(getattr(cfg, "computation_mode", "validated_default"))
+        if family == "timing_respiratory":
+            native = "speech/pause segment events"
+            region = "segment table: speech + internal nonspeech events"
+            reducer = "event sums, counts, durations, percent, mean/CV over event distributions"
+            applied = "segment_event_default"
+            warning = "mode_locked: waveform modes are not applicable to timing physiology"
+        elif family == "rhythm_ems":
+            native = "effective-task amplitude envelope and 0-10 Hz modulation spectrum"
+            region = str(getattr(cfg, "rhythm_region_policy", "effective_task"))
+            reducer = "dominant peaks, normalized band powers, slow/fast ratio"
+            applied = str(getattr(cfg, "rhythm_mode", "effective_task_default"))
+            warning = "speech-only concatenation is discouraged because it destroys internal pause timing"
+        elif family == "phonatory":
+            native = "voiced frames / period and amplitude support"
+            region = str(getattr(cfg, "acoustic_region_policy", "speech_only"))
+            reducer = "F0 mean/SD, CPP/HNR summaries, jitter/shimmer perturbation formulas, voice-break count"
+            applied = str(getattr(cfg, "phonatory_mode", "voiced_default"))
+            warning = "requires adequate voiced support; values are not full-file silence summaries"
+        elif family == "articulatory_formant":
+            native = "valid LPC formant-frame trajectories"
+            region = str(getattr(cfg, "acoustic_region_policy", "speech_only"))
+            reducer = "median formants/bandwidths, 5-95 ranges, slope percentiles"
+            applied = str(getattr(cfg, "formant_mode", "valid_frame_default"))
+            warning = "requires valid LPC frames; low-validity tracks must be reviewed"
+        elif family == "resonatory_nasality":
+            native = "valid spectral frames with formant/nasal-pole support"
+            region = str(getattr(cfg, "acoustic_region_policy", "speech_only"))
+            reducer = "median spectral contrasts/support values with overlap and validity warnings"
+            applied = str(getattr(cfg, "resonatory_mode", "valid_spectral_default"))
+            warning = "vowel/F0/device sensitive; use controlled tasks when possible"
+        else:
+            native = "aligned CPP/F1/F2 trajectory windows"
+            region = str(getattr(cfg, "coordination_region_policy", "effective_task"))
+            reducer = "lagged correlation eigenspectrum normalized participation ratio"
+            applied = str(getattr(cfg, "coordination_mode", "trajectory_default"))
+            warning = "coordination index is not monotonic severity; requires valid aligned tracks"
+        rows.append({
+            "feature": feature,
+            "subsystem": row.get("subsystem", ""),
+            "family": family,
+            "requested_global_mode": mode,
+            "applied_family_mode": applied,
+            "analysis_region": region,
+            "native_measurement_scale": native,
+            "file_level_scalar_reduction": reducer,
+            "scientific_warning": warning,
+        })
+    return pd.DataFrame(rows)
+
 def run_acoustic_feature_extraction(
     segmentation_summary_csv: str | Path,
     output_root: str | Path,
     config: FeatureExtractionConfig | None = None,
 ) -> StageResult:
     """Extract acoustic features from segmentation outputs."""
-    cfg = config or FeatureExtractionConfig()
+    cfg = _apply_computation_mode_defaults(config or FeatureExtractionConfig())
     segmentation_summary_csv = Path(segmentation_summary_csv)
     stage_dir = Path(output_root) / "acoustic" / "004_features"
     folders = ensure_stage_folders(stage_dir)
@@ -237,6 +378,7 @@ def run_acoustic_feature_extraction(
     registry_path = folders["tables"] / "selected_acoustic_feature_registry.csv"
     scale_registry_path = folders["tables"] / "acoustic_feature_measurement_scale_registry.csv"
     computation_policy_path = folders["tables"] / "acoustic_feature_computation_policy.csv"
+    reduction_audit_path = folders["tables"] / "acoustic_feature_scalar_reduction_audit.csv"
     native_segments_path = folders["tables"] / "native_measurements" / "acoustic_native_segment_events.csv"
     errors_path = folders["errors"] / "acoustic_feature_errors.csv"
 
@@ -245,6 +387,7 @@ def run_acoustic_feature_extraction(
     registry.to_csv(registry_path, index=False)
     build_feature_scale_registry(registry).to_csv(scale_registry_path, index=False)
     build_feature_computation_policy(registry).to_csv(computation_policy_path, index=False)
+    _build_reduction_audit(registry, cfg).to_csv(reduction_audit_path, index=False)
     _write_native_segment_events(seg_summary, native_segments_path)
     pd.DataFrame(errors).to_csv(errors_path, index=False)
 
@@ -325,6 +468,7 @@ def run_acoustic_feature_extraction(
             "Coordination features were validated in v0.31 as time-delay cross-correlation eigenspectrum complexity over CPP/F1/F2 trajectories.",
             "Feature measurement scale metadata is written to document the native physiologic scale and recommended reducers.",
             "Feature computation policy is written to define, for each feature, the default analysis region and exact file-level scalar reduction strategy.",
+            "Scalar reduction audit is written to document the requested mode, applied family mode, and native measurement scale for every selected feature.",
             "Native segment-event measurements are preserved for timing features; frame/trajectory persistence for signal features is planned as the next architecture extension.",
             "Registered-but-not-yet-implemented features remain explicit NaN placeholders.",
             "Expected-range flags are descriptive screening aids, not clinical cutoffs.",

@@ -144,3 +144,8 @@ Respiratory/timing acoustic features are now validated against explicit segment-
 ## v0.33 feature computation strategy
 
 The Aggregation GUI stage has been removed. Feature Extraction now owns the physiologic reduction strategy from native scale to one file-level value. See `docs/acoustic_gui_v033_remove_aggregation_feature_strategy.md`.
+
+
+## v0.35 Feature Extraction completion pass
+
+Feature Extraction now includes explicit computation-mode controls and writes `acoustic_feature_scalar_reduction_audit.csv`, documenting how each selected file-level scalar was produced from its native measurement scale. See `docs/acoustic_gui_v035_feature_extraction_conclusion.md`.
