@@ -1,4 +1,4 @@
-"""VSLP Acoustic Pipeline GUI v0.34.
+"""VSLP Acoustic Pipeline GUI v0.36.
 
 V0.17 Setup/Ingest refinement:
 - stage-aware workflow guidance with scientific rationale;
@@ -7,7 +7,7 @@ V0.17 Setup/Ingest refinement:
 - feature-level selection inside each subsystem;
 - quick selectors for all / implemented / proxy / pending features;
 - region-aware feature extraction;
-- QC dashboard stage;
+- dedicated Quality Control stage;
 - clearer separation of clinical/simple controls and expert controls.
 """
 
@@ -65,7 +65,6 @@ from vslp.acoustic.ingest.stage import run_acoustic_ingest
 from vslp.acoustic.metadata.stage import MetadataConfig, run_acoustic_metadata
 from vslp.acoustic.preprocess.stage import FilterConfig, PreprocessConfig, run_acoustic_preprocess
 from vslp.acoustic.segment.stage import run_acoustic_segmentation_silero
-from vslp.acoustic.qc.stage import AcousticQCConfig, run_acoustic_qc_dashboard
 from vslp.acoustic.quality.stage import (
     QC_FAMILIES,
     FAMILY_FEATURES,
@@ -74,6 +73,7 @@ from vslp.acoustic.quality.stage import (
     run_acoustic_quality_control,
 )
 from vslp.core.project import initialize_project
+from vslp.core.schemas import ArtifactRef, StageManifest, StageResult
 from vslp.gui.common.utils import open_in_browser, open_path
 
 
@@ -130,7 +130,7 @@ class AcousticPipelineWindow(QMainWindow):
             "segment": StageRecord(),
             "quality": StageRecord(),
             "features": StageRecord(),
-            "qc": StageRecord(),
+            "reports": StageRecord(),
         }
         self._thread: QThread | None = None
         self._worker: Worker | None = None
@@ -155,7 +155,7 @@ class AcousticPipelineWindow(QMainWindow):
 
         title = QLabel("VSLP")
         title.setObjectName("AppTitleLabel")
-        subtitle = QLabel("Acoustic Pipeline GUI v0.34")
+        subtitle = QLabel("Acoustic Pipeline GUI v0.36")
         subtitle.setObjectName("SubtitleLabel")
         ip_notice = QLabel(
             "© 2026 Nevena Musikic & Yana Yunusova\n"
@@ -177,7 +177,7 @@ class AcousticPipelineWindow(QMainWindow):
             ("segment", "Data Segmentation"),
             ("quality", "Quality Control"),
             ("features", "Feature Extraction"),
-            ("qc", "QC Dashboard"),
+            ("reports", "Reports"),
         ]:
             card = QFrame()
             card.setObjectName("Card")
@@ -227,7 +227,6 @@ class AcousticPipelineWindow(QMainWindow):
         tabs.addTab(self._build_segment_tab(), "Segmentation")
         tabs.addTab(self._build_quality_tab(), "Quality Control")
         tabs.addTab(self._build_features_tab(), "Features")
-        tabs.addTab(self._build_qc_tab(), "QC Dashboard")
         tabs.addTab(self._build_inspector_tab(), "Inspector")
         tabs.addTab(self._build_reports_tab(), "Reports & Outputs")
         main_col.addWidget(tabs, stretch=1)
@@ -1083,38 +1082,6 @@ class AcousticPipelineWindow(QMainWindow):
         return self._scrollable(container)
 
 
-    def _build_qc_tab(self) -> QWidget:
-        container = QWidget()
-        layout = QVBoxLayout(container)
-        layout.addWidget(self._info_panel(
-            "QC rationale",
-            "QC flags recordings for review; it does not reject data automatically. Thresholds are intentionally visible and editable because acceptable quality depends on task, device, patient speech impairment, and study design."
-        ))
-        group = QGroupBox("QC dashboard thresholds")
-        form = QFormLayout(group)
-        self.qc_min_snr_spin = QDoubleSpinBox(); self.qc_min_snr_spin.setDecimals(1); self.qc_min_snr_spin.setRange(-50.0, 80.0); self.qc_min_snr_spin.setValue(10.0)
-        self._set_tooltip(self.qc_min_snr_spin, "Research-screening SNR proxy threshold. 10 dB is a conservative initial flag, not a hard exclusion rule.")
-        self.qc_clip_spin = QDoubleSpinBox(); self.qc_clip_spin.setDecimals(4); self.qc_clip_spin.setRange(0.0, 1.0); self.qc_clip_spin.setSingleStep(0.0005); self.qc_clip_spin.setValue(0.001)
-        self._set_tooltip(self.qc_clip_spin, "Fraction of samples allowed near full scale before flagging clipping. Default 0.001 = 0.1%.")
-        self.qc_min_speech_spin = QDoubleSpinBox(); self.qc_min_speech_spin.setDecimals(2); self.qc_min_speech_spin.setRange(0.0, 1.0); self.qc_min_speech_spin.setValue(0.05)
-        self._set_tooltip(self.qc_min_speech_spin, "Very low speech fraction may indicate wrong file, failed recording, or VAD failure.")
-        self.qc_max_speech_spin = QDoubleSpinBox(); self.qc_max_speech_spin.setDecimals(2); self.qc_max_speech_spin.setRange(0.0, 1.0); self.qc_max_speech_spin.setValue(0.98)
-        self._set_tooltip(self.qc_max_speech_spin, "Very high speech fraction may indicate missing pause detection or excessive background/sustained activity.")
-        form.addRow("Minimum estimated SNR (dB)", self.qc_min_snr_spin)
-        form.addRow("Maximum clipping fraction", self.qc_clip_spin)
-        form.addRow("Minimum speech fraction", self.qc_min_speech_spin)
-        form.addRow("Maximum speech fraction", self.qc_max_speech_spin)
-        guidance = QLabel("QC flags files for review using preprocessing, segmentation, and feature-completeness outputs. These are research-screening thresholds, not clinical acceptance criteria.")
-        guidance.setWordWrap(True); guidance.setObjectName("SubtitleLabel")
-        run_btn = QPushButton("Run QC Dashboard")
-        run_btn.setObjectName("RunButton")
-        run_btn.clicked.connect(self.run_qc_dashboard)
-        layout.addWidget(group)
-        layout.addWidget(guidance)
-        layout.addWidget(run_btn)
-        layout.addStretch(1)
-        return self._scrollable(container)
-
     def _build_inspector_tab(self) -> QWidget:
         """Build an inspector with left-side controls and right-side previews.
 
@@ -1177,7 +1144,6 @@ class AcousticPipelineWindow(QMainWindow):
             ("Feature computation policy", lambda: self.preview_csv(self._stage_path("features", "computation_policy"))),
             ("Feature scalar-reduction audit", lambda: self.preview_csv(self._stage_path("features", "reduction_audit"))),
             ("Native segment events", lambda: self.preview_csv(self._output_root() / "acoustic" / "004_features" / "tables" / "native_measurements" / "acoustic_native_segment_events.csv")),
-            ("QC dashboard", lambda: self.preview_csv(self._stage_path("qc", "summary"))),
         ]
         for label, callback in table_buttons:
             btn = QPushButton(label)
@@ -1213,9 +1179,6 @@ class AcousticPipelineWindow(QMainWindow):
             ("Feature expected-range flags", lambda: self.preview_image(self._features_plot_path("feature_expected_range_flags.png"))),
             ("Feature correlation heatmap", lambda: self.preview_image(self._features_plot_path("feature_correlation_heatmap.png"))),
             ("Feature subsystem coverage", lambda: self.preview_image(self._features_plot_path("feature_subsystem_distributions.png"))),
-            ("QC flag counts", lambda: self.preview_image(self._output_root() / "acoustic" / "006_qc_dashboard" / "plots" / "qc_flag_counts.png")),
-            ("QC SNR distribution", lambda: self.preview_image(self._output_root() / "acoustic" / "006_qc_dashboard" / "plots" / "qc_snr_distribution.png")),
-            ("QC speech fraction", lambda: self.preview_image(self._output_root() / "acoustic" / "006_qc_dashboard" / "plots" / "qc_speech_fraction_distribution.png")),
         ]
         for label, callback in plot_buttons:
             btn = QPushButton(label)
@@ -1295,37 +1258,71 @@ class AcousticPipelineWindow(QMainWindow):
     def _build_reports_tab(self) -> QWidget:
         container = QWidget()
         layout = QVBoxLayout(container)
-        group = QGroupBox("Open outputs")
-        btns = QGridLayout(group)
-        buttons = [
-            ("Open Metadata File Index CSV", lambda: self._open_stage_file("metadata", "summary")),
-            ("Open Metadata Column Mapping CSV", lambda: self._open_stage_file("metadata", "column_mapping")),
-            ("Open Metadata Linkage CSV", lambda: self._open_stage_file("metadata", "linkage")),
-            ("Open Metadata HTML Report", lambda: self._open_stage_file("metadata", "report")),
-            ("Open Ingest Summary CSV", lambda: self._open_stage_file("ingest", "summary")),
-            ("Open Preprocess Detailed CSV", lambda: self._open_stage_file("preprocess", "summary")),
-            ("Open Preprocess HTML Report", lambda: self._open_stage_file("preprocess", "report")),
-            ("Open Data Segmentation Summary CSV", lambda: self._open_stage_file("segment", "summary")),
-            ("Open Data Segmentation HTML Report", lambda: self._open_stage_file("segment", "report")),
-            ("Open Quality Features CSV", lambda: self._open_stage_file("quality", "summary")),
-            ("Open Quality Control HTML Report", lambda: self._open_stage_file("quality", "report")),
-            ("Open Feature Table CSV", lambda: self._open_stage_file("features", "summary")),
-            ("Open Feature HTML Report", lambda: self._open_stage_file("features", "report")),
-            ("Open QC Dashboard CSV", lambda: self._open_stage_file("qc", "summary")),
-            ("Open QC Dashboard HTML", lambda: self._open_stage_file("qc", "report")),
-            ("Open Acoustic Output Folder", self.open_output_root),
+        layout.setSpacing(12)
+        layout.addWidget(self._info_panel(
+            "Info",
+            "Review generated outputs, open stage reports, and create a compact run-level summary. Quality Control remains a dedicated stage after segmentation; this screen only organizes outputs."
+        ))
+
+        generate_group = QGroupBox("Run summary")
+        generate_layout = QVBoxLayout(generate_group)
+        summary_note = QLabel("Generate an index of available tables/reports/plots and a compact HTML summary for the current output project.")
+        summary_note.setObjectName("SubtitleLabel")
+        summary_note.setWordWrap(True)
+        generate_btn = QPushButton("Generate Run Summary")
+        generate_btn.setObjectName("RunButton")
+        generate_btn.clicked.connect(self.run_generate_report_summary)
+        generate_layout.addWidget(summary_note)
+        generate_layout.addWidget(generate_btn)
+
+        stage_reports = QGroupBox("Stage reports")
+        stage_grid = QGridLayout(stage_reports)
+        stage_buttons = [
+            ("Metadata report", lambda: self._open_stage_file("metadata", "report")),
+            ("Preprocess report", lambda: self._open_stage_file("preprocess", "report")),
+            ("Segmentation report", lambda: self._open_stage_file("segment", "report")),
+            ("Quality Control report", lambda: self._open_stage_file("quality", "report")),
+            ("Feature Extraction report", lambda: self._open_stage_file("features", "report")),
+            ("Run summary report", lambda: self._open_stage_file("reports", "report")),
         ]
-        for i, (label, callback) in enumerate(buttons):
-            btn = QPushButton(label)
-            btn.setObjectName("OpenButton")
-            btn.clicked.connect(callback)
-            btns.addWidget(btn, i // 2, i % 2)
-        notes = QLabel(
-            "Every stage writes tables, reports, logs, plots, errors, and manifests to disk. The Inspector tab shows quick previews; this tab opens the native files/folders."
-        )
-        notes.setWordWrap(True); notes.setObjectName("SubtitleLabel")
-        layout.addWidget(group)
-        layout.addWidget(notes)
+        for i, (label, callback) in enumerate(stage_buttons):
+            btn = QPushButton(label); btn.setObjectName("OpenButton"); btn.clicked.connect(callback)
+            stage_grid.addWidget(btn, i // 2, i % 2)
+
+        primary_tables = QGroupBox("Primary tables")
+        table_grid = QGridLayout(primary_tables)
+        table_buttons = [
+            ("Project file index", lambda: self._open_stage_file("metadata", "summary")),
+            ("Metadata column mapping", lambda: self._open_stage_file("metadata", "column_mapping")),
+            ("Ingest summary", lambda: self._open_stage_file("ingest", "summary")),
+            ("Preprocess summary", lambda: self._open_stage_file("preprocess", "main_summary")),
+            ("Segmentation summary", lambda: self._open_stage_file("segment", "main_summary")),
+            ("Quality main summary", lambda: self._open_stage_file("quality", "main_summary")),
+            ("Quality recommendations", lambda: self._open_stage_file("quality", "recommendations")),
+            ("Feature table", lambda: self._open_stage_file("features", "summary")),
+            ("Feature status", lambda: self._open_stage_file("features", "status")),
+            ("Feature scalar-reduction audit", lambda: self._open_stage_file("features", "reduction_audit")),
+            ("Run output manifest", lambda: self._open_stage_file("reports", "summary")),
+        ]
+        for i, (label, callback) in enumerate(table_buttons):
+            btn = QPushButton(label); btn.setObjectName("OpenButton"); btn.clicked.connect(callback)
+            table_grid.addWidget(btn, i // 2, i % 2)
+
+        folders = QGroupBox("Folders")
+        folder_layout = QHBoxLayout(folders)
+        open_acoustic = QPushButton("Open Acoustic Output Folder")
+        open_acoustic.setObjectName("OpenButton")
+        open_acoustic.clicked.connect(self.open_output_root)
+        open_plots = QPushButton("Open Plots Folder")
+        open_plots.setObjectName("OpenButton")
+        open_plots.clicked.connect(lambda: open_path(self._output_root() / "acoustic"))
+        folder_layout.addWidget(open_acoustic)
+        folder_layout.addWidget(open_plots)
+
+        layout.addWidget(generate_group)
+        layout.addWidget(stage_reports)
+        layout.addWidget(primary_tables)
+        layout.addWidget(folders)
         layout.addStretch(1)
         return self._scrollable(container)
 
@@ -1603,14 +1600,14 @@ class AcousticPipelineWindow(QMainWindow):
             ("quality", "report"): self._output_root() / "acoustic" / "003_quality_control" / "reports" / "acoustic_quality_control_report.html",
             ("features", "summary"): self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_features_per_file.csv",
             ("features", "report"): self._output_root() / "acoustic" / "004_features" / "reports" / "acoustic_feature_report.html",
+            ("reports", "summary"): self._output_root() / "acoustic" / "007_run_summary" / "tables" / "vslp_acoustic_output_manifest.csv",
+            ("reports", "report"): self._output_root() / "acoustic" / "007_run_summary" / "reports" / "vslp_acoustic_run_summary.html",
             ("features", "registry"): self._output_root() / "acoustic" / "004_features" / "tables" / "selected_acoustic_feature_registry.csv",
             ("features", "status"): self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_feature_status_long.csv",
             ("features", "audit"): self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_feature_distribution_audit.csv",
             ("features", "range_flags"): self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_feature_expected_range_flags.csv",
             ("features", "computation_policy"): self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_feature_computation_policy.csv",
             ("features", "reduction_audit"): self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_feature_scalar_reduction_audit.csv",
-            ("qc", "summary"): self._output_root() / "acoustic" / "006_qc_dashboard" / "tables" / "acoustic_qc_dashboard.csv",
-            ("qc", "report"): self._output_root() / "acoustic" / "006_qc_dashboard" / "reports" / "acoustic_qc_dashboard.html",
         }
         return mapping[(stage, kind)]
 
@@ -1630,7 +1627,7 @@ class AcousticPipelineWindow(QMainWindow):
             "segment": (self._stage_path("segment", "summary"), self._stage_path("segment", "report")),
             "quality": (self._stage_path("quality", "summary"), self._stage_path("quality", "report")),
             "features": (self._stage_path("features", "summary"), self._stage_path("features", "report")),
-            "qc": (self._stage_path("qc", "summary"), self._stage_path("qc", "report")),
+            "reports": (self._stage_path("reports", "summary"), self._stage_path("reports", "report")),
         }
         for stage, (summary, report) in known.items():
             rec = self.stage_records[stage]
@@ -2120,22 +2117,102 @@ class AcousticPipelineWindow(QMainWindow):
         self._run_worker("features", run_acoustic_feature_extraction, {"segmentation_summary_csv": segmentation_summary, "output_root": output_root, "config": cfg})
 
 
-    def run_qc_dashboard(self) -> None:
+    def run_generate_report_summary(self) -> None:
         paths = self._require_paths()
         if paths is None: return
         if not self._require_project_initialized(): return
         _input_path, output_root = paths
-        preprocess_csv = self._stage_path("preprocess", "summary")
-        if not preprocess_csv.exists():
-            QMessageBox.warning(self, "Preprocess required", "Run preprocessing first. QC uses preprocessing outputs at minimum.")
-            return
-        cfg = AcousticQCConfig(
-            min_snr_db=float(self.qc_min_snr_spin.value()),
-            max_clipping_fraction=float(self.qc_clip_spin.value()),
-            min_speech_fraction=float(self.qc_min_speech_spin.value()),
-            max_speech_fraction=float(self.qc_max_speech_spin.value()),
+        self._run_worker("reports", self._write_run_summary_files, {"output_root": output_root})
+
+    def _write_run_summary_files(self, output_root: str | Path) -> StageResult:
+        output_root = Path(output_root)
+        stage_dir = output_root / "acoustic" / "007_run_summary"
+        table_dir = stage_dir / "tables"
+        report_dir = stage_dir / "reports"
+        manifest_dir = stage_dir / "manifests"
+        table_dir.mkdir(parents=True, exist_ok=True)
+        report_dir.mkdir(parents=True, exist_ok=True)
+        manifest_dir.mkdir(parents=True, exist_ok=True)
+
+        artifacts = [
+            ("metadata", "project_file_index", self._stage_path("metadata", "summary"), "table"),
+            ("metadata", "metadata_report", self._stage_path("metadata", "report"), "report"),
+            ("ingest", "audio_ingest_summary", self._stage_path("ingest", "summary"), "table"),
+            ("preprocess", "preprocess_main_summary", self._stage_path("preprocess", "main_summary"), "table"),
+            ("preprocess", "preprocess_report", self._stage_path("preprocess", "report"), "report"),
+            ("segmentation", "segmentation_main_summary", self._stage_path("segment", "main_summary"), "table"),
+            ("segmentation", "segmentation_report", self._stage_path("segment", "report"), "report"),
+            ("quality_control", "quality_main_summary", self._stage_path("quality", "main_summary"), "table"),
+            ("quality_control", "quality_warnings", self._stage_path("quality", "warnings"), "table"),
+            ("quality_control", "quality_recommendations", self._stage_path("quality", "recommendations"), "table"),
+            ("quality_control", "quality_report", self._stage_path("quality", "report"), "report"),
+            ("feature_extraction", "feature_table", self._stage_path("features", "summary"), "table"),
+            ("feature_extraction", "feature_status", self._stage_path("features", "status"), "table"),
+            ("feature_extraction", "feature_reduction_audit", self._stage_path("features", "reduction_audit"), "table"),
+            ("feature_extraction", "feature_report", self._stage_path("features", "report"), "report"),
+        ]
+        rows = []
+        for stage, name, path, kind in artifacts:
+            rows.append({
+                "stage": stage,
+                "artifact": name,
+                "kind": kind,
+                "exists": bool(path.exists()),
+                "path": str(path),
+            })
+        manifest_csv = table_dir / "vslp_acoustic_output_manifest.csv"
+        pd.DataFrame(rows).to_csv(manifest_csv, index=False)
+
+        def csv_count(path: Path) -> str:
+            if not path.exists():
+                return "not available"
+            try:
+                return str(len(pd.read_csv(path)))
+            except Exception:
+                return "available"
+
+        metrics = [
+            ("Ingested files", csv_count(self._stage_path("ingest", "summary"))),
+            ("Metadata-linked files", csv_count(self._stage_path("metadata", "summary"))),
+            ("Segmented files", csv_count(self._stage_path("segment", "main_summary"))),
+            ("QC feature rows", csv_count(self._stage_path("quality", "summary"))),
+            ("Feature rows", csv_count(self._stage_path("features", "summary"))),
+        ]
+        available = sum(1 for r in rows if r["exists"])
+        total = len(rows)
+        report_path = report_dir / "vslp_acoustic_run_summary.html"
+        metric_rows = "".join(f"<tr><td>{k}</td><td>{v}</td></tr>" for k, v in metrics)
+        artifact_rows = "".join(
+            f"<tr><td>{r['stage']}</td><td>{r['artifact']}</td><td>{r['kind']}</td><td>{'yes' if r['exists'] else 'no'}</td><td><code>{r['path']}</code></td></tr>"
+            for r in rows
         )
-        self._run_worker("qc", run_acoustic_qc_dashboard, {"output_root": output_root, "config": cfg})
+        report_path.write_text(f"""
+<!doctype html><html><head><meta charset='utf-8'><title>VSLP Acoustic Run Summary</title>
+<style>
+body{{font-family:Arial, sans-serif;background:#0b1320;color:#e8eef8;margin:32px;}}
+h1,h2{{color:#ffffff}} .card{{background:#111d2e;border:1px solid #26364d;border-radius:12px;padding:18px;margin:16px 0;}}
+table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{border-bottom:1px solid #26364d;padding:8px;text-align:left;vertical-align:top}}th{{color:#9bc7ff}}code{{color:#8de0d2;word-break:break-all}}
+.ok{{color:#8ef2c6}} .warn{{color:#ffd98e}}
+</style></head><body>
+<h1>VSLP Acoustic Run Summary</h1>
+<div class='card'><p>This report indexes the outputs produced by the current acoustic pipeline run. It is an output review layer, not an additional QC algorithm.</p>
+<p><b>Available artifacts:</b> <span class='ok'>{available}</span> / {total}</p></div>
+<div class='card'><h2>Stage counts</h2><table><tr><th>Item</th><th>Count/status</th></tr>{metric_rows}</table></div>
+<div class='card'><h2>Output manifest</h2><table><tr><th>Stage</th><th>Artifact</th><th>Kind</th><th>Exists</th><th>Path</th></tr>{artifact_rows}</table></div>
+</body></html>
+""", encoding="utf-8")
+        manifest = StageManifest(
+            stage_name="acoustic_run_summary",
+            stage_version="0.36.0",
+            status="completed",
+            output_artifacts=[
+                ArtifactRef(path=str(manifest_csv), role="output_manifest", media_type="text/csv"),
+                ArtifactRef(path=str(report_path), role="run_summary_report", media_type="text/html"),
+            ],
+            notes=["Run summary indexes existing outputs. It does not compute new QC decisions."],
+        )
+        manifest_path = manifest.write_json(manifest_dir / "stage_manifest.json")
+        return StageResult(status="completed", manifest_path=manifest_path, summary_table=manifest_csv, report_path=report_path)
 
     def run_all(self) -> None:
         paths = self._require_paths()
@@ -2160,6 +2237,18 @@ class AcousticPipelineWindow(QMainWindow):
                 frame_ms=int(self.frame_ms_spin.value()),
                 force_reload=bool(self.force_reload_check.isChecked()),
             )
+            quality_result = run_acoustic_quality_control(
+                segmentation_summary_csv=output_root / "acoustic" / "003_segmentation" / "tables" / "acoustic_segmentation_summary.csv",
+                output_root=output_root,
+                config=QualityControlConfig(
+                    selected_families=self._selected_qc_families(),
+                    selected_features=self._selected_qc_features(),
+                    minimum_internal_pause_sec=float(self.qc_pause_sec_spin.value()),
+                    high_level_percentile=float(self.qc_high_level_spin.value()),
+                    hard_clip_threshold=float(self.qc_hard_clip_spin.value()),
+                    near_clip_threshold=float(self.qc_near_clip_spin.value()),
+                ),
+            )
             features_result = run_acoustic_feature_extraction(
                 segmentation_summary_csv=output_root / "acoustic" / "003_segmentation" / "tables" / "acoustic_segmentation_summary.csv",
                 output_root=output_root,
@@ -2171,21 +2260,13 @@ class AcousticPipelineWindow(QMainWindow):
                     computation_mode=self.computation_mode_combo.currentText(),
                 ),
             )
-            qc_result = run_acoustic_qc_dashboard(
-                output_root=output_root,
-                config=AcousticQCConfig(
-                    min_snr_db=float(self.qc_min_snr_spin.value()),
-                    max_clipping_fraction=float(self.qc_clip_spin.value()),
-                    min_speech_fraction=float(self.qc_min_speech_spin.value()),
-                    max_speech_fraction=float(self.qc_max_speech_spin.value()),
-                ),
-            )
-            return {"metadata": metadata_result, "ingest": ingest_result, "preprocess": preprocess_result, "segment": segment_result, "features": features_result, "qc": qc_result}
+            reports_result = self._write_run_summary_files(output_root)
+            return {"metadata": metadata_result, "ingest": ingest_result, "preprocess": preprocess_result, "segment": segment_result, "quality": quality_result, "features": features_result, "reports": reports_result}
         self._run_worker("full_run", full_run, {"input_path": input_path, "output_root": output_root})
 
     def _on_worker_finished(self, name: str, result: object) -> None:  # type: ignore[override]
         if name == "full_run" and isinstance(result, dict):
-            for stage_name in ["metadata", "ingest", "preprocess", "segment", "quality", "features", "qc"]:
+            for stage_name in ["metadata", "ingest", "preprocess", "segment", "quality", "features", "reports"]:
                 self._on_worker_finished(stage_name, result[stage_name])
             self.append_log("Full acoustic backend run finished.")
             return

@@ -16,7 +16,6 @@ from vslp.acoustic.metadata.stage import MetadataConfig, run_acoustic_metadata
 from vslp.acoustic.pipeline.run_preprocess_to_segmentation import run_acoustic_ingest_preprocess_segment
 from vslp.acoustic.preprocess.stage import FilterConfig, PreprocessConfig, run_acoustic_preprocess
 from vslp.acoustic.segment.stage import run_acoustic_segmentation_silero
-from vslp.acoustic.qc.stage import AcousticQCConfig, run_acoustic_qc_dashboard
 from vslp.acoustic.quality.stage import QualityControlConfig, run_acoustic_quality_control
 from vslp.core.project import initialize_project
 from vslp.core.doctor import run_doctor
@@ -211,22 +210,6 @@ def acoustic_extract_features(
     )
     typer.echo(f"Status: {result.status}")
     typer.echo(f"Features: {result.summary_table}")
-    typer.echo(f"Errors: {result.error_table}")
-    typer.echo(f"Report: {result.report_path}")
-    typer.echo(f"Manifest: {result.manifest_path}")
-
-
-@acoustic_app.command("qc-dashboard")
-def acoustic_qc_dashboard(
-    output_root: Path,
-    min_snr_db: float = 10.0,
-    max_clipping_fraction: float = 0.001,
-):
-    """Generate an acoustic QC dashboard from preprocessing, segmentation, and feature outputs."""
-    cfg = AcousticQCConfig(min_snr_db=min_snr_db, max_clipping_fraction=max_clipping_fraction)
-    result = run_acoustic_qc_dashboard(output_root=output_root, config=cfg)
-    typer.echo(f"Status: {result.status}")
-    typer.echo(f"QC table: {result.summary_table}")
     typer.echo(f"Errors: {result.error_table}")
     typer.echo(f"Report: {result.report_path}")
     typer.echo(f"Manifest: {result.manifest_path}")
