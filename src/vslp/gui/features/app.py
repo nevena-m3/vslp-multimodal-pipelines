@@ -37,7 +37,7 @@ from vslp.analysis.features.plots import (
     plot_missingness, plot_feature_availability_heatmap
 )
 
-APP_VERSION = "v0.43"
+APP_VERSION = "v0.44"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -513,19 +513,53 @@ class FeatureAnalysisGUI(QMainWindow):
         tabs.addTab(self.overview_family_table, "Feature families")
         card.layout.addWidget(tabs)
 
-        plot_row = QHBoxLayout()
+        plot_panel = QFrame()
+        plot_panel.setStyleSheet(f"QFrame {{ background:#F8FBFE; border:1px solid {LINE}; border-radius:12px; }}")
+        plot_panel_layout = QHBoxLayout(plot_panel)
+        plot_panel_layout.setContentsMargins(14, 14, 14, 14)
+        plot_panel_layout.setSpacing(14)
+
+        plot_controls = QFrame()
+        plot_controls.setStyleSheet("QFrame { border:none; background:transparent; }")
+        plot_controls_layout = QVBoxLayout(plot_controls)
+        plot_controls_layout.setContentsMargins(0, 0, 0, 0)
+        plot_controls_layout.setSpacing(8)
+        plot_title = QLabel("Overview plots")
+        plot_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
+        plot_controls_layout.addWidget(plot_title)
+        plot_note = QLabel("Generate or preview dataset-orientation plots. Buttons create missing plots automatically after tables are loaded and an output folder is selected.")
+        plot_note.setWordWrap(True)
+        plot_note.setStyleSheet(f"color:{MUTED}; border:none; background:transparent;")
+        plot_controls_layout.addWidget(plot_note)
         for label, attr in [
-            ("Open role-count plot", "role_counts"),
-            ("Open task/group-count plot", "group_counts"),
-            ("Open feature-family plot", "feature_family_counts"),
-            ("Open availability heatmap", "feature_availability_heatmap"),
+            ("Role counts", "role_counts"),
+            ("Task / group counts", "group_counts"),
+            ("Feature-family counts", "feature_family_counts"),
+            ("Feature availability", "feature_availability_heatmap"),
+            ("Top missing features", "missingness_top_features"),
         ]:
             b = QPushButton(label)
             b.setProperty("secondary", True)
-            b.clicked.connect(lambda _=False, a=attr: self.open_plot(a))
-            plot_row.addWidget(b)
-        plot_row.addStretch(1)
-        card.layout.addLayout(plot_row)
+            b.clicked.connect(lambda _=False, a=attr: self.preview_plot(a))
+            plot_controls_layout.addWidget(b)
+        regen = QPushButton("Regenerate all overview plots")
+        regen.clicked.connect(self.regenerate_overview_plots)
+        plot_controls_layout.addWidget(regen)
+        open_current = QPushButton("Open current plot file")
+        open_current.setProperty("secondary", True)
+        open_current.clicked.connect(self.open_current_overview_plot)
+        plot_controls_layout.addWidget(open_current)
+        plot_controls_layout.addStretch(1)
+        plot_controls.setFixedWidth(245)
+        plot_panel_layout.addWidget(plot_controls)
+
+        self.overview_plot_preview = QLabel("Run Feature Analysis, then select a plot on the left.")
+        self.overview_plot_preview.setAlignment(Qt.AlignCenter)
+        self.overview_plot_preview.setMinimumHeight(420)
+        self.overview_plot_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.overview_plot_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
+        plot_panel_layout.addWidget(self.overview_plot_preview, 1)
+        card.layout.addWidget(plot_panel)
 
         layout.addWidget(card)
         return self._wrap_scroll(body)
@@ -570,6 +604,130 @@ class FeatureAnalysisGUI(QMainWindow):
         self._fill_table(self.overview_family_table, outputs.get("feature_family_overview", pd.DataFrame()))
         self.overview_note.setText("Overview generated. Review row counts, mapped features, detected labels/covariates, task balance, and feature-family coverage before interpreting distributions or ML-readiness.")
 
+    def _analysis_dirs(self) -> tuple[Path, Path, Path, Path]:
+        if not getattr(self, "output_dir", None):
+            self.output_dir = Path(self.output_edit.text().strip()) / "feature_analysis"
+        tables_dir = self.output_dir / "tables"
+        reports_dir = self.output_dir / "reports"
+        plots_dir = self.output_dir / "plots"
+        for d in (tables_dir, reports_dir, plots_dir):
+            d.mkdir(parents=True, exist_ok=True)
+        return self.output_dir, tables_dir, reports_dir, plots_dir
+
+    def _build_analysis_outputs(self) -> tuple[dict[str, pd.DataFrame], list[str]]:
+        if self.feature_df is None:
+            self.load_and_map()
+        if self.feature_df is None:
+            raise RuntimeError("Load a primary feature table first.")
+        mapping = self.collect_mapping_from_table()
+        roles = role_lists(mapping)
+        feature_cols = roles.get("Feature", [])
+        inventory = dataset_inventory(self.feature_df, self.qc_df, self.meta_df, mapping)
+        role_sum = role_summary(mapping)
+        design = design_overview(self.feature_df, mapping)
+        family = feature_family_overview(self.feature_df, feature_cols, self.registry_df)
+        groups = group_counts(self.feature_df)
+        dist = feature_distribution_summary(self.feature_df, feature_cols)
+        if feature_cols:
+            row_missing = pd.DataFrame({
+                "row_index": range(len(self.feature_df)),
+                "missing_fraction_all_columns": self.feature_df.isna().mean(axis=1).values,
+                "missing_fraction_feature_columns": self.feature_df[feature_cols].isna().mean(axis=1).values,
+            })
+        else:
+            row_missing = pd.DataFrame({
+                "row_index": range(len(self.feature_df)),
+                "missing_fraction_all_columns": self.feature_df.isna().mean(axis=1).values,
+                "missing_fraction_feature_columns": float("nan"),
+            })
+        qc_corr = feature_qc_correlations(self.feature_df, self.qc_df, feature_cols)
+        reliability = reliability_screen(dist, qc_corr)
+        outputs = {
+            "dataset_inventory": inventory,
+            "feature_role_summary": role_sum,
+            "dataset_design_overview": design,
+            "feature_family_overview": family,
+            "group_counts": groups,
+            "feature_column_mapping": mapping,
+            "feature_distribution_summary": dist,
+            "missingness_by_row": row_missing,
+            "feature_qc_spearman_correlation": qc_corr,
+            "feature_reliability_screen": reliability,
+        }
+        return outputs, feature_cols
+
+    def _write_outputs(self, outputs: dict[str, pd.DataFrame], tables_dir: Path) -> None:
+        for name, df in outputs.items():
+            df.to_csv(tables_dir / f"{name}.csv", index=False)
+
+    def _generate_overview_plots(self, outputs: dict[str, pd.DataFrame], feature_cols: list[str], plots_dir: Path) -> dict[str, str]:
+        paths = {}
+        paths["role_counts"] = str(plot_role_counts(outputs.get("feature_role_summary", pd.DataFrame()), plots_dir / "overview_role_counts.png"))
+        paths["group_counts"] = str(plot_group_counts(outputs.get("group_counts", pd.DataFrame()), plots_dir / "overview_group_counts.png"))
+        paths["feature_family_counts"] = str(plot_feature_family_counts(outputs.get("feature_family_overview", pd.DataFrame()), plots_dir / "overview_feature_family_counts.png"))
+        paths["missingness_top_features"] = str(plot_missingness(outputs.get("feature_distribution_summary", pd.DataFrame()), plots_dir / "missingness_top_features.png"))
+        paths["feature_availability_heatmap"] = str(plot_feature_availability_heatmap(self.feature_df, feature_cols, plots_dir / "feature_availability_heatmap.png"))
+        return paths
+
+    def regenerate_overview_plots(self) -> None:
+        try:
+            if self.feature_df is None:
+                self.load_and_map()
+            if self.feature_df is None:
+                return
+            if not self.output_edit.text().strip():
+                QMessageBox.warning(self, "Missing output folder", "Please select an output folder before generating plots.")
+                return
+            self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
+            outputs, feature_cols = self._build_analysis_outputs()
+            self.outputs = outputs
+            self._write_outputs(outputs, tables_dir)
+            self.plot_paths = self._generate_overview_plots(outputs, feature_cols, plots_dir)
+            self.populate_output_tables(outputs)
+            self.update_overview_dashboard(outputs)
+            self.log(f"Overview plots generated in: {plots_dir}")
+            self.preview_plot("role_counts", generate_if_missing=False)
+        except Exception as exc:
+            QMessageBox.critical(self, "Could not generate overview plots", str(exc))
+
+    def preview_plot(self, key: str, generate_if_missing: bool = True) -> None:
+        if generate_if_missing and (not hasattr(self, "plot_paths") or key not in self.plot_paths or not Path(self.plot_paths.get(key, "")).exists()):
+            self.regenerate_overview_plots()
+        if not hasattr(self, "plot_paths") or key not in self.plot_paths:
+            QMessageBox.information(self, "Plot unavailable", "Run Feature Analysis first, or this plot was not generated for the current dataset.")
+            return
+        path = Path(self.plot_paths[key])
+        if not path.exists():
+            QMessageBox.information(self, "Plot unavailable", f"Plot file not found:\n{path}")
+            return
+        self.current_overview_plot = path
+        self._show_overview_plot(path)
+
+    def _show_overview_plot(self, path: Path) -> None:
+        if not hasattr(self, "overview_plot_preview"):
+            return
+        pix = QPixmap(str(path))
+        if pix.isNull():
+            self.overview_plot_preview.setText(f"Could not load plot:\n{path}")
+            return
+        target_size = self.overview_plot_preview.size()
+        scaled = pix.scaled(target_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.overview_plot_preview.setPixmap(scaled)
+        self.overview_plot_preview.setToolTip(str(path))
+
+    def open_current_overview_plot(self) -> None:
+        path = getattr(self, "current_overview_plot", None)
+        if not path:
+            QMessageBox.information(self, "No current plot", "Preview a plot first, then use this button to open the full-resolution file.")
+            return
+        self.open_file(Path(path))
+
+    def open_file(self, path: Path) -> None:
+        if not path.exists():
+            QMessageBox.information(self, "File unavailable", f"File not found:\n{path}")
+            return
+        self.open_file(path)
+
     def open_plot(self, key: str) -> None:
         if not hasattr(self, "plot_paths") or key not in self.plot_paths:
             QMessageBox.information(self, "Plot unavailable", "Run Feature Analysis first, or this plot was not generated for the current dataset.")
@@ -578,13 +736,7 @@ class FeatureAnalysisGUI(QMainWindow):
         if not path.exists():
             QMessageBox.information(self, "Plot unavailable", f"Plot file not found:\n{path}")
             return
-        import subprocess, platform
-        if platform.system() == "Darwin":
-            subprocess.run(["open", str(path)], check=False)
-        elif platform.system() == "Windows":
-            subprocess.run(["explorer", str(path)], check=False)
-        else:
-            subprocess.run(["xdg-open", str(path)], check=False)
+        self.open_file(path)
 
     def _table_page(self, title: str, subtitle: str) -> QWidget:
         body = QWidget()
@@ -738,52 +890,10 @@ class FeatureAnalysisGUI(QMainWindow):
             reports_dir.mkdir(parents=True, exist_ok=True)
             plots_dir.mkdir(parents=True, exist_ok=True)
 
-            mapping = self.collect_mapping_from_table()
-            roles = role_lists(mapping)
-            feature_cols = roles.get("Feature", [])
-            inventory = dataset_inventory(self.feature_df, self.qc_df, self.meta_df, mapping)
-            role_sum = role_summary(mapping)
-            design = design_overview(self.feature_df, mapping)
-            family = feature_family_overview(self.feature_df, feature_cols, self.registry_df)
-            groups = group_counts(self.feature_df)
-            dist = feature_distribution_summary(self.feature_df, feature_cols)
-            if feature_cols:
-                row_missing = pd.DataFrame({
-                    "row_index": range(len(self.feature_df)),
-                    "missing_fraction_all_columns": self.feature_df.isna().mean(axis=1).values,
-                    "missing_fraction_feature_columns": self.feature_df[feature_cols].isna().mean(axis=1).values,
-                })
-            else:
-                row_missing = pd.DataFrame({
-                    "row_index": range(len(self.feature_df)),
-                    "missing_fraction_all_columns": self.feature_df.isna().mean(axis=1).values,
-                    "missing_fraction_feature_columns": float("nan"),
-                })
-            qc_corr = feature_qc_correlations(self.feature_df, self.qc_df, feature_cols)
-            reliability = reliability_screen(dist, qc_corr)
-
-            outputs = {
-                "dataset_inventory": inventory,
-                "feature_role_summary": role_sum,
-                "dataset_design_overview": design,
-                "feature_family_overview": family,
-                "group_counts": groups,
-                "feature_column_mapping": mapping,
-                "feature_distribution_summary": dist,
-                "missingness_by_row": row_missing,
-                "feature_qc_spearman_correlation": qc_corr,
-                "feature_reliability_screen": reliability,
-            }
+            outputs, feature_cols = self._build_analysis_outputs()
             self.outputs = outputs
-            for name, df in outputs.items():
-                df.to_csv(tables_dir / f"{name}.csv", index=False)
-
-            self.plot_paths = {}
-            self.plot_paths["role_counts"] = str(plot_role_counts(role_sum, plots_dir / "overview_role_counts.png"))
-            self.plot_paths["group_counts"] = str(plot_group_counts(groups, plots_dir / "overview_group_counts.png"))
-            self.plot_paths["feature_family_counts"] = str(plot_feature_family_counts(family, plots_dir / "overview_feature_family_counts.png"))
-            self.plot_paths["missingness_top_features"] = str(plot_missingness(dist, plots_dir / "missingness_top_features.png"))
-            self.plot_paths["feature_availability_heatmap"] = str(plot_feature_availability_heatmap(self.feature_df, feature_cols, plots_dir / "feature_availability_heatmap.png"))
+            self._write_outputs(outputs, tables_dir)
+            self.plot_paths = self._generate_overview_plots(outputs, feature_cols, plots_dir)
 
             self.write_report(reports_dir / "vslp_feature_analysis_report.html", outputs)
             self.populate_output_tables(outputs)
@@ -815,6 +925,12 @@ class FeatureAnalysisGUI(QMainWindow):
             for j, c in enumerate(show.columns):
                 table.setItem(i, j, QTableWidgetItem(str(show.iloc[i, j])))
         table.resizeRowsToContents()
+
+    def resizeEvent(self, event):  # noqa: N802 - Qt override
+        super().resizeEvent(event)
+        path = getattr(self, "current_overview_plot", None)
+        if path and hasattr(self, "overview_plot_preview"):
+            self._show_overview_plot(Path(path))
 
     def write_report(self, path: Path, outputs: dict[str, pd.DataFrame]) -> None:
         inv = outputs.get("dataset_inventory", pd.DataFrame()).to_html(index=False, escape=False)
