@@ -283,3 +283,161 @@ def reliability_screen(dist: pd.DataFrame, qc_corr: pd.DataFrame | None = None) 
             "review_reason": "; ".join(reasons) if reasons else "no major screening issue detected",
         })
     return pd.DataFrame(rows)
+
+
+
+def missingness_feature_summary(feature_df: pd.DataFrame, feature_cols: list[str], registry: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Feature-level missingness audit.
+
+    This is intentionally descriptive. High missingness is not automatically bad:
+    in clinical speech/kinematic datasets it can reflect task incompatibility,
+    physiologic inability to produce valid support, segmentation failure, or a
+    real data-quality problem. The output therefore gives review categories
+    rather than deleting columns.
+    """
+    if not feature_cols:
+        return pd.DataFrame(columns=["feature", "family_or_subsystem", "n_rows", "n_missing", "n_valid", "missing_fraction", "n_unique_valid", "numeric", "missingness_status", "interpretation"])
+    subsystem_lookup: dict[str, str] = {}
+    if registry is not None and not registry.empty:
+        fcol = next((c for c in ["feature", "feature_name", "name", "column"] if c in registry.columns), None)
+        scol = next((c for c in ["subsystem", "family", "feature_family", "group"] if c in registry.columns), None)
+        if fcol and scol:
+            for _, r in registry[[fcol, scol]].dropna().iterrows():
+                subsystem_lookup[str(r[fcol])] = str(r[scol])
+    rows = []
+    n = len(feature_df)
+    for c in feature_cols:
+        if c not in feature_df.columns:
+            continue
+        x = feature_df[c]
+        nmiss = int(x.isna().sum())
+        nvalid = int(x.notna().sum())
+        frac = float(nmiss / n) if n else np.nan
+        if frac >= 0.80:
+            status = "high_review"
+            interp = "Very high missingness. Review task compatibility, feature implementation status, segmentation/QC support, and whether this feature should enter downstream analysis."
+        elif frac >= 0.50:
+            status = "review"
+            interp = "Substantial missingness. Do not impute automatically; inspect pattern by task, group, subject/session, and QC burden."
+        elif frac >= 0.20:
+            status = "monitor"
+            interp = "Moderate missingness. Usually usable with transparent reporting and sensitivity checks."
+        else:
+            status = "low"
+            interp = "Low missingness. Still inspect outliers and QC sensitivity before modeling."
+        rows.append({
+            "feature": c,
+            "family_or_subsystem": subsystem_lookup.get(c, "unclassified"),
+            "n_rows": int(n),
+            "n_missing": nmiss,
+            "n_valid": nvalid,
+            "missing_fraction": frac,
+            "n_unique_valid": int(x.nunique(dropna=True)),
+            "numeric": bool(pd.api.types.is_numeric_dtype(x)),
+            "missingness_status": status,
+            "interpretation": interp,
+        })
+    return pd.DataFrame(rows).sort_values(["missing_fraction", "feature"], ascending=[False, True])
+
+
+def missingness_row_summary(feature_df: pd.DataFrame, feature_cols: list[str]) -> pd.DataFrame:
+    """Row/recording-level missingness with useful identifiers preserved."""
+    id_candidates = ["record_key", "file_name", "subject_id", "session_id", "iteration", "task", "diagnosis", "severity_bin"]
+    id_cols = [c for c in id_candidates if c in feature_df.columns]
+    base = feature_df[id_cols].copy() if id_cols else pd.DataFrame(index=feature_df.index)
+    base.insert(0, "row_index", range(len(feature_df)))
+    base["missing_fraction_all_columns"] = feature_df.isna().mean(axis=1).values
+    if feature_cols:
+        base["missing_fraction_feature_columns"] = feature_df[feature_cols].isna().mean(axis=1).values
+        base["n_missing_features"] = feature_df[feature_cols].isna().sum(axis=1).values
+        base["n_valid_features"] = feature_df[feature_cols].notna().sum(axis=1).values
+    else:
+        base["missing_fraction_feature_columns"] = np.nan
+        base["n_missing_features"] = np.nan
+        base["n_valid_features"] = np.nan
+    def status(frac: float) -> str:
+        if pd.isna(frac): return "not_available"
+        if frac >= 0.80: return "high_review"
+        if frac >= 0.50: return "review"
+        if frac >= 0.20: return "monitor"
+        return "low"
+    base["row_missingness_status"] = base["missing_fraction_feature_columns"].apply(status)
+    return base.sort_values("missing_fraction_feature_columns", ascending=False, na_position="last")
+
+
+def missingness_group_summary(feature_df: pd.DataFrame, feature_cols: list[str]) -> pd.DataFrame:
+    """Descriptive missingness by task/diagnosis/severity/sex/session/device.
+
+    This is for bias detection. It does not run hypothesis tests because small-N
+    and group imbalance are expected in clinical datasets.
+    """
+    if not feature_cols:
+        return pd.DataFrame(columns=["group_variable", "column", "level", "n_rows", "mean_feature_missing_fraction", "median_feature_missing_fraction", "n_high_review_rows"])
+    row_miss = feature_df[feature_cols].isna().mean(axis=1)
+    candidates = [
+        ("task", ["task", "task_name", "prompt"]),
+        ("diagnosis", ["diagnosis", "dx", "group"]),
+        ("severity_bin", ["severity_bin", "severity_class"]),
+        ("sex_or_gender", ["sex", "gender"]),
+        ("session", ["session_id", "visit_id", "clinical_visit_id"]),
+        ("subject", ["subject_id", "participant_id", "patient_id"]),
+        ("device", ["device", "microphone", "site"]),
+        ("modality", ["modality"]),
+    ]
+    rows = []
+    tmp = feature_df.copy()
+    tmp["__feature_missing_fraction"] = row_miss
+    for group_name, names in candidates:
+        c = _first_present(tmp, names)
+        if not c:
+            continue
+        grouped = tmp.groupby(c, dropna=True)["__feature_missing_fraction"]
+        for level, vals in grouped:
+            vals = pd.to_numeric(vals, errors="coerce").dropna()
+            if vals.empty:
+                continue
+            rows.append({
+                "group_variable": group_name,
+                "column": c,
+                "level": str(level),
+                "n_rows": int(vals.shape[0]),
+                "mean_feature_missing_fraction": float(vals.mean()),
+                "median_feature_missing_fraction": float(vals.median()),
+                "q75_feature_missing_fraction": float(vals.quantile(0.75)),
+                "n_high_review_rows": int((vals >= 0.80).sum()),
+                "n_review_or_higher_rows": int((vals >= 0.50).sum()),
+                "interpretation": "Descriptive only. Compare groups cautiously; missingness can be confounded by disease severity, task, device, and repeated sessions.",
+            })
+    return pd.DataFrame(rows).sort_values(["group_variable", "mean_feature_missing_fraction"], ascending=[True, False]) if rows else pd.DataFrame(columns=["group_variable", "column", "level", "n_rows", "mean_feature_missing_fraction"])
+
+
+def missingness_family_summary(feature_missing: pd.DataFrame) -> pd.DataFrame:
+    if feature_missing is None or feature_missing.empty or "family_or_subsystem" not in feature_missing.columns:
+        return pd.DataFrame(columns=["family_or_subsystem", "n_features", "mean_missing_fraction", "median_missing_fraction", "n_review_features"])
+    df = feature_missing.copy()
+    df["missing_fraction"] = pd.to_numeric(df["missing_fraction"], errors="coerce")
+    return df.groupby("family_or_subsystem", dropna=False).agg(
+        n_features=("feature", "count"),
+        mean_missing_fraction=("missing_fraction", "mean"),
+        median_missing_fraction=("missing_fraction", "median"),
+        max_missing_fraction=("missing_fraction", "max"),
+        n_review_features=("missingness_status", lambda x: int(pd.Series(x).isin(["review", "high_review"]).sum())),
+    ).reset_index().sort_values("mean_missing_fraction", ascending=False)
+
+
+def missingness_comissing_pairs(feature_df: pd.DataFrame, feature_cols: list[str], top_n: int = 40) -> pd.DataFrame:
+    """Pairwise co-missingness among most-missing features."""
+    if not feature_cols:
+        return pd.DataFrame(columns=["feature_a", "feature_b", "co_missing_fraction", "n_co_missing"])
+    cols = [c for c in feature_cols if c in feature_df.columns]
+    miss_fr = feature_df[cols].isna().mean().sort_values(ascending=False)
+    cols = miss_fr.head(top_n).index.tolist()
+    rows = []
+    n = len(feature_df)
+    for i, a in enumerate(cols):
+        ma = feature_df[a].isna()
+        for b in cols[i+1:]:
+            mb = feature_df[b].isna()
+            nco = int((ma & mb).sum())
+            rows.append({"feature_a": a, "feature_b": b, "co_missing_fraction": float(nco / n) if n else np.nan, "n_co_missing": nco})
+    return pd.DataFrame(rows).sort_values("co_missing_fraction", ascending=False) if rows else pd.DataFrame(columns=["feature_a", "feature_b", "co_missing_fraction", "n_co_missing"])

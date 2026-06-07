@@ -30,14 +30,18 @@ from vslp.analysis.features.column_mapping import (
 from vslp.analysis.features.audit import (
     read_table, dataset_inventory, role_summary, design_overview,
     feature_family_overview, group_counts, feature_distribution_summary,
-    feature_qc_correlations, reliability_screen
+    feature_qc_correlations, reliability_screen,
+    missingness_feature_summary, missingness_row_summary, missingness_group_summary,
+    missingness_family_summary, missingness_comissing_pairs
 )
 from vslp.analysis.features.plots import (
     plot_role_counts, plot_group_counts, plot_feature_family_counts,
-    plot_missingness, plot_feature_availability_heatmap
+    plot_missingness, plot_feature_availability_heatmap,
+    plot_row_missingness_distribution, plot_missingness_by_group,
+    plot_missingness_family_summary, plot_comissing_heatmap
 )
 
-APP_VERSION = "v0.44"
+APP_VERSION = "v0.45"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -349,7 +353,7 @@ class FeatureAnalysisGUI(QMainWindow):
             "project": self._project_page(),
             "mapping": self._mapping_page(),
             "overview": self._overview_page(),
-            "missing": self._table_page("Missingness", "Feature-level and row-level missingness summaries."),
+            "missing": self._missingness_page(),
             "dist": self._table_page("Distributions / Outliers", "Distribution summaries and robust outlier screening."),
             "qc": self._table_page("QC Integration", "Feature-QC association screening, when a QC table is supplied."),
             "reliability": self._table_page("Reliability", "Initial reliability screen for downstream analysis."),
@@ -628,18 +632,11 @@ class FeatureAnalysisGUI(QMainWindow):
         family = feature_family_overview(self.feature_df, feature_cols, self.registry_df)
         groups = group_counts(self.feature_df)
         dist = feature_distribution_summary(self.feature_df, feature_cols)
-        if feature_cols:
-            row_missing = pd.DataFrame({
-                "row_index": range(len(self.feature_df)),
-                "missing_fraction_all_columns": self.feature_df.isna().mean(axis=1).values,
-                "missing_fraction_feature_columns": self.feature_df[feature_cols].isna().mean(axis=1).values,
-            })
-        else:
-            row_missing = pd.DataFrame({
-                "row_index": range(len(self.feature_df)),
-                "missing_fraction_all_columns": self.feature_df.isna().mean(axis=1).values,
-                "missing_fraction_feature_columns": float("nan"),
-            })
+        feature_missing = missingness_feature_summary(self.feature_df, feature_cols, self.registry_df)
+        row_missing = missingness_row_summary(self.feature_df, feature_cols)
+        group_missing = missingness_group_summary(self.feature_df, feature_cols)
+        family_missing = missingness_family_summary(feature_missing)
+        comissing = missingness_comissing_pairs(self.feature_df, feature_cols)
         qc_corr = feature_qc_correlations(self.feature_df, self.qc_df, feature_cols)
         reliability = reliability_screen(dist, qc_corr)
         outputs = {
@@ -650,7 +647,11 @@ class FeatureAnalysisGUI(QMainWindow):
             "group_counts": groups,
             "feature_column_mapping": mapping,
             "feature_distribution_summary": dist,
+            "missingness_by_feature": feature_missing,
             "missingness_by_row": row_missing,
+            "missingness_by_group": group_missing,
+            "missingness_by_family": family_missing,
+            "missingness_comissing_pairs": comissing,
             "feature_qc_spearman_correlation": qc_corr,
             "feature_reliability_screen": reliability,
         }
@@ -667,6 +668,11 @@ class FeatureAnalysisGUI(QMainWindow):
         paths["feature_family_counts"] = str(plot_feature_family_counts(outputs.get("feature_family_overview", pd.DataFrame()), plots_dir / "overview_feature_family_counts.png"))
         paths["missingness_top_features"] = str(plot_missingness(outputs.get("feature_distribution_summary", pd.DataFrame()), plots_dir / "missingness_top_features.png"))
         paths["feature_availability_heatmap"] = str(plot_feature_availability_heatmap(self.feature_df, feature_cols, plots_dir / "feature_availability_heatmap.png"))
+        # Missingness-specific plots are generated at the same time so that the Missingness page is immediately usable.
+        paths["missingness_row_distribution"] = str(plot_row_missingness_distribution(outputs.get("missingness_by_row", pd.DataFrame()), plots_dir / "missingness_row_distribution.png"))
+        paths["missingness_by_group"] = str(plot_missingness_by_group(outputs.get("missingness_by_group", pd.DataFrame()), plots_dir / "missingness_by_group.png"))
+        paths["missingness_by_family"] = str(plot_missingness_family_summary(outputs.get("missingness_by_family", pd.DataFrame()), plots_dir / "missingness_by_family.png"))
+        paths["missingness_comissing_heatmap"] = str(plot_comissing_heatmap(self.feature_df, feature_cols, plots_dir / "missingness_comissing_heatmap.png"))
         return paths
 
     def regenerate_overview_plots(self) -> None:
@@ -685,7 +691,8 @@ class FeatureAnalysisGUI(QMainWindow):
             self.plot_paths = self._generate_overview_plots(outputs, feature_cols, plots_dir)
             self.populate_output_tables(outputs)
             self.update_overview_dashboard(outputs)
-            self.log(f"Overview plots generated in: {plots_dir}")
+            self.update_missingness_dashboard(outputs)
+            self.log(f"Overview/missingness plots generated in: {plots_dir}")
             self.preview_plot("role_counts", generate_if_missing=False)
         except Exception as exc:
             QMessageBox.critical(self, "Could not generate overview plots", str(exc))
@@ -737,6 +744,163 @@ class FeatureAnalysisGUI(QMainWindow):
             QMessageBox.information(self, "Plot unavailable", f"Plot file not found:\n{path}")
             return
         self.open_file(path)
+
+
+    def _missingness_page(self) -> QWidget:
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
+
+        card = Card(
+            "Missingness",
+            "Audit feature failure and data availability. Missingness may be informative in clinical datasets; inspect patterns before imputation, exclusion, or ML."
+        )
+
+        self.missing_metric_grid = QGridLayout()
+        self.missing_metric_grid.setHorizontalSpacing(12)
+        self.missing_metric_grid.setVerticalSpacing(12)
+        card.layout.addLayout(self.missing_metric_grid)
+
+        self.missing_note = QLabel("Run Feature Analysis to populate missingness tables and plots. Review feature-level, row-level, family-level, and group-level patterns before modeling.")
+        self.missing_note.setWordWrap(True)
+        self.missing_note.setStyleSheet(f"color:{MUTED}; background:#F7FAFD; border:1px solid {LINE}; border-radius:8px; padding:10px;")
+        card.layout.addWidget(self.missing_note)
+
+        tabs = QTabWidget()
+        tabs.setStyleSheet(f"QTabWidget::pane {{ border: 1px solid {LINE}; border-radius: 8px; background: #FFFFFF; }} QTabBar::tab {{ padding: 8px 14px; color: {NAVY}; }} QTabBar::tab:selected {{ background: #EAF8F7; border-bottom: 2px solid {TEAL}; }}")
+        self.missing_feature_table = QTableWidget(0, 0)
+        self.missing_row_table = QTableWidget(0, 0)
+        self.missing_group_table = QTableWidget(0, 0)
+        self.missing_family_table = QTableWidget(0, 0)
+        self.missing_comissing_table = QTableWidget(0, 0)
+        for t in [self.missing_feature_table, self.missing_row_table, self.missing_group_table, self.missing_family_table, self.missing_comissing_table]:
+            t.setAlternatingRowColors(True)
+            t.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        tabs.addTab(self.missing_feature_table, "By feature")
+        tabs.addTab(self.missing_row_table, "By row / recording")
+        tabs.addTab(self.missing_group_table, "By group")
+        tabs.addTab(self.missing_family_table, "By family")
+        tabs.addTab(self.missing_comissing_table, "Co-missing pairs")
+        card.layout.addWidget(tabs)
+
+        plot_panel = QFrame()
+        plot_panel.setStyleSheet(f"QFrame {{ background:#F8FBFE; border:1px solid {LINE}; border-radius:12px; }}")
+        plot_panel_layout = QHBoxLayout(plot_panel)
+        plot_panel_layout.setContentsMargins(14, 14, 14, 14)
+        plot_panel_layout.setSpacing(14)
+
+        controls = QFrame()
+        controls.setStyleSheet("QFrame { border:none; background:transparent; }")
+        controls_layout = QVBoxLayout(controls)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(8)
+        title = QLabel("Missingness plots")
+        title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
+        controls_layout.addWidget(title)
+        note = QLabel("These plots identify whether feature failure is global, feature-specific, subject/task-specific, or family-specific. They are descriptive screening tools, not exclusion rules.")
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{MUTED}; border:none; background:transparent;")
+        controls_layout.addWidget(note)
+        for label, key in [
+            ("Top missing features", "missingness_top_features"),
+            ("Row-level missingness", "missingness_row_distribution"),
+            ("Missingness by group", "missingness_by_group"),
+            ("Missingness by family", "missingness_by_family"),
+            ("Feature availability", "feature_availability_heatmap"),
+            ("Co-missing heatmap", "missingness_comissing_heatmap"),
+        ]:
+            b = QPushButton(label)
+            b.setProperty("secondary", True)
+            b.clicked.connect(lambda _=False, k=key: self.preview_missingness_plot(k))
+            controls_layout.addWidget(b)
+        regen = QPushButton("Regenerate missingness plots")
+        regen.clicked.connect(self.regenerate_overview_plots)
+        controls_layout.addWidget(regen)
+        open_current = QPushButton("Open current plot file")
+        open_current.setProperty("secondary", True)
+        open_current.clicked.connect(self.open_current_missingness_plot)
+        controls_layout.addWidget(open_current)
+        controls_layout.addStretch(1)
+        controls.setFixedWidth(260)
+        plot_panel_layout.addWidget(controls)
+
+        self.missing_plot_preview = QLabel("Run Feature Analysis, then select a missingness plot on the left.")
+        self.missing_plot_preview.setAlignment(Qt.AlignCenter)
+        self.missing_plot_preview.setMinimumHeight(430)
+        self.missing_plot_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.missing_plot_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
+        plot_panel_layout.addWidget(self.missing_plot_preview, 1)
+        card.layout.addWidget(plot_panel)
+
+        layout.addWidget(card)
+        return self._wrap_scroll(body)
+
+    def update_missingness_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
+        if not hasattr(self, "missing_metric_grid"):
+            return
+        while self.missing_metric_grid.count():
+            item = self.missing_metric_grid.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        feat = outputs.get("missingness_by_feature", pd.DataFrame())
+        row = outputs.get("missingness_by_row", pd.DataFrame())
+        group = outputs.get("missingness_by_group", pd.DataFrame())
+        n_features = len(feat) if feat is not None else 0
+        mean_miss = "—"
+        high_features = "—"
+        high_rows = "—"
+        groups = "—"
+        if feat is not None and not feat.empty and "missing_fraction" in feat.columns:
+            mean_miss = f"{pd.to_numeric(feat['missing_fraction'], errors='coerce').mean():.3f}"
+            high_features = int(feat.get("missingness_status", pd.Series(dtype=str)).isin(["review", "high_review"]).sum())
+        if row is not None and not row.empty and "missing_fraction_feature_columns" in row.columns:
+            high_rows = int((pd.to_numeric(row["missing_fraction_feature_columns"], errors="coerce") >= 0.50).sum())
+        if group is not None and not group.empty and "group_variable" in group.columns:
+            groups = int(group["group_variable"].nunique())
+        tiles = [
+            ("Features audited", n_features, "selected feature columns"),
+            ("Mean missingness", mean_miss, "across selected features"),
+            ("Review features", high_features, "≥50% missing or worse"),
+            ("Review rows", high_rows, "≥50% selected features missing"),
+            ("Group screens", groups, "available metadata strata"),
+            ("Default policy", "do not auto-impute", "review mechanism first"),
+        ]
+        for idx, (title, value, subtitle) in enumerate(tiles):
+            self.missing_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx // 3, idx % 3)
+        self._fill_table(self.missing_feature_table, outputs.get("missingness_by_feature", pd.DataFrame()))
+        self._fill_table(self.missing_row_table, outputs.get("missingness_by_row", pd.DataFrame()))
+        self._fill_table(self.missing_group_table, outputs.get("missingness_by_group", pd.DataFrame()))
+        self._fill_table(self.missing_family_table, outputs.get("missingness_by_family", pd.DataFrame()))
+        self._fill_table(self.missing_comissing_table, outputs.get("missingness_comissing_pairs", pd.DataFrame()))
+        self.missing_note.setText("Missingness audit generated. Inspect feature-level failure, row-level data loss, group/task imbalance, and co-missing patterns before deciding whether to exclude, impute, stratify, or keep features with caution.")
+
+    def preview_missingness_plot(self, key: str) -> None:
+        if not hasattr(self, "plot_paths") or key not in self.plot_paths or not Path(self.plot_paths.get(key, "")).exists():
+            self.regenerate_overview_plots()
+        if not hasattr(self, "plot_paths") or key not in self.plot_paths:
+            QMessageBox.information(self, "Plot unavailable", "Run Feature Analysis first, or this plot was not generated for the current dataset.")
+            return
+        path = Path(self.plot_paths[key])
+        if not path.exists():
+            QMessageBox.information(self, "Plot unavailable", f"Plot file not found:\n{path}")
+            return
+        self.current_missingness_plot = path
+        pix = QPixmap(str(path))
+        if pix.isNull():
+            self.missing_plot_preview.setText(f"Could not load plot:\n{path}")
+            return
+        scaled = pix.scaled(self.missing_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.missing_plot_preview.setPixmap(scaled)
+        self.missing_plot_preview.setToolTip(str(path))
+
+    def open_current_missingness_plot(self) -> None:
+        path = getattr(self, "current_missingness_plot", None)
+        if not path:
+            QMessageBox.information(self, "No current plot", "Preview a plot first, then use this button to open the full-resolution file.")
+            return
+        self.open_file(Path(path))
 
     def _table_page(self, title: str, subtitle: str) -> QWidget:
         body = QWidget()
@@ -898,6 +1062,7 @@ class FeatureAnalysisGUI(QMainWindow):
             self.write_report(reports_dir / "vslp_feature_analysis_report.html", outputs)
             self.populate_output_tables(outputs)
             self.update_overview_dashboard(outputs)
+            self.update_missingness_dashboard(outputs)
             self.log(f"Analysis complete. Outputs written to: {self.output_dir}")
             self.show_page("overview")
         except Exception as exc:
@@ -906,7 +1071,7 @@ class FeatureAnalysisGUI(QMainWindow):
     def populate_output_tables(self, outputs: dict[str, pd.DataFrame]) -> None:
         targets = {
             "overview": "dataset_inventory",
-            "missing": "missingness_by_row",
+            "missing": "missingness_by_feature",
             "distributions___outliers": "feature_distribution_summary",
             "qc_integration": "feature_qc_spearman_correlation",
             "reliability": "feature_reliability_screen",
@@ -931,12 +1096,19 @@ class FeatureAnalysisGUI(QMainWindow):
         path = getattr(self, "current_overview_plot", None)
         if path and hasattr(self, "overview_plot_preview"):
             self._show_overview_plot(Path(path))
+        mpath = getattr(self, "current_missingness_plot", None)
+        if mpath and hasattr(self, "missing_plot_preview"):
+            pix = QPixmap(str(mpath))
+            if not pix.isNull():
+                self.missing_plot_preview.setPixmap(pix.scaled(self.missing_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
     def write_report(self, path: Path, outputs: dict[str, pd.DataFrame]) -> None:
         inv = outputs.get("dataset_inventory", pd.DataFrame()).to_html(index=False, escape=False)
         roles = outputs.get("feature_role_summary", summarize_roles(outputs.get("feature_column_mapping", pd.DataFrame()))).to_html(index=False, escape=False)
         design = outputs.get("dataset_design_overview", pd.DataFrame()).to_html(index=False, escape=False)
         fam = outputs.get("feature_family_overview", pd.DataFrame()).to_html(index=False, escape=False)
+        miss = outputs.get("missingness_by_feature", pd.DataFrame()).head(80).to_html(index=False, escape=False)
+        missgrp = outputs.get("missingness_by_group", pd.DataFrame()).head(80).to_html(index=False, escape=False)
         rel = outputs.get("feature_reliability_screen", pd.DataFrame()).head(80).to_html(index=False, escape=False)
         html = f"""<!doctype html><html><head><meta charset='utf-8'><title>VSLP Feature Analysis Report</title>
         <style>body{{font-family:Arial,sans-serif;margin:32px;color:#0E1726}} h1,h2{{color:#071A33}} table{{border-collapse:collapse;width:100%;font-size:12px;margin-bottom:24px}} td,th{{border:1px solid #D9E2EF;padding:6px}} th{{background:#EEF4FA}}</style></head><body>
@@ -945,6 +1117,8 @@ class FeatureAnalysisGUI(QMainWindow):
         <h2>Column-role summary</h2>{roles}
         <h2>Dataset design overview</h2>{design}
         <h2>Feature-family overview</h2>{fam}
+        <h2>Missingness by feature</h2>{miss}
+        <h2>Missingness by group</h2>{missgrp}
         <h2>Initial feature reliability screen</h2>{rel}</body></html>"""
         path.write_text(html, encoding="utf-8")
 
