@@ -12,8 +12,8 @@ from typing import Optional
 import pandas as pd
 
 try:
-    from PySide6.QtCore import Qt, QSize
-    from PySide6.QtGui import QPixmap, QFont
+    from PySide6.QtCore import Qt, QSize, QUrl
+    from PySide6.QtGui import QPixmap, QFont, QDesktopServices
     from PySide6.QtWidgets import (
         QApplication, QComboBox, QFileDialog, QFrame, QGridLayout, QGroupBox,
         QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox,
@@ -32,16 +32,19 @@ from vslp.analysis.features.audit import (
     feature_family_overview, group_counts, feature_distribution_summary,
     feature_qc_correlations, reliability_screen,
     missingness_feature_summary, missingness_row_summary, missingness_group_summary,
-    missingness_family_summary, missingness_comissing_pairs
+    missingness_family_summary, missingness_comissing_pairs,
+    robust_outlier_flags, expected_range_flags, distribution_review_summary
 )
 from vslp.analysis.features.plots import (
     plot_role_counts, plot_group_counts, plot_feature_family_counts,
     plot_missingness, plot_feature_availability_heatmap,
     plot_row_missingness_distribution, plot_missingness_by_group,
-    plot_missingness_family_summary, plot_comissing_heatmap
+    plot_missingness_family_summary, plot_comissing_heatmap,
+    plot_distribution_review_summary, plot_expected_range_flags,
+    plot_selected_feature_distribution, plot_group_feature_boxplot, plot_distribution_grid, plot_outlier_counts
 )
 
-APP_VERSION = "v0.45"
+APP_VERSION = "v0.46"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -354,7 +357,7 @@ class FeatureAnalysisGUI(QMainWindow):
             "mapping": self._mapping_page(),
             "overview": self._overview_page(),
             "missing": self._missingness_page(),
-            "dist": self._table_page("Distributions / Outliers", "Distribution summaries and robust outlier screening."),
+            "dist": self._distributions_page(),
             "qc": self._table_page("QC Integration", "Feature-QC association screening, when a QC table is supplied."),
             "reliability": self._table_page("Reliability", "Initial reliability screen for downstream analysis."),
             "export": self._export_page(),
@@ -632,6 +635,9 @@ class FeatureAnalysisGUI(QMainWindow):
         family = feature_family_overview(self.feature_df, feature_cols, self.registry_df)
         groups = group_counts(self.feature_df)
         dist = feature_distribution_summary(self.feature_df, feature_cols)
+        outlier_flags = robust_outlier_flags(self.feature_df, feature_cols, self.registry_df)
+        range_flags = expected_range_flags(self.feature_df, feature_cols, self.registry_df)
+        dist_review = distribution_review_summary(dist, range_flags)
         feature_missing = missingness_feature_summary(self.feature_df, feature_cols, self.registry_df)
         row_missing = missingness_row_summary(self.feature_df, feature_cols)
         group_missing = missingness_group_summary(self.feature_df, feature_cols)
@@ -647,6 +653,9 @@ class FeatureAnalysisGUI(QMainWindow):
             "group_counts": groups,
             "feature_column_mapping": mapping,
             "feature_distribution_summary": dist,
+            "robust_outlier_flags": outlier_flags,
+            "feature_expected_range_flags": range_flags,
+            "distribution_review_summary": dist_review,
             "missingness_by_feature": feature_missing,
             "missingness_by_row": row_missing,
             "missingness_by_group": group_missing,
@@ -673,6 +682,14 @@ class FeatureAnalysisGUI(QMainWindow):
         paths["missingness_by_group"] = str(plot_missingness_by_group(outputs.get("missingness_by_group", pd.DataFrame()), plots_dir / "missingness_by_group.png"))
         paths["missingness_by_family"] = str(plot_missingness_family_summary(outputs.get("missingness_by_family", pd.DataFrame()), plots_dir / "missingness_by_family.png"))
         paths["missingness_comissing_heatmap"] = str(plot_comissing_heatmap(self.feature_df, feature_cols, plots_dir / "missingness_comissing_heatmap.png"))
+        paths["distribution_review_status"] = str(plot_distribution_review_summary(outputs.get("distribution_review_summary", pd.DataFrame()), plots_dir / "distribution_review_status.png"))
+        paths["expected_range_flags"] = str(plot_expected_range_flags(outputs.get("feature_expected_range_flags", pd.DataFrame()), plots_dir / "feature_expected_range_flags.png"))
+        paths["outlier_counts"] = str(plot_outlier_counts(outputs.get("robust_outlier_flags", pd.DataFrame()), plots_dir / "outlier_counts.png"))
+        paths["feature_distribution_grid"] = str(plot_distribution_grid(self.feature_df, feature_cols, plots_dir / "feature_distribution_grid.png"))
+        first_feature = feature_cols[0] if feature_cols else None
+        if first_feature:
+            paths["selected_feature_distribution"] = str(plot_selected_feature_distribution(self.feature_df, first_feature, plots_dir / "selected_feature_distribution.png"))
+            paths["selected_feature_by_group"] = str(plot_group_feature_boxplot(self.feature_df, first_feature, plots_dir / "selected_feature_by_group.png"))
         return paths
 
     def regenerate_overview_plots(self) -> None:
@@ -692,6 +709,7 @@ class FeatureAnalysisGUI(QMainWindow):
             self.populate_output_tables(outputs)
             self.update_overview_dashboard(outputs)
             self.update_missingness_dashboard(outputs)
+            self.update_distribution_dashboard(outputs)
             self.log(f"Overview/missingness plots generated in: {plots_dir}")
             self.preview_plot("role_counts", generate_if_missing=False)
         except Exception as exc:
@@ -733,7 +751,7 @@ class FeatureAnalysisGUI(QMainWindow):
         if not path.exists():
             QMessageBox.information(self, "File unavailable", f"File not found:\n{path}")
             return
-        self.open_file(path)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def open_plot(self, key: str) -> None:
         if not hasattr(self, "plot_paths") or key not in self.plot_paths:
@@ -902,6 +920,255 @@ class FeatureAnalysisGUI(QMainWindow):
             return
         self.open_file(Path(path))
 
+
+    def _distributions_page(self) -> QWidget:
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
+
+        card = Card(
+            "Distributions / Outliers",
+            "Inspect feature distributions, robust outliers, expected-range flags, and group/context overlays. These are review tools, not automatic exclusion decisions."
+        )
+
+        self.dist_metric_grid = QGridLayout()
+        self.dist_metric_grid.setHorizontalSpacing(12)
+        self.dist_metric_grid.setVerticalSpacing(12)
+        card.layout.addLayout(self.dist_metric_grid)
+
+        self.dist_note = QLabel("Run Feature Analysis to populate distribution diagnostics. Review outliers in context: task, QC, device, diagnosis/severity, and implementation status can all affect feature values.")
+        self.dist_note.setWordWrap(True)
+        self.dist_note.setStyleSheet(f"color:{MUTED}; background:#F7FAFD; border:1px solid {LINE}; border-radius:8px; padding:10px;")
+        card.layout.addWidget(self.dist_note)
+
+        top_controls = QHBoxLayout()
+        top_controls.addWidget(QLabel("Feature to inspect:"))
+        self.dist_feature_combo = QComboBox()
+        self.dist_feature_combo.setMinimumWidth(360)
+        self.dist_feature_combo.currentTextChanged.connect(lambda _: self.generate_selected_distribution_plot())
+        top_controls.addWidget(self.dist_feature_combo)
+        top_controls.addWidget(QLabel("Group overlay:"))
+        self.dist_group_combo = QComboBox()
+        self.dist_group_combo.setMinimumWidth(240)
+        self.dist_group_combo.currentTextChanged.connect(lambda _: self.generate_selected_group_plot())
+        top_controls.addWidget(self.dist_group_combo)
+        top_controls.addStretch(1)
+        card.layout.addLayout(top_controls)
+
+        tabs = QTabWidget()
+        tabs.setStyleSheet(f"QTabWidget::pane {{ border: 1px solid {LINE}; border-radius: 8px; background: #FFFFFF; }} QTabBar::tab {{ padding: 8px 14px; color: {NAVY}; }} QTabBar::tab:selected {{ background: #EAF8F7; border-bottom: 2px solid {TEAL}; }}")
+        self.dist_summary_table = QTableWidget(0, 0)
+        self.dist_review_table = QTableWidget(0, 0)
+        self.dist_outlier_table = QTableWidget(0, 0)
+        self.dist_range_table = QTableWidget(0, 0)
+        for t in [self.dist_summary_table, self.dist_review_table, self.dist_outlier_table, self.dist_range_table]:
+            t.setAlternatingRowColors(True)
+            t.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        tabs.addTab(self.dist_summary_table, "Distribution summary")
+        tabs.addTab(self.dist_review_table, "Review summary")
+        tabs.addTab(self.dist_outlier_table, "Row-level outliers")
+        tabs.addTab(self.dist_range_table, "Expected ranges")
+        card.layout.addWidget(tabs)
+
+        plot_panel = QFrame()
+        plot_panel.setStyleSheet(f"QFrame {{ background:#F8FBFE; border:1px solid {LINE}; border-radius:12px; }}")
+        plot_panel_layout = QHBoxLayout(plot_panel)
+        plot_panel_layout.setContentsMargins(14, 14, 14, 14)
+        plot_panel_layout.setSpacing(14)
+
+        controls = QFrame()
+        controls.setStyleSheet("QFrame { border:none; background:transparent; }")
+        controls_layout = QVBoxLayout(controls)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(8)
+        title = QLabel("Distribution plots")
+        title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
+        controls_layout.addWidget(title)
+        note = QLabel("Use the feature-specific plots for clinical review. A statistical outlier is not automatically wrong; it may be true physiology, task effect, device/QC artifact, or computation failure.")
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{MUTED}; border:none; background:transparent;")
+        controls_layout.addWidget(note)
+        for label, key in [
+            ("Review status", "distribution_review_status"),
+            ("Expected-range flags", "expected_range_flags"),
+            ("Outlier counts", "outlier_counts"),
+            ("Feature distribution grid", "feature_distribution_grid"),
+            ("Selected feature", "selected_feature_distribution"),
+            ("Selected feature by group", "selected_feature_by_group"),
+        ]:
+            b = QPushButton(label)
+            b.setProperty("secondary", True)
+            b.clicked.connect(lambda _=False, k=key: self.preview_distribution_plot(k))
+            controls_layout.addWidget(b)
+        regen = QPushButton("Regenerate distribution plots")
+        regen.clicked.connect(self.regenerate_overview_plots)
+        controls_layout.addWidget(regen)
+        open_current = QPushButton("Open current plot file")
+        open_current.setProperty("secondary", True)
+        open_current.clicked.connect(self.open_current_distribution_plot)
+        controls_layout.addWidget(open_current)
+        controls_layout.addStretch(1)
+        controls.setFixedWidth(270)
+        plot_panel_layout.addWidget(controls)
+
+        self.dist_plot_preview = QLabel("Run Feature Analysis, then select a distribution plot on the left.")
+        self.dist_plot_preview.setAlignment(Qt.AlignCenter)
+        self.dist_plot_preview.setMinimumHeight(460)
+        self.dist_plot_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.dist_plot_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
+        plot_panel_layout.addWidget(self.dist_plot_preview, 1)
+        card.layout.addWidget(plot_panel)
+
+        layout.addWidget(card)
+        return self._wrap_scroll(body)
+
+    def update_distribution_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
+        if not hasattr(self, "dist_metric_grid"):
+            return
+        while self.dist_metric_grid.count():
+            item = self.dist_metric_grid.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        dist = outputs.get("feature_distribution_summary", pd.DataFrame())
+        review = outputs.get("distribution_review_summary", pd.DataFrame())
+        outliers = outputs.get("robust_outlier_flags", pd.DataFrame())
+        ranges = outputs.get("feature_expected_range_flags", pd.DataFrame())
+        n_features = len(dist) if dist is not None else 0
+        monitor = review.get("distribution_status", pd.Series(dtype=str)).isin(["monitor"]).sum() if review is not None and not review.empty else 0
+        review_n = review.get("distribution_status", pd.Series(dtype=str)).isin(["review"]).sum() if review is not None and not review.empty else 0
+        out_n = len(outliers) if outliers is not None else 0
+        range_n = int(pd.to_numeric(ranges.get("fraction_outside_expected", pd.Series(dtype=float)), errors="coerce").gt(0).sum()) if ranges is not None and not ranges.empty else 0
+        zero_n = int(dist.get("zero_variance", pd.Series(dtype=bool)).fillna(False).sum()) if dist is not None and not dist.empty else 0
+        tiles = [
+            ("Features audited", n_features, "numeric selected features"),
+            ("Monitor", int(monitor), "moderate distribution issues"),
+            ("Review", int(review_n), "high-risk distribution issues"),
+            ("Outlier rows", out_n, "row-level robust/range flags"),
+            ("Range flags", range_n, "features outside supplied ranges"),
+            ("Zero variance", zero_n, "not useful for ML"),
+        ]
+        for idx, (title, value, subtitle) in enumerate(tiles):
+            self.dist_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx // 3, idx % 3)
+        self._fill_table(self.dist_summary_table, dist)
+        self._fill_table(self.dist_review_table, review)
+        self._fill_table(self.dist_outlier_table, outliers)
+        self._fill_table(self.dist_range_table, ranges)
+        if hasattr(self, "dist_feature_combo"):
+            current = self.dist_feature_combo.currentText()
+            self.dist_feature_combo.blockSignals(True)
+            self.dist_feature_combo.clear()
+            if dist is not None and not dist.empty and "feature" in dist.columns:
+                self.dist_feature_combo.addItems([str(x) for x in dist["feature"].dropna().tolist()])
+            if current:
+                ix = self.dist_feature_combo.findText(current)
+                if ix >= 0:
+                    self.dist_feature_combo.setCurrentIndex(ix)
+            self.dist_feature_combo.blockSignals(False)
+        if hasattr(self, "dist_group_combo"):
+            current = self.dist_group_combo.currentText()
+            self.dist_group_combo.blockSignals(True)
+            self.dist_group_combo.clear()
+            self.dist_group_combo.addItem("Auto")
+            if self.feature_df is not None:
+                for c in ["task", "diagnosis", "severity_bin", "modality", "sex", "gender", "session_id", "subject_id"]:
+                    if c in self.feature_df.columns:
+                        self.dist_group_combo.addItem(c)
+            if current:
+                ix = self.dist_group_combo.findText(current)
+                if ix >= 0:
+                    self.dist_group_combo.setCurrentIndex(ix)
+            self.dist_group_combo.blockSignals(False)
+        self.dist_note.setText("Distribution audit generated. Review statistical outliers together with expected ranges, QC artifacts, task compatibility, and clinical/context metadata before excluding or transforming features.")
+
+    def _selected_distribution_feature(self) -> str | None:
+        if not hasattr(self, "dist_feature_combo"):
+            return None
+        val = self.dist_feature_combo.currentText().strip()
+        return val or None
+
+    def _selected_distribution_group(self) -> str | None:
+        if not hasattr(self, "dist_group_combo"):
+            return None
+        val = self.dist_group_combo.currentText().strip()
+        return None if val in ["", "Auto"] else val
+
+    def _selected_expected_bounds(self, feature: str | None) -> tuple[float | None, float | None]:
+        if not feature or not getattr(self, "outputs", None):
+            return None, None
+        ranges = self.outputs.get("feature_expected_range_flags", pd.DataFrame())
+        if ranges is None or ranges.empty or "feature" not in ranges.columns:
+            return None, None
+        row = ranges[ranges["feature"].astype(str).eq(str(feature))]
+        if row.empty:
+            return None, None
+        low = pd.to_numeric(row.iloc[0].get("expected_low"), errors="coerce")
+        high = pd.to_numeric(row.iloc[0].get("expected_high"), errors="coerce")
+        return (float(low) if pd.notna(low) else None, float(high) if pd.notna(high) else None)
+
+    def generate_selected_distribution_plot(self) -> None:
+        if self.feature_df is None or not self.output_edit.text().strip():
+            return
+        feature = self._selected_distribution_feature()
+        if not feature:
+            return
+        try:
+            self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
+            low, high = self._selected_expected_bounds(feature)
+            path = plot_selected_feature_distribution(self.feature_df, feature, plots_dir / "selected_feature_distribution.png", low, high, self._selected_distribution_group())
+            if not hasattr(self, "plot_paths"):
+                self.plot_paths = {}
+            self.plot_paths["selected_feature_distribution"] = str(path)
+            self.preview_distribution_plot("selected_feature_distribution")
+        except Exception:
+            pass
+
+    def generate_selected_group_plot(self) -> None:
+        if self.feature_df is None or not self.output_edit.text().strip():
+            return
+        feature = self._selected_distribution_feature()
+        if not feature:
+            return
+        try:
+            self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
+            path = plot_group_feature_boxplot(self.feature_df, feature, plots_dir / "selected_feature_by_group.png", self._selected_distribution_group())
+            if not hasattr(self, "plot_paths"):
+                self.plot_paths = {}
+            self.plot_paths["selected_feature_by_group"] = str(path)
+        except Exception:
+            pass
+
+    def preview_distribution_plot(self, key: str) -> None:
+        if key == "selected_feature_distribution":
+            self.generate_selected_distribution_plot()
+        if key == "selected_feature_by_group":
+            self.generate_selected_group_plot()
+        if not hasattr(self, "plot_paths") or key not in self.plot_paths or not Path(self.plot_paths.get(key, "")).exists():
+            self.regenerate_overview_plots()
+        if not hasattr(self, "plot_paths") or key not in self.plot_paths:
+            QMessageBox.information(self, "Plot unavailable", "Run Feature Analysis first, or this plot was not generated for the current dataset.")
+            return
+        path = Path(self.plot_paths[key])
+        if not path.exists():
+            QMessageBox.information(self, "Plot unavailable", f"Plot file not found:\n{path}")
+            return
+        self.current_distribution_plot = path
+        pix = QPixmap(str(path))
+        if pix.isNull():
+            self.dist_plot_preview.setText(f"Could not load plot:\n{path}")
+            return
+        scaled = pix.scaled(self.dist_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.dist_plot_preview.setPixmap(scaled)
+        self.dist_plot_preview.setToolTip(str(path))
+
+    def open_current_distribution_plot(self) -> None:
+        path = getattr(self, "current_distribution_plot", None)
+        if not path:
+            QMessageBox.information(self, "No current plot", "Preview a plot first, then use this button to open the full-resolution file.")
+            return
+        self.open_file(Path(path))
+
     def _table_page(self, title: str, subtitle: str) -> QWidget:
         body = QWidget()
         layout = QVBoxLayout(body)
@@ -1063,6 +1330,7 @@ class FeatureAnalysisGUI(QMainWindow):
             self.populate_output_tables(outputs)
             self.update_overview_dashboard(outputs)
             self.update_missingness_dashboard(outputs)
+            self.update_distribution_dashboard(outputs)
             self.log(f"Analysis complete. Outputs written to: {self.output_dir}")
             self.show_page("overview")
         except Exception as exc:
@@ -1101,6 +1369,11 @@ class FeatureAnalysisGUI(QMainWindow):
             pix = QPixmap(str(mpath))
             if not pix.isNull():
                 self.missing_plot_preview.setPixmap(pix.scaled(self.missing_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        dpath = getattr(self, "current_distribution_plot", None)
+        if dpath and hasattr(self, "dist_plot_preview"):
+            pix = QPixmap(str(dpath))
+            if not pix.isNull():
+                self.dist_plot_preview.setPixmap(pix.scaled(self.dist_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
     def write_report(self, path: Path, outputs: dict[str, pd.DataFrame]) -> None:
         inv = outputs.get("dataset_inventory", pd.DataFrame()).to_html(index=False, escape=False)
@@ -1109,6 +1382,8 @@ class FeatureAnalysisGUI(QMainWindow):
         fam = outputs.get("feature_family_overview", pd.DataFrame()).to_html(index=False, escape=False)
         miss = outputs.get("missingness_by_feature", pd.DataFrame()).head(80).to_html(index=False, escape=False)
         missgrp = outputs.get("missingness_by_group", pd.DataFrame()).head(80).to_html(index=False, escape=False)
+        distreview = outputs.get("distribution_review_summary", pd.DataFrame()).head(100).to_html(index=False, escape=False)
+        outrows = outputs.get("robust_outlier_flags", pd.DataFrame()).head(100).to_html(index=False, escape=False)
         rel = outputs.get("feature_reliability_screen", pd.DataFrame()).head(80).to_html(index=False, escape=False)
         html = f"""<!doctype html><html><head><meta charset='utf-8'><title>VSLP Feature Analysis Report</title>
         <style>body{{font-family:Arial,sans-serif;margin:32px;color:#0E1726}} h1,h2{{color:#071A33}} table{{border-collapse:collapse;width:100%;font-size:12px;margin-bottom:24px}} td,th{{border:1px solid #D9E2EF;padding:6px}} th{{background:#EEF4FA}}</style></head><body>
@@ -1119,6 +1394,8 @@ class FeatureAnalysisGUI(QMainWindow):
         <h2>Feature-family overview</h2>{fam}
         <h2>Missingness by feature</h2>{miss}
         <h2>Missingness by group</h2>{missgrp}
+        <h2>Distribution / outlier review</h2>{distreview}
+        <h2>Row-level outlier flags</h2>{outrows}
         <h2>Initial feature reliability screen</h2>{rel}</body></html>"""
         path.write_text(html, encoding="utf-8")
 

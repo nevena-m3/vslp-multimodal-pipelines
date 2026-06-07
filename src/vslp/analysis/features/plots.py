@@ -272,3 +272,96 @@ def plot_comissing_heatmap(feature_df: pd.DataFrame, feature_cols: Sequence[str]
     cbar.set_label("co-missing fraction", color=MUTED)
     cbar.ax.tick_params(labelsize=8, colors=MUTED)
     return _save(fig, path)
+
+
+
+def plot_distribution_review_summary(review: pd.DataFrame, path: Path) -> Path:
+    if review is None or review.empty or "distribution_status" not in review.columns:
+        return _empty(path, "No distribution review summary was available.", "Distribution review status")
+    counts = review["distribution_status"].astype(str).value_counts().reindex(["ok", "monitor", "review"]).fillna(0)
+    fig, ax = plt.subplots(figsize=(8.5, 5.2))
+    colors = [TEAL, GOLD, RED]
+    ax.bar(counts.index, counts.values, color=colors)
+    ax.set_ylabel("Number of features", color=MUTED)
+    _style(ax, "Distribution / outlier review status")
+    for i, v in enumerate(counts.values):
+        ax.text(i, v + max(0.1, counts.max() * 0.02), str(int(v)), ha="center", fontsize=10, color=MUTED)
+    return _save(fig, path)
+
+
+def plot_expected_range_flags(expected: pd.DataFrame, path: Path) -> Path:
+    if expected is None or expected.empty or "fraction_outside_expected" not in expected.columns:
+        return _empty(path, "No expected-range information was available. Load a registry/policy table with expected_low and expected_high to enable range plots.", "Expected-range flags")
+    df = expected.copy()
+    df["fraction_outside_expected"] = pd.to_numeric(df["fraction_outside_expected"], errors="coerce")
+    df = df.dropna(subset=["fraction_outside_expected"]).sort_values("fraction_outside_expected", ascending=True).tail(35)
+    if df.empty:
+        return _empty(path, "Registry ranges were not available for the selected features.", "Expected-range flags")
+    colors = [RED if v >= 0.20 else GOLD if v > 0 else TEAL for v in df["fraction_outside_expected"]]
+    fig, ax = plt.subplots(figsize=(10.5, max(4.8, 0.34 * len(df))))
+    ax.barh(df["feature"].astype(str), df["fraction_outside_expected"], color=colors)
+    ax.set_xlabel("Fraction outside supplied expected range", color=MUTED)
+    ax.set_xlim(0, max(0.05, min(1.0, float(df["fraction_outside_expected"].max()) * 1.15)))
+    _style(ax, "Expected-range review by feature")
+    return _save(fig, path)
+
+
+def plot_selected_feature_distribution(
+    df: pd.DataFrame,
+    feature: str,
+    path: Path,
+    expected_low: float | None = None,
+    expected_high: float | None = None,
+    group_col: str | None = None,
+) -> Path:
+    if df is None or df.empty or feature not in df.columns:
+        return _empty(path, "Selected feature was not found in the table.", "Selected feature distribution")
+    x = pd.to_numeric(df[feature], errors="coerce")
+    valid = x.dropna()
+    if valid.empty:
+        return _empty(path, "Selected feature has no valid numeric values.", f"Distribution: {feature}")
+    fig, ax = plt.subplots(figsize=(10.5, 6.0))
+    bins = min(30, max(6, int(np.sqrt(len(valid)))))
+    ax.hist(valid, bins=bins, color=TEAL, alpha=0.85, edgecolor="white")
+    med = float(valid.median())
+    q1, q3 = np.nanpercentile(valid, [25, 75])
+    ax.axvline(med, color=NAVY, linestyle="-", linewidth=1.8, label="median")
+    ax.axvline(q1, color=MUTED, linestyle="--", linewidth=1.0, label="IQR")
+    ax.axvline(q3, color=MUTED, linestyle="--", linewidth=1.0)
+    if expected_low is not None and not np.isnan(expected_low):
+        ax.axvline(expected_low, color=RED, linestyle=":", linewidth=1.5, label="expected range")
+    if expected_high is not None and not np.isnan(expected_high):
+        ax.axvline(expected_high, color=RED, linestyle=":", linewidth=1.5)
+    ax.set_xlabel(feature, color=MUTED)
+    ax.set_ylabel("Rows / recordings", color=MUTED)
+    _style(ax, f"Distribution: {feature}")
+    ax.legend(frameon=False, fontsize=8)
+    return _save(fig, path)
+
+
+def plot_group_feature_boxplot(df: pd.DataFrame, feature: str, path: Path, group_col: str | None = None) -> Path:
+    if df is None or df.empty or feature not in df.columns:
+        return _empty(path, "Selected feature was not found in the table.", "Feature by group")
+    if group_col is None or group_col not in df.columns:
+        candidates = [c for c in ["task", "diagnosis", "severity_bin", "modality", "sex", "gender"] if c in df.columns]
+        group_col = candidates[0] if candidates else None
+    if group_col is None:
+        return _empty(path, "No grouping column was detected. Add task, diagnosis, severity_bin, modality, sex/gender, or metadata to enable grouped distribution plots.", "Feature by group")
+    work = df[[feature, group_col]].copy()
+    work[feature] = pd.to_numeric(work[feature], errors="coerce")
+    work = work.dropna(subset=[feature, group_col])
+    if work.empty or work[group_col].nunique() < 2:
+        return _empty(path, "The selected grouping column does not have at least two usable groups.", "Feature by group")
+    counts = work[group_col].astype(str).value_counts().head(12)
+    groups = list(counts.index)
+    data = [work.loc[work[group_col].astype(str).eq(g), feature].to_numpy(dtype=float) for g in groups]
+    fig, ax = plt.subplots(figsize=(max(9, 0.8 * len(groups)), 6.2))
+    ax.boxplot(data, tick_labels=[f"{g}\n(n={len(d)})" for g, d in zip(groups, data)], showfliers=False)
+    for i, d in enumerate(data, start=1):
+        if len(d):
+            jitter = np.linspace(-0.14, 0.14, len(d)) if len(d) > 1 else np.array([0.0])
+            ax.scatter(np.full(len(d), i) + jitter, d, s=18, alpha=0.65, color=TEAL)
+    ax.set_ylabel(feature, color=MUTED)
+    _style(ax, f"{feature} by {group_col}")
+    ax.tick_params(axis="x", labelrotation=35)
+    return _save(fig, path)

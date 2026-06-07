@@ -441,3 +441,220 @@ def missingness_comissing_pairs(feature_df: pd.DataFrame, feature_cols: list[str
             nco = int((ma & mb).sum())
             rows.append({"feature_a": a, "feature_b": b, "co_missing_fraction": float(nco / n) if n else np.nan, "n_co_missing": nco})
     return pd.DataFrame(rows).sort_values("co_missing_fraction", ascending=False) if rows else pd.DataFrame(columns=["feature_a", "feature_b", "co_missing_fraction", "n_co_missing"])
+
+
+
+def _registry_feature_metadata(registry: pd.DataFrame | None) -> dict[str, dict[str, object]]:
+    """Return registry metadata keyed by feature name when available."""
+    if registry is None or registry.empty:
+        return {}
+    fcol = next((c for c in ["feature", "feature_name", "name", "column"] if c in registry.columns), None)
+    if not fcol:
+        return {}
+    out: dict[str, dict[str, object]] = {}
+    for _, row in registry.iterrows():
+        feat = row.get(fcol)
+        if pd.isna(feat):
+            continue
+        out[str(feat)] = {str(k): row[k] for k in registry.columns}
+    return out
+
+
+def _expected_bounds_from_meta(meta: dict[str, object]) -> tuple[float, float]:
+    low_cols = ["expected_low", "expected_min", "physiologic_low", "range_low", "orientation_low"]
+    high_cols = ["expected_high", "expected_max", "physiologic_high", "range_high", "orientation_high"]
+    low = np.nan
+    high = np.nan
+    for c in low_cols:
+        if c in meta:
+            low = pd.to_numeric(pd.Series([meta[c]]), errors="coerce").iloc[0]
+            if pd.notna(low):
+                break
+    for c in high_cols:
+        if c in meta:
+            high = pd.to_numeric(pd.Series([meta[c]]), errors="coerce").iloc[0]
+            if pd.notna(high):
+                break
+    return float(low) if pd.notna(low) else np.nan, float(high) if pd.notna(high) else np.nan
+
+
+def robust_outlier_flags(feature_df: pd.DataFrame, feature_cols: list[str], registry: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Row-level robust outlier and expected-range flags.
+
+    Uses robust z-scores based on median/MAD when possible, with IQR fallback.
+    Expected ranges are only applied when a registry/policy table supplies usable
+    low/high limits. These are review flags, not automatic exclusions.
+    """
+    id_candidates = ["file_name", "record_key", "subject_id", "session_id", "task", "iteration", "recording_date"]
+    id_cols = [c for c in id_candidates if c in feature_df.columns]
+    meta_lookup = _registry_feature_metadata(registry)
+    rows = []
+    for c in numeric_columns(feature_df, feature_cols):
+        x = pd.to_numeric(feature_df[c], errors="coerce")
+        valid = x.dropna()
+        if valid.empty:
+            continue
+        med = float(np.nanmedian(valid))
+        q1, q3 = np.nanpercentile(valid, [25, 75])
+        iqr = float(q3 - q1)
+        mad = float(np.nanmedian(np.abs(valid - med)))
+        if mad > 0:
+            rz = 0.6745 * (x - med) / mad
+            robust_method = "median_mad"
+        elif iqr > 0:
+            rz = (x - med) / (iqr / 1.349)
+            robust_method = "iqr_scaled"
+        else:
+            rz = pd.Series(np.nan, index=x.index)
+            robust_method = "zero_variance"
+        low, high = _expected_bounds_from_meta(meta_lookup.get(c, {}))
+        outside_low = pd.Series(False, index=x.index)
+        outside_high = pd.Series(False, index=x.index)
+        if not np.isnan(low):
+            outside_low = x < low
+        if not np.isnan(high):
+            outside_high = x > high
+        robust_flag = rz.abs() > 3.5
+        impossible_flag = outside_low | outside_high
+        flag_any = robust_flag | impossible_flag
+        for idx in x.index[flag_any.fillna(False)]:
+            reasons = []
+            if bool(robust_flag.loc[idx]):
+                reasons.append("robust_z_abs_gt_3_5")
+            if bool(outside_low.loc[idx]):
+                reasons.append("below_expected_range")
+            if bool(outside_high.loc[idx]):
+                reasons.append("above_expected_range")
+            review_level = "range_review" if bool(impossible_flag.loc[idx]) else "statistical_review"
+            record = {
+                "row_index": int(idx) if isinstance(idx, (int, np.integer)) else str(idx),
+                "feature": c,
+                "value": float(x.loc[idx]) if pd.notna(x.loc[idx]) else np.nan,
+                "median": med,
+                "iqr": iqr,
+                "robust_z": float(rz.loc[idx]) if pd.notna(rz.loc[idx]) else np.nan,
+                "expected_low": low,
+                "expected_high": high,
+                "flag_type": "; ".join(reasons),
+                "review_level": review_level,
+                "robust_method": robust_method,
+            }
+            for idc in id_cols:
+                record[idc] = feature_df.loc[idx, idc]
+            rows.append(record)
+    return pd.DataFrame(rows)
+
+
+def expected_range_flags(feature_df: pd.DataFrame, feature_cols: list[str], registry: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Feature-level expected-range audit where registry bounds are available."""
+    meta_lookup = _registry_feature_metadata(registry)
+    rows = []
+    for c in numeric_columns(feature_df, feature_cols):
+        x = pd.to_numeric(feature_df[c], errors="coerce")
+        valid = x.dropna()
+        low, high = _expected_bounds_from_meta(meta_lookup.get(c, {}))
+        has_range = not (np.isnan(low) and np.isnan(high))
+        if valid.empty:
+            n_below = n_above = 0
+            frac = np.nan
+            minv = maxv = np.nan
+        else:
+            below = (valid < low) if not np.isnan(low) else pd.Series(False, index=valid.index)
+            above = (valid > high) if not np.isnan(high) else pd.Series(False, index=valid.index)
+            n_below = int(below.sum())
+            n_above = int(above.sum())
+            frac = float((below | above).mean()) if has_range else np.nan
+            minv = float(valid.min())
+            maxv = float(valid.max())
+        if not has_range:
+            status = "no_registry_range"
+            interp = "No expected range was supplied; evaluate using distribution/outlier and domain review."
+        elif frac == 0:
+            status = "within_range"
+            interp = "All valid values are within the supplied expected range."
+        elif frac < 0.05:
+            status = "minor_review"
+            interp = "Small fraction outside expected range; inspect rows and QC context."
+        elif frac < 0.20:
+            status = "review"
+            interp = "Meaningful fraction outside expected range; inspect computation, task compatibility, and QC."
+        else:
+            status = "high_review"
+            interp = "Large fraction outside expected range; do not use blindly for modeling."
+        rows.append({
+            "feature": c,
+            "n_valid": int(valid.size),
+            "expected_low": low,
+            "expected_high": high,
+            "min": minv,
+            "max": maxv,
+            "n_below_expected": n_below,
+            "n_above_expected": n_above,
+            "fraction_outside_expected": frac,
+            "range_status": status,
+            "interpretation": interp,
+        })
+    return pd.DataFrame(rows)
+
+
+def distribution_review_summary(dist: pd.DataFrame, expected: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Feature-level distribution/outlier review summary."""
+    if dist is None or dist.empty:
+        return pd.DataFrame(columns=["feature", "distribution_status", "review_reason"])
+    df = dist.copy()
+    if expected is not None and not expected.empty and "feature" in expected.columns:
+        keep = [c for c in ["feature", "fraction_outside_expected", "range_status"] if c in expected.columns]
+        df = df.merge(expected[keep], on="feature", how="left")
+    else:
+        df["fraction_outside_expected"] = np.nan
+        df["range_status"] = "no_registry_range"
+    rows = []
+    for _, r in df.iterrows():
+        reasons = []
+        status = "ok"
+        miss = float(r.get("missing_fraction", 0) or 0)
+        out = float(r.get("robust_outlier_fraction", 0) or 0)
+        zero = bool(r.get("zero_variance", False))
+        n = int(r.get("n", 0) or 0)
+        range_status = str(r.get("range_status", "no_registry_range"))
+        if n < 3:
+            status = "review"
+            reasons.append("too few valid observations")
+        if zero:
+            status = "review"
+            reasons.append("zero variance")
+        if miss >= 0.50:
+            status = "review"
+            reasons.append("high missingness")
+        elif miss >= 0.20 and status == "ok":
+            status = "monitor"
+            reasons.append("moderate missingness")
+        if out >= 0.20:
+            status = "review"
+            reasons.append("many robust outliers")
+        elif out >= 0.05 and status == "ok":
+            status = "monitor"
+            reasons.append("some robust outliers")
+        if range_status in ["review", "high_review"]:
+            status = "review"
+            reasons.append("expected-range violations")
+        elif range_status == "minor_review" and status == "ok":
+            status = "monitor"
+            reasons.append("minor expected-range violations")
+        rows.append({
+            "feature": r.get("feature"),
+            "n_valid": n,
+            "missing_fraction": miss,
+            "median": r.get("median"),
+            "iqr": r.get("iqr"),
+            "q05": r.get("q05"),
+            "q95": r.get("q95"),
+            "min": r.get("min"),
+            "max": r.get("max"),
+            "robust_outlier_fraction": out,
+            "fraction_outside_expected": r.get("fraction_outside_expected"),
+            "zero_variance": zero,
+            "distribution_status": status,
+            "review_reason": "; ".join(reasons) if reasons else "no major distribution issue detected",
+        })
+    return pd.DataFrame(rows)
