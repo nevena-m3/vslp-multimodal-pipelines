@@ -190,3 +190,85 @@ def plot_feature_family_counts(family_overview: pd.DataFrame, path: Path) -> Pat
     ax.set_xlabel("Features", color=MUTED)
     _style(ax, "Feature count by family / subsystem")
     return _save(fig, path)
+
+
+def plot_row_missingness_distribution(row_missing: pd.DataFrame, path: Path) -> Path:
+    if row_missing is None or row_missing.empty or "missing_fraction_feature_columns" not in row_missing.columns:
+        return _empty(path, "No row-level missingness data were available.", "Row-level missingness")
+    x = pd.to_numeric(row_missing["missing_fraction_feature_columns"], errors="coerce").dropna()
+    if x.empty:
+        return _empty(path, "No feature-row missingness values were available.", "Row-level missingness")
+    fig, ax = plt.subplots(figsize=(9.8, 5.5))
+    bins = np.linspace(0, 1, 21)
+    ax.hist(x, bins=bins, color=TEAL, alpha=0.88, edgecolor="white")
+    ax.axvline(0.20, color=GOLD, linestyle="--", linewidth=1.3, label="20% monitor")
+    ax.axvline(0.50, color=RED, linestyle="--", linewidth=1.3, label="50% review")
+    ax.axvline(float(x.median()), color=NAVY, linestyle="-", linewidth=1.5, label="median")
+    ax.set_xlabel("Fraction of selected features missing in a row", color=MUTED)
+    ax.set_ylabel("Rows / recordings", color=MUTED)
+    _style(ax, "Row-level feature missingness")
+    ax.legend(frameon=False, fontsize=8)
+    return _save(fig, path)
+
+
+def plot_missingness_by_group(group_summary: pd.DataFrame, path: Path, preferred: str = "task") -> Path:
+    required = {"group_variable", "level", "n_rows", "mean_feature_missing_fraction"}
+    if group_summary is None or group_summary.empty or not required.issubset(group_summary.columns):
+        return _empty(path, "No grouping variables were available. Add metadata columns such as task, diagnosis, severity_bin, sex/gender, session, subject, or device.", "Missingness by group")
+    df = group_summary.copy()
+    available = list(df["group_variable"].astype(str).unique())
+    group = preferred if preferred in available else next((g for g in ["task", "diagnosis", "severity_bin", "sex_or_gender", "device", "session", "subject"] if g in available), available[0])
+    df = df[df["group_variable"].astype(str).eq(group)].copy()
+    df["mean_feature_missing_fraction"] = pd.to_numeric(df["mean_feature_missing_fraction"], errors="coerce")
+    df["n_rows"] = pd.to_numeric(df["n_rows"], errors="coerce").fillna(0)
+    df = df.dropna(subset=["mean_feature_missing_fraction"]).sort_values("mean_feature_missing_fraction", ascending=True).tail(30)
+    if df.empty:
+        return _empty(path, "The selected grouping variable did not contain usable missingness values.", "Missingness by group")
+    fig, ax = plt.subplots(figsize=(10.5, max(4.8, 0.36 * len(df))))
+    colors = [RED if v >= 0.50 else GOLD if v >= 0.20 else TEAL for v in df["mean_feature_missing_fraction"]]
+    labels = [f"{lev}  (n={int(n)})" for lev, n in zip(df["level"].astype(str), df["n_rows"])]
+    ax.barh(labels, df["mean_feature_missing_fraction"], color=colors)
+    ax.set_xlabel("Mean feature missingness", color=MUTED)
+    ax.set_xlim(0, max(0.05, min(1.0, float(df["mean_feature_missing_fraction"].max()) * 1.15)))
+    ax.axvline(0.20, color=GOLD, linestyle="--", linewidth=1, alpha=0.8)
+    ax.axvline(0.50, color=RED, linestyle="--", linewidth=1, alpha=0.8)
+    _style(ax, f"Mean feature missingness by {group}")
+    return _save(fig, path)
+
+
+def plot_missingness_family_summary(family_summary: pd.DataFrame, path: Path) -> Path:
+    if family_summary is None or family_summary.empty or "family_or_subsystem" not in family_summary.columns:
+        return _empty(path, "No feature-family/subsystem information was available. Load a feature registry/policy file to enable family-level missingness review.", "Missingness by family")
+    df = family_summary.copy()
+    df["mean_missing_fraction"] = pd.to_numeric(df["mean_missing_fraction"], errors="coerce")
+    df = df.dropna(subset=["mean_missing_fraction"]).sort_values("mean_missing_fraction", ascending=True)
+    if df.empty:
+        return _empty(path, "No family-level missingness values were available.", "Missingness by family")
+    fig, ax = plt.subplots(figsize=(10, max(4.8, 0.42 * len(df))))
+    colors = [RED if v >= 0.50 else GOLD if v >= 0.20 else TEAL for v in df["mean_missing_fraction"]]
+    ax.barh(df["family_or_subsystem"].astype(str), df["mean_missing_fraction"], color=colors)
+    ax.set_xlabel("Mean feature missingness", color=MUTED)
+    ax.set_xlim(0, max(0.05, min(1.0, float(df["mean_missing_fraction"].max()) * 1.15)))
+    _style(ax, "Feature missingness by family / subsystem")
+    return _save(fig, path)
+
+
+def plot_comissing_heatmap(feature_df: pd.DataFrame, feature_cols: Sequence[str], path: Path, max_features: int = 45) -> Path:
+    cols = [c for c in list(feature_cols) if c in feature_df.columns]
+    if not cols:
+        return _empty(path, "No feature columns were available for co-missingness analysis.", "Co-missingness")
+    miss_fr = feature_df[cols].isna().mean().sort_values(ascending=False)
+    cols = miss_fr.head(max_features).index.tolist()
+    if len(cols) < 2:
+        return _empty(path, "At least two feature columns are required for co-missingness analysis.", "Co-missingness")
+    miss = feature_df[cols].isna().astype(float)
+    mat = miss.T.dot(miss) / max(1, len(miss))
+    fig, ax = plt.subplots(figsize=(max(8, 0.24 * len(cols)), max(7, 0.24 * len(cols))))
+    im = ax.imshow(mat.to_numpy(), vmin=0, vmax=min(1, max(0.01, float(np.nanmax(mat.to_numpy())))), cmap="magma", aspect="auto")
+    ax.set_title("Pairwise co-missingness among most-missing features", fontsize=14, fontweight="bold", color=NAVY, pad=12)
+    ax.set_xticks(range(len(cols))); ax.set_xticklabels(cols, rotation=90, fontsize=6, color=MUTED)
+    ax.set_yticks(range(len(cols))); ax.set_yticklabels(cols, fontsize=6, color=MUTED)
+    cbar = fig.colorbar(im, ax=ax, fraction=0.025, pad=0.02)
+    cbar.set_label("co-missing fraction", color=MUTED)
+    cbar.ax.tick_params(labelsize=8, colors=MUTED)
+    return _save(fig, path)
