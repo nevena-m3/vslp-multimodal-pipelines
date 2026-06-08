@@ -35,7 +35,10 @@ from vslp.analysis.features.audit import (
     missingness_family_summary, missingness_comissing_pairs,
     robust_outlier_flags, expected_range_flags, distribution_review_summary,
     distribution_shape_audit, row_outlier_burden_summary,
-    overview_readiness_summary, overview_feature_quality_landscape
+    overview_readiness_summary, overview_feature_quality_landscape,
+    qc_metric_catalog, qc_row_burden_summary, qc_family_burden_summary,
+    feature_qc_family_association, qc_missingness_associations,
+    qc_outlier_associations, qc_integration_summary
 )
 from vslp.analysis.features.plots import (
     plot_role_counts, plot_group_counts, plot_feature_family_counts,
@@ -46,7 +49,10 @@ from vslp.analysis.features.plots import (
     plot_selected_feature_distribution, plot_selected_feature_diagnostic, plot_group_feature_boxplot, plot_distribution_grid, plot_outlier_counts,
     plot_distribution_shape_summary, plot_distribution_shape_landscape, plot_row_outlier_burden, plot_variance_screen,
     plot_overview_readiness_scorecard, plot_dataset_design_tiles,
-    plot_feature_quality_landscape, plot_feature_family_quality, plot_subject_task_matrix
+    plot_feature_quality_landscape, plot_feature_family_quality, plot_subject_task_matrix,
+    plot_qc_family_burden, plot_qc_metric_distributions, plot_qc_feature_association_heatmap,
+    plot_qc_top_feature_associations, plot_qc_missingness_associations,
+    plot_qc_row_burden, plot_selected_feature_qc_scatter, plot_qc_artifact_model
 )
 
 APP_VERSION = "v0.49"
@@ -448,7 +454,7 @@ class FeatureAnalysisGUI(QMainWindow):
             "overview": self._overview_page(),
             "missing": self._missingness_page(),
             "dist": self._distributions_page(),
-            "qc": self._table_page("QC Integration", "Feature-QC association screening, when a QC table is supplied."),
+            "qc": self._qc_page(),
             "reliability": self._table_page("Reliability", "Initial reliability screen for downstream analysis."),
             "export": self._export_page(),
         }
@@ -808,6 +814,13 @@ class FeatureAnalysisGUI(QMainWindow):
         quality_landscape = overview_feature_quality_landscape(dist, self.registry_df)
         readiness = overview_readiness_summary(self.feature_df, self.qc_df, self.meta_df, mapping, dist, feature_missing, groups)
         qc_corr = feature_qc_correlations(self.feature_df, self.qc_df, feature_cols)
+        qc_catalog = qc_metric_catalog(self.qc_df)
+        qc_family = qc_family_burden_summary(self.qc_df)
+        qc_row_burden = qc_row_burden_summary(self.qc_df)
+        qc_family_assoc = feature_qc_family_association(qc_corr)
+        qc_missing_assoc = qc_missingness_associations(self.feature_df, self.qc_df, feature_cols)
+        qc_outlier_assoc = qc_outlier_associations(outlier_flags, self.qc_df)
+        qc_summary = qc_integration_summary(self.qc_df, qc_corr, qc_family, qc_missing_assoc, qc_outlier_assoc)
         reliability = reliability_screen(dist, qc_corr)
         outputs = {
             "dataset_inventory": inventory,
@@ -830,6 +843,13 @@ class FeatureAnalysisGUI(QMainWindow):
             "missingness_by_family": family_missing,
             "missingness_comissing_pairs": comissing,
             "feature_qc_spearman_correlation": qc_corr,
+            "qc_metric_catalog": qc_catalog,
+            "qc_family_burden_summary": qc_family,
+            "qc_row_burden_summary": qc_row_burden,
+            "feature_qc_family_association": qc_family_assoc,
+            "qc_missingness_associations": qc_missing_assoc,
+            "qc_outlier_associations": qc_outlier_assoc,
+            "qc_integration_summary": qc_summary,
             "feature_reliability_screen": reliability,
         }
         return outputs, feature_cols
@@ -871,6 +891,16 @@ class FeatureAnalysisGUI(QMainWindow):
         if first_feature:
             paths["selected_feature_distribution"] = str(plot_selected_feature_diagnostic(self.feature_df, first_feature, plots_dir / "selected_feature_distribution.png"))
             paths["selected_feature_by_group"] = str(plot_group_feature_boxplot(self.feature_df, first_feature, plots_dir / "selected_feature_by_group.png"))
+        paths["qc_artifact_model"] = str(plot_qc_artifact_model(plots_dir / "qc_artifact_model.png"))
+        paths["qc_family_burden"] = str(plot_qc_family_burden(outputs.get("qc_family_burden_summary", pd.DataFrame()), plots_dir / "qc_family_burden.png"))
+        paths["qc_metric_distributions"] = str(plot_qc_metric_distributions(self.qc_df, outputs.get("qc_metric_catalog", pd.DataFrame()), plots_dir / "qc_metric_distributions.png"))
+        paths["qc_feature_association_heatmap"] = str(plot_qc_feature_association_heatmap(outputs.get("feature_qc_family_association", pd.DataFrame()), plots_dir / "qc_feature_association_heatmap.png"))
+        paths["qc_top_feature_associations"] = str(plot_qc_top_feature_associations(outputs.get("feature_qc_spearman_correlation", pd.DataFrame()), plots_dir / "qc_top_feature_associations.png"))
+        paths["qc_missingness_associations"] = str(plot_qc_missingness_associations(outputs.get("qc_missingness_associations", pd.DataFrame()), plots_dir / "qc_missingness_associations.png"))
+        paths["qc_row_burden"] = str(plot_qc_row_burden(outputs.get("qc_row_burden_summary", pd.DataFrame()), plots_dir / "qc_row_burden.png"))
+        qcols = outputs.get("qc_metric_catalog", pd.DataFrame()).get("qc_variable", pd.Series(dtype=str)).astype(str).tolist()
+        if first_feature and qcols:
+            paths["selected_feature_qc_scatter"] = str(plot_selected_feature_qc_scatter(self.feature_df, self.qc_df, first_feature, qcols[0], plots_dir / "selected_feature_qc_scatter.png"))
         return paths
 
     def preview_selected_overview_plot(self) -> None:
@@ -921,6 +951,7 @@ class FeatureAnalysisGUI(QMainWindow):
             self.update_overview_dashboard(outputs)
             self.update_missingness_dashboard(outputs)
             self.update_distribution_dashboard(outputs)
+            self.update_qc_dashboard(outputs)
             self.log(f"Overview/missingness plots generated in: {plots_dir}")
             self.preview_plot("role_counts", generate_if_missing=False)
         except Exception as exc:
@@ -1513,6 +1544,268 @@ class FeatureAnalysisGUI(QMainWindow):
             return
         self.open_file(Path(path))
 
+
+    def _simple_table(self) -> QTableWidget:
+        table = QTableWidget(0, 0)
+        table.setAlternatingRowColors(True)
+        table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        return table
+
+    def _qc_page(self) -> QWidget:
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
+
+        card = Card(
+            "QC Integration",
+            "Artifact-aware interpretation layer. This screen asks whether feature values, missingness, or outliers may be explained by acquisition quality rather than physiology."
+        )
+        self.qc_metric_grid = QGridLayout()
+        self.qc_metric_grid.setHorizontalSpacing(12)
+        self.qc_metric_grid.setVerticalSpacing(12)
+        card.layout.addLayout(self.qc_metric_grid)
+
+        self.qc_note = QLabel(
+            "Load an optional QC table in Project, accept Column Mapping, and run Feature Analysis. QC is interpreted as a multidimensional profile: additive interference, gain/level dynamics, reverberation/echo, channel/device/platform, nonlinear distortion, and temporal discontinuities."
+        )
+        self.qc_note.setWordWrap(True)
+        self.qc_note.setStyleSheet(f"color:{INK}; background:#F7FAFD; border:1px solid {LINE}; border-radius:10px; padding:10px;")
+        card.layout.addWidget(self.qc_note)
+
+        tabs = QTabWidget()
+        self.qc_summary_table = self._simple_table()
+        self.qc_catalog_table = self._simple_table()
+        self.qc_family_table = self._simple_table()
+        self.qc_assoc_table = self._simple_table()
+        self.qc_family_assoc_table = self._simple_table()
+        self.qc_missing_table = self._simple_table()
+        self.qc_outlier_table = self._simple_table()
+        self.qc_row_table = self._simple_table()
+        tabs.addTab(self.qc_summary_table, "Summary")
+        tabs.addTab(self.qc_catalog_table, "QC metrics")
+        tabs.addTab(self.qc_family_table, "Family burden")
+        tabs.addTab(self.qc_assoc_table, "Feature × QC")
+        tabs.addTab(self.qc_family_assoc_table, "Feature × family")
+        tabs.addTab(self.qc_missing_table, "Missingness × QC")
+        tabs.addTab(self.qc_outlier_table, "Outliers × QC")
+        tabs.addTab(self.qc_row_table, "Row QC burden")
+        card.layout.addWidget(tabs)
+        layout.addWidget(card)
+
+        plot_card = Card(
+            "QC plot board",
+            "Use these plots to decide whether acoustic feature behavior may be acquisition-sensitive. Every plot is descriptive and should be interpreted with task, clinical, segmentation, and raw-audio context."
+        )
+        controls = QHBoxLayout()
+        self.qc_feature_combo = QComboBox()
+        self.qc_feature_combo.setMinimumWidth(270)
+        self.qc_metric_combo = QComboBox()
+        self.qc_metric_combo.setMinimumWidth(270)
+        controls.addWidget(QLabel("Feature:")); controls.addWidget(self.qc_feature_combo)
+        controls.addSpacing(12)
+        controls.addWidget(QLabel("QC metric:")); controls.addWidget(self.qc_metric_combo)
+        controls.addStretch(1)
+        plot_card.layout.addLayout(controls)
+
+        buttons = QHBoxLayout()
+        for label, key in [
+            ("QC framework", "qc_artifact_model"),
+            ("Family burden", "qc_family_burden"),
+            ("QC metric distributions", "qc_metric_distributions"),
+            ("Feature × QC-family heatmap", "qc_feature_association_heatmap"),
+            ("Top feature-QC associations", "qc_top_feature_associations"),
+            ("Missingness linked to QC", "qc_missingness_associations"),
+            ("Row QC burden", "qc_row_burden"),
+            ("Selected feature × selected QC", "selected_feature_qc_scatter"),
+        ]:
+            b = QPushButton(label)
+            b.setProperty("secondary", True)
+            b.clicked.connect(lambda _=False, k=key: self.preview_qc_plot(k))
+            buttons.addWidget(b)
+        buttons.addStretch(1)
+        plot_card.layout.addLayout(buttons)
+
+        splitter = QSplitter(Qt.Horizontal)
+        self.qc_plot_preview = QLabel("Run Feature Analysis, then select a QC plot.")
+        self.qc_plot_preview.setAlignment(Qt.AlignCenter)
+        self.qc_plot_preview.setMinimumHeight(520)
+        self.qc_plot_preview.setStyleSheet(f"background:#FFFFFF; color:{MUTED}; border:1px solid {LINE}; border-radius:10px;")
+        self.qc_plot_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.qc_interpretation_label = QLabel("Select a QC plot to see structured interpretation guidance.")
+        self.qc_interpretation_label.setWordWrap(True)
+        self.qc_interpretation_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.qc_interpretation_label.setMinimumWidth(340)
+        self.qc_interpretation_label.setStyleSheet(f"background:#F7FAFD; color:{INK}; border:1px solid {LINE}; border-radius:10px; padding:14px; line-height:145%;")
+        splitter.addWidget(self.qc_plot_preview)
+        splitter.addWidget(self.qc_interpretation_label)
+        splitter.setSizes([860, 360])
+        plot_card.layout.addWidget(splitter)
+
+        open_btn = QPushButton("Open current plot full size")
+        open_btn.setProperty("secondary", True)
+        open_btn.clicked.connect(self.open_current_qc_plot)
+        plot_card.layout.addWidget(open_btn)
+        layout.addWidget(plot_card)
+        return self._wrap_scroll(body)
+
+    def update_qc_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
+        if not hasattr(self, "qc_metric_grid"):
+            return
+        while self.qc_metric_grid.count():
+            item = self.qc_metric_grid.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        summary = outputs.get("qc_integration_summary", pd.DataFrame())
+        def metric_value(name, default="—"):
+            if summary is None or summary.empty or "metric" not in summary.columns:
+                return default
+            hit = summary[summary["metric"].astype(str).eq(name)]
+            return hit["value"].iloc[0] if not hit.empty else default
+        tiles = [
+            ("QC table", "yes" if str(metric_value("qc_table_loaded", False)).lower() == "true" else "no", "artifact context supplied"),
+            ("QC rows", metric_value("qc_rows"), "recordings with QC data"),
+            ("QC metrics", metric_value("numeric_qc_metrics"), "numeric artifact indicators"),
+            ("Families", metric_value("artifact_families_detected"), "recognized QC domains"),
+            ("Feature-QC pairs ≥ .30", metric_value("feature_qc_pairs_abs_rho_ge_0_30", 0), "monitor associations"),
+            ("Feature-QC pairs ≥ .50", metric_value("feature_qc_pairs_abs_rho_ge_0_50", 0), "review associations"),
+        ]
+        for idx, (title, value, subtitle) in enumerate(tiles):
+            self.qc_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx // 3, idx % 3)
+
+        self._fill_table(self.qc_summary_table, summary)
+        self._fill_table(self.qc_catalog_table, outputs.get("qc_metric_catalog", pd.DataFrame()))
+        self._fill_table(self.qc_family_table, outputs.get("qc_family_burden_summary", pd.DataFrame()))
+        self._fill_table(self.qc_assoc_table, outputs.get("feature_qc_spearman_correlation", pd.DataFrame()))
+        self._fill_table(self.qc_family_assoc_table, outputs.get("feature_qc_family_association", pd.DataFrame()))
+        self._fill_table(self.qc_missing_table, outputs.get("qc_missingness_associations", pd.DataFrame()))
+        self._fill_table(self.qc_outlier_table, outputs.get("qc_outlier_associations", pd.DataFrame()))
+        self._fill_table(self.qc_row_table, outputs.get("qc_row_burden_summary", pd.DataFrame()))
+
+        self.qc_feature_combo.clear()
+        dist = outputs.get("feature_distribution_summary", pd.DataFrame())
+        if dist is not None and not dist.empty and "feature" in dist.columns:
+            self.qc_feature_combo.addItems(dist["feature"].astype(str).tolist())
+        self.qc_metric_combo.clear()
+        catalog = outputs.get("qc_metric_catalog", pd.DataFrame())
+        if catalog is not None and not catalog.empty and "qc_variable" in catalog.columns:
+            self.qc_metric_combo.addItems(catalog["qc_variable"].astype(str).tolist())
+        if self.qc_df is None or self.qc_df.empty:
+            self.qc_note.setText("No QC table is loaded. This menu will become active when Project includes an optional QC table with qadd/qgain/qrev/qchan/qdist/qtemp/qdrop metrics or equivalent QC indicators.")
+        else:
+            self.qc_note.setText("QC integration generated. Use this menu to distinguish acquisition-sensitive feature behavior from plausible speech-physiology variation. QC associations are descriptive screening signals, not automatic exclusion rules.")
+
+    def _selected_qc_feature(self) -> str | None:
+        if hasattr(self, "qc_feature_combo") and self.qc_feature_combo.count() > 0:
+            return self.qc_feature_combo.currentText()
+        return None
+
+    def _selected_qc_metric(self) -> str | None:
+        if hasattr(self, "qc_metric_combo") and self.qc_metric_combo.count() > 0:
+            return self.qc_metric_combo.currentText()
+        return None
+
+    def generate_selected_qc_scatter(self) -> None:
+        feature = self._selected_qc_feature()
+        metric = self._selected_qc_metric()
+        if not feature or not metric:
+            return
+        try:
+            self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
+            path = plot_selected_feature_qc_scatter(self.feature_df, self.qc_df, feature, metric, plots_dir / "selected_feature_qc_scatter.png")
+            if not hasattr(self, "plot_paths"):
+                self.plot_paths = {}
+            self.plot_paths["selected_feature_qc_scatter"] = str(path)
+        except Exception:
+            pass
+
+    def preview_qc_plot(self, key: str) -> None:
+        if key == "selected_feature_qc_scatter":
+            self.generate_selected_qc_scatter()
+        if not hasattr(self, "plot_paths") or key not in self.plot_paths or not Path(self.plot_paths.get(key, "")).exists():
+            self.regenerate_overview_plots()
+        if not hasattr(self, "plot_paths") or key not in self.plot_paths:
+            QMessageBox.information(self, "Plot unavailable", "Run Feature Analysis first, or this QC plot could not be generated for the current dataset.")
+            return
+        path = Path(self.plot_paths[key])
+        if not path.exists():
+            QMessageBox.information(self, "Plot unavailable", f"Plot file not found:\n{path}")
+            return
+        self.current_qc_plot = path
+        self.update_qc_interpretation(key)
+        pix = QPixmap(str(path))
+        if pix.isNull():
+            self.qc_plot_preview.setText(f"Could not load plot:\n{path}")
+            return
+        self.qc_plot_preview.setPixmap(pix.scaled(self.qc_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self.qc_plot_preview.setToolTip(str(path))
+
+    def update_qc_interpretation(self, key: str) -> None:
+        if not hasattr(self, "qc_interpretation_label"):
+            return
+        feature = self._selected_qc_feature() or "selected feature"
+        qcvar = self._selected_qc_metric() or "selected QC metric"
+        captions = {
+            "qc_artifact_model": (
+                "<b>What it shows</b><br>The conceptual QC model: recording quality is a vector of artifact families, not a single good/bad score.<br><br>"
+                "<b>Concerning pattern</b><br>Any family can perturb features differently. A recording can be acceptable overall but still artifact-sensitive for specific feature families.<br><br>"
+                "<b>Do not overinterpret</b><br>QC families are proxy estimates of latent acquisition processes, not direct physical measurements of the room/device.<br><br>"
+                "<b>Next check</b><br>Inspect family burden, feature-QC associations, and selected feature × QC scatter plots."
+            ),
+            "qc_family_burden": (
+                "<b>What it shows</b><br>Which artifact families have elevated QC metrics across recordings.<br><br>"
+                "<b>Concerning pattern</b><br>High burden in additive, gain, channel, reverberation, distortion, or temporal families indicates acquisition effects that may bias feature interpretation.<br><br>"
+                "<b>Do not overinterpret</b><br>High family burden does not automatically mean recordings are unusable; it means downstream features need artifact-aware interpretation.<br><br>"
+                "<b>Next check</b><br>Use Feature × QC-family heatmap to see which acoustic features are sensitive to that family."
+            ),
+            "qc_metric_distributions": (
+                "<b>What it shows</b><br>Distributions of the highest-spread QC metrics, grouped by artifact family.<br><br>"
+                "<b>Concerning pattern</b><br>Heavy tails, spikes at zero, or extreme values can indicate rare but important artifacts such as clipping or dropouts.<br><br>"
+                "<b>Do not overinterpret</b><br>Different QC metrics have different units and supports; compare shape and burden, not raw magnitude across metrics.<br><br>"
+                "<b>Next check</b><br>Review the QC metric catalog and row-level QC burden table."
+            ),
+            "qc_feature_association_heatmap": (
+                "<b>What it shows</b><br>Maximum absolute monotonic association between each feature and each QC artifact family.<br><br>"
+                "<b>Concerning pattern</b><br>A block of high associations for one feature family suggests acquisition-sensitive measurements.<br><br>"
+                "<b>Do not overinterpret</b><br>Correlation does not prove artifact causation; QC may also be linked to task, severity, device, or cohort.<br><br>"
+                "<b>Next check</b><br>Inspect top feature-QC associations and selected feature × selected QC scatter."
+            ),
+            "qc_top_feature_associations": (
+                "<b>What it shows</b><br>The strongest individual feature-QC metric associations ranked by |Spearman rho|.<br><br>"
+                "<b>Concerning pattern</b><br>|rho| ≥ .30 warrants monitoring; |rho| ≥ .50 should be reviewed before using the feature in ML or clinical interpretation.<br><br>"
+                "<b>Do not overinterpret</b><br>A strong association can represent true task/acquisition structure, not necessarily bad data.<br><br>"
+                "<b>Next check</b><br>Check whether the association remains after stratifying by task/group and after reviewing row-level QC."
+            ),
+            "qc_missingness_associations": (
+                "<b>What it shows</b><br>Whether feature absence is associated with QC burden.<br><br>"
+                "<b>Concerning pattern</b><br>If missingness increases with QC artifacts, the missing-data mechanism may be acquisition-dependent rather than random.<br><br>"
+                "<b>Do not overinterpret</b><br>Absence of association does not prove missingness is random; sample size and alignment matter.<br><br>"
+                "<b>Next check</b><br>Compare with Missingness by group/task and Feature availability heatmap."
+            ),
+            "qc_row_burden": (
+                "<b>What it shows</b><br>Recordings with the largest number of elevated QC metrics.<br><br>"
+                "<b>Concerning pattern</b><br>Rows with multiple elevated QC families may be acquisition-dominated and should be reviewed before row exclusion or model training.<br><br>"
+                "<b>Do not overinterpret</b><br>Do not delete rows automatically; severe ALS speech may also produce unusual signal patterns.<br><br>"
+                "<b>Next check</b><br>Open the row QC burden table and inspect raw audio, segmentation, task, and clinical context."
+            ),
+            "selected_feature_qc_scatter": (
+                f"<b>What it shows</b><br>Recording-level relationship between <b>{feature}</b> and <b>{qcvar}</b>.<br><br>"
+                "<b>Concerning pattern</b><br>Monotonic trends, funnel shapes, or clusters suggest that feature values may depend on acquisition quality.<br><br>"
+                "<b>Do not overinterpret</b><br>This is descriptive, not a causal model. Check task, diagnosis, severity, device, and subject repetition.<br><br>"
+                "<b>Next check</b><br>If clinically important, plan QC sensitivity analyses or use QC covariates in the later ML/statistical pipeline."
+            ),
+        }
+        self.qc_interpretation_label.setText(captions.get(key, "Select a QC plot to see structured interpretation guidance."))
+
+    def open_current_qc_plot(self) -> None:
+        path = getattr(self, "current_qc_plot", None)
+        if not path:
+            QMessageBox.information(self, "No current plot", "Preview a QC plot first, then open the full-resolution file.")
+            return
+        self.open_file(Path(path))
+
     def _table_page(self, title: str, subtitle: str) -> QWidget:
         body = QWidget()
         layout = QVBoxLayout(body)
@@ -1675,6 +1968,7 @@ class FeatureAnalysisGUI(QMainWindow):
             self.update_overview_dashboard(outputs)
             self.update_missingness_dashboard(outputs)
             self.update_distribution_dashboard(outputs)
+            self.update_qc_dashboard(outputs)
             self.log(f"Analysis complete. Outputs written to: {self.output_dir}")
             self.show_page("overview")
         except Exception as exc:
@@ -1718,6 +2012,11 @@ class FeatureAnalysisGUI(QMainWindow):
             pix = QPixmap(str(dpath))
             if not pix.isNull():
                 self.dist_plot_preview.setPixmap(pix.scaled(self.dist_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        qpath = getattr(self, "current_qc_plot", None)
+        if qpath and hasattr(self, "qc_plot_preview"):
+            pix = QPixmap(str(qpath))
+            if not pix.isNull():
+                self.qc_plot_preview.setPixmap(pix.scaled(self.qc_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
     def write_report(self, path: Path, outputs: dict[str, pd.DataFrame]) -> None:
         inv = outputs.get("dataset_inventory", pd.DataFrame()).to_html(index=False, escape=False)

@@ -267,6 +267,309 @@ def feature_qc_correlations(feature_df: pd.DataFrame, qc_df: pd.DataFrame | None
     return pd.DataFrame(rows)
 
 
+
+QC_FAMILY_PREFIXES = [
+    ("qadd", "Additive interference"),
+    ("qgain", "Gain / level dynamics"),
+    ("qrev", "Reverberation / echo"),
+    ("qchan", "Channel / device / platform"),
+    ("qdist", "Nonlinear distortion"),
+    ("qtemp", "Temporal discontinuities"),
+    ("qdrop", "Temporal discontinuities"),
+]
+
+QC_FAMILY_MECHANISMS = {
+    "Additive interference": "External acoustic energy superimposed on speech: background noise, competing speech, hum, transient pause noise.",
+    "Gain / level dynamics": "Time-varying amplitude scaling: microphone distance, input level, automatic gain control, level drift.",
+    "Reverberation / echo": "Convolutional room effects: delayed reflections, echo tails, boundary smearing, room acoustics.",
+    "Channel / device / platform": "Recording-chain spectral transformation: microphone response, bandwidth limitation, codec/browser/platform processing.",
+    "Nonlinear distortion": "Amplitude-dependent deformation: clipping, saturation, overload, nonlinear compression.",
+    "Temporal discontinuities": "Disruption of time structure: dropouts, skips, glitches, missing or repeated segments, abrupt energy jumps.",
+    "unclassified": "QC-like variable not recognized from naming conventions; interpret manually.",
+}
+
+
+def qc_family_from_name(name: str) -> str:
+    n = normalize_name(str(name))
+    for prefix, family in QC_FAMILY_PREFIXES:
+        if n.startswith(prefix):
+            return family
+    if any(tok in n for tok in ["snr", "noise", "pause_rms", "hum", "interference"]):
+        return "Additive interference"
+    if any(tok in n for tok in ["gain", "rms", "level", "agc", "peak_to_rms"]):
+        return "Gain / level dynamics"
+    if any(tok in n for tok in ["reverb", "echo", "tail", "decay", "blur"]):
+        return "Reverberation / echo"
+    if any(tok in n for tok in ["channel", "device", "codec", "band", "centroid", "rolloff", "tilt", "crest"]):
+        return "Channel / device / platform"
+    if any(tok in n for tok in ["clip", "dist", "saturat", "overload"]):
+        return "Nonlinear distortion"
+    if any(tok in n for tok in ["drop", "jump", "glitch", "skip", "discontinu", "zero_run", "temp"]):
+        return "Temporal discontinuities"
+    return "unclassified"
+
+
+def _qc_numeric_columns(qc_df: pd.DataFrame | None) -> list[str]:
+    if qc_df is None or qc_df.empty:
+        return []
+    mapping = classify_columns(qc_df, table_kind="qc")
+    proposed = role_lists(mapping).get(ROLE_QC, [])
+    if proposed:
+        cols = [c for c in proposed if c in qc_df.columns and pd.api.types.is_numeric_dtype(qc_df[c])]
+    else:
+        cols = [c for c in qc_df.columns if pd.api.types.is_numeric_dtype(qc_df[c])]
+    # Exclude obvious identifiers accidentally numeric.
+    drop_tokens = ["id", "index", "subject", "participant", "file", "record"]
+    clean = []
+    for c in cols:
+        n = normalize_name(c)
+        if any(n == tok or n.endswith("_" + tok) for tok in drop_tokens):
+            continue
+        clean.append(c)
+    return clean
+
+
+def align_feature_qc(feature_df: pd.DataFrame, qc_df: pd.DataFrame | None) -> tuple[pd.DataFrame | None, str]:
+    """Return feature rows aligned with optional QC columns and a readable alignment note."""
+    if qc_df is None or qc_df.empty:
+        return None, "No QC table supplied."
+    join_keys = [k for k in ["record_key", "file_name", "filename", "source_file", "audio_file", "subject_id", "participant_id"] if k in feature_df.columns and k in qc_df.columns]
+    if join_keys:
+        key = join_keys[0]
+        merged = feature_df.merge(qc_df, on=key, how="left", suffixes=("", "__qc"))
+        return merged, f"QC table aligned to feature table using shared key: {key}."
+    if len(feature_df) == len(qc_df):
+        merged = pd.concat([feature_df.reset_index(drop=True), qc_df.reset_index(drop=True).add_suffix("__qc")], axis=1)
+        return merged, "QC table aligned by row order because no shared key was detected and row counts matched. Verify this assumption."
+    return None, "QC table could not be aligned to feature rows: no shared key and row counts differ."
+
+
+def qc_metric_catalog(qc_df: pd.DataFrame | None) -> pd.DataFrame:
+    cols = _qc_numeric_columns(qc_df)
+    if qc_df is None or qc_df.empty or not cols:
+        return pd.DataFrame(columns=["qc_variable", "artifact_family", "mechanism", "n_valid", "missing_fraction", "median", "iqr", "min", "max", "n_unique", "interpretation"])
+    rows = []
+    for c in cols:
+        x = pd.to_numeric(qc_df[c], errors="coerce")
+        q25 = x.quantile(0.25); q75 = x.quantile(0.75)
+        fam = qc_family_from_name(c)
+        rows.append({
+            "qc_variable": c,
+            "artifact_family": fam,
+            "mechanism": QC_FAMILY_MECHANISMS.get(fam, ""),
+            "n_valid": int(x.notna().sum()),
+            "missing_fraction": float(x.isna().mean()),
+            "median": float(x.median()) if x.notna().any() else np.nan,
+            "iqr": float(q75 - q25) if pd.notna(q25) and pd.notna(q75) else np.nan,
+            "min": float(x.min()) if x.notna().any() else np.nan,
+            "max": float(x.max()) if x.notna().any() else np.nan,
+            "n_unique": int(x.nunique(dropna=True)),
+            "interpretation": _qc_metric_interpretation(c, fam),
+        })
+    return pd.DataFrame(rows).sort_values(["artifact_family", "qc_variable"])
+
+
+def _qc_metric_interpretation(name: str, family: str) -> str:
+    n = normalize_name(name)
+    if family == "Additive interference":
+        if "speech_pause_level_diff" in n or "snr" in n:
+            return "Lower contrast usually indicates more background interference relative to speech."
+        return "Higher or more variable pause energy/noise structure suggests additive contamination."
+    if family == "Gain / level dynamics":
+        return "Large variability, drift, or extreme peaks suggest unstable recording level, AGC, distance change, or headroom risk."
+    if family == "Reverberation / echo":
+        return "Large tail, slow decay, or boundary blur suggests room reflections that can smear timing and spectral features."
+    if family == "Channel / device / platform":
+        return "Extreme spectral centroid/rolloff/high-band/tilt values may indicate device filtering, bandwidth limitation, or platform processing."
+    if family == "Nonlinear distortion":
+        return "Nonzero clipping or near-clipping fractions indicate overload or amplitude distortion. Sparse events can still be important."
+    if family == "Temporal discontinuities":
+        return "Energy jumps, dropouts, or zero runs suggest skipped audio, glitches, or recording/transmission discontinuities."
+    return "Interpret with the QC documentation and feature definition."
+
+
+def _robust_z(x: pd.Series) -> pd.Series:
+    x = pd.to_numeric(x, errors="coerce")
+    med = x.median(skipna=True)
+    mad = (x - med).abs().median(skipna=True)
+    if pd.isna(med):
+        return pd.Series(np.nan, index=x.index)
+    if pd.notna(mad) and mad > 0:
+        return 0.6745 * (x - med) / mad
+    q25, q75 = x.quantile(0.25), x.quantile(0.75)
+    iqr = q75 - q25
+    if pd.notna(iqr) and iqr > 0:
+        return (x - med) / (iqr / 1.349)
+    return pd.Series(0.0, index=x.index)
+
+
+def qc_row_burden_summary(qc_df: pd.DataFrame | None) -> pd.DataFrame:
+    cols = _qc_numeric_columns(qc_df)
+    if qc_df is None or qc_df.empty or not cols:
+        return pd.DataFrame(columns=["row_index", "total_qc_flags", "qc_flag_fraction", "max_abs_qc_z", "elevated_qc_families", "top_qc_variable"])
+    flags = pd.DataFrame(index=qc_df.index)
+    zvals = pd.DataFrame(index=qc_df.index)
+    for c in cols:
+        z = _robust_z(qc_df[c]).abs()
+        zvals[c] = z
+        flags[c] = z >= 3.5
+    out = pd.DataFrame({
+        "row_index": qc_df.index.astype(int),
+        "total_qc_flags": flags.sum(axis=1).astype(int),
+        "qc_flag_fraction": flags.mean(axis=1).astype(float),
+        "max_abs_qc_z": zvals.max(axis=1, skipna=True),
+    })
+    elevated = []
+    topvar = []
+    for idx in qc_df.index:
+        fams = sorted({qc_family_from_name(c) for c in cols if bool(flags.loc[idx, c])})
+        elevated.append("; ".join(fams))
+        if zvals.loc[idx].notna().any():
+            topvar.append(str(zvals.loc[idx].idxmax()))
+        else:
+            topvar.append("")
+    out["elevated_qc_families"] = elevated
+    out["top_qc_variable"] = topvar
+    id_candidates = [c for c in ["record_key", "file_name", "filename", "source_file", "subject_id", "participant_id", "task", "task_name"] if c in qc_df.columns]
+    for c in reversed(id_candidates):
+        out.insert(1, c, qc_df[c].astype(str).values)
+    return out.sort_values(["total_qc_flags", "max_abs_qc_z"], ascending=[False, False])
+
+
+def qc_family_burden_summary(qc_df: pd.DataFrame | None) -> pd.DataFrame:
+    catalog = qc_metric_catalog(qc_df)
+    if qc_df is None or qc_df.empty or catalog.empty:
+        return pd.DataFrame(columns=["artifact_family", "n_qc_metrics", "mean_missing_fraction", "median_metric_iqr", "median_row_flag_fraction", "mechanism", "interpretation"])
+    row_flags = pd.DataFrame(index=qc_df.index)
+    rows = []
+    for family, sub in catalog.groupby("artifact_family"):
+        cols = [c for c in sub["qc_variable"].tolist() if c in qc_df.columns]
+        if not cols:
+            continue
+        fam_flags = pd.DataFrame({c: (_robust_z(qc_df[c]).abs() >= 3.5) for c in cols}, index=qc_df.index)
+        row_flags[family] = fam_flags.mean(axis=1)
+        rows.append({
+            "artifact_family": family,
+            "n_qc_metrics": int(len(cols)),
+            "mean_missing_fraction": float(sub["missing_fraction"].mean()),
+            "median_metric_iqr": float(pd.to_numeric(sub["iqr"], errors="coerce").median()),
+            "median_row_flag_fraction": float(row_flags[family].median(skipna=True)),
+            "mechanism": QC_FAMILY_MECHANISMS.get(family, ""),
+            "interpretation": _qc_family_interpretation(family),
+        })
+    return pd.DataFrame(rows).sort_values("artifact_family")
+
+
+def _qc_family_interpretation(family: str) -> str:
+    if family == "Additive interference":
+        return "Review whether background noise or competing speech could alter spectral, cepstral, segmentation, and pause-based features."
+    if family == "Gain / level dynamics":
+        return "Review whether level instability, AGC, or microphone distance changes could alter intensity, perturbation, CPP/HNR, or clipping-sensitive features."
+    if family == "Reverberation / echo":
+        return "Review whether room reflections could smear boundaries, inflate pause/tail energy, and bias spectral or timing features."
+    if family == "Channel / device / platform":
+        return "Review whether recording-chain filtering or codec/browser effects could bias formants, spectral tilt, high-band ratios, and voice-quality measures."
+    if family == "Nonlinear distortion":
+        return "Review any nonzero clipping/near-clipping carefully; sparse clipping can disproportionately affect perturbation and spectral measures."
+    if family == "Temporal discontinuities":
+        return "Review whether dropouts or glitches could distort duration, pauses, rhythm, and segment-level summaries."
+    return "Review manually."
+
+
+def feature_qc_family_association(qc_corr: pd.DataFrame | None) -> pd.DataFrame:
+    if qc_corr is None or qc_corr.empty or not {"feature", "qc_variable", "spearman_rho"}.issubset(qc_corr.columns):
+        return pd.DataFrame(columns=["feature", "artifact_family", "max_abs_spearman", "median_abs_spearman", "n_qc_metrics", "strongest_qc_variable", "strongest_direction", "review_priority", "interpretation"])
+    df = qc_corr.copy()
+    df["abs_spearman"] = pd.to_numeric(df["spearman_rho"], errors="coerce").abs()
+    df["artifact_family"] = df["qc_variable"].apply(qc_family_from_name)
+    rows = []
+    for (feature, family), sub in df.dropna(subset=["abs_spearman"]).groupby(["feature", "artifact_family"]):
+        if sub.empty:
+            continue
+        imax = sub["abs_spearman"].idxmax()
+        rho = float(sub.loc[imax, "spearman_rho"])
+        max_abs = float(sub.loc[imax, "abs_spearman"])
+        priority = "review" if max_abs >= 0.50 else "monitor" if max_abs >= 0.30 else "context"
+        rows.append({
+            "feature": feature,
+            "artifact_family": family,
+            "max_abs_spearman": max_abs,
+            "median_abs_spearman": float(sub["abs_spearman"].median()),
+            "n_qc_metrics": int(sub["qc_variable"].nunique()),
+            "strongest_qc_variable": sub.loc[imax, "qc_variable"],
+            "strongest_direction": "positive" if rho > 0 else "negative" if rho < 0 else "zero",
+            "review_priority": priority,
+            "interpretation": f"{feature} varies monotonically with {family} metrics; check whether this reflects physiology, task structure, or acquisition artifact before ML.",
+        })
+    out = pd.DataFrame(rows)
+    if out.empty:
+        return out
+    return out.sort_values(["review_priority", "max_abs_spearman"], ascending=[False, False])
+
+
+def qc_missingness_associations(feature_df: pd.DataFrame, qc_df: pd.DataFrame | None, feature_cols: list[str]) -> pd.DataFrame:
+    aligned, note = align_feature_qc(feature_df, qc_df)
+    if aligned is None:
+        return pd.DataFrame(columns=["feature", "qc_variable", "artifact_family", "spearman_rho", "abs_spearman", "n_pairwise", "alignment_note"])
+    qc_cols = _qc_numeric_columns(qc_df)
+    qc_lookup = {q: q if q in aligned.columns else f"{q}__qc" for q in qc_cols}
+    rows = []
+    for f in numeric_columns(feature_df, feature_cols):
+        if f not in aligned.columns:
+            continue
+        miss = aligned[f].isna().astype(float)
+        if miss.nunique(dropna=True) <= 1:
+            continue
+        for q_orig, q in qc_lookup.items():
+            if q not in aligned.columns:
+                continue
+            pair = pd.DataFrame({"missing": miss, "qc": pd.to_numeric(aligned[q], errors="coerce")}).dropna()
+            if len(pair) < 8 or pair["qc"].nunique() <= 1:
+                continue
+            rho = float(pair["missing"].corr(pair["qc"], method="spearman"))
+            rows.append({"feature": f, "qc_variable": q_orig, "artifact_family": qc_family_from_name(q_orig), "spearman_rho": rho, "abs_spearman": abs(rho), "n_pairwise": int(len(pair)), "alignment_note": note})
+    out = pd.DataFrame(rows)
+    return out.sort_values("abs_spearman", ascending=False) if not out.empty else out
+
+
+def qc_outlier_associations(outlier_flags: pd.DataFrame, qc_df: pd.DataFrame | None) -> pd.DataFrame:
+    if qc_df is None or qc_df.empty or outlier_flags is None or outlier_flags.empty or "row_index" not in outlier_flags.columns:
+        return pd.DataFrame(columns=["qc_variable", "artifact_family", "spearman_rho", "abs_spearman", "n_pairwise", "interpretation"])
+    row_burden = outlier_flags.groupby("row_index").size().rename("feature_outlier_count").reset_index()
+    tmp = pd.DataFrame({"row_index": qc_df.index.astype(int)}).merge(row_burden, on="row_index", how="left")
+    tmp["feature_outlier_count"] = tmp["feature_outlier_count"].fillna(0)
+    qc_cols = _qc_numeric_columns(qc_df)
+    rows = []
+    for q in qc_cols:
+        pair = pd.DataFrame({"outliers": tmp["feature_outlier_count"], "qc": pd.to_numeric(qc_df[q], errors="coerce")}).dropna()
+        if len(pair) < 8 or pair["outliers"].nunique() <= 1 or pair["qc"].nunique() <= 1:
+            continue
+        rho = float(pair["outliers"].corr(pair["qc"], method="spearman"))
+        rows.append({"qc_variable": q, "artifact_family": qc_family_from_name(q), "spearman_rho": rho, "abs_spearman": abs(rho), "n_pairwise": int(len(pair)), "interpretation": "Positive values indicate rows with higher QC burden also tend to accumulate more feature outlier flags."})
+    out = pd.DataFrame(rows)
+    return out.sort_values("abs_spearman", ascending=False) if not out.empty else out
+
+
+def qc_integration_summary(qc_df: pd.DataFrame | None, qc_corr: pd.DataFrame | None, family_summary: pd.DataFrame | None, missing_assoc: pd.DataFrame | None, outlier_assoc: pd.DataFrame | None) -> pd.DataFrame:
+    rows = []
+    loaded = qc_df is not None and not qc_df.empty
+    qc_cols = _qc_numeric_columns(qc_df)
+    rows.append({"metric": "qc_table_loaded", "value": bool(loaded), "interpretation": "Whether objective recording-quality metrics were supplied for artifact-aware interpretation."})
+    rows.append({"metric": "qc_rows", "value": 0 if qc_df is None else int(len(qc_df)), "interpretation": "Number of QC records available."})
+    rows.append({"metric": "numeric_qc_metrics", "value": int(len(qc_cols)), "interpretation": "Number of numeric QC indicators usable for correlation and burden summaries."})
+    rows.append({"metric": "artifact_families_detected", "value": int(len({qc_family_from_name(c) for c in qc_cols if qc_family_from_name(c) != 'unclassified'})), "interpretation": "Number of recognized QC artifact families represented by supplied metrics."})
+    if qc_corr is not None and not qc_corr.empty and "spearman_rho" in qc_corr.columns:
+        absrho = pd.to_numeric(qc_corr["spearman_rho"], errors="coerce").abs()
+        rows.append({"metric": "feature_qc_pairs_abs_rho_ge_0_30", "value": int((absrho >= 0.30).sum()), "interpretation": "Feature-QC monotonic associations requiring contextual review."})
+        rows.append({"metric": "feature_qc_pairs_abs_rho_ge_0_50", "value": int((absrho >= 0.50).sum()), "interpretation": "Stronger feature-QC associations; prioritize for sensitivity checks."})
+    else:
+        rows.append({"metric": "feature_qc_pairs_abs_rho_ge_0_30", "value": 0, "interpretation": "No usable feature-QC association table was available."})
+    if missing_assoc is not None and not missing_assoc.empty and "abs_spearman" in missing_assoc.columns:
+        rows.append({"metric": "missingness_qc_pairs_abs_rho_ge_0_30", "value": int((missing_assoc["abs_spearman"] >= 0.30).sum()), "interpretation": "Cases where feature absence may be linked to artifact burden."})
+    if outlier_assoc is not None and not outlier_assoc.empty and "abs_spearman" in outlier_assoc.columns:
+        rows.append({"metric": "row_outlier_qc_pairs_abs_rho_ge_0_30", "value": int((outlier_assoc["abs_spearman"] >= 0.30).sum()), "interpretation": "Cases where row-level feature outlier burden co-varies with QC metrics."})
+    return pd.DataFrame(rows)
+
 def reliability_screen(dist: pd.DataFrame, qc_corr: pd.DataFrame | None = None) -> pd.DataFrame:
     max_qc = {}
     if qc_corr is not None and not qc_corr.empty:
