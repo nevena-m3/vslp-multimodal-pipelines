@@ -1258,3 +1258,236 @@ def overview_feature_quality_landscape(dist: pd.DataFrame | None, registry: pd.D
             "quality_score": round(score, 1),
         })
     return pd.DataFrame(rows).sort_values(["quality_status", "quality_score", "feature"], ascending=[False, True, True])
+
+
+# -----------------------------------------------------------------------------
+# Feature relationship / redundancy / PCA review
+# -----------------------------------------------------------------------------
+
+def _feature_family_lookup(feature_cols: list[str], registry: pd.DataFrame | None = None) -> dict[str, str]:
+    lookup = {str(c): "unclassified" for c in feature_cols}
+    if registry is None or registry.empty:
+        return lookup
+    feature_col = next((c for c in ["feature", "feature_name", "name", "column"] if c in registry.columns), None)
+    family_col = next((c for c in ["subsystem", "family", "feature_family", "group", "domain"] if c in registry.columns), None)
+    if not feature_col or not family_col:
+        return lookup
+    for _, r in registry[[feature_col, family_col]].dropna().iterrows():
+        f = str(r[feature_col])
+        if f in lookup:
+            lookup[f] = str(r[family_col])
+    return lookup
+
+
+def feature_correlation_long_table(feature_df: pd.DataFrame, feature_cols: list[str], max_features: int = 220) -> pd.DataFrame:
+    cols = numeric_columns(feature_df, feature_cols)[:max_features]
+    if feature_df is None or feature_df.empty or len(cols) < 2:
+        return pd.DataFrame(columns=["feature_1", "feature_2", "spearman_rho", "abs_spearman", "n_pairwise", "direction", "relationship_strength"])
+    x = feature_df[cols].apply(pd.to_numeric, errors="coerce")
+    corr = x.corr(method="spearman", min_periods=8)
+    rows = []
+    for i, f1 in enumerate(cols):
+        for f2 in cols[i+1:]:
+            rho = corr.loc[f1, f2]
+            pair = x[[f1, f2]].dropna()
+            absrho = abs(float(rho)) if pd.notna(rho) else np.nan
+            if pd.isna(absrho):
+                strength = "not_modelable"
+            elif absrho >= .90:
+                strength = "near_duplicate"
+            elif absrho >= .80:
+                strength = "strong_redundancy"
+            elif absrho >= .60:
+                strength = "moderate_block"
+            elif absrho >= .30:
+                strength = "weak_to_moderate"
+            else:
+                strength = "low"
+            rows.append({
+                "feature_1": f1,
+                "feature_2": f2,
+                "spearman_rho": float(rho) if pd.notna(rho) else np.nan,
+                "abs_spearman": absrho,
+                "n_pairwise": int(len(pair)),
+                "direction": "positive" if pd.notna(rho) and rho >= 0 else "negative" if pd.notna(rho) else "not_modelable",
+                "relationship_strength": strength,
+            })
+    return pd.DataFrame(rows).sort_values("abs_spearman", ascending=False, na_position="last")
+
+
+def redundant_feature_pairs(corr_long: pd.DataFrame, registry: pd.DataFrame | None = None, threshold: float = .80) -> pd.DataFrame:
+    if corr_long is None or corr_long.empty or "abs_spearman" not in corr_long.columns:
+        return pd.DataFrame(columns=["feature_1", "feature_2", "spearman_rho", "abs_spearman", "family_1", "family_2", "same_family", "review_priority", "recommendation"])
+    features = sorted(set(corr_long["feature_1"].astype(str)).union(set(corr_long["feature_2"].astype(str))))
+    fam = _feature_family_lookup(features, registry)
+    df = corr_long.copy()
+    df["abs_spearman"] = pd.to_numeric(df["abs_spearman"], errors="coerce")
+    df = df.dropna(subset=["abs_spearman"]).query("abs_spearman >= @threshold").copy()
+    if df.empty:
+        return pd.DataFrame(columns=["feature_1", "feature_2", "spearman_rho", "abs_spearman", "family_1", "family_2", "same_family", "review_priority", "recommendation"])
+    df["family_1"] = df["feature_1"].map(fam).fillna("unclassified")
+    df["family_2"] = df["feature_2"].map(fam).fillna("unclassified")
+    df["same_family"] = df["family_1"].eq(df["family_2"])
+    df["review_priority"] = np.where(df["abs_spearman"] >= .90, "high", "moderate")
+    df["recommendation"] = np.where(
+        df["abs_spearman"] >= .90,
+        "Near-duplicate relationship. Avoid carrying both into small-sample ML without a reason; choose representative or aggregate later inside ML pipeline.",
+        "Strong redundancy. Treat as a feature block; consider representative selection or block-level interpretation later."
+    )
+    return df[["feature_1", "feature_2", "spearman_rho", "abs_spearman", "n_pairwise", "family_1", "family_2", "same_family", "review_priority", "recommendation"]].sort_values("abs_spearman", ascending=False)
+
+
+def feature_relationship_modules(corr_long: pd.DataFrame, registry: pd.DataFrame | None = None, threshold: float = .70) -> pd.DataFrame:
+    if corr_long is None or corr_long.empty:
+        return pd.DataFrame(columns=["module_id", "n_features", "representative_feature", "mean_abs_spearman", "max_abs_spearman", "families", "features", "interpretation"])
+    df = corr_long.copy()
+    df["abs_spearman"] = pd.to_numeric(df["abs_spearman"], errors="coerce")
+    edges = df.dropna(subset=["abs_spearman"]).query("abs_spearman >= @threshold")
+    features = sorted(set(df["feature_1"].astype(str)).union(set(df["feature_2"].astype(str))))
+    fam = _feature_family_lookup(features, registry)
+    parent = {f: f for f in features}
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+    def union(a,b):
+        ra, rb = find(a), find(b)
+        if ra != rb: parent[rb] = ra
+    for _, r in edges.iterrows():
+        union(str(r["feature_1"]), str(r["feature_2"]))
+    comps = {}
+    for f in features:
+        comps.setdefault(find(f), []).append(f)
+    rows=[]; mid=1
+    for comp in sorted(comps.values(), key=len, reverse=True):
+        if len(comp) < 2:
+            continue
+        sub = df[df["feature_1"].isin(comp) & df["feature_2"].isin(comp)].copy()
+        vals = pd.to_numeric(sub["abs_spearman"], errors="coerce").dropna()
+        degree = {f:0 for f in comp}
+        for _, r in edges[edges["feature_1"].isin(comp) & edges["feature_2"].isin(comp)].iterrows():
+            degree[str(r["feature_1"])] += 1; degree[str(r["feature_2"])] += 1
+        rep = sorted(degree.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+        fams = sorted({fam.get(f,"unclassified") for f in comp})
+        rows.append({
+            "module_id": f"M{mid:02d}",
+            "n_features": int(len(comp)),
+            "representative_feature": rep,
+            "mean_abs_spearman": float(vals.mean()) if not vals.empty else np.nan,
+            "max_abs_spearman": float(vals.max()) if not vals.empty else np.nan,
+            "families": "; ".join(fams),
+            "features": "; ".join(comp[:60]) + ("; ..." if len(comp) > 60 else ""),
+            "interpretation": "Connected correlation block at |rho| >= 0.70. Review as a subsystem/block rather than independent features.",
+        })
+        mid += 1
+    return pd.DataFrame(rows)
+
+
+def feature_family_correlation_matrix(corr_long: pd.DataFrame, registry: pd.DataFrame | None = None) -> pd.DataFrame:
+    if corr_long is None or corr_long.empty:
+        return pd.DataFrame(columns=["family_1", "family_2", "mean_abs_spearman", "median_abs_spearman", "n_pairs", "relationship_type"])
+    features = sorted(set(corr_long["feature_1"].astype(str)).union(set(corr_long["feature_2"].astype(str))))
+    fam = _feature_family_lookup(features, registry)
+    df = corr_long.copy()
+    df["family_1"] = df["feature_1"].map(fam).fillna("unclassified")
+    df["family_2"] = df["feature_2"].map(fam).fillna("unclassified")
+    df["abs_spearman"] = pd.to_numeric(df["abs_spearman"], errors="coerce")
+    rows=[]
+    for (a,b), sub in df.dropna(subset=["abs_spearman"]).groupby(["family_1","family_2"]):
+        vals = sub["abs_spearman"]
+        rows.append({"family_1":a,"family_2":b,"mean_abs_spearman":float(vals.mean()),"median_abs_spearman":float(vals.median()),"n_pairs":int(len(vals)),"relationship_type":"within_family" if a==b else "between_family"})
+    return pd.DataFrame(rows).sort_values(["relationship_type","mean_abs_spearman"], ascending=[False, False])
+
+
+def _pca_arrays(feature_df: pd.DataFrame, feature_cols: list[str], max_features: int = 180):
+    cols = numeric_columns(feature_df, feature_cols)[:max_features]
+    if len(cols) < 2 or feature_df is None or feature_df.empty:
+        return None, [], None, None, None
+    x = feature_df[cols].apply(pd.to_numeric, errors="coerce")
+    good = x.notna().sum(axis=0) >= max(8, min(20, int(.10*len(x))))
+    x = x.loc[:, good]
+    cols = x.columns.tolist()
+    if len(cols) < 2:
+        return None, [], None, None, None
+    med = x.median(axis=0, skipna=True)
+    x = x.fillna(med)
+    q25 = x.quantile(.25); q75 = x.quantile(.75); iqr = (q75-q25).replace(0, np.nan)
+    sd = x.std(axis=0, ddof=1).replace(0, np.nan)
+    scale = iqr.fillna(sd).fillna(1.0)
+    z = (x - med) / scale
+    z = z.replace([np.inf,-np.inf], np.nan).fillna(0.0)
+    arr = z.to_numpy(dtype=float)
+    arr = arr - arr.mean(axis=0, keepdims=True)
+    try:
+        U,S,Vt = np.linalg.svd(arr, full_matrices=False)
+    except Exception:
+        return None, cols, None, None, None
+    scores = U * S
+    denom = max(1, arr.shape[0]-1)
+    eig = (S**2) / denom
+    explained = eig / eig.sum() if eig.sum() > 0 else np.zeros_like(eig)
+    return arr, cols, explained, Vt, scores
+
+
+def feature_pca_summary(feature_df: pd.DataFrame, feature_cols: list[str]) -> pd.DataFrame:
+    arr, cols, explained, Vt, scores = _pca_arrays(feature_df, feature_cols)
+    if explained is None:
+        return pd.DataFrame(columns=["component", "variance_percent", "cumulative_variance_percent", "n_features", "n_records", "interpretation"])
+    rows=[]; cum=0.0
+    for i, v in enumerate(explained[:12], start=1):
+        cum += float(v)
+        rows.append({"component": f"PC{i}", "variance_percent": 100*float(v), "cumulative_variance_percent": 100*cum, "n_features": len(cols), "n_records": 0 if arr is None else arr.shape[0], "interpretation": "Exploratory unsupervised variance component; not a classifier or outcome model."})
+    return pd.DataFrame(rows)
+
+
+def feature_pca_loadings(feature_df: pd.DataFrame, feature_cols: list[str], registry: pd.DataFrame | None = None, top_n: int = 20) -> pd.DataFrame:
+    arr, cols, explained, Vt, scores = _pca_arrays(feature_df, feature_cols)
+    if Vt is None:
+        return pd.DataFrame(columns=["component","feature","loading","abs_loading","rank_within_component","family_or_subsystem"])
+    fam = _feature_family_lookup(cols, registry)
+    rows=[]
+    for pc_idx in range(min(5, Vt.shape[0])):
+        load = Vt[pc_idx]
+        order = np.argsort(-np.abs(load))[:top_n]
+        for rank, j in enumerate(order, start=1):
+            rows.append({"component": f"PC{pc_idx+1}", "feature": cols[j], "loading": float(load[j]), "abs_loading": float(abs(load[j])), "rank_within_component": rank, "family_or_subsystem": fam.get(cols[j], "unclassified")})
+    return pd.DataFrame(rows)
+
+
+def feature_pca_scores(feature_df: pd.DataFrame, feature_cols: list[str]) -> pd.DataFrame:
+    arr, cols, explained, Vt, scores = _pca_arrays(feature_df, feature_cols)
+    if scores is None:
+        return pd.DataFrame(columns=["row_index","PC1","PC2","PC3"])
+    rows = {"row_index": feature_df.index.astype(int)}
+    for i in range(min(3, scores.shape[1])):
+        rows[f"PC{i+1}"] = scores[:, i]
+    return pd.DataFrame(rows)
+
+
+def feature_relationship_summary(feature_df: pd.DataFrame, feature_cols: list[str], registry: pd.DataFrame | None = None) -> pd.DataFrame:
+    cols = numeric_columns(feature_df, feature_cols)
+    corr = feature_correlation_long_table(feature_df, feature_cols)
+    redundant = redundant_feature_pairs(corr, registry, threshold=.80)
+    modules = feature_relationship_modules(corr, registry, threshold=.70)
+    pca = feature_pca_summary(feature_df, feature_cols)
+    rows = [
+        {"metric":"numeric_features", "value": int(len(cols)), "interpretation":"Numeric feature columns usable for correlation, redundancy, and PCA review."},
+        {"metric":"feature_pairs_evaluated", "value": int(len(corr)) if corr is not None else 0, "interpretation":"Number of pairwise Spearman relationships evaluated."},
+    ]
+    if corr is not None and not corr.empty:
+        a = pd.to_numeric(corr["abs_spearman"], errors="coerce")
+        rows += [
+            {"metric":"pairs_abs_rho_ge_0_60", "value": int((a>=.60).sum()), "interpretation":"Moderate or stronger feature blocks. Useful for subsystem interpretation."},
+            {"metric":"redundant_pairs_abs_rho_ge_0_80", "value": int((a>=.80).sum()), "interpretation":"Strongly redundant pairs. Review before ML feature selection."},
+            {"metric":"near_duplicate_pairs_abs_rho_ge_0_90", "value": int((a>=.90).sum()), "interpretation":"Near-duplicate features. Avoid unexamined feature-count inflation."},
+        ]
+    rows.append({"metric":"correlation_modules_abs_rho_ge_0_70", "value": int(len(modules)) if modules is not None else 0, "interpretation":"Connected feature blocks at |rho| >= .70."})
+    if pca is not None and not pca.empty:
+        pc1 = float(pca.loc[pca["component"].eq("PC1"), "variance_percent"].iloc[0]) if (pca["component"]=="PC1").any() else np.nan
+        pc3 = float(pca.iloc[min(2, len(pca)-1)]["cumulative_variance_percent"])
+        rows += [
+            {"metric":"pc1_variance_percent", "value": round(pc1,2), "interpretation":"Variance captured by the first unsupervised component. High PC1 can indicate a global axis."},
+            {"metric":"pc1_pc3_cumulative_percent", "value": round(pc3,2), "interpretation":"Variance captured by the first three PCs. Used only for structure review."},
+        ]
+    return pd.DataFrame(rows)

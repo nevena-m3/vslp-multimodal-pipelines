@@ -38,7 +38,10 @@ from vslp.analysis.features.audit import (
     overview_readiness_summary, overview_feature_quality_landscape,
     qc_metric_catalog, qc_row_burden_summary, qc_family_burden_summary,
     feature_qc_family_association, qc_missingness_associations,
-    qc_outlier_associations, qc_integration_summary
+    qc_outlier_associations, qc_integration_summary,
+    feature_relationship_summary, feature_correlation_long_table, redundant_feature_pairs,
+    feature_relationship_modules, feature_family_correlation_matrix,
+    feature_pca_summary, feature_pca_loadings, feature_pca_scores
 )
 from vslp.analysis.features.plots import (
     plot_role_counts, plot_group_counts, plot_feature_family_counts,
@@ -52,10 +55,14 @@ from vslp.analysis.features.plots import (
     plot_feature_quality_landscape, plot_feature_family_quality, plot_subject_task_matrix,
     plot_qc_family_burden, plot_qc_metric_distributions, plot_qc_feature_association_heatmap,
     plot_qc_top_feature_associations, plot_qc_missingness_associations,
-    plot_qc_row_burden, plot_selected_feature_qc_scatter, plot_qc_artifact_model
+    plot_qc_row_burden, plot_selected_feature_qc_scatter, plot_qc_artifact_model,
+    plot_relationship_correlation_heatmap, plot_relationship_redundant_pairs,
+    plot_relationship_family_matrix, plot_relationship_pca_scree,
+    plot_relationship_pca_scores, plot_relationship_pca_loadings,
+    plot_selected_feature_correlations
 )
 
-APP_VERSION = "v0.49"
+APP_VERSION = "v0.51"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -353,6 +360,7 @@ class Sidebar(QFrame):
             ("missing", "○  Missingness"),
             ("dist", "○  Distributions"),
             ("qc", "○  QC Integration"),
+            ("relationships", "○  Feature Relationships"),
             ("reliability", "○  Reliability"),
             ("export", "○  Export / Report"),
         ]:
@@ -429,7 +437,7 @@ class FeatureAnalysisGUI(QMainWindow):
         self.mapping_df = pd.DataFrame()
         self.outputs: dict[str, pd.DataFrame] = {}
         self.output_dir: Optional[Path] = None
-        self.page_keys = ["project", "mapping", "overview", "missing", "dist", "qc", "reliability", "export"]
+        self.page_keys = ["project", "mapping", "overview", "missing", "dist", "qc", "relationships", "reliability", "export"]
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -455,6 +463,7 @@ class FeatureAnalysisGUI(QMainWindow):
             "missing": self._missingness_page(),
             "dist": self._distributions_page(),
             "qc": self._qc_page(),
+            "relationships": self._relationships_page(),
             "reliability": self._table_page("Reliability", "Initial reliability screen for downstream analysis."),
             "export": self._export_page(),
         }
@@ -821,6 +830,14 @@ class FeatureAnalysisGUI(QMainWindow):
         qc_missing_assoc = qc_missingness_associations(self.feature_df, self.qc_df, feature_cols)
         qc_outlier_assoc = qc_outlier_associations(outlier_flags, self.qc_df)
         qc_summary = qc_integration_summary(self.qc_df, qc_corr, qc_family, qc_missing_assoc, qc_outlier_assoc)
+        rel_summary = feature_relationship_summary(self.feature_df, feature_cols, self.registry_df)
+        rel_corr_long = feature_correlation_long_table(self.feature_df, feature_cols)
+        rel_redundant = redundant_feature_pairs(rel_corr_long, self.registry_df)
+        rel_modules = feature_relationship_modules(rel_corr_long, self.registry_df)
+        rel_family_matrix = feature_family_correlation_matrix(rel_corr_long, self.registry_df)
+        rel_pca_summary = feature_pca_summary(self.feature_df, feature_cols)
+        rel_pca_loadings = feature_pca_loadings(self.feature_df, feature_cols, self.registry_df)
+        rel_pca_scores = feature_pca_scores(self.feature_df, feature_cols)
         reliability = reliability_screen(dist, qc_corr)
         outputs = {
             "dataset_inventory": inventory,
@@ -850,6 +867,14 @@ class FeatureAnalysisGUI(QMainWindow):
             "qc_missingness_associations": qc_missing_assoc,
             "qc_outlier_associations": qc_outlier_assoc,
             "qc_integration_summary": qc_summary,
+            "feature_relationship_summary": rel_summary,
+            "feature_correlation_long": rel_corr_long,
+            "feature_redundant_pairs": rel_redundant,
+            "feature_relationship_modules": rel_modules,
+            "feature_family_correlation_matrix": rel_family_matrix,
+            "feature_pca_summary": rel_pca_summary,
+            "feature_pca_loadings": rel_pca_loadings,
+            "feature_pca_scores": rel_pca_scores,
             "feature_reliability_screen": reliability,
         }
         return outputs, feature_cols
@@ -901,6 +926,14 @@ class FeatureAnalysisGUI(QMainWindow):
         qcols = outputs.get("qc_metric_catalog", pd.DataFrame()).get("qc_variable", pd.Series(dtype=str)).astype(str).tolist()
         if first_feature and qcols:
             paths["selected_feature_qc_scatter"] = str(plot_selected_feature_qc_scatter(self.feature_df, self.qc_df, first_feature, qcols[0], plots_dir / "selected_feature_qc_scatter.png"))
+        paths["relationship_correlation_heatmap"] = str(plot_relationship_correlation_heatmap(outputs.get("feature_correlation_long", pd.DataFrame()), plots_dir / "relationship_correlation_heatmap.png"))
+        paths["relationship_redundant_pairs"] = str(plot_relationship_redundant_pairs(outputs.get("feature_redundant_pairs", pd.DataFrame()), plots_dir / "relationship_redundant_pairs.png"))
+        paths["relationship_family_matrix"] = str(plot_relationship_family_matrix(outputs.get("feature_family_correlation_matrix", pd.DataFrame()), plots_dir / "relationship_family_matrix.png"))
+        paths["relationship_pca_scree"] = str(plot_relationship_pca_scree(outputs.get("feature_pca_summary", pd.DataFrame()), plots_dir / "relationship_pca_scree.png"))
+        paths["relationship_pca_scores"] = str(plot_relationship_pca_scores(outputs.get("feature_pca_scores", pd.DataFrame()), self.feature_df, plots_dir / "relationship_pca_scores.png"))
+        paths["relationship_pca_loadings"] = str(plot_relationship_pca_loadings(outputs.get("feature_pca_loadings", pd.DataFrame()), plots_dir / "relationship_pca_loadings.png"))
+        if first_feature:
+            paths["selected_feature_correlations"] = str(plot_selected_feature_correlations(outputs.get("feature_correlation_long", pd.DataFrame()), first_feature, plots_dir / "selected_feature_correlations.png"))
         return paths
 
     def preview_selected_overview_plot(self) -> None:
@@ -952,6 +985,7 @@ class FeatureAnalysisGUI(QMainWindow):
             self.update_missingness_dashboard(outputs)
             self.update_distribution_dashboard(outputs)
             self.update_qc_dashboard(outputs)
+            self.update_relationships_dashboard(outputs)
             self.log(f"Overview/missingness plots generated in: {plots_dir}")
             self.preview_plot("role_counts", generate_if_missing=False)
         except Exception as exc:
@@ -1806,6 +1840,221 @@ class FeatureAnalysisGUI(QMainWindow):
             return
         self.open_file(Path(path))
 
+
+    def _relationships_page(self) -> QWidget:
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
+        card = Card(
+            "Feature Relationships",
+            "Correlation, redundancy, family structure, and exploratory PCA. This screen asks whether features form interpretable subsystems or redundant blocks before any ML work."
+        )
+        self.relationship_metric_grid = QGridLayout()
+        card.layout.addLayout(self.relationship_metric_grid)
+
+        controls = QHBoxLayout()
+        self.relationship_feature_combo = QComboBox()
+        self.relationship_feature_combo.setMinimumWidth(360)
+        self.relationship_feature_combo.currentIndexChanged.connect(lambda _=0: self.preview_relationship_plot("selected_feature_correlations"))
+        controls.addWidget(QLabel("Selected feature:"))
+        controls.addWidget(self.relationship_feature_combo)
+        controls.addStretch(1)
+        open_btn = QPushButton("Open current plot")
+        open_btn.setProperty("secondary", True)
+        open_btn.clicked.connect(self.open_current_relationship_plot)
+        controls.addWidget(open_btn)
+        card.layout.addLayout(controls)
+
+        tabs = QTabWidget()
+        self.relationship_summary_table = self._simple_table()
+        self.relationship_redundant_table = self._simple_table()
+        self.relationship_modules_table = self._simple_table()
+        self.relationship_family_matrix_table = self._simple_table()
+        self.relationship_pca_table = self._simple_table()
+        self.relationship_loadings_table = self._simple_table()
+        for title, tbl in [
+            ("Summary", self.relationship_summary_table),
+            ("Redundant pairs", self.relationship_redundant_table),
+            ("Modules", self.relationship_modules_table),
+            ("Family matrix", self.relationship_family_matrix_table),
+            ("PCA summary", self.relationship_pca_table),
+            ("PCA loadings", self.relationship_loadings_table),
+        ]:
+            tabs.addTab(tbl, title)
+        card.layout.addWidget(tabs, 1)
+
+        plot_card = Card("Relationship plots", "Each plot includes interpretation guidance. Use these to distinguish useful feature blocks from avoidable redundancy.")
+        split = QSplitter(Qt.Horizontal)
+        left = QWidget(); left_l = QVBoxLayout(left); left_l.setContentsMargins(0,0,0,0); left_l.setSpacing(8)
+        for label, key in [
+            ("Correlation heatmap", "relationship_correlation_heatmap"),
+            ("Top redundant pairs", "relationship_redundant_pairs"),
+            ("Family/block matrix", "relationship_family_matrix"),
+            ("PCA scree", "relationship_pca_scree"),
+            ("PCA recording map", "relationship_pca_scores"),
+            ("PCA top loadings", "relationship_pca_loadings"),
+            ("Selected feature links", "selected_feature_correlations"),
+        ]:
+            b = QPushButton(label)
+            b.setProperty("secondary", True)
+            b.clicked.connect(lambda _=False, k=key: self.preview_relationship_plot(k))
+            left_l.addWidget(b)
+        left_l.addStretch(1)
+        right = QWidget(); right_l = QVBoxLayout(right); right_l.setContentsMargins(0,0,0,0); right_l.setSpacing(10)
+        self.relationship_plot_preview = QLabel("Run Feature Analysis, then select a relationship plot.")
+        self.relationship_plot_preview.setAlignment(Qt.AlignCenter)
+        self.relationship_plot_preview.setMinimumHeight(520)
+        self.relationship_plot_preview.setStyleSheet(f"background:#FFFFFF; border:1px solid {LINE}; border-radius:12px; color:{MUTED};")
+        self.relationship_interpretation_label = QLabel("Select a plot to see structured interpretation guidance.")
+        self.relationship_interpretation_label.setWordWrap(True)
+        self.relationship_interpretation_label.setStyleSheet(f"background:#FFFFFF; color:{INK}; border:1px solid {LINE}; border-radius:10px; padding:12px;")
+        right_l.addWidget(self.relationship_plot_preview, 1)
+        right_l.addWidget(self.relationship_interpretation_label)
+        split.addWidget(left); split.addWidget(right); split.setStretchFactor(1, 1)
+        plot_card.layout.addWidget(split)
+        layout.addWidget(card)
+        layout.addWidget(plot_card, 1)
+        return self._wrap_scroll(body)
+
+    def update_relationships_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
+        if not hasattr(self, "relationship_summary_table"):
+            return
+        while self.relationship_metric_grid.count():
+            item = self.relationship_metric_grid.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        summary = outputs.get("feature_relationship_summary", pd.DataFrame())
+        def metric(name: str, default: object = "—") -> object:
+            if summary is None or summary.empty or "metric" not in summary.columns:
+                return default
+            row = summary.loc[summary["metric"].astype(str).eq(name)]
+            return row["value"].iloc[0] if not row.empty else default
+        tiles = [
+            ("Numeric features", metric("numeric_features"), "usable for relationships"),
+            ("Pairwise links", metric("feature_pairs_evaluated"), "Spearman pairs"),
+            ("|ρ| ≥ .80", metric("redundant_pairs_abs_rho_ge_0_80"), "strong redundancy"),
+            ("Modules", metric("correlation_modules_abs_rho_ge_0_70"), "connected blocks"),
+            ("PC1 variance", metric("pc1_variance_percent"), "% if PCA available"),
+            ("PC1–PC3", metric("pc1_pc3_cumulative_percent"), "cumulative variance"),
+        ]
+        for idx, (title, value, subtitle) in enumerate(tiles):
+            self.relationship_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx // 3, idx % 3)
+        self._fill_table(self.relationship_summary_table, summary)
+        self._fill_table(self.relationship_redundant_table, outputs.get("feature_redundant_pairs", pd.DataFrame()))
+        self._fill_table(self.relationship_modules_table, outputs.get("feature_relationship_modules", pd.DataFrame()))
+        self._fill_table(self.relationship_family_matrix_table, outputs.get("feature_family_correlation_matrix", pd.DataFrame()))
+        self._fill_table(self.relationship_pca_table, outputs.get("feature_pca_summary", pd.DataFrame()))
+        self._fill_table(self.relationship_loadings_table, outputs.get("feature_pca_loadings", pd.DataFrame()))
+        if hasattr(self, "relationship_feature_combo"):
+            current = self.relationship_feature_combo.currentText()
+            self.relationship_feature_combo.blockSignals(True)
+            self.relationship_feature_combo.clear()
+            corr = outputs.get("feature_correlation_long", pd.DataFrame())
+            feats = []
+            if corr is not None and not corr.empty:
+                feats = sorted(set(corr.get("feature_1", pd.Series(dtype=str)).astype(str)).union(set(corr.get("feature_2", pd.Series(dtype=str)).astype(str))))
+            self.relationship_feature_combo.addItems(feats[:500])
+            if current and current in feats:
+                self.relationship_feature_combo.setCurrentText(current)
+            self.relationship_feature_combo.blockSignals(False)
+
+    def _selected_relationship_feature(self) -> str | None:
+        if hasattr(self, "relationship_feature_combo") and self.relationship_feature_combo.count() > 0:
+            return self.relationship_feature_combo.currentText()
+        return None
+
+    def generate_selected_feature_correlations(self) -> None:
+        feature = self._selected_relationship_feature()
+        if not feature:
+            return
+        try:
+            self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
+            path = plot_selected_feature_correlations(self.outputs.get("feature_correlation_long", pd.DataFrame()), feature, plots_dir / "selected_feature_correlations.png")
+            if not hasattr(self, "plot_paths"):
+                self.plot_paths = {}
+            self.plot_paths["selected_feature_correlations"] = str(path)
+        except Exception:
+            pass
+
+    def preview_relationship_plot(self, key: str) -> None:
+        if key == "selected_feature_correlations":
+            self.generate_selected_feature_correlations()
+        if not hasattr(self, "plot_paths") or key not in self.plot_paths or not Path(self.plot_paths.get(key, "")).exists():
+            self.regenerate_overview_plots()
+        if not hasattr(self, "plot_paths") or key not in self.plot_paths:
+            QMessageBox.information(self, "Plot unavailable", "Run Feature Analysis first, or this relationship plot could not be generated for the current dataset.")
+            return
+        path = Path(self.plot_paths[key])
+        if not path.exists():
+            QMessageBox.information(self, "Plot unavailable", f"Plot file not found:\n{path}")
+            return
+        self.current_relationship_plot = path
+        self.update_relationship_interpretation(key)
+        pix = QPixmap(str(path))
+        if pix.isNull():
+            self.relationship_plot_preview.setText(f"Could not load plot:\n{path}")
+            return
+        self.relationship_plot_preview.setPixmap(pix.scaled(self.relationship_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self.relationship_plot_preview.setToolTip(str(path))
+
+    def update_relationship_interpretation(self, key: str) -> None:
+        if not hasattr(self, "relationship_interpretation_label"):
+            return
+        feature = self._selected_relationship_feature() or "selected feature"
+        captions = {
+            "relationship_correlation_heatmap": (
+                "<b>What it shows</b><br>Spearman feature-feature correlation among the most connected numeric features.<br><br>"
+                "<b>Concerning pattern</b><br>Large solid blocks mean many features carry overlapping information. That can inflate interpretability claims and destabilize ML models.<br><br>"
+                "<b>Do not overinterpret</b><br>Correlation is not physiology by itself. Correlated features may share computation, task, QC sensitivity, or true subsystem behavior.<br><br>"
+                "<b>Next check</b><br>Review redundant pairs, family matrix, PCA loadings, and QC associations for the same block."
+            ),
+            "relationship_redundant_pairs": (
+                "<b>What it shows</b><br>The strongest feature-feature associations ranked by |Spearman rho|.<br><br>"
+                "<b>Concerning pattern</b><br>|ρ| ≥ .80 suggests near-duplicate information. |ρ| ≥ .90 often indicates variables should not all enter the same small-sample ML model.<br><br>"
+                "<b>Do not overinterpret</b><br>Redundancy is not automatically bad for descriptive science; it can validate a feature family. It is mainly a problem for ML and feature-count inflation.<br><br>"
+                "<b>Next check</b><br>Use the module table to decide whether to keep one representative or carry the block forward as a family."
+            ),
+            "relationship_family_matrix": (
+                "<b>What it shows</b><br>Average absolute correlation within and between feature families/subsystems.<br><br>"
+                "<b>Concerning pattern</b><br>Very high cross-family coupling suggests features may be dominated by shared acquisition, task, or scaling effects rather than distinct physiology.<br><br>"
+                "<b>Do not overinterpret</b><br>Some cross-family coupling is expected in connected speech because speech subsystems are coordinated.<br><br>"
+                "<b>Next check</b><br>Compare family matrix with QC Integration and PCA loadings."
+            ),
+            "relationship_pca_scree": (
+                "<b>What it shows</b><br>How much feature variance is captured by each principal component after robust scaling.<br><br>"
+                "<b>Concerning pattern</b><br>A very dominant PC1 may indicate a global size/quality/task axis rather than independent feature domains.<br><br>"
+                "<b>Do not overinterpret</b><br>PCA is exploratory and unsupervised. It is not a clinical classifier or biomarker result.<br><br>"
+                "<b>Next check</b><br>Inspect PCA loadings and the PCA recording map to understand what drives each component."
+            ),
+            "relationship_pca_scores": (
+                "<b>What it shows</b><br>Recordings plotted on PC1 and PC2 using numeric features after robust scaling.<br><br>"
+                "<b>Concerning pattern</b><br>Clear clusters may reflect task, cohort, device, QC, or real physiological differences; they require annotation before interpretation.<br><br>"
+                "<b>Do not overinterpret</b><br>Separation on PCA is not evidence of diagnostic performance. It is structure discovery only.<br><br>"
+                "<b>Next check</b><br>Color/stratify by task, diagnosis, QC, or severity in later modules."
+            ),
+            "relationship_pca_loadings": (
+                "<b>What it shows</b><br>The features with the largest absolute loadings on early PCs.<br><br>"
+                "<b>Concerning pattern</b><br>If one QC-sensitive or high-missingness feature family dominates PC1, the main structure may be technical rather than physiological.<br><br>"
+                "<b>Do not overinterpret</b><br>Loadings describe variance structure, not outcome association or clinical validity.<br><br>"
+                "<b>Next check</b><br>Compare dominant loading features with Distributions, QC Integration, and later outcome screening."
+            ),
+            "selected_feature_correlations": (
+                f"<b>What it shows</b><br>The strongest relationships involving <b>{feature}</b>.<br><br>"
+                "<b>Concerning pattern</b><br>If a feature has many very high correlations, it may be redundant or part of a broad latent block.<br><br>"
+                "<b>Do not overinterpret</b><br>A feature with many correlations is not necessarily better; it may simply share computation with many variables.<br><br>"
+                "<b>Next check</b><br>Inspect whether linked features are from the same family, same task, or same QC-sensitive subsystem."
+            ),
+        }
+        self.relationship_interpretation_label.setText(captions.get(key, "Select a relationship plot to see structured interpretation guidance."))
+
+    def open_current_relationship_plot(self) -> None:
+        path = getattr(self, "current_relationship_plot", None)
+        if not path:
+            QMessageBox.information(self, "No current plot", "Preview a relationship plot first, then open the full-resolution file.")
+            return
+        self.open_file(Path(path))
+
     def _table_page(self, title: str, subtitle: str) -> QWidget:
         body = QWidget()
         layout = QVBoxLayout(body)
@@ -1969,6 +2218,7 @@ class FeatureAnalysisGUI(QMainWindow):
             self.update_missingness_dashboard(outputs)
             self.update_distribution_dashboard(outputs)
             self.update_qc_dashboard(outputs)
+            self.update_relationships_dashboard(outputs)
             self.log(f"Analysis complete. Outputs written to: {self.output_dir}")
             self.show_page("overview")
         except Exception as exc:
@@ -1980,6 +2230,7 @@ class FeatureAnalysisGUI(QMainWindow):
             "missing": "missingness_by_feature",
             "distributions___outliers": "feature_distribution_summary",
             "qc_integration": "feature_qc_spearman_correlation",
+            "feature_relationships": "feature_relationship_summary",
             "reliability": "feature_reliability_screen",
         }
         for obj_suffix, key in targets.items():
