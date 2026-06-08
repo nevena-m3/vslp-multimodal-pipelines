@@ -47,7 +47,7 @@ from vslp.analysis.features.plots import (
     plot_feature_quality_landscape, plot_feature_family_quality, plot_subject_task_matrix
 )
 
-APP_VERSION = "v0.47"
+APP_VERSION = "v0.48"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -98,12 +98,23 @@ def set_app_style(app: QApplication) -> None:
         padding: 7px 10px;
         min-height: 28px;
         color: {INK};
-        selection-background-color: {TEAL};
+        selection-background-color: #DDF6F4;
+        selection-color: {INK};
     }}
-    QComboBox {{ min-width: 220px; }}
+    QComboBox {{
+        min-width: 220px;
+        background: #FFFFFF;
+        color: {INK};
+    }}
+    QComboBox:hover {{ border: 1px solid #B7C7DA; background: #FFFFFF; color: {INK}; }}
+    QComboBox:focus {{ border: 1px solid {TEAL}; background: #FFFFFF; color: {INK}; }}
+    QComboBox:on {{ background: #FFFFFF; color: {INK}; }}
     QComboBox::drop-down {{
         border: none;
-        width: 28px;
+        width: 30px;
+        background: #FFFFFF;
+        border-top-right-radius: 8px;
+        border-bottom-right-radius: 8px;
     }}
     QComboBox QAbstractItemView {{
         background: #FFFFFF;
@@ -115,23 +126,95 @@ def set_app_style(app: QApplication) -> None:
         outline: none;
         min-width: 260px;
     }}
+    QComboBox QAbstractItemView::item {{
+        background: #FFFFFF;
+        color: {INK};
+        min-height: 26px;
+        padding: 6px 10px;
+    }}
+    QComboBox QAbstractItemView::item:hover {{ background: #F3FAF9; color: {INK}; }}
+    QComboBox QAbstractItemView::item:selected {{ background: #DDF6F4; color: {INK}; }}
     QPushButton {{
-        background: {NAVY};
-        color: white;
-        border: 1px solid #12385E;
+        background: #FFFFFF;
+        color: {NAVY};
+        border: 1px solid {LINE};
         border-radius: 9px;
         padding: 8px 14px;
-        font-weight: 600;
+        font-weight: 700;
     }}
-    QPushButton:hover {{ background: #0E3156; }}
-    QPushButton:pressed {{ background: #061426; }}
-    QPushButton:disabled {{ background: #B8C3D3; color: #EDF1F7; border-color: #B8C3D3; }}
+    QPushButton:hover {{ background: #F3FAF9; border-color: {TEAL}; color: {NAVY}; }}
+    QPushButton:pressed {{ background: #DDF6F4; border-color: {TEAL}; color: {NAVY}; }}
+    QPushButton:focus {{ border: 1px solid {TEAL}; background: #FFFFFF; color: {NAVY}; }}
+    QPushButton:checked {{ background: #EAF8F7; border-color: {TEAL}; color: {NAVY}; }}
+    QPushButton:disabled {{ background: #F4F6F9; color: #8A99AA; border-color: #D9E2EF; }}
     QPushButton[secondary="true"] {{
         background: #FFFFFF;
         color: {NAVY};
         border: 1px solid {LINE};
     }}
-    QPushButton[secondary="true"]:hover {{ background: #F3F8FF; }}
+    QPushButton[secondary="true"]:hover {{ background: #F3FAF9; border-color: {TEAL}; color: {NAVY}; }}
+    QPushButton[primary="true"] {{
+        background: #EAF8F7;
+        color: {NAVY};
+        border: 1px solid {TEAL};
+    }}
+    QPushButton[primary="true"]:hover {{ background: #DDF6F4; color: {NAVY}; }}
+    QPushButton[primary="true"]:pressed {{ background: #C8F0ED; color: {NAVY}; }}
+    QAbstractButton {{
+        color: {NAVY};
+        background: #FFFFFF;
+        selection-background-color: #DDF6F4;
+        selection-color: {INK};
+    }}
+    QCheckBox, QRadioButton {{
+        color: {INK};
+        background: transparent;
+        spacing: 8px;
+        min-height: 24px;
+    }}
+    QCheckBox:hover, QRadioButton:hover {{ color: {NAVY}; background: #F7FAFD; }}
+    QListView, QTreeView, QTableView {{
+        background: #FFFFFF;
+        color: {INK};
+        alternate-background-color: #F8FBFE;
+        selection-background-color: #DDF6F4;
+        selection-color: {INK};
+    }}
+    QTabWidget::pane {{
+        background: #FFFFFF;
+        border: 1px solid {LINE};
+        border-radius: 8px;
+    }}
+    QTabBar::tab {{
+        background: #F7FAFD;
+        color: {NAVY};
+        border: 1px solid {LINE};
+        border-bottom: none;
+        padding: 8px 14px;
+        min-height: 22px;
+        border-top-left-radius: 8px;
+        border-top-right-radius: 8px;
+    }}
+    QTabBar::tab:selected {{
+        background: #FFFFFF;
+        color: {NAVY};
+        border-top: 2px solid {TEAL};
+        font-weight: 700;
+    }}
+    QTabBar::tab:hover {{ background: #F3FAF9; color: {NAVY}; }}
+    QMenu {{
+        background: #FFFFFF;
+        color: {INK};
+        border: 1px solid {LINE};
+    }}
+    QMenu::item {{ background: #FFFFFF; color: {INK}; padding: 7px 14px; }}
+    QMenu::item:selected {{ background: #DDF6F4; color: {INK}; }}
+    QToolTip {{
+        background: #FFFFFF;
+        color: {INK};
+        border: 1px solid {LINE};
+        padding: 6px;
+    }}
     QTableWidget {{
         background: #FFFFFF;
         border: 1px solid {LINE};
@@ -235,7 +318,9 @@ class Sidebar(QFrame):
             padding: 10px 12px;
             font-weight: 600;
         }}
-        QPushButton:hover {{ background: #0F2D4F; border-color: #1C4E7E; }}
+        QPushButton:hover {{ background: #0F2D4F; border-color: #1C4E7E; color: #FFFFFF; }}
+        QPushButton:focus {{ background: #0B2442; border-color: {TEAL}; color: #FFFFFF; }}
+        QPushButton:pressed {{ background: #123A63; border-color: {TEAL}; color: #FFFFFF; }}
         QPushButton[active="true"] {{ background: #123A63; border-color: {TEAL}; color: #FFFFFF; }}
         """)
         layout = QVBoxLayout(self)
@@ -510,7 +595,12 @@ class FeatureAnalysisGUI(QMainWindow):
         card.layout.addWidget(self.overview_note)
 
         tabs = QTabWidget()
-        tabs.setStyleSheet(f"QTabWidget::pane {{ border: 1px solid {LINE}; border-radius: 8px; background: #FFFFFF; }} QTabBar::tab {{ padding: 8px 14px; color: {NAVY}; }} QTabBar::tab:selected {{ background: #EAF8F7; border-bottom: 2px solid {TEAL}; }}")
+        tabs.setStyleSheet(f"""
+            QTabWidget::pane {{ border: 1px solid {LINE}; border-radius: 8px; background: #FFFFFF; }}
+            QTabBar::tab {{ background:#F7FAFD; color:{NAVY}; border:1px solid {LINE}; border-bottom:none; padding:8px 14px; min-height:22px; }}
+            QTabBar::tab:selected {{ background:#FFFFFF; color:{NAVY}; border-top:2px solid {TEAL}; font-weight:700; }}
+            QTabBar::tab:hover {{ background:#F3FAF9; color:{NAVY}; }}
+        """)
 
         self.overview_readiness_table = QTableWidget(0, 0)
         self.overview_inventory_table = QTableWidget(0, 0)
@@ -895,7 +985,12 @@ class FeatureAnalysisGUI(QMainWindow):
         card.layout.addWidget(self.missing_note)
 
         tabs = QTabWidget()
-        tabs.setStyleSheet(f"QTabWidget::pane {{ border: 1px solid {LINE}; border-radius: 8px; background: #FFFFFF; }} QTabBar::tab {{ padding: 8px 14px; color: {NAVY}; }} QTabBar::tab:selected {{ background: #EAF8F7; border-bottom: 2px solid {TEAL}; }}")
+        tabs.setStyleSheet(f"""
+            QTabWidget::pane {{ border: 1px solid {LINE}; border-radius: 8px; background: #FFFFFF; }}
+            QTabBar::tab {{ background:#F7FAFD; color:{NAVY}; border:1px solid {LINE}; border-bottom:none; padding:8px 14px; min-height:22px; }}
+            QTabBar::tab:selected {{ background:#FFFFFF; color:{NAVY}; border-top:2px solid {TEAL}; font-weight:700; }}
+            QTabBar::tab:hover {{ background:#F3FAF9; color:{NAVY}; }}
+        """)
         self.missing_feature_table = QTableWidget(0, 0)
         self.missing_row_table = QTableWidget(0, 0)
         self.missing_group_table = QTableWidget(0, 0)
@@ -929,6 +1024,10 @@ class FeatureAnalysisGUI(QMainWindow):
         note.setWordWrap(True)
         note.setStyleSheet(f"color:{MUTED}; border:none; background:transparent;")
         controls_layout.addWidget(note)
+        guide = QLabel("Interpretation guide:\n• <20%: usually low concern\n• 20–50%: monitor mechanism\n• ≥50%: review before ML\n• blocks/clusters: possible task, QC, or computation support problem")
+        guide.setWordWrap(True)
+        guide.setStyleSheet(f"color:{INK}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:9px; font-size:12px;")
+        controls_layout.addWidget(guide)
         for label, key in [
             ("Top missing features", "missingness_top_features"),
             ("Row-level missingness", "missingness_row_distribution"),
@@ -957,7 +1056,17 @@ class FeatureAnalysisGUI(QMainWindow):
         self.missing_plot_preview.setMinimumHeight(430)
         self.missing_plot_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.missing_plot_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
-        plot_panel_layout.addWidget(self.missing_plot_preview, 1)
+        right_preview = QFrame()
+        right_preview.setStyleSheet("QFrame { border:none; background:transparent; }")
+        right_layout = QVBoxLayout(right_preview)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(10)
+        right_layout.addWidget(self.missing_plot_preview, 1)
+        self.missing_plot_caption = QLabel("Select a missingness plot. A short interpretation guide will appear here so the plot can be read without guessing.")
+        self.missing_plot_caption.setWordWrap(True)
+        self.missing_plot_caption.setStyleSheet(f"color:{INK}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:10px;")
+        right_layout.addWidget(self.missing_plot_caption)
+        plot_panel_layout.addWidget(right_preview, 1)
         card.layout.addWidget(plot_panel)
 
         layout.addWidget(card)
@@ -1001,7 +1110,18 @@ class FeatureAnalysisGUI(QMainWindow):
         self._fill_table(self.missing_group_table, outputs.get("missingness_by_group", pd.DataFrame()))
         self._fill_table(self.missing_family_table, outputs.get("missingness_by_family", pd.DataFrame()))
         self._fill_table(self.missing_comissing_table, outputs.get("missingness_comissing_pairs", pd.DataFrame()))
-        self.missing_note.setText("Missingness audit generated. Inspect feature-level failure, row-level data loss, group/task imbalance, and co-missing patterns before deciding whether to exclude, impute, stratify, or keep features with caution.")
+        self.missing_note.setText("Missingness audit generated. Read this menu as a missing-data mechanism screen: first identify high-missing features, then check whether missingness is concentrated in rows, tasks/groups, feature families, or co-missing clusters. Imputation and complete-case exclusion should be deferred to ML only after this review.")
+
+    def _missingness_plot_caption_text(self, key: str) -> str:
+        captions = {
+            "missingness_top_features": "Top missing features: ranks feature columns by missing fraction. Features near the top may be unsupported for some tasks, sensitive to signal quality, or computationally unstable. Do not exclude automatically; first check whether missingness is task-, group-, or QC-linked.",
+            "missingness_row_distribution": "Row-level missingness: shows how much feature information is lost per recording/row. A right-shifted distribution means many recordings have broad feature failure, which can reduce usable sample size and bias ML training.",
+            "missingness_by_group": "Missingness by group: compares average feature missingness across detected task, diagnosis, severity, device, session, or similar groups. Group differences suggest missingness may be non-random and should not be handled by naive complete-case analysis.",
+            "missingness_by_family": "Missingness by family: summarizes failure by feature subsystem. A high family-level value suggests a systematic issue, such as formant tracking, voicing detection, segmentation support, or missing registry labels, rather than isolated bad features.",
+            "feature_availability_heatmap": "Feature availability heatmap: rows are recordings and columns are features. Contiguous missing blocks suggest structured missingness by task, modality, subject group, or computation mode; scattered gaps suggest more local feature failure.",
+            "missingness_comissing_heatmap": "Co-missing heatmap: shows features that fail together. Strong co-missing clusters often indicate shared algorithmic dependencies or task support limitations, and they should be reviewed as groups rather than one feature at a time.",
+        }
+        return captions.get(key, "Missingness plot. Use it to determine whether feature absence is isolated, structured, or associated with design/QC variables.")
 
     def preview_missingness_plot(self, key: str) -> None:
         if not hasattr(self, "plot_paths") or key not in self.plot_paths or not Path(self.plot_paths.get(key, "")).exists():
@@ -1014,6 +1134,8 @@ class FeatureAnalysisGUI(QMainWindow):
             QMessageBox.information(self, "Plot unavailable", f"Plot file not found:\n{path}")
             return
         self.current_missingness_plot = path
+        if hasattr(self, "missing_plot_caption"):
+            self.missing_plot_caption.setText(self._missingness_plot_caption_text(key))
         pix = QPixmap(str(path))
         if pix.isNull():
             self.missing_plot_preview.setText(f"Could not load plot:\n{path}")
@@ -1066,7 +1188,12 @@ class FeatureAnalysisGUI(QMainWindow):
         card.layout.addLayout(top_controls)
 
         tabs = QTabWidget()
-        tabs.setStyleSheet(f"QTabWidget::pane {{ border: 1px solid {LINE}; border-radius: 8px; background: #FFFFFF; }} QTabBar::tab {{ padding: 8px 14px; color: {NAVY}; }} QTabBar::tab:selected {{ background: #EAF8F7; border-bottom: 2px solid {TEAL}; }}")
+        tabs.setStyleSheet(f"""
+            QTabWidget::pane {{ border: 1px solid {LINE}; border-radius: 8px; background: #FFFFFF; }}
+            QTabBar::tab {{ background:#F7FAFD; color:{NAVY}; border:1px solid {LINE}; border-bottom:none; padding:8px 14px; min-height:22px; }}
+            QTabBar::tab:selected {{ background:#FFFFFF; color:{NAVY}; border-top:2px solid {TEAL}; font-weight:700; }}
+            QTabBar::tab:hover {{ background:#F3FAF9; color:{NAVY}; }}
+        """)
         self.dist_summary_table = QTableWidget(0, 0)
         self.dist_review_table = QTableWidget(0, 0)
         self.dist_outlier_table = QTableWidget(0, 0)
