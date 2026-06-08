@@ -945,3 +945,287 @@ def plot_selected_feature_correlations(corr_long: pd.DataFrame, feature: str, pa
     ax.set_xlabel("Spearman rho", color=MUTED); ax.set_xlim(-1,1)
     _style(ax, f"Strongest feature links for {feature}")
     return _save(fig, path)
+
+# Group / outcome screening plots
+
+def plot_screening_group_balance(balance: pd.DataFrame, path: Path) -> Path:
+    required = {"group_variable", "level", "n_rows"}
+    if balance is None or balance.empty or not required.issubset(balance.columns):
+        return _empty(path, "No categorical group/outcome variables were available for balance plotting.", "Group balance")
+    df = balance.copy()
+    # pick the most informative variable: not too many levels, largest total rows
+    totals = df.groupby("group_variable")["n_rows"].sum().sort_values(ascending=False)
+    group = str(totals.index[0])
+    sub = df[df["group_variable"].astype(str).eq(group)].copy().sort_values("n_rows", ascending=True)
+    sub = sub.tail(30)
+    fig, ax = plt.subplots(figsize=(10.5, max(4.8, 0.36 * len(sub))))
+    colors = [RED if float(n) < 10 else GOLD if float(n) < 20 else TEAL for n in sub["n_rows"]]
+    ax.barh(sub["level"].astype(str), pd.to_numeric(sub["n_rows"], errors="coerce"), color=colors)
+    ax.set_xlabel("Rows / recordings", color=MUTED)
+    _style(ax, f"Group balance: {group}")
+    return _save(fig, path)
+
+
+def plot_screening_effect_ranking(cont: pd.DataFrame, cat: pd.DataFrame, path: Path, top_n: int = 30) -> Path:
+    frames=[]
+    if cont is not None and not cont.empty:
+        a = cont.copy(); a["screening_source"] = a.get("outcome_variable", "continuous").astype(str); a["label"] = a["feature"].astype(str) + " → " + a["screening_source"].astype(str); frames.append(a)
+    if cat is not None and not cat.empty:
+        b = cat.copy(); b["screening_source"] = b.get("group_variable", "group").astype(str); b["label"] = b["feature"].astype(str) + " ↔ " + b["screening_source"].astype(str); frames.append(b)
+    if not frames:
+        return _empty(path, "No feature-outcome or feature-group screening effects were available.", "Screening effects")
+    df = pd.concat(frames, ignore_index=True, sort=False)
+    df["abs_effect"] = pd.to_numeric(df["abs_effect"], errors="coerce")
+    df = df.dropna(subset=["abs_effect"]).sort_values("abs_effect", ascending=False).head(top_n).sort_values("abs_effect")
+    if df.empty:
+        return _empty(path, "Screening effects were not evaluable for the current dataset.", "Screening effects")
+    fig, ax = plt.subplots(figsize=(11.5, max(5, 0.34 * len(df))))
+    colors = [RED if v >= .50 else GOLD if v >= .30 else TEAL for v in df["abs_effect"]]
+    ax.barh(df["label"].astype(str), df["abs_effect"], color=colors)
+    ax.set_xlabel("Absolute descriptive effect size", color=MUTED)
+    ax.axvline(.30, color=GOLD, linestyle="--", linewidth=1)
+    ax.axvline(.50, color=RED, linestyle="--", linewidth=1)
+    _style(ax, "Top descriptive feature screening effects")
+    return _save(fig, path)
+
+
+def plot_screening_continuous_heatmap(cont: pd.DataFrame, path: Path, max_features: int = 40, max_outcomes: int = 12) -> Path:
+    if cont is None or cont.empty or not {"feature", "outcome_variable", "effect"}.issubset(cont.columns):
+        return _empty(path, "No continuous outcome screening results were available.", "Feature × continuous outcome")
+    df = cont.copy()
+    df["abs_effect"] = pd.to_numeric(df["abs_effect"], errors="coerce")
+    df["effect"] = pd.to_numeric(df["effect"], errors="coerce")
+    top_feats = df.groupby("feature")["abs_effect"].max().sort_values(ascending=False).head(max_features).index.tolist()
+    top_out = df.groupby("outcome_variable")["abs_effect"].max().sort_values(ascending=False).head(max_outcomes).index.tolist()
+    mat = df[df["feature"].isin(top_feats) & df["outcome_variable"].isin(top_out)].pivot_table(index="feature", columns="outcome_variable", values="effect", aggfunc="max")
+    if mat.empty:
+        return _empty(path, "No evaluable continuous outcome heatmap could be formed.", "Feature × continuous outcome")
+    fig, ax = plt.subplots(figsize=(max(8, 0.5 * len(mat.columns) + 5), max(6, 0.24 * len(mat.index) + 2)))
+    im = ax.imshow(mat.fillna(0).to_numpy(dtype=float), vmin=-1, vmax=1, cmap="coolwarm", aspect="auto")
+    ax.set_xticks(range(len(mat.columns))); ax.set_xticklabels(mat.columns, rotation=45, ha="right", fontsize=8, color=MUTED)
+    ax.set_yticks(range(len(mat.index))); ax.set_yticklabels(mat.index, fontsize=6, color=MUTED)
+    ax.set_title("Feature × continuous outcome Spearman screen", fontsize=14, fontweight="bold", color=NAVY, pad=12)
+    cbar = fig.colorbar(im, ax=ax, fraction=0.025, pad=0.02); cbar.set_label("Spearman rho", color=MUTED); cbar.ax.tick_params(labelsize=8, colors=MUTED)
+    return _save(fig, path)
+
+
+def plot_screening_group_heatmap(cat: pd.DataFrame, path: Path, max_features: int = 40, max_groups: int = 12) -> Path:
+    if cat is None or cat.empty or not {"feature", "group_variable", "effect"}.issubset(cat.columns):
+        return _empty(path, "No categorical group screening results were available.", "Feature × group")
+    df = cat.copy(); df["abs_effect"] = pd.to_numeric(df["abs_effect"], errors="coerce"); df["effect"] = pd.to_numeric(df["effect"], errors="coerce")
+    top_feats = df.groupby("feature")["abs_effect"].max().sort_values(ascending=False).head(max_features).index.tolist()
+    top_groups = df.groupby("group_variable")["abs_effect"].max().sort_values(ascending=False).head(max_groups).index.tolist()
+    mat = df[df["feature"].isin(top_feats) & df["group_variable"].isin(top_groups)].pivot_table(index="feature", columns="group_variable", values="effect", aggfunc="max")
+    if mat.empty:
+        return _empty(path, "No evaluable group screening heatmap could be formed.", "Feature × group")
+    lim = float(np.nanmax(np.abs(mat.to_numpy(dtype=float)))) if mat.size else 1.0
+    lim = max(lim, 1.0)
+    fig, ax = plt.subplots(figsize=(max(8, 0.5 * len(mat.columns) + 5), max(6, 0.24 * len(mat.index) + 2)))
+    im = ax.imshow(mat.fillna(0).to_numpy(dtype=float), vmin=-lim, vmax=lim, cmap="coolwarm", aspect="auto")
+    ax.set_xticks(range(len(mat.columns))); ax.set_xticklabels(mat.columns, rotation=45, ha="right", fontsize=8, color=MUTED)
+    ax.set_yticks(range(len(mat.index))); ax.set_yticklabels(mat.index, fontsize=6, color=MUTED)
+    ax.set_title("Feature × categorical group contrast screen", fontsize=14, fontweight="bold", color=NAVY, pad=12)
+    cbar = fig.colorbar(im, ax=ax, fraction=0.025, pad=0.02); cbar.set_label("Signed robust effect", color=MUTED); cbar.ax.tick_params(labelsize=8, colors=MUTED)
+    return _save(fig, path)
+
+
+def plot_screening_effect_landscape(cont: pd.DataFrame, cat: pd.DataFrame, path: Path) -> Path:
+    frames=[]
+    if cont is not None and not cont.empty:
+        a = cont.copy(); a["type"] = "continuous"; frames.append(a)
+    if cat is not None and not cat.empty:
+        b = cat.copy(); b["type"] = "categorical"; frames.append(b)
+    if not frames:
+        return _empty(path, "No screening effects were available for the landscape plot.", "Screening landscape")
+    df = pd.concat(frames, ignore_index=True, sort=False)
+    df["abs_effect"] = pd.to_numeric(df["abs_effect"], errors="coerce")
+    df["n_pairwise"] = pd.to_numeric(df["n_pairwise"], errors="coerce")
+    df = df.dropna(subset=["abs_effect", "n_pairwise"])
+    if df.empty:
+        return _empty(path, "Screening effect sizes were not evaluable.", "Screening landscape")
+    fig, ax = plt.subplots(figsize=(10.8, 6.3))
+    for t, color in [("continuous", TEAL), ("categorical", GOLD)]:
+        sub = df[df["type"].eq(t)]
+        if not sub.empty:
+            ax.scatter(sub["n_pairwise"], sub["abs_effect"], s=28, alpha=0.78, color=color, label=t)
+    ax.axhline(.30, color=GOLD, linestyle="--", linewidth=1)
+    ax.axhline(.50, color=RED, linestyle="--", linewidth=1)
+    ax.set_xlabel("Pairwise N", color=MUTED)
+    ax.set_ylabel("Absolute descriptive effect size", color=MUTED)
+    ax.legend(frameon=False, fontsize=9)
+    _style(ax, "Screening effect landscape")
+    return _save(fig, path)
+
+
+def plot_selected_feature_outcome(df: pd.DataFrame, feature: str, outcome: str, path: Path) -> Path:
+    if df is None or df.empty or feature not in df.columns or outcome not in df.columns:
+        return _empty(path, "Selected feature or outcome/group variable was not available.", "Selected feature screening")
+    x = pd.to_numeric(df[feature], errors="coerce")
+    y_raw = df[outcome]
+    tmp = pd.DataFrame({"feature": x, "outcome": y_raw}).dropna()
+    if tmp.empty:
+        return _empty(path, "No paired non-missing values were available for the selected feature and outcome/group.", "Selected feature screening")
+    fig, ax = plt.subplots(figsize=(10.8, 6.2))
+    if pd.api.types.is_numeric_dtype(y_raw) and tmp["outcome"].nunique(dropna=True) > 10:
+        y = pd.to_numeric(tmp["outcome"], errors="coerce")
+        tmp = pd.DataFrame({"feature": tmp["feature"], "outcome": y}).dropna()
+        ax.scatter(tmp["outcome"], tmp["feature"], s=32, color=TEAL, alpha=0.78)
+        if len(tmp) >= 5:
+            try:
+                z = np.polyfit(tmp["outcome"].astype(float), tmp["feature"].astype(float), deg=1)
+                xx = np.linspace(tmp["outcome"].min(), tmp["outcome"].max(), 80)
+                ax.plot(xx, z[0]*xx + z[1], color=NAVY, linewidth=2, alpha=.8)
+            except Exception:
+                pass
+        ax.set_xlabel(outcome, color=MUTED); ax.set_ylabel(feature, color=MUTED)
+        _style(ax, f"{feature} vs {outcome}")
+    else:
+        tmp["outcome"] = tmp["outcome"].astype(str)
+        levels = tmp["outcome"].value_counts().head(12).index.tolist()
+        data = [tmp.loc[tmp["outcome"].eq(level), "feature"].dropna().to_numpy(dtype=float) for level in levels]
+        ax.boxplot(data, labels=levels, vert=True, patch_artist=True, boxprops=dict(facecolor="#DDF6F4", color=TEAL), medianprops=dict(color=NAVY), whiskerprops=dict(color=MUTED), capprops=dict(color=MUTED))
+        for i, vals in enumerate(data, start=1):
+            if len(vals):
+                jitter = np.linspace(-0.12, 0.12, len(vals)) if len(vals) < 30 else np.random.default_rng(42).normal(0, .05, len(vals))
+                ax.scatter(np.full(len(vals), i) + jitter, vals, s=18, color=GOLD, alpha=.45)
+        ax.set_xlabel(outcome, color=MUTED); ax.set_ylabel(feature, color=MUTED)
+        ax.tick_params(axis="x", rotation=30)
+        _style(ax, f"{feature} by {outcome}")
+    return _save(fig, path)
+
+
+def plot_reliability_status_counts(repeatability: pd.DataFrame, path: Path) -> Path:
+    if repeatability is None or repeatability.empty or "reliability_status" not in repeatability.columns:
+        return _empty(path, "No repeatability results were available.", "Reliability status")
+    counts = repeatability["reliability_status"].astype(str).value_counts().reindex(["stable", "moderate", "variable", "unstable", "not_evaluable"]).dropna()
+    if counts.empty:
+        return _empty(path, "No repeatability status values were available.", "Reliability status")
+    fig, ax = plt.subplots(figsize=(9.5, 5.5))
+    ax.bar(counts.index, counts.values, color=TEAL, edgecolor=NAVY, linewidth=.8)
+    ax.set_ylabel("Number of features", color=MUTED)
+    ax.tick_params(axis="x", rotation=20)
+    _style(ax, "Feature repeatability status")
+    for i, v in enumerate(counts.values):
+        ax.text(i, v, str(int(v)), ha="center", va="bottom", color=NAVY, fontweight="bold")
+    return _save(fig, path)
+
+
+def plot_reliability_icc_ranking(repeatability: pd.DataFrame, path: Path, top_n: int = 30) -> Path:
+    if repeatability is None or repeatability.empty or "icc1_proxy" not in repeatability.columns:
+        return _empty(path, "No ICC-style repeatability estimates were available.", "ICC ranking")
+    df = repeatability.copy()
+    df["icc1_proxy"] = pd.to_numeric(df["icc1_proxy"], errors="coerce")
+    df = df.dropna(subset=["icc1_proxy"]).sort_values("icc1_proxy", ascending=False).head(top_n)
+    if df.empty:
+        return _empty(path, "No evaluable features had ICC-style estimates.", "ICC ranking")
+    fig, ax = plt.subplots(figsize=(10, max(5.2, .32*len(df))))
+    ax.barh(df["feature"].astype(str), df["icc1_proxy"], color=TEAL, edgecolor=NAVY, linewidth=.6)
+    ax.axvline(.75, color=NAVY, linestyle="--", linewidth=1, label="stable (.75)")
+    ax.axvline(.50, color=GOLD, linestyle="--", linewidth=1, label="moderate (.50)")
+    ax.axvline(.25, color=RED, linestyle="--", linewidth=1, label="variable (.25)")
+    ax.invert_yaxis()
+    ax.set_xlim(0, 1)
+    ax.set_xlabel("ICC(1)-style variance-ratio proxy", color=MUTED)
+    ax.legend(frameon=False, fontsize=8, loc="lower right")
+    _style(ax, "Most repeatable features")
+    return _save(fig, path)
+
+
+def plot_reliability_variance_landscape(repeatability: pd.DataFrame, path: Path) -> Path:
+    if repeatability is None or repeatability.empty:
+        return _empty(path, "No variance-component repeatability table was available.", "Repeatability landscape")
+    df = repeatability.copy()
+    df["within_subject_variance"] = pd.to_numeric(df.get("within_subject_variance"), errors="coerce")
+    df["between_subject_variance"] = pd.to_numeric(df.get("between_subject_variance"), errors="coerce")
+    df["icc1_proxy"] = pd.to_numeric(df.get("icc1_proxy"), errors="coerce")
+    df = df.dropna(subset=["within_subject_variance", "between_subject_variance", "icc1_proxy"])
+    if df.empty:
+        return _empty(path, "No evaluable within/between-subject variance estimates were available.", "Repeatability landscape")
+    fig, ax = plt.subplots(figsize=(10.5, 6.2))
+    sizes = 35 + 110 * df["icc1_proxy"].clip(0, 1).fillna(0)
+    ax.scatter(df["within_subject_variance"], df["between_subject_variance"], s=sizes, color=TEAL, alpha=.72, edgecolor=NAVY, linewidth=.4)
+    ax.set_xscale("symlog", linthresh=1e-6)
+    ax.set_yscale("symlog", linthresh=1e-6)
+    ax.set_xlabel("Within-subject variance", color=MUTED)
+    ax.set_ylabel("Between-subject variance", color=MUTED)
+    _style(ax, "Within- vs between-subject variance")
+    top = df.sort_values("icc1_proxy", ascending=False).head(8)
+    for _, r in top.iterrows():
+        ax.text(r["within_subject_variance"], r["between_subject_variance"], str(r["feature"])[:22], fontsize=7, color=NAVY)
+    return _save(fig, path)
+
+
+def plot_reliability_family_summary(family: pd.DataFrame, path: Path) -> Path:
+    if family is None or family.empty or "median_icc1_proxy" not in family.columns:
+        return _empty(path, "No family-level repeatability summary was available.", "Reliability by family")
+    df = family.copy()
+    df["median_icc1_proxy"] = pd.to_numeric(df["median_icc1_proxy"], errors="coerce")
+    df = df.dropna(subset=["median_icc1_proxy"]).sort_values("median_icc1_proxy", ascending=True)
+    if df.empty:
+        return _empty(path, "Family-level ICC estimates were not evaluable.", "Reliability by family")
+    fig, ax = plt.subplots(figsize=(10, max(4.8, .42*len(df))))
+    ax.barh(df["family_or_subsystem"].astype(str), df["median_icc1_proxy"], color=GOLD, edgecolor=NAVY, linewidth=.7)
+    ax.axvline(.75, color=NAVY, linestyle="--", linewidth=1)
+    ax.axvline(.50, color=TEAL, linestyle="--", linewidth=1)
+    ax.set_xlim(0, 1)
+    ax.set_xlabel("Median ICC(1)-style proxy", color=MUTED)
+    _style(ax, "Repeatability by feature family")
+    return _save(fig, path)
+
+
+def plot_reliability_subject_counts(counts: pd.DataFrame, path: Path) -> Path:
+    if counts is None or counts.empty or "n_records" not in counts.columns:
+        return _empty(path, "No subject-level record counts were available. A subject identifier is required.", "Subject recording counts")
+    df = counts.copy().sort_values("n_records", ascending=False).head(60)
+    fig, ax = plt.subplots(figsize=(11, 5.8))
+    ax.bar(range(len(df)), pd.to_numeric(df["n_records"], errors="coerce"), color=TEAL, edgecolor=NAVY, linewidth=.5)
+    ax.axhline(2, color=GOLD, linestyle="--", linewidth=1)
+    ax.set_xlabel("Subjects ranked by record count", color=MUTED)
+    ax.set_ylabel("Records per subject", color=MUTED)
+    _style(ax, "Repeated-record support by subject")
+    return _save(fig, path)
+
+
+def plot_selected_feature_reliability(df: pd.DataFrame, feature: str, path: Path, subject_col: str | None = None, session_col: str | None = None) -> Path:
+    if df is None or df.empty or feature not in df.columns:
+        return _empty(path, "Selected feature was not available.", "Selected feature repeatability")
+    # Infer subject/session locally if not supplied.
+    def _find(names):
+        norm = {str(c).lower().replace(" ", "_").replace("-", "_"): c for c in df.columns}
+        for n in names:
+            if n in norm:
+                return norm[n]
+        return None
+    subject_col = subject_col or _find(["subject_id", "participant_id", "patient_id", "speaker_id"])
+    session_col = session_col or _find(["session_id", "visit_id", "clinical_visit_id", "timepoint", "session", "visit"])
+    y = pd.to_numeric(df[feature], errors="coerce")
+    if not subject_col or subject_col not in df.columns:
+        tmp = pd.DataFrame({"value": y}).dropna()
+        if tmp.empty:
+            return _empty(path, "No valid values were available for the selected feature.", "Selected feature repeatability")
+        fig, ax = plt.subplots(figsize=(10, 5.8))
+        ax.scatter(np.arange(len(tmp)), tmp["value"], s=24, color=TEAL, alpha=.75)
+        ax.set_xlabel("Record index", color=MUTED); ax.set_ylabel(feature, color=MUTED)
+        _style(ax, f"{feature}: no subject column detected")
+        return _save(fig, path)
+    tmp = pd.DataFrame({"subject": df[subject_col].astype(str), "value": y})
+    if session_col and session_col in df.columns:
+        tmp["session"] = df[session_col].astype(str)
+    else:
+        tmp["session"] = tmp.groupby("subject").cumcount().astype(str)
+    tmp = tmp.dropna(subset=["subject", "value"])
+    counts = tmp["subject"].value_counts()
+    keep = counts[counts >= 2].head(40).index.tolist()
+    tmp = tmp[tmp["subject"].isin(keep)] if keep else tmp.head(80)
+    if tmp.empty:
+        return _empty(path, "No repeated subjects with valid selected-feature values were available.", "Selected feature repeatability")
+    # Create an ordinal x per subject to avoid fragile session sorting.
+    tmp["order"] = tmp.groupby("subject").cumcount()
+    fig, ax = plt.subplots(figsize=(11, 6.2))
+    for sid, sub in tmp.groupby("subject"):
+        sub = sub.sort_values("order")
+        ax.plot(sub["order"], sub["value"], marker="o", markersize=3.5, linewidth=1.0, alpha=.45, color=TEAL)
+    ax.set_xlabel("Repeated record order within subject", color=MUTED)
+    ax.set_ylabel(feature, color=MUTED)
+    _style(ax, f"{feature}: within-subject repeatability")
+    return _save(fig, path)
