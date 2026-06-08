@@ -79,7 +79,7 @@ from vslp.analysis.features.plots import (
     plot_ml_export_manifest_summary
 )
 
-APP_VERSION = "v0.55"
+APP_VERSION = "v0.55.1"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -275,6 +275,39 @@ def set_app_style(app: QApplication) -> None:
         color: {NAVY};
     }}
     QGroupBox::title {{ subcontrol-origin: margin; left: 12px; padding: 0 6px; }}
+
+    QMessageBox, QMessageBox QLabel, QMessageBox QPushButton {{
+        background: #FFFFFF;
+        color: {INK};
+    }}
+    QMessageBox {{
+        background: #FFFFFF;
+        color: {INK};
+    }}
+    QMessageBox QLabel {{
+        background: #FFFFFF;
+        color: {INK};
+        font-size: 13px;
+        padding: 4px;
+    }}
+    QMessageBox QPushButton {{
+        background: #FFFFFF;
+        color: {NAVY};
+        border: 1px solid {LINE};
+        border-radius: 8px;
+        padding: 7px 14px;
+        min-width: 78px;
+        font-weight: 700;
+    }}
+    QMessageBox QPushButton:hover {{
+        background: #F3FAF9;
+        border-color: {TEAL};
+        color: {NAVY};
+    }}
+    QMessageBox QPushButton:pressed {{
+        background: #DDF6F4;
+        color: {NAVY};
+    }}
     QScrollArea {{ border: none; background: transparent; }}
     """)
 
