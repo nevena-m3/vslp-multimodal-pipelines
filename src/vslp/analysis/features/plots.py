@@ -365,3 +365,130 @@ def plot_group_feature_boxplot(df: pd.DataFrame, feature: str, path: Path, group
     _style(ax, f"{feature} by {group_col}")
     ax.tick_params(axis="x", labelrotation=35)
     return _save(fig, path)
+
+
+def plot_overview_readiness_scorecard(readiness: pd.DataFrame, path: Path) -> Path:
+    if readiness is None or readiness.empty or not {"dimension", "score_0_100"}.issubset(readiness.columns):
+        return _empty(path, "No readiness summary was available.", "Overview readiness")
+    df = readiness.copy()
+    df["score_0_100"] = pd.to_numeric(df["score_0_100"], errors="coerce").fillna(0)
+    df = df.sort_values("score_0_100", ascending=True)
+    colors = [TEAL if v >= 80 else GOLD if v >= 50 else RED if v > 0 else MUTED for v in df["score_0_100"]]
+    fig, ax = plt.subplots(figsize=(10.5, max(4.8, 0.54 * len(df))))
+    ax.barh(df["dimension"].astype(str), df["score_0_100"], color=colors)
+    ax.set_xlim(0, 100)
+    ax.set_xlabel("Orientation score (0–100)", color=MUTED)
+    ax.axvline(50, color=GOLD, linestyle="--", linewidth=1, alpha=0.8)
+    ax.axvline(80, color=TEAL, linestyle="--", linewidth=1, alpha=0.8)
+    _style(ax, "Dataset readiness orientation")
+    for i, v in enumerate(df["score_0_100"]):
+        ax.text(min(99, float(v) + 1.5), i, f"{float(v):.0f}", va="center", fontsize=9, color=MUTED)
+    return _save(fig, path)
+
+
+def plot_dataset_design_tiles(design: pd.DataFrame, path: Path) -> Path:
+    required = {"variable_type", "column", "n_unique", "n_missing"}
+    if design is None or design.empty or not required.issubset(design.columns):
+        return _empty(path, "No dataset-design summary was available.", "Dataset design")
+    df = design.copy().head(12)
+    n = len(df)
+    ncols = 2
+    nrows = int(np.ceil(n / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(12, max(4.8, 2.0 * nrows)))
+    axes = np.array(axes).reshape(-1)
+    for ax, (_, r) in zip(axes, df.iterrows()):
+        col = str(r.get("column", "not_detected"))
+        detected = col != "not_detected"
+        n_unique = int(pd.to_numeric(pd.Series([r.get("n_unique", 0)]), errors="coerce").fillna(0).iloc[0])
+        n_missing = int(pd.to_numeric(pd.Series([r.get("n_missing", 0)]), errors="coerce").fillna(0).iloc[0])
+        status = "detected" if detected else "missing"
+        ax.set_facecolor("#F8FBFE" if detected else "#FFF7F5")
+        ax.text(0.04, 0.76, str(r.get("variable_type", "variable")).replace("_", " ").title(), transform=ax.transAxes, fontsize=12, fontweight="bold", color=NAVY)
+        ax.text(0.04, 0.52, col, transform=ax.transAxes, fontsize=10, color=TEAL if detected else RED)
+        ax.text(0.04, 0.30, f"{status} · unique={n_unique} · missing={n_missing}", transform=ax.transAxes, fontsize=9, color=MUTED)
+        top = str(r.get("top_values", ""))
+        if top and top != "nan":
+            ax.text(0.04, 0.10, top[:120] + ("…" if len(top) > 120 else ""), transform=ax.transAxes, fontsize=8, color=MUTED)
+        ax.set_xticks([]); ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_edgecolor(GRID)
+    for ax in axes[n:]:
+        ax.axis("off")
+    fig.suptitle("Detected dataset design variables", fontsize=15, fontweight="bold", color=NAVY, y=1.01)
+    return _save(fig, path)
+
+
+def plot_feature_quality_landscape(quality: pd.DataFrame, path: Path) -> Path:
+    required = {"feature", "missing_fraction", "robust_outlier_fraction", "quality_status"}
+    if quality is None or quality.empty or not required.issubset(quality.columns):
+        return _empty(path, "No feature-quality landscape was available.", "Feature quality landscape")
+    df = quality.copy()
+    df["missing_fraction"] = pd.to_numeric(df["missing_fraction"], errors="coerce")
+    df["robust_outlier_fraction"] = pd.to_numeric(df["robust_outlier_fraction"], errors="coerce")
+    df["n_valid"] = pd.to_numeric(df.get("n_valid", 1), errors="coerce").fillna(1)
+    df = df.dropna(subset=["missing_fraction", "robust_outlier_fraction"])
+    if df.empty:
+        return _empty(path, "No numeric feature-quality values were available.", "Feature quality landscape")
+    colors = df["quality_status"].map({"ok": TEAL, "monitor": GOLD, "review": RED}).fillna(MUTED).tolist()
+    sizes = np.clip(20 + 2.5 * np.sqrt(df["n_valid"].to_numpy(dtype=float)), 22, 120)
+    fig, ax = plt.subplots(figsize=(10.8, 6.4))
+    ax.scatter(df["missing_fraction"], df["robust_outlier_fraction"], s=sizes, c=colors, alpha=0.78, edgecolors="white", linewidth=0.6)
+    ax.axvline(0.20, color=GOLD, linestyle="--", linewidth=1.0, alpha=0.8)
+    ax.axvline(0.50, color=RED, linestyle="--", linewidth=1.0, alpha=0.8)
+    ax.axhline(0.05, color=GOLD, linestyle="--", linewidth=1.0, alpha=0.8)
+    ax.axhline(0.20, color=RED, linestyle="--", linewidth=1.0, alpha=0.8)
+    ax.set_xlim(-0.02, min(1.0, max(0.05, float(df["missing_fraction"].max()) * 1.12)))
+    ax.set_ylim(-0.01, min(1.0, max(0.05, float(df["robust_outlier_fraction"].max()) * 1.20)))
+    ax.set_xlabel("Missing fraction", color=MUTED)
+    ax.set_ylabel("Robust outlier fraction", color=MUTED)
+    _style(ax, "Feature quality landscape")
+    label_df = df.sort_values(["quality_status", "missing_fraction", "robust_outlier_fraction"], ascending=[False, False, False]).head(10)
+    for _, r in label_df.iterrows():
+        if str(r.get("quality_status")) in {"monitor", "review"}:
+            ax.text(float(r["missing_fraction"]) + 0.005, float(r["robust_outlier_fraction"]) + 0.003, str(r["feature"])[:24], fontsize=7, color=MUTED)
+    return _save(fig, path)
+
+
+def plot_feature_family_quality(family_overview: pd.DataFrame, path: Path) -> Path:
+    if family_overview is None or family_overview.empty or "family_or_subsystem" not in family_overview.columns:
+        return _empty(path, "No feature-family metadata was available. Load a registry/policy table to make this plot more informative.", "Family quality overview")
+    df = family_overview.copy()
+    for col in ["n_features", "mean_missing_fraction", "n_numeric_features"]:
+        if col not in df.columns:
+            df[col] = 0
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+    df = df.sort_values("n_features", ascending=True)
+    fig, ax = plt.subplots(figsize=(10.5, max(4.8, 0.44 * len(df))))
+    colors = [RED if m >= 0.50 else GOLD if m >= 0.20 else TEAL for m in df["mean_missing_fraction"]]
+    labels = [f"{fam}  (miss={m:.1%})" for fam, m in zip(df["family_or_subsystem"].astype(str), df["mean_missing_fraction"])]
+    ax.barh(labels, df["n_features"], color=colors)
+    ax.set_xlabel("Number of mapped features", color=MUTED)
+    _style(ax, "Feature-family coverage and missingness")
+    return _save(fig, path)
+
+
+def plot_subject_task_matrix(df: pd.DataFrame, path: Path) -> Path:
+    if df is None or df.empty:
+        return _empty(path, "No feature table was available.", "Subject × task coverage")
+    subject_col = next((c for c in ["subject_id", "participant_id", "patient_id"] if c in df.columns), None)
+    task_col = next((c for c in ["task", "task_name", "prompt"] if c in df.columns), None)
+    if subject_col is None or task_col is None:
+        return _empty(path, "Subject and task columns are both required for this coverage matrix.", "Subject × task coverage")
+    work = df[[subject_col, task_col]].dropna().copy()
+    if work.empty:
+        return _empty(path, "No non-missing subject/task pairs were available.", "Subject × task coverage")
+    top_subjects = work[subject_col].astype(str).value_counts().head(60).index.tolist()
+    top_tasks = work[task_col].astype(str).value_counts().head(25).index.tolist()
+    mat = pd.crosstab(work[subject_col].astype(str), work[task_col].astype(str)).reindex(index=top_subjects, columns=top_tasks, fill_value=0)
+    fig, ax = plt.subplots(figsize=(max(8, 0.34 * len(top_tasks) + 4), max(6, 0.12 * len(top_subjects) + 3)))
+    im = ax.imshow(mat.to_numpy(), aspect="auto", interpolation="nearest", cmap="viridis")
+    ax.set_title("Subject × task recording coverage", fontsize=14, fontweight="bold", color=NAVY, pad=12)
+    ax.set_xlabel("Task", color=MUTED); ax.set_ylabel("Subject", color=MUTED)
+    ax.set_xticks(range(len(top_tasks))); ax.set_xticklabels(top_tasks, rotation=70, ha="right", fontsize=7, color=MUTED)
+    ystep = max(1, len(top_subjects) // 30)
+    yticks = list(range(0, len(top_subjects), ystep))
+    ax.set_yticks(yticks); ax.set_yticklabels([top_subjects[i] for i in yticks], fontsize=6, color=MUTED)
+    cbar = fig.colorbar(im, ax=ax, fraction=0.025, pad=0.02)
+    cbar.set_label("records", color=MUTED)
+    cbar.ax.tick_params(labelsize=8, colors=MUTED)
+    return _save(fig, path)
