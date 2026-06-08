@@ -41,7 +41,10 @@ from vslp.analysis.features.audit import (
     qc_outlier_associations, qc_integration_summary,
     feature_relationship_summary, feature_correlation_long_table, redundant_feature_pairs,
     feature_relationship_modules, feature_family_correlation_matrix,
-    feature_pca_summary, feature_pca_loadings, feature_pca_scores
+    feature_pca_summary, feature_pca_loadings, feature_pca_scores,
+    build_group_outcome_screening,
+    reliability_design_summary, reliability_subject_record_counts,
+    feature_repeatability_summary, reliability_family_summary
 )
 from vslp.analysis.features.plots import (
     plot_role_counts, plot_group_counts, plot_feature_family_counts,
@@ -59,10 +62,16 @@ from vslp.analysis.features.plots import (
     plot_relationship_correlation_heatmap, plot_relationship_redundant_pairs,
     plot_relationship_family_matrix, plot_relationship_pca_scree,
     plot_relationship_pca_scores, plot_relationship_pca_loadings,
-    plot_selected_feature_correlations
+    plot_selected_feature_correlations,
+    plot_screening_group_balance, plot_screening_effect_ranking,
+    plot_screening_continuous_heatmap, plot_screening_group_heatmap,
+    plot_screening_effect_landscape, plot_selected_feature_outcome,
+    plot_reliability_status_counts, plot_reliability_icc_ranking,
+    plot_reliability_variance_landscape, plot_reliability_family_summary,
+    plot_reliability_subject_counts, plot_selected_feature_reliability
 )
 
-APP_VERSION = "v0.51"
+APP_VERSION = "v0.53"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -361,6 +370,7 @@ class Sidebar(QFrame):
             ("dist", "○  Distributions"),
             ("qc", "○  QC Integration"),
             ("relationships", "○  Feature Relationships"),
+            ("screening", "○  Group / Outcome Screening"),
             ("reliability", "○  Reliability"),
             ("export", "○  Export / Report"),
         ]:
@@ -437,7 +447,7 @@ class FeatureAnalysisGUI(QMainWindow):
         self.mapping_df = pd.DataFrame()
         self.outputs: dict[str, pd.DataFrame] = {}
         self.output_dir: Optional[Path] = None
-        self.page_keys = ["project", "mapping", "overview", "missing", "dist", "qc", "relationships", "reliability", "export"]
+        self.page_keys = ["project", "mapping", "overview", "missing", "dist", "qc", "relationships", "screening", "reliability", "export"]
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -464,7 +474,8 @@ class FeatureAnalysisGUI(QMainWindow):
             "dist": self._distributions_page(),
             "qc": self._qc_page(),
             "relationships": self._relationships_page(),
-            "reliability": self._table_page("Reliability", "Initial reliability screen for downstream analysis."),
+            "screening": self._screening_page(),
+            "reliability": self._reliability_page(),
             "export": self._export_page(),
         }
         for key in self.page_keys:
@@ -838,7 +849,12 @@ class FeatureAnalysisGUI(QMainWindow):
         rel_pca_summary = feature_pca_summary(self.feature_df, feature_cols)
         rel_pca_loadings = feature_pca_loadings(self.feature_df, feature_cols, self.registry_df)
         rel_pca_scores = feature_pca_scores(self.feature_df, feature_cols)
+        screening = build_group_outcome_screening(self.feature_df, feature_cols, mapping)
         reliability = reliability_screen(dist, qc_corr)
+        reliability_design = reliability_design_summary(self.feature_df, feature_cols, mapping)
+        reliability_subjects = reliability_subject_record_counts(self.feature_df, mapping)
+        reliability_repeatability = feature_repeatability_summary(self.feature_df, feature_cols, mapping, self.registry_df)
+        reliability_family = reliability_family_summary(reliability_repeatability)
         outputs = {
             "dataset_inventory": inventory,
             "feature_role_summary": role_sum,
@@ -875,7 +891,16 @@ class FeatureAnalysisGUI(QMainWindow):
             "feature_pca_summary": rel_pca_summary,
             "feature_pca_loadings": rel_pca_loadings,
             "feature_pca_scores": rel_pca_scores,
+            "screening_summary": screening.get("screening_summary", pd.DataFrame()),
+            "screening_variable_catalog": screening.get("screening_variable_catalog", pd.DataFrame()),
+            "screening_continuous_outcome_associations": screening.get("screening_continuous_outcome_associations", pd.DataFrame()),
+            "screening_categorical_group_associations": screening.get("screening_categorical_group_associations", pd.DataFrame()),
+            "screening_group_balance": screening.get("screening_group_balance", pd.DataFrame()),
             "feature_reliability_screen": reliability,
+            "reliability_design_summary": reliability_design,
+            "reliability_subject_record_counts": reliability_subjects,
+            "feature_repeatability_summary": reliability_repeatability,
+            "reliability_family_summary": reliability_family,
         }
         return outputs, feature_cols
 
@@ -934,6 +959,22 @@ class FeatureAnalysisGUI(QMainWindow):
         paths["relationship_pca_loadings"] = str(plot_relationship_pca_loadings(outputs.get("feature_pca_loadings", pd.DataFrame()), plots_dir / "relationship_pca_loadings.png"))
         if first_feature:
             paths["selected_feature_correlations"] = str(plot_selected_feature_correlations(outputs.get("feature_correlation_long", pd.DataFrame()), first_feature, plots_dir / "selected_feature_correlations.png"))
+        paths["screening_group_balance"] = str(plot_screening_group_balance(outputs.get("screening_group_balance", pd.DataFrame()), plots_dir / "screening_group_balance.png"))
+        paths["screening_effect_ranking"] = str(plot_screening_effect_ranking(outputs.get("screening_continuous_outcome_associations", pd.DataFrame()), outputs.get("screening_categorical_group_associations", pd.DataFrame()), plots_dir / "screening_effect_ranking.png"))
+        paths["screening_continuous_heatmap"] = str(plot_screening_continuous_heatmap(outputs.get("screening_continuous_outcome_associations", pd.DataFrame()), plots_dir / "screening_continuous_heatmap.png"))
+        paths["screening_group_heatmap"] = str(plot_screening_group_heatmap(outputs.get("screening_categorical_group_associations", pd.DataFrame()), plots_dir / "screening_group_heatmap.png"))
+        paths["screening_effect_landscape"] = str(plot_screening_effect_landscape(outputs.get("screening_continuous_outcome_associations", pd.DataFrame()), outputs.get("screening_categorical_group_associations", pd.DataFrame()), plots_dir / "screening_effect_landscape.png"))
+        screen_vars = outputs.get("screening_variable_catalog", pd.DataFrame())
+        screen_var_list = screen_vars.get("variable", pd.Series(dtype=str)).astype(str).tolist() if screen_vars is not None and not screen_vars.empty else []
+        if first_feature and screen_var_list:
+            paths["selected_feature_outcome"] = str(plot_selected_feature_outcome(self.feature_df, first_feature, screen_var_list[0], plots_dir / "selected_feature_outcome.png"))
+        paths["reliability_status_counts"] = str(plot_reliability_status_counts(outputs.get("feature_repeatability_summary", pd.DataFrame()), plots_dir / "reliability_status_counts.png"))
+        paths["reliability_icc_ranking"] = str(plot_reliability_icc_ranking(outputs.get("feature_repeatability_summary", pd.DataFrame()), plots_dir / "reliability_icc_ranking.png"))
+        paths["reliability_variance_landscape"] = str(plot_reliability_variance_landscape(outputs.get("feature_repeatability_summary", pd.DataFrame()), plots_dir / "reliability_variance_landscape.png"))
+        paths["reliability_family_summary"] = str(plot_reliability_family_summary(outputs.get("reliability_family_summary", pd.DataFrame()), plots_dir / "reliability_family_summary.png"))
+        paths["reliability_subject_counts"] = str(plot_reliability_subject_counts(outputs.get("reliability_subject_record_counts", pd.DataFrame()), plots_dir / "reliability_subject_counts.png"))
+        if first_feature:
+            paths["selected_feature_reliability"] = str(plot_selected_feature_reliability(self.feature_df, first_feature, plots_dir / "selected_feature_reliability.png"))
         return paths
 
     def preview_selected_overview_plot(self) -> None:
@@ -986,6 +1027,8 @@ class FeatureAnalysisGUI(QMainWindow):
             self.update_distribution_dashboard(outputs)
             self.update_qc_dashboard(outputs)
             self.update_relationships_dashboard(outputs)
+            self.update_screening_dashboard(outputs)
+            self.update_reliability_dashboard(outputs)
             self.log(f"Overview/missingness plots generated in: {plots_dir}")
             self.preview_plot("role_counts", generate_if_missing=False)
         except Exception as exc:
@@ -1459,9 +1502,8 @@ class FeatureAnalysisGUI(QMainWindow):
             if not hasattr(self, "plot_paths"):
                 self.plot_paths = {}
             self.plot_paths["selected_feature_distribution"] = str(path)
-            self.preview_distribution_plot("selected_feature_distribution")
-        except Exception:
-            pass
+        except Exception as exc:
+            QMessageBox.warning(self, "Distribution plot failed", str(exc))
 
     def generate_selected_group_plot(self) -> None:
         if self.feature_df is None or not self.output_edit.text().strip():
@@ -1481,9 +1523,9 @@ class FeatureAnalysisGUI(QMainWindow):
     def preview_distribution_plot(self, key: str) -> None:
         if key == "selected_feature_distribution":
             self.generate_selected_distribution_plot()
-        if key == "selected_feature_by_group":
+        elif key == "selected_feature_by_group":
             self.generate_selected_group_plot()
-        if not hasattr(self, "plot_paths") or key not in self.plot_paths or not Path(self.plot_paths.get(key, "")).exists():
+        elif not hasattr(self, "plot_paths") or key not in self.plot_paths or not Path(self.plot_paths.get(key, "")).exists():
             self.regenerate_overview_plots()
         if not hasattr(self, "plot_paths") or key not in self.plot_paths:
             QMessageBox.information(self, "Plot unavailable", "Run Feature Analysis first, or this plot was not generated for the current dataset.")
@@ -1586,6 +1628,10 @@ class FeatureAnalysisGUI(QMainWindow):
         table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         return table
+
+    def _make_table(self) -> QTableWidget:
+        """Compatibility alias used by newer pages."""
+        return self._simple_table()
 
     def _qc_page(self) -> QWidget:
         body = QWidget()
@@ -2055,6 +2101,431 @@ class FeatureAnalysisGUI(QMainWindow):
             return
         self.open_file(Path(path))
 
+    def _screening_page(self) -> QWidget:
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
+        card = Card(
+            "Group / Outcome Screening",
+            "Descriptive univariate screening of feature associations with clinical labels, task/group variables, and continuous outcomes. This is not modelling, prediction, biomarker discovery, or adjusted inference."
+        )
+        self.screening_metric_grid = QGridLayout()
+        card.layout.addLayout(self.screening_metric_grid)
+        tabs = QTabWidget()
+        self.screening_summary_table = self._make_table()
+        self.screening_catalog_table = self._make_table()
+        self.screening_continuous_table = self._make_table()
+        self.screening_group_table = self._make_table()
+        self.screening_balance_table = self._make_table()
+        tabs.addTab(self.screening_summary_table, "Summary")
+        tabs.addTab(self.screening_catalog_table, "Variable catalog")
+        tabs.addTab(self.screening_continuous_table, "Continuous outcomes")
+        tabs.addTab(self.screening_group_table, "Categorical groups")
+        tabs.addTab(self.screening_balance_table, "Group balance")
+        card.layout.addWidget(tabs)
+
+        plot_card = Card(
+            "Screening plots",
+            "Use these plots to identify candidate feature-label patterns that need task, QC, covariate, and repeated-measures review. Effects here are screening signals only."
+        )
+        controls = QHBoxLayout()
+        self.screening_feature_combo = QComboBox()
+        self.screening_variable_combo = QComboBox()
+        controls.addWidget(QLabel("Feature:")); controls.addWidget(self.screening_feature_combo)
+        controls.addWidget(QLabel("Outcome / group:")); controls.addWidget(self.screening_variable_combo)
+        plot_card.layout.addLayout(controls)
+        split = QSplitter(Qt.Horizontal)
+        left = QWidget(); left_l = QVBoxLayout(left); left_l.setContentsMargins(0,0,0,0)
+        for label, key in [
+            ("Group balance", "screening_group_balance"),
+            ("Top screening effects", "screening_effect_ranking"),
+            ("Feature × continuous outcome heatmap", "screening_continuous_heatmap"),
+            ("Feature × categorical group heatmap", "screening_group_heatmap"),
+            ("Effect-size landscape", "screening_effect_landscape"),
+            ("Selected feature vs selected outcome/group", "selected_feature_outcome"),
+        ]:
+            b = QPushButton(label)
+            b.setProperty("secondary", True)
+            b.clicked.connect(lambda _=False, k=key: self.preview_screening_plot(k))
+            left_l.addWidget(b)
+        open_btn = QPushButton("Open current plot file")
+        open_btn.setProperty("primary", True)
+        open_btn.clicked.connect(self.open_current_screening_plot)
+        left_l.addWidget(open_btn)
+        left_l.addStretch(1)
+        right = QWidget(); right_l = QVBoxLayout(right); right_l.setContentsMargins(0,0,0,0)
+        self.screening_plot_preview = QLabel("Run Feature Analysis, then choose a screening plot.")
+        self.screening_plot_preview.setAlignment(Qt.AlignCenter)
+        self.screening_plot_preview.setMinimumHeight(430)
+        self.screening_plot_preview.setStyleSheet(f"background:#FFFFFF; border:1px solid {LINE}; border-radius:12px; color:{MUTED};")
+        self.screening_interpretation_label = QLabel("Select a plot to see structured interpretation guidance.")
+        self.screening_interpretation_label.setWordWrap(True)
+        self.screening_interpretation_label.setStyleSheet(f"background:#FFFFFF; color:{INK}; border:1px solid {LINE}; border-radius:10px; padding:12px;")
+        right_l.addWidget(self.screening_plot_preview, 1)
+        right_l.addWidget(self.screening_interpretation_label)
+        split.addWidget(left); split.addWidget(right); split.setStretchFactor(1, 1)
+        plot_card.layout.addWidget(split)
+        layout.addWidget(card)
+        layout.addWidget(plot_card, 1)
+        return self._wrap_scroll(body)
+
+    def update_screening_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
+        if not hasattr(self, "screening_summary_table"):
+            return
+        while self.screening_metric_grid.count():
+            item = self.screening_metric_grid.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        summary = outputs.get("screening_summary", pd.DataFrame())
+        def metric(name: str, default: object = "—") -> object:
+            if summary is None or summary.empty or "metric" not in summary.columns:
+                return default
+            row = summary.loc[summary["metric"].astype(str).eq(name)]
+            return row["value"].iloc[0] if not row.empty else default
+        cont = outputs.get("screening_continuous_outcome_associations", pd.DataFrame())
+        cat = outputs.get("screening_categorical_group_associations", pd.DataFrame())
+        tiles = [
+            ("Screening variables", metric("screening_variables_detected"), "outcomes/groups/covariates"),
+            ("Continuous screens", metric("continuous_feature_outcome_tests"), "Spearman screens"),
+            ("Group screens", metric("categorical_group_feature_tests"), "robust contrasts"),
+            ("Continuous |effect| ≥ .30", metric("continuous_abs_effect_ge_0_30"), "monitor/review"),
+            ("Group |effect| ≥ .30", metric("group_abs_effect_ge_0_30"), "monitor/review"),
+            ("Top effect", "—" if (cont is None or cont.empty) and (cat is None or cat.empty) else round(float(pd.concat([d for d in [cont.get('abs_effect') if cont is not None and not cont.empty else pd.Series(dtype=float), cat.get('abs_effect') if cat is not None and not cat.empty else pd.Series(dtype=float)]], ignore_index=True).max()), 3), "descriptive only"),
+        ]
+        for idx, (title, value, subtitle) in enumerate(tiles):
+            self.screening_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx // 3, idx % 3)
+        self._fill_table(self.screening_summary_table, summary)
+        self._fill_table(self.screening_catalog_table, outputs.get("screening_variable_catalog", pd.DataFrame()))
+        self._fill_table(self.screening_continuous_table, cont)
+        self._fill_table(self.screening_group_table, cat)
+        self._fill_table(self.screening_balance_table, outputs.get("screening_group_balance", pd.DataFrame()))
+        current_f = self.screening_feature_combo.currentText() if hasattr(self, "screening_feature_combo") else ""
+        current_v = self.screening_variable_combo.currentText() if hasattr(self, "screening_variable_combo") else ""
+        self.screening_feature_combo.blockSignals(True); self.screening_variable_combo.blockSignals(True)
+        self.screening_feature_combo.clear(); self.screening_variable_combo.clear()
+        feats = []
+        for df in [cont, cat]:
+            if df is not None and not df.empty and "feature" in df.columns:
+                feats.extend(df["feature"].astype(str).tolist())
+        vars_ = []
+        if cont is not None and not cont.empty and "outcome_variable" in cont.columns:
+            vars_.extend(cont["outcome_variable"].astype(str).tolist())
+        if cat is not None and not cat.empty and "group_variable" in cat.columns:
+            vars_.extend(cat["group_variable"].astype(str).tolist())
+        feats = sorted(set(feats)); vars_ = sorted(set(vars_))
+        self.screening_feature_combo.addItems(feats[:500])
+        self.screening_variable_combo.addItems(vars_[:100])
+        if current_f and current_f in feats: self.screening_feature_combo.setCurrentText(current_f)
+        if current_v and current_v in vars_: self.screening_variable_combo.setCurrentText(current_v)
+        self.screening_feature_combo.blockSignals(False); self.screening_variable_combo.blockSignals(False)
+
+    def _selected_screening_feature(self) -> str | None:
+        if hasattr(self, "screening_feature_combo") and self.screening_feature_combo.count() > 0:
+            return self.screening_feature_combo.currentText()
+        return None
+
+    def _selected_screening_variable(self) -> str | None:
+        if hasattr(self, "screening_variable_combo") and self.screening_variable_combo.count() > 0:
+            return self.screening_variable_combo.currentText()
+        return None
+
+    def generate_selected_feature_outcome(self) -> None:
+        feature = self._selected_screening_feature()
+        variable = self._selected_screening_variable()
+        if not feature or not variable:
+            return
+        try:
+            self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
+            path = plot_selected_feature_outcome(self.feature_df, feature, variable, plots_dir / "selected_feature_outcome.png")
+            if not hasattr(self, "plot_paths"):
+                self.plot_paths = {}
+            self.plot_paths["selected_feature_outcome"] = str(path)
+        except Exception:
+            pass
+
+    def preview_screening_plot(self, key: str) -> None:
+        if key == "selected_feature_outcome":
+            self.generate_selected_feature_outcome()
+        if not hasattr(self, "plot_paths") or key not in self.plot_paths or not Path(self.plot_paths.get(key, "")).exists():
+            self.regenerate_overview_plots()
+        if not hasattr(self, "plot_paths") or key not in self.plot_paths:
+            QMessageBox.information(self, "Plot unavailable", "Run Feature Analysis first, or this screening plot could not be generated for the current dataset.")
+            return
+        path = Path(self.plot_paths[key])
+        if not path.exists():
+            QMessageBox.information(self, "Plot unavailable", f"Plot file not found:\n{path}")
+            return
+        self.current_screening_plot = path
+        self.update_screening_interpretation(key)
+        pix = QPixmap(str(path))
+        if pix.isNull():
+            self.screening_plot_preview.setText(f"Could not load plot:\n{path}")
+            return
+        self.screening_plot_preview.setPixmap(pix.scaled(self.screening_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self.screening_plot_preview.setToolTip(str(path))
+
+    def update_screening_interpretation(self, key: str) -> None:
+        if not hasattr(self, "screening_interpretation_label"):
+            return
+        feature = self._selected_screening_feature() or "selected feature"
+        variable = self._selected_screening_variable() or "selected outcome/group"
+        captions = {
+            "screening_group_balance": (
+                "<b>What it shows</b><br>Sample size per level for the most relevant detected group/outcome variable.<br><br>"
+                "<b>Concerning pattern</b><br>Small or highly imbalanced levels make group contrasts unstable and can bias downstream ML splits.<br><br>"
+                "<b>Do not overinterpret</b><br>Balance does not prove comparability; groups can still differ in task, QC, device, age, severity, or visit count.<br><br>"
+                "<b>Next check</b><br>Review the group-balance table and compare with QC Integration and Missingness by group."
+            ),
+            "screening_effect_ranking": (
+                "<b>What it shows</b><br>The largest descriptive univariate feature-outcome or feature-group effects.<br><br>"
+                "<b>Concerning pattern</b><br>Large effects are interesting only if they are not driven by small group sizes, QC, missingness, outliers, or task imbalance.<br><br>"
+                "<b>Do not overinterpret</b><br>This is a screening ranking, not biomarker discovery, not adjusted inference, and not predictive validation.<br><br>"
+                "<b>Next check</b><br>Inspect the selected feature plot and verify the same feature in Distributions, QC Integration, and Feature Relationships."
+            ),
+            "screening_continuous_heatmap": (
+                "<b>What it shows</b><br>Spearman correlations between features and continuous outcomes such as ALSFRS scores, severity scores, progression rate, or intelligibility.<br><br>"
+                "<b>Concerning pattern</b><br>Broad high associations across many features may indicate a global task/QC/severity axis rather than specific physiology.<br><br>"
+                "<b>Do not overinterpret</b><br>Spearman screens are unadjusted and ignore repeated measures. They do not replace mixed models or ML validation.<br><br>"
+                "<b>Next check</b><br>Check whether candidate features are QC-sensitive, redundant, or missing non-randomly."
+            ),
+            "screening_group_heatmap": (
+                "<b>What it shows</b><br>Robust descriptive feature contrasts across categorical groups such as diagnosis, task, severity_bin, session, device, or sex/gender.<br><br>"
+                "<b>Concerning pattern</b><br>Large effects for task or device can masquerade as clinical effects if not handled later.<br><br>"
+                "<b>Do not overinterpret</b><br>Group contrast screens are not corrected clinical tests and are not adjusted for covariates or repeated recordings.<br><br>"
+                "<b>Next check</b><br>Review group balance, task distribution, QC family burden, and selected feature plots."
+            ),
+            "screening_effect_landscape": (
+                "<b>What it shows</b><br>Effect magnitude versus pairwise sample size for all evaluated screening relationships.<br><br>"
+                "<b>Concerning pattern</b><br>Very large effects with very small N are unstable and should not drive conclusions.<br><br>"
+                "<b>Do not overinterpret</b><br>A small effect with high N may be reliable but clinically small; a large effect with low N may be noise.<br><br>"
+                "<b>Next check</b><br>Prioritize effects that are moderate/large, adequate-N, distributionally plausible, and not QC-driven."
+            ),
+            "selected_feature_outcome": (
+                f"<b>What it shows</b><br>Direct descriptive view of <b>{feature}</b> against <b>{variable}</b>.<br><br>"
+                "<b>Concerning pattern</b><br>One or two points driving the pattern, unequal variance, sparse groups, or visible outliers mean the association needs review.<br><br>"
+                "<b>Do not overinterpret</b><br>This plot is descriptive. It does not establish diagnosis, prognosis, causality, or model performance.<br><br>"
+                "<b>Next check</b><br>Check the feature's missingness, distribution, QC sensitivity, redundancy, and reliability before interpreting clinically."
+            ),
+        }
+        self.screening_interpretation_label.setText(captions.get(key, "Select a screening plot to see structured interpretation guidance."))
+
+    def open_current_screening_plot(self) -> None:
+        path = getattr(self, "current_screening_plot", None)
+        if not path:
+            QMessageBox.information(self, "No current plot", "Preview a screening plot first, then open the full-resolution file.")
+            return
+        self.open_file(Path(path))
+
+    def _reliability_page(self) -> QWidget:
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
+        card = Card(
+            "Reliability / Repeatability",
+            "Repeated-measures stability review. This screen asks whether features are stable across repeated recordings/sessions, or mainly session-, task-, QC-, or acquisition-dependent."
+        )
+        self.reliability_metric_grid = QGridLayout()
+        card.layout.addLayout(self.reliability_metric_grid)
+
+        controls = QHBoxLayout()
+        self.reliability_feature_combo = QComboBox()
+        self.reliability_feature_combo.setMinimumWidth(360)
+        self.reliability_feature_combo.currentIndexChanged.connect(lambda _=0: self.preview_reliability_plot("selected_feature_reliability"))
+        controls.addWidget(QLabel("Selected feature:"))
+        controls.addWidget(self.reliability_feature_combo)
+        controls.addStretch(1)
+        open_btn = QPushButton("Open current plot file")
+        open_btn.setProperty("primary", True)
+        open_btn.clicked.connect(self.open_current_reliability_plot)
+        controls.addWidget(open_btn)
+        card.layout.addLayout(controls)
+
+        tabs = QTabWidget()
+        self.reliability_design_table = self._simple_table()
+        self.reliability_repeatability_table = self._simple_table()
+        self.reliability_family_table = self._simple_table()
+        self.reliability_subjects_table = self._simple_table()
+        self.reliability_screen_table = self._simple_table()
+        for title, tbl in [
+            ("Design support", self.reliability_design_table),
+            ("Feature repeatability", self.reliability_repeatability_table),
+            ("Family summary", self.reliability_family_table),
+            ("Subject counts", self.reliability_subjects_table),
+            ("Readiness screen", self.reliability_screen_table),
+        ]:
+            tabs.addTab(tbl, title)
+        card.layout.addWidget(tabs, 1)
+
+        plot_card = Card(
+            "Reliability plots",
+            "Use these plots to distinguish stable participant/setup traits from session-level variability. Interpretation depends on repeated-record design support."
+        )
+        split = QSplitter(Qt.Horizontal)
+        left = QWidget(); left_l = QVBoxLayout(left); left_l.setContentsMargins(0,0,0,0); left_l.setSpacing(8)
+        for label, key in [
+            ("Reliability status counts", "reliability_status_counts"),
+            ("ICC ranking", "reliability_icc_ranking"),
+            ("Within vs between variance", "reliability_variance_landscape"),
+            ("Reliability by family", "reliability_family_summary"),
+            ("Subject record counts", "reliability_subject_counts"),
+            ("Selected feature spaghetti", "selected_feature_reliability"),
+        ]:
+            b = QPushButton(label)
+            b.setProperty("secondary", True)
+            b.clicked.connect(lambda _=False, k=key: self.preview_reliability_plot(k))
+            left_l.addWidget(b)
+        left_l.addStretch(1)
+        right = QWidget(); right_l = QVBoxLayout(right); right_l.setContentsMargins(0,0,0,0); right_l.setSpacing(10)
+        self.reliability_plot_preview = QLabel("Run Feature Analysis, then choose a reliability plot.")
+        self.reliability_plot_preview.setAlignment(Qt.AlignCenter)
+        self.reliability_plot_preview.setMinimumHeight(500)
+        self.reliability_plot_preview.setStyleSheet(f"background:#FFFFFF; border:1px solid {LINE}; border-radius:12px; color:{MUTED};")
+        self.reliability_interpretation_label = QLabel("Select a plot to see structured interpretation guidance.")
+        self.reliability_interpretation_label.setWordWrap(True)
+        self.reliability_interpretation_label.setStyleSheet(f"background:#FFFFFF; color:{INK}; border:1px solid {LINE}; border-radius:10px; padding:12px;")
+        right_l.addWidget(self.reliability_plot_preview, 1)
+        right_l.addWidget(self.reliability_interpretation_label)
+        split.addWidget(left); split.addWidget(right); split.setStretchFactor(1, 1)
+        plot_card.layout.addWidget(split)
+        layout.addWidget(card)
+        layout.addWidget(plot_card, 1)
+        return self._wrap_scroll(body)
+
+    def update_reliability_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
+        if not hasattr(self, "reliability_repeatability_table"):
+            return
+        while self.reliability_metric_grid.count():
+            item = self.reliability_metric_grid.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        design = outputs.get("reliability_design_summary", pd.DataFrame())
+        rep = outputs.get("feature_repeatability_summary", pd.DataFrame())
+        fam = outputs.get("reliability_family_summary", pd.DataFrame())
+        subj = outputs.get("reliability_subject_record_counts", pd.DataFrame())
+        def metric(name: str, default: object = "—") -> object:
+            if design is None or design.empty or "metric" not in design.columns:
+                return default
+            row = design.loc[design["metric"].astype(str).eq(name)]
+            return row["value"].iloc[0] if not row.empty else default
+        stable = int(rep["reliability_status"].astype(str).eq("stable").sum()) if rep is not None and not rep.empty and "reliability_status" in rep.columns else 0
+        moderate = int(rep["reliability_status"].astype(str).eq("moderate").sum()) if rep is not None and not rep.empty and "reliability_status" in rep.columns else 0
+        evaluable = int(pd.to_numeric(rep.get("icc1_proxy", pd.Series(dtype=float)), errors="coerce").notna().sum()) if rep is not None and not rep.empty else 0
+        tiles = [
+            ("Subject column", metric("subject_column"), "repeatability anchor"),
+            ("Subjects with repeats", metric("subjects_with_repeats", 0), "required for ICC-style review"),
+            ("Median records / subject", metric("median_records_per_subject", 0), "design depth"),
+            ("Evaluable features", evaluable, "ICC-style estimates"),
+            ("Stable features", stable, "ICC proxy ≥ .75"),
+            ("Moderate features", moderate, "ICC proxy .50-.75"),
+        ]
+        for idx, (title, value, subtitle) in enumerate(tiles):
+            self.reliability_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx // 3, idx % 3)
+        self._fill_table(self.reliability_design_table, design)
+        self._fill_table(self.reliability_repeatability_table, rep)
+        self._fill_table(self.reliability_family_table, fam)
+        self._fill_table(self.reliability_subjects_table, subj)
+        self._fill_table(self.reliability_screen_table, outputs.get("feature_reliability_screen", pd.DataFrame()))
+        current = self.reliability_feature_combo.currentText() if hasattr(self, "reliability_feature_combo") else ""
+        self.reliability_feature_combo.blockSignals(True)
+        self.reliability_feature_combo.clear()
+        feats = rep["feature"].astype(str).tolist() if rep is not None and not rep.empty and "feature" in rep.columns else []
+        self.reliability_feature_combo.addItems(feats[:500])
+        if current and current in feats:
+            self.reliability_feature_combo.setCurrentText(current)
+        self.reliability_feature_combo.blockSignals(False)
+
+    def _selected_reliability_feature(self) -> str | None:
+        if hasattr(self, "reliability_feature_combo") and self.reliability_feature_combo.count() > 0:
+            return self.reliability_feature_combo.currentText()
+        return None
+
+    def generate_selected_feature_reliability(self) -> None:
+        feature = self._selected_reliability_feature()
+        if not feature:
+            return
+        try:
+            self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
+            path = plot_selected_feature_reliability(self.feature_df, feature, plots_dir / "selected_feature_reliability.png")
+            if not hasattr(self, "plot_paths"):
+                self.plot_paths = {}
+            self.plot_paths["selected_feature_reliability"] = str(path)
+        except Exception as exc:
+            QMessageBox.warning(self, "Reliability plot failed", str(exc))
+
+    def preview_reliability_plot(self, key: str) -> None:
+        if key == "selected_feature_reliability":
+            self.generate_selected_feature_reliability()
+        elif not hasattr(self, "plot_paths") or key not in self.plot_paths or not Path(self.plot_paths.get(key, "")).exists():
+            self.regenerate_overview_plots()
+        if not hasattr(self, "plot_paths") or key not in self.plot_paths:
+            QMessageBox.information(self, "Plot unavailable", "Run Feature Analysis first, or this reliability plot could not be generated for the current dataset.")
+            return
+        path = Path(self.plot_paths[key])
+        if not path.exists():
+            QMessageBox.information(self, "Plot unavailable", f"Plot file not found:\n{path}")
+            return
+        self.current_reliability_plot = path
+        self.update_reliability_interpretation(key)
+        pix = QPixmap(str(path))
+        if pix.isNull():
+            self.reliability_plot_preview.setText(f"Could not load plot:\n{path}")
+            return
+        self.reliability_plot_preview.setPixmap(pix.scaled(self.reliability_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self.reliability_plot_preview.setToolTip(str(path))
+
+    def update_reliability_interpretation(self, key: str) -> None:
+        if not hasattr(self, "reliability_interpretation_label"):
+            return
+        feature = self._selected_reliability_feature() or "selected feature"
+        captions = {
+            "reliability_status_counts": (
+                "<b>What it shows</b><br>Counts of features classified as stable, moderate, variable, unstable, or not evaluable based on repeated-record variance structure.<br><br>"
+                "<b>Concerning pattern</b><br>Many not-evaluable or unstable features means the dataset may not support longitudinal interpretation for those measures.<br><br>"
+                "<b>Do not overinterpret</b><br>These are screening labels, not formal mixed-effects reliability estimates.<br><br>"
+                "<b>Next check</b><br>Inspect design support and selected-feature spaghetti plots."
+            ),
+            "reliability_icc_ranking": (
+                "<b>What it shows</b><br>Features ranked by ICC(1)-style variance-ratio proxy: between-subject variance divided by total between+within variance.<br><br>"
+                "<b>Concerning pattern</b><br>Low ICC means repeated recordings from the same subject vary substantially; this can weaken longitudinal monitoring.<br><br>"
+                "<b>Do not overinterpret</b><br>High ICC can reflect stable device/setup effects as well as stable physiology. Compare with QC Integration.<br><br>"
+                "<b>Next check</b><br>Review family summary, QC sensitivity, and selected feature trajectories."
+            ),
+            "reliability_variance_landscape": (
+                "<b>What it shows</b><br>Within-subject variance versus between-subject variance for evaluable features. Larger points have higher ICC proxy.<br><br>"
+                "<b>Concerning pattern</b><br>High within-subject variance suggests session/task/acquisition instability; high between-subject variance can be useful but may include stable device effects.<br><br>"
+                "<b>Do not overinterpret</b><br>This does not separate physiology from acquisition unless paired with QC and task context.<br><br>"
+                "<b>Next check</b><br>Inspect features with high between-subject and low within-subject variance."
+            ),
+            "reliability_family_summary": (
+                "<b>What it shows</b><br>Median repeatability by feature family/subsystem.<br><br>"
+                "<b>Concerning pattern</b><br>A whole family with low repeatability may reflect task support problems, algorithm instability, or acquisition sensitivity.<br><br>"
+                "<b>Do not overinterpret</b><br>Family medians can hide individual strong features.<br><br>"
+                "<b>Next check</b><br>Open the feature repeatability table and compare with distributions/QC."
+            ),
+            "reliability_subject_counts": (
+                "<b>What it shows</b><br>How many repeated records each subject contributes.<br><br>"
+                "<b>Concerning pattern</b><br>Few repeated subjects or very unequal recording counts make reliability estimates fragile.<br><br>"
+                "<b>Do not overinterpret</b><br>More records per subject improve reliability estimation but do not guarantee task or QC comparability.<br><br>"
+                "<b>Next check</b><br>Review task/session structure and subject-level QC burden."
+            ),
+            "selected_feature_reliability": (
+                f"<b>What it shows</b><br>Repeated-record trajectory for <b>{feature}</b> within each subject when subject labels are available.<br><br>"
+                "<b>Concerning pattern</b><br>Large within-subject swings suggest session effects, task differences, QC artifacts, or genuine longitudinal change.<br><br>"
+                "<b>Do not overinterpret</b><br>Spaghetti plots are descriptive; they do not prove progression or stability.<br><br>"
+                "<b>Next check</b><br>Compare against visit timing, task, severity, and QC."
+            ),
+        }
+        self.reliability_interpretation_label.setText(captions.get(key, "Select a reliability plot to see structured interpretation guidance."))
+
+    def open_current_reliability_plot(self) -> None:
+        path = getattr(self, "current_reliability_plot", None)
+        if not path:
+            QMessageBox.information(self, "No current plot", "Preview a reliability plot first, then open the full-resolution file.")
+            return
+        self.open_file(Path(path))
+
     def _table_page(self, title: str, subtitle: str) -> QWidget:
         body = QWidget()
         layout = QVBoxLayout(body)
@@ -2219,6 +2690,8 @@ class FeatureAnalysisGUI(QMainWindow):
             self.update_distribution_dashboard(outputs)
             self.update_qc_dashboard(outputs)
             self.update_relationships_dashboard(outputs)
+            self.update_screening_dashboard(outputs)
+            self.update_reliability_dashboard(outputs)
             self.log(f"Analysis complete. Outputs written to: {self.output_dir}")
             self.show_page("overview")
         except Exception as exc:
@@ -2231,7 +2704,8 @@ class FeatureAnalysisGUI(QMainWindow):
             "distributions___outliers": "feature_distribution_summary",
             "qc_integration": "feature_qc_spearman_correlation",
             "feature_relationships": "feature_relationship_summary",
-            "reliability": "feature_reliability_screen",
+            "group___outcome_screening": "screening_summary",
+            "reliability": "feature_repeatability_summary",
         }
         for obj_suffix, key in targets.items():
             table = getattr(self, f"table_{obj_suffix}", None)
@@ -2268,6 +2742,21 @@ class FeatureAnalysisGUI(QMainWindow):
             pix = QPixmap(str(qpath))
             if not pix.isNull():
                 self.qc_plot_preview.setPixmap(pix.scaled(self.qc_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        rpath = getattr(self, "current_relationship_plot", None)
+        if rpath and hasattr(self, "relationship_plot_preview"):
+            pix = QPixmap(str(rpath))
+            if not pix.isNull():
+                self.relationship_plot_preview.setPixmap(pix.scaled(self.relationship_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        spath = getattr(self, "current_screening_plot", None)
+        if spath and hasattr(self, "screening_plot_preview"):
+            pix = QPixmap(str(spath))
+            if not pix.isNull():
+                self.screening_plot_preview.setPixmap(pix.scaled(self.screening_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        relpath = getattr(self, "current_reliability_plot", None)
+        if relpath and hasattr(self, "reliability_plot_preview"):
+            pix = QPixmap(str(relpath))
+            if not pix.isNull():
+                self.reliability_plot_preview.setPixmap(pix.scaled(self.reliability_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
     def write_report(self, path: Path, outputs: dict[str, pd.DataFrame]) -> None:
         inv = outputs.get("dataset_inventory", pd.DataFrame()).to_html(index=False, escape=False)

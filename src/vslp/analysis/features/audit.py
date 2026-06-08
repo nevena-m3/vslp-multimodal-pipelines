@@ -1491,3 +1491,409 @@ def feature_relationship_summary(feature_df: pd.DataFrame, feature_cols: list[st
             {"metric":"pc1_pc3_cumulative_percent", "value": round(pc3,2), "interpretation":"Variance captured by the first three PCs. Used only for structure review."},
         ]
     return pd.DataFrame(rows)
+
+# Group / outcome screening utilities
+# Descriptive, univariate, leakage-safe orientation only. No model training.
+
+def _screening_candidate_columns(feature_df: pd.DataFrame, mapping: pd.DataFrame | None, feature_cols: list[str]) -> tuple[list[str], list[str], pd.DataFrame]:
+    """Return continuous outcomes, categorical groups, and an audit catalog."""
+    feature_set = set(feature_cols or [])
+    rows = []
+    candidate_names = set()
+    if mapping is not None and not mapping.empty and {"column", "role"}.issubset(mapping.columns):
+        for _, r in mapping.iterrows():
+            col = str(r.get("column", ""))
+            role = str(r.get("role", ""))
+            if col in feature_df.columns and role in {ROLE_TARGET, ROLE_COVARIATE, ROLE_TASK, ROLE_TIME}:
+                candidate_names.add(col)
+    # Also include common design/outcome labels even if mapping was conservative.
+    keywords = [
+        "diagnosis", "dx", "group", "class", "label", "target", "outcome", "severity", "severity_bin",
+        "severity_score", "alsfrs", "alsfrs_total", "alsfrs_bulbar", "alsbdi", "progression", "intelligibility",
+        "task", "task_name", "prompt", "session", "visit", "timepoint", "sex", "gender", "age", "device", "microphone",
+    ]
+    for c in feature_df.columns:
+        n = normalize_name(c)
+        if any(k in n for k in keywords):
+            candidate_names.add(c)
+    # Never use feature columns as outcome/group candidates.
+    candidate_names = [c for c in candidate_names if c in feature_df.columns and c not in feature_set]
+    continuous = []
+    categorical = []
+    for c in candidate_names:
+        s = feature_df[c]
+        n_nonmissing = int(s.notna().sum())
+        n_unique = int(s.nunique(dropna=True))
+        numeric = pd.api.types.is_numeric_dtype(s)
+        role = "unknown"
+        if mapping is not None and not mapping.empty and {"column","role"}.issubset(mapping.columns):
+            rr = mapping.loc[mapping["column"].astype(str).eq(str(c)), "role"]
+            if not rr.empty:
+                role = str(rr.iloc[0])
+        if n_nonmissing < 6 or n_unique < 2:
+            kind = "insufficient"
+            action = "Not enough non-missing or unique values for screening."
+        elif numeric and n_unique > 10:
+            continuous.append(c)
+            kind = "continuous_outcome"
+            action = "Use Spearman feature-outcome screening. Interpret descriptively only."
+        elif n_unique <= 20:
+            categorical.append(c)
+            kind = "categorical_group"
+            action = "Use group contrast screening. Inspect group balance before interpretation."
+        else:
+            kind = "high_cardinality_skip"
+            action = "Too many levels for simple group screening; consider recoding before use."
+        rows.append({
+            "variable": c,
+            "mapped_role": role,
+            "screening_type": kind,
+            "numeric": bool(numeric),
+            "n_nonmissing": n_nonmissing,
+            "n_unique": n_unique,
+            "missing_fraction": float(s.isna().mean()),
+            "recommended_use": action,
+        })
+    catalog = pd.DataFrame(rows).sort_values(["screening_type", "variable"]) if rows else pd.DataFrame(columns=["variable","mapped_role","screening_type","numeric","n_nonmissing","n_unique","missing_fraction","recommended_use"])
+    return continuous[:12], categorical[:12], catalog
+
+
+def _strength_label(effect: float) -> str:
+    a = abs(float(effect)) if pd.notna(effect) else np.nan
+    if pd.isna(a):
+        return "not_evaluable"
+    if a >= 0.50:
+        return "strong_review"
+    if a >= 0.30:
+        return "moderate_monitor"
+    if a >= 0.20:
+        return "weak_signal"
+    return "minimal"
+
+
+def _cliffs_delta(x: pd.Series, y: pd.Series, max_n: int = 800) -> float:
+    x = pd.to_numeric(x, errors="coerce").dropna().to_numpy(dtype=float)
+    y = pd.to_numeric(y, errors="coerce").dropna().to_numpy(dtype=float)
+    if len(x) == 0 or len(y) == 0:
+        return np.nan
+    # deterministic downsample for tractability
+    if len(x) > max_n:
+        x = x[np.linspace(0, len(x)-1, max_n).astype(int)]
+    if len(y) > max_n:
+        y = y[np.linspace(0, len(y)-1, max_n).astype(int)]
+    diff = x[:, None] - y[None, :]
+    return float((np.sum(diff > 0) - np.sum(diff < 0)) / diff.size)
+
+
+def _robust_standardized_median_diff(a: pd.Series, b: pd.Series) -> float:
+    x = pd.to_numeric(a, errors="coerce").dropna()
+    y = pd.to_numeric(b, errors="coerce").dropna()
+    if x.empty or y.empty:
+        return np.nan
+    pooled = pd.concat([x, y])
+    iqr = float(pooled.quantile(.75) - pooled.quantile(.25))
+    sd = float(pooled.std(ddof=1))
+    scale = iqr if iqr > 0 else sd if sd > 0 else np.nan
+    if pd.isna(scale) or scale == 0:
+        return np.nan
+    return float((x.median() - y.median()) / scale)
+
+
+def continuous_outcome_screen(feature_df: pd.DataFrame, feature_cols: list[str], continuous_targets: list[str]) -> pd.DataFrame:
+    rows = []
+    fcols = numeric_columns(feature_df, feature_cols)
+    for target in continuous_targets:
+        if target not in feature_df.columns:
+            continue
+        y = pd.to_numeric(feature_df[target], errors="coerce")
+        for feat in fcols:
+            x = pd.to_numeric(feature_df[feat], errors="coerce")
+            pair = pd.DataFrame({"x": x, "y": y}).dropna()
+            if len(pair) < 8 or pair["x"].nunique() < 3 or pair["y"].nunique() < 3:
+                continue
+            rho = pair["x"].rank(method="average").corr(pair["y"].rank(method="average"))
+            rows.append({
+                "outcome_variable": target,
+                "feature": feat,
+                "association_type": "spearman_feature_continuous_outcome",
+                "effect": float(rho) if pd.notna(rho) else np.nan,
+                "abs_effect": float(abs(rho)) if pd.notna(rho) else np.nan,
+                "direction": "positive" if pd.notna(rho) and rho > 0 else "negative" if pd.notna(rho) and rho < 0 else "none",
+                "n_pairwise": int(len(pair)),
+                "feature_missing_fraction": float(x.isna().mean()),
+                "outcome_missing_fraction": float(y.isna().mean()),
+                "screening_strength": _strength_label(rho),
+                "interpretation": "Descriptive monotonic feature-outcome association; not adjusted for task, QC, covariates, or repeated measures.",
+            })
+    if not rows:
+        return pd.DataFrame(columns=["outcome_variable","feature","association_type","effect","abs_effect","direction","n_pairwise","feature_missing_fraction","outcome_missing_fraction","screening_strength","interpretation"])
+    return pd.DataFrame(rows).sort_values(["abs_effect", "n_pairwise"], ascending=[False, False])
+
+
+def categorical_group_screen(feature_df: pd.DataFrame, feature_cols: list[str], categorical_groups: list[str], max_levels: int = 8) -> pd.DataFrame:
+    rows = []
+    fcols = numeric_columns(feature_df, feature_cols)
+    for group in categorical_groups:
+        if group not in feature_df.columns:
+            continue
+        g = feature_df[group].astype("object")
+        levels = [x for x in g.dropna().astype(str).value_counts().index.tolist() if x.lower() not in {"nan", "none"}]
+        if len(levels) < 2 or len(levels) > max_levels:
+            continue
+        for feat in fcols:
+            x = pd.to_numeric(feature_df[feat], errors="coerce")
+            tmp = pd.DataFrame({"x": x, "g": g.astype(str)}).replace({"g": {"nan": np.nan}}).dropna()
+            tmp = tmp[tmp["g"].isin(levels)]
+            if len(tmp) < 8 or tmp["x"].nunique() < 3:
+                continue
+            counts = tmp["g"].value_counts()
+            if (counts < 3).any():
+                continue
+            if len(levels) == 2:
+                a, b = levels[0], levels[1]
+                xa = tmp.loc[tmp["g"].eq(a), "x"]
+                xb = tmp.loc[tmp["g"].eq(b), "x"]
+                effect = _robust_standardized_median_diff(xa, xb)
+                cliff = _cliffs_delta(xa, xb)
+                interpretation = f"Binary group contrast: median({a}) - median({b}) scaled by pooled IQR/SD. Cliff delta also reported."
+                extra = {"level_1": a, "level_2": b, "cliffs_delta": cliff}
+            else:
+                med = tmp.groupby("g")["x"].median()
+                pooled = tmp["x"]
+                iqr = float(pooled.quantile(.75) - pooled.quantile(.25))
+                sd = float(pooled.std(ddof=1))
+                scale = iqr if iqr > 0 else sd if sd > 0 else np.nan
+                effect = float((med.max() - med.min()) / scale) if pd.notna(scale) and scale > 0 else np.nan
+                interpretation = "Multi-level group contrast: range of group medians scaled by pooled IQR/SD. Descriptive only."
+                extra = {"level_1": str(med.idxmax()), "level_2": str(med.idxmin()), "cliffs_delta": np.nan}
+            rows.append({
+                "group_variable": group,
+                "feature": feat,
+                "association_type": "robust_group_contrast",
+                "effect": effect,
+                "abs_effect": abs(effect) if pd.notna(effect) else np.nan,
+                "direction": "higher_in_" + str(extra["level_1"]) if pd.notna(effect) and effect > 0 else "higher_in_" + str(extra["level_2"]) if pd.notna(effect) and effect < 0 else "none",
+                "n_pairwise": int(len(tmp)),
+                "n_levels": int(len(levels)),
+                "level_1": extra["level_1"],
+                "level_2": extra["level_2"],
+                "cliffs_delta": extra["cliffs_delta"],
+                "group_counts": "; ".join([f"{k}: {int(v)}" for k, v in counts.items()]),
+                "feature_missing_fraction": float(x.isna().mean()),
+                "screening_strength": _strength_label(effect),
+                "interpretation": interpretation,
+            })
+    if not rows:
+        return pd.DataFrame(columns=["group_variable","feature","association_type","effect","abs_effect","direction","n_pairwise","n_levels","level_1","level_2","cliffs_delta","group_counts","feature_missing_fraction","screening_strength","interpretation"])
+    return pd.DataFrame(rows).sort_values(["abs_effect", "n_pairwise"], ascending=[False, False])
+
+
+def screening_group_balance(feature_df: pd.DataFrame, categorical_groups: list[str]) -> pd.DataFrame:
+    rows=[]
+    for group in categorical_groups:
+        if group not in feature_df.columns:
+            continue
+        vc = feature_df[group].astype("object").dropna().astype(str).value_counts()
+        if vc.empty:
+            continue
+        total = int(vc.sum())
+        for level, n in vc.items():
+            rows.append({
+                "group_variable": group,
+                "level": level,
+                "n_rows": int(n),
+                "proportion": float(n / total) if total else np.nan,
+                "imbalance_note": "small_level" if n < 10 else "ok",
+            })
+    return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["group_variable","level","n_rows","proportion","imbalance_note"])
+
+
+def screening_effect_summary(continuous_screen: pd.DataFrame, categorical_screen: pd.DataFrame, catalog: pd.DataFrame) -> pd.DataFrame:
+    rows=[]
+    rows.append({"metric":"screening_variables_detected", "value": int(0 if catalog is None else len(catalog)), "interpretation":"Candidate outcome/group/covariate variables available for descriptive screening."})
+    rows.append({"metric":"continuous_feature_outcome_tests", "value": int(0 if continuous_screen is None else len(continuous_screen)), "interpretation":"Feature-continuous outcome Spearman screens evaluated."})
+    rows.append({"metric":"categorical_group_feature_tests", "value": int(0 if categorical_screen is None else len(categorical_screen)), "interpretation":"Feature-group descriptive contrast screens evaluated."})
+    if continuous_screen is not None and not continuous_screen.empty:
+        rows.append({"metric":"continuous_abs_effect_ge_0_30", "value": int((pd.to_numeric(continuous_screen["abs_effect"], errors="coerce") >= .30).sum()), "interpretation":"Moderate or stronger feature-outcome screens; review, not discovery claims."})
+    if categorical_screen is not None and not categorical_screen.empty:
+        rows.append({"metric":"group_abs_effect_ge_0_30", "value": int((pd.to_numeric(categorical_screen["abs_effect"], errors="coerce") >= .30).sum()), "interpretation":"Moderate or stronger feature-group screens; review group balance and QC."})
+    return pd.DataFrame(rows)
+
+
+def build_group_outcome_screening(feature_df: pd.DataFrame, feature_cols: list[str], mapping: pd.DataFrame | None = None) -> dict[str, pd.DataFrame]:
+    continuous, categorical, catalog = _screening_candidate_columns(feature_df, mapping, feature_cols)
+    cont = continuous_outcome_screen(feature_df, feature_cols, continuous)
+    cat = categorical_group_screen(feature_df, feature_cols, categorical)
+    balance = screening_group_balance(feature_df, categorical)
+    summary = screening_effect_summary(cont, cat, catalog)
+    return {
+        "screening_summary": summary,
+        "screening_variable_catalog": catalog,
+        "screening_continuous_outcome_associations": cont,
+        "screening_categorical_group_associations": cat,
+        "screening_group_balance": balance,
+    }
+
+
+
+def _detect_reliability_design_columns(feature_df: pd.DataFrame, mapping: pd.DataFrame | None = None) -> dict[str, str | None]:
+    """Detect repeated-measures design columns conservatively."""
+    subject = _first_present(feature_df, [
+        "subject_id", "participant_id", "patient_id", "person_id", "speaker_id", "client_id"
+    ])
+    session = _first_present(feature_df, [
+        "session_id", "visit_id", "clinical_visit_id", "timepoint", "wave", "session", "visit", "recording_session"
+    ])
+    task = _first_present(feature_df, ["task", "task_name", "prompt", "passage", "speech_task"])
+    date = _first_present(feature_df, ["recording_date", "date", "created_at", "timestamp", "datetime"])
+    if mapping is not None and not mapping.empty and "role" in mapping.columns and "column" in mapping.columns:
+        roles = role_lists(mapping)
+        if not subject:
+            ids = [c for c in roles.get(ROLE_IDENTIFIER, []) if c in feature_df.columns]
+            subject = ids[0] if ids else None
+        if not session:
+            times = [c for c in roles.get(ROLE_TIME, []) if c in feature_df.columns]
+            session = times[0] if times else None
+        if not task:
+            tasks = [c for c in roles.get(ROLE_TASK, []) if c in feature_df.columns]
+            task = tasks[0] if tasks else None
+    return {"subject_col": subject, "session_col": session, "task_col": task, "date_col": date}
+
+
+def reliability_design_summary(feature_df: pd.DataFrame, feature_cols: list[str], mapping: pd.DataFrame | None = None) -> pd.DataFrame:
+    design = _detect_reliability_design_columns(feature_df, mapping)
+    subject = design.get("subject_col")
+    session = design.get("session_col")
+    task = design.get("task_col")
+    rows = []
+    rows.append({"metric": "rows", "value": int(len(feature_df)), "interpretation": "Number of records available for repeatability review."})
+    rows.append({"metric": "numeric_features", "value": int(len(numeric_columns(feature_df, feature_cols))), "interpretation": "Numeric feature columns included in repeatability summaries."})
+    rows.append({"metric": "subject_column", "value": subject or "not_detected", "interpretation": "Subject/participant column used to identify repeated recordings."})
+    rows.append({"metric": "session_column", "value": session or "not_detected", "interpretation": "Session/visit/time column used for ordering repeated recordings when available."})
+    rows.append({"metric": "task_column", "value": task or "not_detected", "interpretation": "Task column used to interpret task-specific repeatability when available."})
+    if subject and subject in feature_df.columns:
+        counts = feature_df[subject].value_counts(dropna=True)
+        rows.append({"metric": "unique_subjects", "value": int(counts.size), "interpretation": "Subjects with at least one record."})
+        rows.append({"metric": "subjects_with_repeats", "value": int((counts >= 2).sum()), "interpretation": "Subjects contributing two or more records; required for within-subject repeatability."})
+        rows.append({"metric": "median_records_per_subject", "value": float(counts.median()) if not counts.empty else 0, "interpretation": "Typical repeated-record count per subject."})
+        rows.append({"metric": "max_records_per_subject", "value": int(counts.max()) if not counts.empty else 0, "interpretation": "Largest repeated-record count for one subject."})
+    else:
+        rows.append({"metric": "subjects_with_repeats", "value": 0, "interpretation": "No subject column detected; ICC-style repeatability cannot be estimated."})
+    if task and task in feature_df.columns:
+        rows.append({"metric": "unique_tasks", "value": int(feature_df[task].nunique(dropna=True)), "interpretation": "Task diversity; repeatability should be interpreted within task when tasks differ."})
+    if session and session in feature_df.columns:
+        rows.append({"metric": "unique_sessions", "value": int(feature_df[session].nunique(dropna=True)), "interpretation": "Detected session/visit/timepoint levels."})
+    return pd.DataFrame(rows)
+
+
+def reliability_subject_record_counts(feature_df: pd.DataFrame, mapping: pd.DataFrame | None = None) -> pd.DataFrame:
+    design = _detect_reliability_design_columns(feature_df, mapping)
+    subject = design.get("subject_col")
+    session = design.get("session_col")
+    task = design.get("task_col")
+    if not subject or subject not in feature_df.columns:
+        return pd.DataFrame(columns=["subject", "n_records", "n_sessions", "n_tasks", "interpretation"])
+    grp = feature_df.groupby(subject, dropna=True)
+    rows=[]
+    for sid, sub in grp:
+        n_sessions = int(sub[session].nunique(dropna=True)) if session and session in sub.columns else 0
+        n_tasks = int(sub[task].nunique(dropna=True)) if task and task in sub.columns else 0
+        interp = "repeatable_design" if len(sub) >= 2 else "single_record_only"
+        if len(sub) >= 2 and task and n_tasks > 1:
+            interp = "repeated records include multiple tasks; interpret within-task reliability cautiously"
+        rows.append({"subject": sid, "n_records": int(len(sub)), "n_sessions": n_sessions, "n_tasks": n_tasks, "interpretation": interp})
+    return pd.DataFrame(rows).sort_values(["n_records", "subject"], ascending=[False, True])
+
+
+def feature_repeatability_summary(feature_df: pd.DataFrame, feature_cols: list[str], mapping: pd.DataFrame | None = None, registry: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Descriptive repeated-measures reliability screen.
+
+    ICC is an ICC(1)-style variance-ratio proxy from one-way subject grouping.
+    It is only a screening statistic; it is not a formal mixed-effects reliability model.
+    """
+    design = _detect_reliability_design_columns(feature_df, mapping)
+    subject = design.get("subject_col")
+    task = design.get("task_col")
+    subsystem_lookup: dict[str, str] = {}
+    if registry is not None and not registry.empty:
+        name_col = _first_present(registry, ["feature", "feature_name", "name", "column"])
+        fam_col = _first_present(registry, ["family", "feature_family", "subsystem", "domain"])
+        if name_col and fam_col:
+            subsystem_lookup = dict(zip(registry[name_col].astype(str), registry[fam_col].astype(str)))
+    rows=[]
+    num_cols = numeric_columns(feature_df, feature_cols)
+    if not num_cols:
+        return pd.DataFrame(columns=["feature", "family_or_subsystem", "n_valid", "n_subjects", "n_repeated_subjects", "icc1_proxy", "within_subject_variance", "between_subject_variance", "median_within_subject_range", "missing_fraction", "reliability_status", "interpretation"])
+    for feat in num_cols:
+        x = pd.to_numeric(feature_df[feat], errors="coerce")
+        miss = float(x.isna().mean())
+        if not subject or subject not in feature_df.columns:
+            rows.append({
+                "feature": feat, "family_or_subsystem": subsystem_lookup.get(feat, "unclassified"),
+                "n_valid": int(x.notna().sum()), "n_subjects": 0, "n_repeated_subjects": 0,
+                "icc1_proxy": np.nan, "within_subject_variance": np.nan, "between_subject_variance": np.nan,
+                "median_within_subject_range": np.nan, "missing_fraction": miss,
+                "reliability_status": "not_evaluable",
+                "interpretation": "No subject/participant column detected; repeated-measures reliability cannot be estimated."
+            })
+            continue
+        tmp = pd.DataFrame({"subject": feature_df[subject], "value": x})
+        if task and task in feature_df.columns:
+            tmp["task"] = feature_df[task]
+        tmp = tmp.dropna(subset=["subject", "value"])
+        counts = tmp.groupby("subject")["value"].count()
+        repeated_subjects = counts[counts >= 2].index
+        n_valid = int(len(tmp)); n_subjects = int(counts.size); n_repeated = int(len(repeated_subjects))
+        if n_repeated < 3 or n_valid < 6:
+            status = "not_evaluable"
+            interp = "Too few repeated subjects/observations for stable repeatability estimation."
+            icc = np.nan; within = np.nan; between = np.nan; med_range = np.nan
+        else:
+            rep = tmp[tmp["subject"].isin(repeated_subjects)].copy()
+            subj_stats = rep.groupby("subject")["value"].agg(["mean", "var", "count", "min", "max"])
+            within = float(np.nanmean(subj_stats["var"].fillna(0).to_numpy()))
+            between = float(np.nanvar(subj_stats["mean"].to_numpy(), ddof=1)) if len(subj_stats) > 1 else np.nan
+            denom = between + within
+            icc = float(between / denom) if denom and np.isfinite(denom) and denom > 0 else np.nan
+            med_range = float(np.nanmedian((subj_stats["max"] - subj_stats["min"]).to_numpy()))
+            if not np.isfinite(icc):
+                status = "not_evaluable"; interp = "Variance components were not stable enough for interpretation."
+            elif icc >= 0.75:
+                status = "stable"; interp = "High participant-level stability; feature may capture stable subject/setup traits."
+            elif icc >= 0.50:
+                status = "moderate"; interp = "Moderate stability; useful but still sensitive to session/task/acquisition conditions."
+            elif icc >= 0.25:
+                status = "variable"; interp = "Low-to-moderate stability; inspect task/QC/session effects before longitudinal use."
+            else:
+                status = "unstable"; interp = "Low repeatability; feature may be session-dependent, noisy, task-sensitive, or acquisition-sensitive."
+        rows.append({
+            "feature": feat,
+            "family_or_subsystem": subsystem_lookup.get(feat, "unclassified"),
+            "n_valid": n_valid,
+            "n_subjects": n_subjects,
+            "n_repeated_subjects": n_repeated,
+            "icc1_proxy": icc,
+            "within_subject_variance": within,
+            "between_subject_variance": between,
+            "median_within_subject_range": med_range,
+            "missing_fraction": miss,
+            "reliability_status": status,
+            "interpretation": interp,
+        })
+    return pd.DataFrame(rows).sort_values(["reliability_status", "icc1_proxy"], ascending=[True, False])
+
+
+def reliability_family_summary(repeatability: pd.DataFrame) -> pd.DataFrame:
+    if repeatability is None or repeatability.empty or "family_or_subsystem" not in repeatability.columns:
+        return pd.DataFrame(columns=["family_or_subsystem", "n_features", "median_icc1_proxy", "n_stable", "n_unstable_or_variable", "interpretation"])
+    df = repeatability.copy()
+    df["icc1_proxy"] = pd.to_numeric(df.get("icc1_proxy"), errors="coerce")
+    rows=[]
+    for fam, sub in df.groupby("family_or_subsystem", dropna=False):
+        status = sub.get("reliability_status", pd.Series(dtype=str)).astype(str)
+        med = float(sub["icc1_proxy"].median()) if sub["icc1_proxy"].notna().any() else np.nan
+        n_stable = int(status.isin(["stable"]).sum())
+        n_var = int(status.isin(["variable", "unstable"]).sum())
+        interp = "Family appears stable" if np.isfinite(med) and med >= .75 else ("Family has mixed repeatability" if np.isfinite(med) and med >= .5 else "Family requires repeatability review")
+        rows.append({"family_or_subsystem": fam, "n_features": int(len(sub)), "median_icc1_proxy": med, "n_stable": n_stable, "n_unstable_or_variable": n_var, "interpretation": interp})
+    return pd.DataFrame(rows).sort_values("median_icc1_proxy", ascending=False, na_position="last")
