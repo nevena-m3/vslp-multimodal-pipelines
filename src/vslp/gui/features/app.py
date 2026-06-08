@@ -34,6 +34,7 @@ from vslp.analysis.features.audit import (
     missingness_feature_summary, missingness_row_summary, missingness_group_summary,
     missingness_family_summary, missingness_comissing_pairs,
     robust_outlier_flags, expected_range_flags, distribution_review_summary,
+    distribution_shape_audit, row_outlier_burden_summary,
     overview_readiness_summary, overview_feature_quality_landscape
 )
 from vslp.analysis.features.plots import (
@@ -42,12 +43,13 @@ from vslp.analysis.features.plots import (
     plot_row_missingness_distribution, plot_missingness_by_group,
     plot_missingness_family_summary, plot_comissing_heatmap,
     plot_distribution_review_summary, plot_expected_range_flags,
-    plot_selected_feature_distribution, plot_group_feature_boxplot, plot_distribution_grid, plot_outlier_counts,
+    plot_selected_feature_distribution, plot_selected_feature_diagnostic, plot_group_feature_boxplot, plot_distribution_grid, plot_outlier_counts,
+    plot_distribution_shape_summary, plot_distribution_shape_landscape, plot_row_outlier_burden, plot_variance_screen,
     plot_overview_readiness_scorecard, plot_dataset_design_tiles,
     plot_feature_quality_landscape, plot_feature_family_quality, plot_subject_task_matrix
 )
 
-APP_VERSION = "v0.48"
+APP_VERSION = "v0.49"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -796,6 +798,8 @@ class FeatureAnalysisGUI(QMainWindow):
         outlier_flags = robust_outlier_flags(self.feature_df, feature_cols, self.registry_df)
         range_flags = expected_range_flags(self.feature_df, feature_cols, self.registry_df)
         dist_review = distribution_review_summary(dist, range_flags)
+        shape_audit = distribution_shape_audit(dist, range_flags)
+        row_outlier_burden = row_outlier_burden_summary(outlier_flags, len(feature_cols))
         feature_missing = missingness_feature_summary(self.feature_df, feature_cols, self.registry_df)
         row_missing = missingness_row_summary(self.feature_df, feature_cols)
         group_missing = missingness_group_summary(self.feature_df, feature_cols)
@@ -818,6 +822,8 @@ class FeatureAnalysisGUI(QMainWindow):
             "robust_outlier_flags": outlier_flags,
             "feature_expected_range_flags": range_flags,
             "distribution_review_summary": dist_review,
+            "distribution_shape_audit": shape_audit,
+            "row_outlier_burden_summary": row_outlier_burden,
             "missingness_by_feature": feature_missing,
             "missingness_by_row": row_missing,
             "missingness_by_group": group_missing,
@@ -850,12 +856,20 @@ class FeatureAnalysisGUI(QMainWindow):
         paths["missingness_by_family"] = str(plot_missingness_family_summary(outputs.get("missingness_by_family", pd.DataFrame()), plots_dir / "missingness_by_family.png"))
         paths["missingness_comissing_heatmap"] = str(plot_comissing_heatmap(self.feature_df, feature_cols, plots_dir / "missingness_comissing_heatmap.png"))
         paths["distribution_review_status"] = str(plot_distribution_review_summary(outputs.get("distribution_review_summary", pd.DataFrame()), plots_dir / "distribution_review_status.png"))
+        paths["distribution_shape_summary"] = str(plot_distribution_shape_summary(outputs.get("distribution_shape_audit", pd.DataFrame()), plots_dir / "distribution_shape_summary.png"))
+        paths["distribution_shape_landscape"] = str(plot_distribution_shape_landscape(outputs.get("distribution_shape_audit", pd.DataFrame()), plots_dir / "distribution_shape_landscape.png"))
+        paths["row_outlier_burden"] = str(plot_row_outlier_burden(outputs.get("row_outlier_burden_summary", pd.DataFrame()), plots_dir / "row_outlier_burden.png"))
+        paths["variance_screen"] = str(plot_variance_screen(outputs.get("feature_distribution_summary", pd.DataFrame()), plots_dir / "variance_screen.png"))
         paths["expected_range_flags"] = str(plot_expected_range_flags(outputs.get("feature_expected_range_flags", pd.DataFrame()), plots_dir / "feature_expected_range_flags.png"))
         paths["outlier_counts"] = str(plot_outlier_counts(outputs.get("robust_outlier_flags", pd.DataFrame()), plots_dir / "outlier_counts.png"))
-        paths["feature_distribution_grid"] = str(plot_distribution_grid(self.feature_df, feature_cols, plots_dir / "feature_distribution_grid.png"))
+        focus_cols = list(feature_cols)
+        shape_for_grid = outputs.get("distribution_shape_audit", pd.DataFrame())
+        if shape_for_grid is not None and not shape_for_grid.empty and "feature" in shape_for_grid.columns:
+            focus_cols = [c for c in shape_for_grid["feature"].astype(str).tolist() if c in self.feature_df.columns] or focus_cols
+        paths["feature_distribution_grid"] = str(plot_distribution_grid(self.feature_df, focus_cols, plots_dir / "feature_distribution_grid.png"))
         first_feature = feature_cols[0] if feature_cols else None
         if first_feature:
-            paths["selected_feature_distribution"] = str(plot_selected_feature_distribution(self.feature_df, first_feature, plots_dir / "selected_feature_distribution.png"))
+            paths["selected_feature_distribution"] = str(plot_selected_feature_diagnostic(self.feature_df, first_feature, plots_dir / "selected_feature_distribution.png"))
             paths["selected_feature_by_group"] = str(plot_group_feature_boxplot(self.feature_df, first_feature, plots_dir / "selected_feature_by_group.png"))
         return paths
 
@@ -1024,7 +1038,7 @@ class FeatureAnalysisGUI(QMainWindow):
         note.setWordWrap(True)
         note.setStyleSheet(f"color:{MUTED}; border:none; background:transparent;")
         controls_layout.addWidget(note)
-        guide = QLabel("Interpretation guide:\n• <20%: usually low concern\n• 20–50%: monitor mechanism\n• ≥50%: review before ML\n• blocks/clusters: possible task, QC, or computation support problem")
+        guide = QLabel("Interpretation guide:<br>• &lt;20%: usually low concern<br>• 20–50%: monitor mechanism<br>• ≥50%: review before ML<br>• blocks/clusters: possible task, QC, or computation support problem")
         guide.setWordWrap(True)
         guide.setStyleSheet(f"color:{INK}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:9px; font-size:12px;")
         controls_layout.addWidget(guide)
@@ -1198,13 +1212,17 @@ class FeatureAnalysisGUI(QMainWindow):
         self.dist_review_table = QTableWidget(0, 0)
         self.dist_outlier_table = QTableWidget(0, 0)
         self.dist_range_table = QTableWidget(0, 0)
-        for t in [self.dist_summary_table, self.dist_review_table, self.dist_outlier_table, self.dist_range_table]:
+        self.dist_shape_table = QTableWidget(0, 0)
+        self.dist_row_burden_table = QTableWidget(0, 0)
+        for t in [self.dist_summary_table, self.dist_review_table, self.dist_outlier_table, self.dist_range_table, self.dist_shape_table, self.dist_row_burden_table]:
             t.setAlternatingRowColors(True)
             t.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         tabs.addTab(self.dist_summary_table, "Distribution summary")
         tabs.addTab(self.dist_review_table, "Review summary")
         tabs.addTab(self.dist_outlier_table, "Row-level outliers")
         tabs.addTab(self.dist_range_table, "Expected ranges")
+        tabs.addTab(self.dist_shape_table, "Shape audit")
+        tabs.addTab(self.dist_row_burden_table, "Row burden")
         card.layout.addWidget(tabs)
 
         plot_panel = QFrame()
@@ -1227,11 +1245,15 @@ class FeatureAnalysisGUI(QMainWindow):
         controls_layout.addWidget(note)
         for label, key in [
             ("Review status", "distribution_review_status"),
+            ("Shape priority", "distribution_shape_summary"),
+            ("Shape landscape", "distribution_shape_landscape"),
             ("Expected-range flags", "expected_range_flags"),
             ("Outlier counts", "outlier_counts"),
-            ("Feature distribution grid", "feature_distribution_grid"),
-            ("Selected feature", "selected_feature_distribution"),
+            ("Row outlier burden", "row_outlier_burden"),
+            ("Variance screen", "variance_screen"),
+            ("Feature diagnostic", "selected_feature_distribution"),
             ("Selected feature by group", "selected_feature_by_group"),
+            ("Top feature grid", "feature_distribution_grid"),
         ]:
             b = QPushButton(label)
             b.setProperty("secondary", True)
@@ -1250,10 +1272,18 @@ class FeatureAnalysisGUI(QMainWindow):
 
         self.dist_plot_preview = QLabel("Run Feature Analysis, then select a distribution plot on the left.")
         self.dist_plot_preview.setAlignment(Qt.AlignCenter)
-        self.dist_plot_preview.setMinimumHeight(460)
+        self.dist_plot_preview.setMinimumHeight(520)
         self.dist_plot_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.dist_plot_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
         plot_panel_layout.addWidget(self.dist_plot_preview, 1)
+
+        self.dist_interpretation_label = QLabel("Select a plot to see: what it shows, what is concerning, what not to conclude, and what to check next.")
+        self.dist_interpretation_label.setWordWrap(True)
+        self.dist_interpretation_label.setMinimumWidth(300)
+        self.dist_interpretation_label.setMaximumWidth(390)
+        self.dist_interpretation_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.dist_interpretation_label.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{INK}; padding:14px; font-size:12px; line-height:140%; }}")
+        plot_panel_layout.addWidget(self.dist_interpretation_label)
         card.layout.addWidget(plot_panel)
 
         layout.addWidget(card)
@@ -1271,12 +1301,16 @@ class FeatureAnalysisGUI(QMainWindow):
         review = outputs.get("distribution_review_summary", pd.DataFrame())
         outliers = outputs.get("robust_outlier_flags", pd.DataFrame())
         ranges = outputs.get("feature_expected_range_flags", pd.DataFrame())
+        shape = outputs.get("distribution_shape_audit", pd.DataFrame())
+        row_burden = outputs.get("row_outlier_burden_summary", pd.DataFrame())
         n_features = len(dist) if dist is not None else 0
         monitor = review.get("distribution_status", pd.Series(dtype=str)).isin(["monitor"]).sum() if review is not None and not review.empty else 0
         review_n = review.get("distribution_status", pd.Series(dtype=str)).isin(["review"]).sum() if review is not None and not review.empty else 0
         out_n = len(outliers) if outliers is not None else 0
         range_n = int(pd.to_numeric(ranges.get("fraction_outside_expected", pd.Series(dtype=float)), errors="coerce").gt(0).sum()) if ranges is not None and not ranges.empty else 0
         zero_n = int(dist.get("zero_variance", pd.Series(dtype=bool)).fillna(False).sum()) if dist is not None and not dist.empty else 0
+        shape_review = int(shape.get("priority", pd.Series(dtype=str)).astype(str).eq("review").sum()) if shape is not None and not shape.empty else 0
+        row_review = int(row_burden.get("review_level", pd.Series(dtype=str)).astype(str).eq("review").sum()) if row_burden is not None and not row_burden.empty else 0
         tiles = [
             ("Features audited", n_features, "numeric selected features"),
             ("Monitor", int(monitor), "moderate distribution issues"),
@@ -1284,6 +1318,8 @@ class FeatureAnalysisGUI(QMainWindow):
             ("Outlier rows", out_n, "row-level robust/range flags"),
             ("Range flags", range_n, "features outside supplied ranges"),
             ("Zero variance", zero_n, "not useful for ML"),
+            ("Shape review", shape_review, "features needing shape review"),
+            ("Row burden", row_review, "recordings with many flags"),
         ]
         for idx, (title, value, subtitle) in enumerate(tiles):
             self.dist_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx // 3, idx % 3)
@@ -1291,6 +1327,8 @@ class FeatureAnalysisGUI(QMainWindow):
         self._fill_table(self.dist_review_table, review)
         self._fill_table(self.dist_outlier_table, outliers)
         self._fill_table(self.dist_range_table, ranges)
+        self._fill_table(self.dist_shape_table, shape)
+        self._fill_table(self.dist_row_burden_table, row_burden)
         if hasattr(self, "dist_feature_combo"):
             current = self.dist_feature_combo.currentText()
             self.dist_feature_combo.blockSignals(True)
@@ -1352,7 +1390,7 @@ class FeatureAnalysisGUI(QMainWindow):
         try:
             self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
             low, high = self._selected_expected_bounds(feature)
-            path = plot_selected_feature_distribution(self.feature_df, feature, plots_dir / "selected_feature_distribution.png", low, high, self._selected_distribution_group())
+            path = plot_selected_feature_diagnostic(self.feature_df, feature, plots_dir / "selected_feature_distribution.png", low, high, self._selected_distribution_group())
             if not hasattr(self, "plot_paths"):
                 self.plot_paths = {}
             self.plot_paths["selected_feature_distribution"] = str(path)
@@ -1390,6 +1428,7 @@ class FeatureAnalysisGUI(QMainWindow):
             QMessageBox.information(self, "Plot unavailable", f"Plot file not found:\n{path}")
             return
         self.current_distribution_plot = path
+        self.update_distribution_interpretation(key)
         pix = QPixmap(str(path))
         if pix.isNull():
             self.dist_plot_preview.setText(f"Could not load plot:\n{path}")
@@ -1397,6 +1436,75 @@ class FeatureAnalysisGUI(QMainWindow):
         scaled = pix.scaled(self.dist_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
         self.dist_plot_preview.setPixmap(scaled)
         self.dist_plot_preview.setToolTip(str(path))
+
+    def update_distribution_interpretation(self, key: str) -> None:
+        if not hasattr(self, "dist_interpretation_label"):
+            return
+        feature = self._selected_distribution_feature() or "selected feature"
+        group = self._selected_distribution_group() or "detected group"
+        captions = {
+            "distribution_review_status": (
+                "<b>What it shows</b><br>Counts of features labelled ok, monitor, or review after combining valid n, missingness, zero variance, robust outlier burden, and expected-range flags.<br><br>"
+                "<b>Concerning pattern</b><br>Many features in review means the dataset may contain unstable or poorly supported variables before modelling.<br><br>"
+                "<b>Do not overinterpret</b><br>This is not an exclusion rule and not a measure of clinical importance.<br><br>"
+                "<b>Next check</b><br>Open Shape audit, Expected ranges, Row-level outliers, and the selected-feature diagnostic for the highest-priority features."
+            ),
+            "distribution_shape_summary": (
+                "<b>What it shows</b><br>Feature-level distribution-shape priority: compact/regular, monitor, or review.<br><br>"
+                "<b>Concerning pattern</b><br>Many review features suggest severe skew, heavy tails, floor/ceiling effects, high missingness, or too few valid values.<br><br>"
+                "<b>Do not overinterpret</b><br>Speech features are not required to be normally distributed; non-normality alone is not a failure.<br><br>"
+                "<b>Next check</b><br>Use the feature diagnostic and raw/QC context before deciding whether to exclude, transform, or retain a feature."
+            ),
+            "distribution_shape_landscape": (
+                "<b>What it shows</b><br>Each feature is positioned by skew proxy and tail heaviness. Review features are labelled when possible.<br><br>"
+                "<b>Concerning pattern</b><br>Features far from zero skew or with very high tail ratio may be driven by extreme rows, bounded scales, or task/QC artifacts.<br><br>"
+                "<b>Do not overinterpret</b><br>Skewed physiological signals can be real. This plot indicates shape, not validity.<br><br>"
+                "<b>Next check</b><br>Inspect selected-feature histogram/ECDF/QQ-style view, then check task, group, QC, and expected range."
+            ),
+            "expected_range_flags": (
+                "<b>What it shows</b><br>Features with values outside supplied expected ranges from the registry/policy table.<br><br>"
+                "<b>Concerning pattern</b><br>A high fraction outside range suggests unit mismatch, computation error, task incompatibility, or unusual recordings.<br><br>"
+                "<b>Do not overinterpret</b><br>If no registry bounds were supplied, absence of range flags does not prove values are plausible.<br><br>"
+                "<b>Next check</b><br>Verify units, computation mode, task type, and row-level flags."
+            ),
+            "outlier_counts": (
+                "<b>What it shows</b><br>Which features have the largest number of row-level robust outlier or expected-range flags.<br><br>"
+                "<b>Concerning pattern</b><br>One feature with many flags may be unstable; many features with flags on the same rows may indicate bad recordings/QC issues.<br><br>"
+                "<b>Do not overinterpret</b><br>A robust outlier is not automatically an artifact; it can represent real disease severity or task behavior.<br><br>"
+                "<b>Next check</b><br>Open Row outlier burden and selected-feature diagnostic."
+            ),
+            "row_outlier_burden": (
+                "<b>What it shows</b><br>Rows/recordings that accumulate many flagged features.<br><br>"
+                "<b>Concerning pattern</b><br>Rows with many simultaneous flags often indicate acquisition/QC problems, wrong task, segmentation failure, or metadata mismatch.<br><br>"
+                "<b>Do not overinterpret</b><br>Do not delete rows automatically; review audio/QC and clinical context first.<br><br>"
+                "<b>Next check</b><br>Open the row-level outlier table and inspect source file, task, subject, and QC metrics."
+            ),
+            "variance_screen": (
+                "<b>What it shows</b><br>Features with zero or near-zero spread based on IQR and unique values.<br><br>"
+                "<b>Concerning pattern</b><br>Zero-variance features cannot contribute to modelling and may indicate constants, placeholders, or failed computation.<br><br>"
+                "<b>Do not overinterpret</b><br>Low variance can be expected in homogeneous samples; it is still weak for prediction in this dataset.<br><br>"
+                "<b>Next check</b><br>Confirm feature definition and whether this feature should be exported or marked review/exclude."
+            ),
+            "selected_feature_distribution": (
+                f"<b>What it shows</b><br>A four-panel diagnostic for <b>{feature}</b>: histogram, box/strip view, empirical CDF, and QQ-style normality check.<br><br>"
+                "<b>Concerning pattern</b><br>Isolated extreme points, strong skew, flat/step-like ECDF, or divergence from the QQ reference line may require review.<br><br>"
+                "<b>Do not overinterpret</b><br>Normality is not required. This view is for understanding shape and plausible preprocessing needs.<br><br>"
+                "<b>Next check</b><br>Compare by group/task, inspect outlier rows, and review expected ranges/QC."
+            ),
+            "selected_feature_by_group": (
+                f"<b>What it shows</b><br>Distribution of <b>{feature}</b> across <b>{group}</b> using box/strip display.<br><br>"
+                "<b>Concerning pattern</b><br>Group separation accompanied by unequal spread, very small n, or group-specific outliers may reflect bias or real signal.<br><br>"
+                "<b>Do not overinterpret</b><br>This is descriptive, not a hypothesis test and not an ML result.<br><br>"
+                "<b>Next check</b><br>Check group sample sizes, task balance, QC burden, and later univariate screening."
+            ),
+            "feature_distribution_grid": (
+                "<b>What it shows</b><br>A compact grid of the highest-priority features from the shape audit, not every feature.<br><br>"
+                "<b>Concerning pattern</b><br>Degenerate, highly skewed, or multi-peaked panels indicate features needing closer inspection.<br><br>"
+                "<b>Do not overinterpret</b><br>The grid is a triage board. Use selected-feature diagnostics for decisions.<br><br>"
+                "<b>Next check</b><br>Select one suspicious feature from the dropdown and inspect it in detail."
+            ),
+        }
+        self.dist_interpretation_label.setText(captions.get(key, "Select a plot to see structured interpretation guidance."))
 
     def open_current_distribution_plot(self) -> None:
         path = getattr(self, "current_distribution_plot", None)

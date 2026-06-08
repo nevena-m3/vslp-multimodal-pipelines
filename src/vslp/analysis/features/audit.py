@@ -181,31 +181,57 @@ def feature_distribution_summary(feature_df: pd.DataFrame, feature_cols: list[st
         if non.empty:
             rows.append({"feature": c, "n": 0, "missing_fraction": float(x.isna().mean()), "mean": np.nan, "median": np.nan, "sd": np.nan, "iqr": np.nan, "q05": np.nan, "q95": np.nan, "min": np.nan, "max": np.nan, "robust_outlier_fraction": np.nan, "zero_variance": True})
             continue
-        q05, q1, q3, q95 = np.nanpercentile(non, [5, 25, 75, 95])
+        q01, q05, q1, q3, q95, q99 = np.nanpercentile(non, [1, 5, 25, 75, 95, 99])
         med = float(np.nanmedian(non))
+        mean = float(np.nanmean(non))
+        sd = float(np.nanstd(non, ddof=1)) if non.size > 1 else np.nan
         iqr = float(q3 - q1)
         mad = float(np.nanmedian(np.abs(non - med)))
+        unique_n = int(non.nunique(dropna=True))
+        zero_var = bool(unique_n <= 1)
+        near_zero_var = bool((iqr == 0 and unique_n <= max(2, int(0.03 * non.size))) or (sd == 0 if pd.notna(sd) else False))
         if mad > 0:
             rz = 0.6745 * (non - med) / mad
             out_frac = float((np.abs(rz) > 3.5).mean())
+            robust_method = "median_mad"
         elif iqr > 0:
+            rz = (non - med) / (iqr / 1.349)
             out_frac = float(((non < q1 - 1.5 * iqr) | (non > q3 + 1.5 * iqr)).mean())
+            robust_method = "iqr_scaled"
         else:
             out_frac = 0.0
+            robust_method = "zero_variance"
+        skew_proxy = float((mean - med) / sd) if pd.notna(sd) and sd > 0 else np.nan
+        tail_ratio = float((q95 - q05) / iqr) if iqr > 0 else np.nan
+        robust_cv = float(iqr / abs(med)) if med != 0 and iqr > 0 else np.nan
+        floor_frac = float((non == np.nanmin(non)).mean())
+        ceiling_frac = float((non == np.nanmax(non)).mean())
         rows.append({
             "feature": c,
             "n": int(non.size),
             "missing_fraction": float(x.isna().mean()),
-            "mean": float(np.nanmean(non)),
+            "mean": mean,
             "median": med,
-            "sd": float(np.nanstd(non, ddof=1)) if non.size > 1 else np.nan,
+            "sd": sd,
             "iqr": iqr,
+            "q01": float(q01),
             "q05": float(q05),
+            "q25": float(q1),
+            "q75": float(q3),
             "q95": float(q95),
+            "q99": float(q99),
             "min": float(np.nanmin(non)),
             "max": float(np.nanmax(non)),
+            "unique_values": unique_n,
             "robust_outlier_fraction": out_frac,
-            "zero_variance": bool(non.nunique(dropna=True) <= 1),
+            "robust_outlier_method": robust_method,
+            "skew_proxy_mean_minus_median_over_sd": skew_proxy,
+            "tail_ratio_q95_q05_over_iqr": tail_ratio,
+            "robust_cv_iqr_over_abs_median": robust_cv,
+            "floor_fraction": floor_frac,
+            "ceiling_fraction": ceiling_frac,
+            "zero_variance": zero_var,
+            "near_zero_variance": near_zero_var,
         })
     return pd.DataFrame(rows)
 
@@ -659,6 +685,156 @@ def distribution_review_summary(dist: pd.DataFrame, expected: pd.DataFrame | Non
         })
     return pd.DataFrame(rows)
 
+
+
+
+def distribution_shape_audit(dist: pd.DataFrame, expected: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Human-readable distribution diagnostics for each feature.
+
+    This table is descriptive. It does not transform, exclude, impute, or select
+    features. It explains why a feature looks easy to interpret, requires
+    monitoring, or needs review before downstream modelling.
+    """
+    if dist is None or dist.empty:
+        return pd.DataFrame(columns=[
+            "feature", "shape_class", "priority", "why_it_matters",
+            "recommended_review", "possible_transform_for_ml", "do_not_conclude"
+        ])
+    df = dist.copy()
+    if expected is not None and not expected.empty and "feature" in expected.columns:
+        keep = [c for c in ["feature", "range_status", "fraction_outside_expected"] if c in expected.columns]
+        df = df.merge(expected[keep], on="feature", how="left")
+    rows = []
+    for _, r in df.iterrows():
+        reasons = []
+        transform = []
+        shape = []
+        priority = "ok"
+        n = int(r.get("n", 0) or 0)
+        miss = float(r.get("missing_fraction", 0) or 0)
+        out = float(r.get("robust_outlier_fraction", 0) or 0)
+        zero = bool(r.get("zero_variance", False))
+        nzv = bool(r.get("near_zero_variance", False))
+        skew = r.get("skew_proxy_mean_minus_median_over_sd", np.nan)
+        tail = r.get("tail_ratio_q95_q05_over_iqr", np.nan)
+        floor = float(r.get("floor_fraction", 0) or 0)
+        ceiling = float(r.get("ceiling_fraction", 0) or 0)
+        range_status = str(r.get("range_status", "no_registry_range"))
+        if n < 10:
+            priority = "review"
+            reasons.append("very small valid n")
+            shape.append("insufficient_n")
+        if zero:
+            priority = "review"
+            reasons.append("zero variance; cannot separate records")
+            shape.append("zero_variance")
+        elif nzv:
+            priority = "monitor" if priority == "ok" else priority
+            reasons.append("near-zero variance / sparse spread")
+            shape.append("near_zero_variance")
+        if pd.notna(skew) and abs(float(skew)) >= 0.75:
+            priority = "monitor" if priority == "ok" else priority
+            direction = "right-skewed" if float(skew) > 0 else "left-skewed"
+            reasons.append(direction)
+            shape.append(direction)
+            transform.append("consider log/robust scaling in ML only if scientifically compatible")
+        if pd.notna(tail) and float(tail) >= 4.5:
+            priority = "monitor" if priority == "ok" else priority
+            reasons.append("heavy-tailed distribution")
+            shape.append("heavy_tailed")
+            transform.append("inspect extreme rows; robust scaling may be preferable in ML")
+        if floor >= 0.20:
+            priority = "monitor" if priority == "ok" else priority
+            reasons.append("possible floor effect")
+            shape.append("floor_effect")
+        if ceiling >= 0.20:
+            priority = "monitor" if priority == "ok" else priority
+            reasons.append("possible ceiling effect")
+            shape.append("ceiling_effect")
+        if miss >= 0.50:
+            priority = "review"
+            reasons.append("high missingness")
+        elif miss >= 0.20 and priority == "ok":
+            priority = "monitor"
+            reasons.append("moderate missingness")
+        if out >= 0.20:
+            priority = "review"
+            reasons.append("large robust outlier burden")
+        elif out >= 0.05 and priority == "ok":
+            priority = "monitor"
+            reasons.append("some robust outliers")
+        if range_status in ["review", "high_review"]:
+            priority = "review"
+            reasons.append("expected-range violations")
+        elif range_status == "minor_review" and priority == "ok":
+            priority = "monitor"
+            reasons.append("minor expected-range violations")
+        shape_class = ", ".join(dict.fromkeys(shape)) if shape else "compact_or_regular"
+        if not transform:
+            transform.append("no transformation suggested at feature-analysis stage")
+        if priority == "review":
+            rec = "Inspect raw rows, task/QC context, and computation validity before ML export."
+        elif priority == "monitor":
+            rec = "Keep visible in downstream review; consider robust ML preprocessing inside CV."
+        else:
+            rec = "Distribution is descriptively acceptable; continue to QC/reliability review."
+        rows.append({
+            "feature": r.get("feature"),
+            "n_valid": n,
+            "missing_fraction": miss,
+            "robust_outlier_fraction": out,
+            "skew_proxy": r.get("skew_proxy_mean_minus_median_over_sd"),
+            "tail_ratio": r.get("tail_ratio_q95_q05_over_iqr"),
+            "floor_fraction": floor,
+            "ceiling_fraction": ceiling,
+            "shape_class": shape_class,
+            "priority": priority,
+            "why_it_matters": "; ".join(reasons) if reasons else "no major distribution-shape concern detected",
+            "recommended_review": rec,
+            "possible_transform_for_ml": "; ".join(dict.fromkeys(transform)),
+            "do_not_conclude": "Do not treat statistical non-normality or an outlier as invalid physiology without raw/QC/context review.",
+        })
+    priority_order = {"review": 0, "monitor": 1, "ok": 2}
+    out = pd.DataFrame(rows)
+    if not out.empty:
+        out["priority_rank"] = out["priority"].map(priority_order).fillna(9)
+        out = out.sort_values(["priority_rank", "robust_outlier_fraction", "missing_fraction"], ascending=[True, False, False]).drop(columns=["priority_rank"])
+    return out
+
+
+def row_outlier_burden_summary(outliers: pd.DataFrame, n_features: int) -> pd.DataFrame:
+    """Summarize how many feature-level flags accumulate on each row/recording."""
+    base_cols = ["row_index", "n_flagged_features", "fraction_flagged_features", "range_flag_count", "robust_flag_count", "review_level", "flagged_features"]
+    if outliers is None or outliers.empty or "row_index" not in outliers.columns:
+        return pd.DataFrame(columns=base_cols)
+    rows = []
+    id_cols = [c for c in ["file_name", "record_key", "subject_id", "session_id", "task", "iteration", "recording_date"] if c in outliers.columns]
+    denom = max(1, int(n_features or 1))
+    for row_index, g in outliers.groupby("row_index", dropna=False):
+        flags = g.get("flag_type", pd.Series(dtype=str)).astype(str)
+        n_range = int(flags.str.contains("expected_range", case=False, na=False).sum())
+        n_robust = int(flags.str.contains("robust_z", case=False, na=False).sum())
+        n_feat = int(g["feature"].nunique()) if "feature" in g.columns else int(len(g))
+        frac = n_feat / denom
+        if n_range > 0 or frac >= 0.20:
+            level = "review"
+        elif frac >= 0.05:
+            level = "monitor"
+        else:
+            level = "ok"
+        rec = {
+            "row_index": row_index,
+            "n_flagged_features": n_feat,
+            "fraction_flagged_features": frac,
+            "range_flag_count": n_range,
+            "robust_flag_count": n_robust,
+            "review_level": level,
+            "flagged_features": ", ".join(g["feature"].astype(str).drop_duplicates().head(30)) if "feature" in g.columns else "",
+        }
+        for c in id_cols:
+            rec[c] = g[c].iloc[0]
+        rows.append(rec)
+    return pd.DataFrame(rows).sort_values(["review_level", "n_flagged_features"], ascending=[False, False])
 
 def overview_readiness_summary(
     feature_df: pd.DataFrame,
