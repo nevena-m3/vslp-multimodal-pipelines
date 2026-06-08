@@ -492,3 +492,149 @@ def plot_subject_task_matrix(df: pd.DataFrame, path: Path) -> Path:
     cbar.set_label("records", color=MUTED)
     cbar.ax.tick_params(labelsize=8, colors=MUTED)
     return _save(fig, path)
+
+
+def plot_distribution_shape_summary(shape: pd.DataFrame, path: Path) -> Path:
+    if shape is None or shape.empty or "priority" not in shape.columns:
+        return _empty(path, "No distribution-shape audit was available.", "Distribution shape audit")
+    order = ["ok", "monitor", "review"]
+    counts = shape["priority"].astype(str).value_counts().reindex(order).fillna(0)
+    fig, ax = plt.subplots(figsize=(8.8, 5.0))
+    colors = [TEAL, GOLD, RED]
+    ax.bar(counts.index, counts.values, color=colors)
+    ax.set_ylabel("Number of features", color=MUTED)
+    _style(ax, "Distribution-shape review priority")
+    for i, v in enumerate(counts.values):
+        ax.text(i, v + max(0.1, counts.max() * 0.03), str(int(v)), ha="center", fontsize=10, color=MUTED)
+    ax.text(0.01, -0.20, "Review priority integrates spread, skew/tails, floor/ceiling effects, missingness, robust outliers, and expected-range flags.",
+            transform=ax.transAxes, fontsize=9, color=MUTED, va="top")
+    return _save(fig, path)
+
+
+def plot_distribution_shape_landscape(shape: pd.DataFrame, path: Path) -> Path:
+    required = {"feature", "skew_proxy", "tail_ratio", "priority"}
+    if shape is None or shape.empty or not required.issubset(shape.columns):
+        return _empty(path, "No shape landscape data were available.", "Distribution shape landscape")
+    df = shape.copy()
+    df["skew_proxy"] = pd.to_numeric(df["skew_proxy"], errors="coerce")
+    df["tail_ratio"] = pd.to_numeric(df["tail_ratio"], errors="coerce")
+    df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=["skew_proxy", "tail_ratio"])
+    if df.empty:
+        return _empty(path, "No usable skew/tail values were available.", "Distribution shape landscape")
+    color_map = {"ok": TEAL, "monitor": GOLD, "review": RED}
+    colors = [color_map.get(str(p), MUTED) for p in df["priority"]]
+    fig, ax = plt.subplots(figsize=(10.5, 6.2))
+    ax.scatter(df["skew_proxy"], df["tail_ratio"], s=52, c=colors, alpha=0.78, edgecolors="white", linewidths=0.7)
+    ax.axvline(0, color=GRID, linewidth=1)
+    ax.axvline(0.75, color=GOLD, linestyle="--", linewidth=1)
+    ax.axvline(-0.75, color=GOLD, linestyle="--", linewidth=1)
+    ax.axhline(4.5, color=GOLD, linestyle="--", linewidth=1)
+    ax.set_xlabel("Skew proxy: (mean − median) / SD", color=MUTED)
+    ax.set_ylabel("Tail ratio: (q95 − q05) / IQR", color=MUTED)
+    _style(ax, "Distribution shape landscape")
+    # label highest-risk points only
+    lab = df[df["priority"].astype(str).eq("review")].head(10)
+    for _, r in lab.iterrows():
+        ax.text(float(r["skew_proxy"]), float(r["tail_ratio"]), "  " + str(r["feature"])[:28], fontsize=7, color=NAVY, alpha=0.85)
+    return _save(fig, path)
+
+
+def plot_row_outlier_burden(row_burden: pd.DataFrame, path: Path) -> Path:
+    if row_burden is None or row_burden.empty or "n_flagged_features" not in row_burden.columns:
+        return _empty(path, "No row-level outlier burden was available.", "Row-level outlier burden")
+    df = row_burden.copy()
+    df["n_flagged_features"] = pd.to_numeric(df["n_flagged_features"], errors="coerce").fillna(0)
+    df = df.sort_values("n_flagged_features", ascending=False).head(40).sort_values("n_flagged_features", ascending=True)
+    label_col = next((c for c in ["file_name", "record_key", "subject_id", "row_index"] if c in df.columns), "row_index")
+    colors = [RED if str(v) == "review" else GOLD if str(v) == "monitor" else TEAL for v in df.get("review_level", pd.Series(["ok"] * len(df)))]
+    fig, ax = plt.subplots(figsize=(11, max(4.8, 0.32 * len(df))))
+    ax.barh(df[label_col].astype(str), df["n_flagged_features"], color=colors)
+    ax.set_xlabel("Number of flagged features on row / recording", color=MUTED)
+    _style(ax, "Rows accumulating multiple feature flags")
+    return _save(fig, path)
+
+
+def plot_variance_screen(dist: pd.DataFrame, path: Path) -> Path:
+    if dist is None or dist.empty or "feature" not in dist.columns:
+        return _empty(path, "No distribution summary was available.", "Variance screen")
+    df = dist.copy()
+    df["iqr"] = pd.to_numeric(df.get("iqr"), errors="coerce")
+    df["unique_values"] = pd.to_numeric(df.get("unique_values"), errors="coerce")
+    df["zero_variance"] = df.get("zero_variance", False).fillna(False).astype(bool)
+    df["near_zero_variance"] = df.get("near_zero_variance", False).fillna(False).astype(bool)
+    df = df.sort_values(["zero_variance", "near_zero_variance", "iqr"], ascending=[False, False, True]).head(35).iloc[::-1]
+    colors = [RED if z else GOLD if nz else TEAL for z, nz in zip(df["zero_variance"], df["near_zero_variance"])]
+    fig, ax = plt.subplots(figsize=(10.5, max(4.8, 0.34 * len(df))))
+    ax.barh(df["feature"].astype(str), df["iqr"].fillna(0), color=colors)
+    ax.set_xlabel("Interquartile range (native units)", color=MUTED)
+    _style(ax, "Zero / near-zero variance screen")
+    return _save(fig, path)
+
+
+def plot_selected_feature_diagnostic(
+    df: pd.DataFrame,
+    feature: str,
+    path: Path,
+    expected_low: float | None = None,
+    expected_high: float | None = None,
+    group_col: str | None = None,
+) -> Path:
+    if df is None or df.empty or feature not in df.columns:
+        return _empty(path, "Selected feature was not found in the table.", "Selected-feature diagnostic")
+    x_all = pd.to_numeric(df[feature], errors="coerce")
+    valid = x_all.dropna()
+    if valid.empty:
+        return _empty(path, "Selected feature has no valid numeric values.", f"Diagnostic: {feature}")
+    fig, axes = plt.subplots(2, 2, figsize=(13.5, 9.2))
+    ax = axes[0, 0]
+    bins = min(34, max(6, int(np.sqrt(len(valid)))))
+    ax.hist(valid, bins=bins, color=TEAL, alpha=0.88, edgecolor="white")
+    med = float(valid.median())
+    q1, q3 = np.nanpercentile(valid, [25, 75])
+    ax.axvline(med, color=NAVY, linewidth=1.8, label="median")
+    ax.axvline(q1, color=MUTED, linestyle="--", linewidth=1.0, label="IQR")
+    ax.axvline(q3, color=MUTED, linestyle="--", linewidth=1.0)
+    if expected_low is not None and not np.isnan(expected_low):
+        ax.axvline(expected_low, color=RED, linestyle=":", linewidth=1.5, label="expected range")
+    if expected_high is not None and not np.isnan(expected_high):
+        ax.axvline(expected_high, color=RED, linestyle=":", linewidth=1.5)
+    ax.set_xlabel(feature, color=MUTED); ax.set_ylabel("Rows", color=MUTED)
+    _style(ax, "Histogram with median, IQR, expected range")
+    ax.legend(frameon=False, fontsize=8)
+
+    ax = axes[0, 1]
+    ax.boxplot(valid.to_numpy(dtype=float), vert=False, showfliers=False)
+    y = np.linspace(0.88, 1.12, len(valid)) if len(valid) > 1 else np.array([1.0])
+    ax.scatter(valid, y, s=18, alpha=0.55, color=TEAL)
+    ax.set_yticks([]); ax.set_xlabel(feature, color=MUTED)
+    _style(ax, "Box/strip view: spread and extreme rows")
+
+    ax = axes[1, 0]
+    sorted_x = np.sort(valid.to_numpy(dtype=float))
+    ecdf = np.arange(1, len(sorted_x) + 1) / len(sorted_x)
+    ax.plot(sorted_x, ecdf, color=TEAL, linewidth=2)
+    ax.axhline(0.5, color=GRID, linestyle="--", linewidth=1)
+    ax.set_xlabel(feature, color=MUTED); ax.set_ylabel("Cumulative fraction", color=MUTED)
+    _style(ax, "Empirical cumulative distribution")
+
+    ax = axes[1, 1]
+    n = len(sorted_x)
+    if n >= 3 and float(np.nanstd(sorted_x)) > 0:
+        from statistics import NormalDist
+        probs = (np.arange(1, n + 1) - 0.5) / n
+        theo = np.array([NormalDist().inv_cdf(float(p)) for p in probs])
+        ax.scatter(theo, sorted_x, s=18, alpha=0.65, color=TEAL)
+        # reference line through q1/q3
+        tq1, tq3 = np.percentile(theo, [25, 75])
+        xq1, xq3 = np.percentile(sorted_x, [25, 75])
+        slope = (xq3 - xq1) / (tq3 - tq1) if tq3 != tq1 else 0
+        intercept = xq1 - slope * tq1
+        xs = np.array([theo.min(), theo.max()])
+        ax.plot(xs, intercept + slope * xs, color=NAVY, linestyle="--", linewidth=1)
+        ax.set_xlabel("Normal quantiles", color=MUTED); ax.set_ylabel(feature, color=MUTED)
+        _style(ax, "QQ-style normality check")
+    else:
+        ax.text(0.5, 0.5, "Too few unique values for QQ-style view", ha="center", va="center", color=MUTED)
+        ax.axis("off")
+    fig.suptitle(f"Selected-feature distribution diagnostic: {feature}", fontsize=16, fontweight="bold", color=NAVY, y=1.02)
+    return _save(fig, path)
