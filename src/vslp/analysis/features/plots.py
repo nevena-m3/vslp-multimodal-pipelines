@@ -810,3 +810,138 @@ def plot_selected_feature_qc_scatter(feature_df: pd.DataFrame, qc_df: pd.DataFra
     if pd.notna(rho):
         ax.text(.02, .98, f"Spearman ρ = {rho:.2f}\nn = {len(pair)}", transform=ax.transAxes, va="top", ha="left", fontsize=10, color=NAVY, bbox=dict(facecolor="white", edgecolor=GRID, boxstyle="round,pad=.35"))
     return _save(fig, path)
+
+
+# -----------------------------------------------------------------------------
+# Feature relationship plots
+# -----------------------------------------------------------------------------
+
+def _corr_matrix_from_long(corr_long: pd.DataFrame, top_n: int = 60) -> pd.DataFrame:
+    if corr_long is None or corr_long.empty or not {"feature_1","feature_2","spearman_rho"}.issubset(corr_long.columns):
+        return pd.DataFrame()
+    df = corr_long.copy()
+    df["abs_spearman"] = pd.to_numeric(df.get("abs_spearman", df["spearman_rho"].abs()), errors="coerce")
+    features = df.groupby("feature_1")["abs_spearman"].max().combine_first(df.groupby("feature_2")["abs_spearman"].max()).sort_values(ascending=False).head(top_n).index.tolist()
+    if not features:
+        features = sorted(set(df["feature_1"].astype(str)).union(set(df["feature_2"].astype(str))))[:top_n]
+    mat = pd.DataFrame(np.eye(len(features)), index=features, columns=features)
+    for _, r in df.iterrows():
+        a, b = str(r["feature_1"]), str(r["feature_2"])
+        if a in mat.index and b in mat.columns:
+            val = pd.to_numeric(r["spearman_rho"], errors="coerce")
+            mat.loc[a,b] = val; mat.loc[b,a] = val
+    return mat
+
+
+def plot_relationship_correlation_heatmap(corr_long: pd.DataFrame, path: Path, top_n: int = 60) -> Path:
+    mat = _corr_matrix_from_long(corr_long, top_n=top_n)
+    if mat.empty:
+        return _empty(path, "At least two numeric feature columns are required for feature-feature correlation review.", "Feature correlation heatmap")
+    order = mat.abs().sum(axis=1).sort_values(ascending=False).index.tolist()
+    mat = mat.loc[order, order]
+    fig, ax = plt.subplots(figsize=(11.5, 10.2))
+    im = ax.imshow(mat.to_numpy(float), vmin=-1, vmax=1, cmap="coolwarm", aspect="auto")
+    step = max(1, len(mat)//35)
+    ticks = list(range(0, len(mat), step))
+    ax.set_xticks(ticks); ax.set_xticklabels([mat.columns[i] for i in ticks], rotation=90, fontsize=6, color=MUTED)
+    ax.set_yticks(ticks); ax.set_yticklabels([mat.index[i] for i in ticks], fontsize=6, color=MUTED)
+    ax.set_title("Feature-feature Spearman correlation structure", fontsize=14, fontweight="bold", color=NAVY, pad=12)
+    cbar = fig.colorbar(im, ax=ax, fraction=.025, pad=.02); cbar.set_label("Spearman rho", color=MUTED); cbar.ax.tick_params(labelsize=8, colors=MUTED)
+    return _save(fig, path)
+
+
+def plot_relationship_redundant_pairs(pairs: pd.DataFrame, path: Path, top_n: int = 30) -> Path:
+    if pairs is None or pairs.empty or "abs_spearman" not in pairs.columns:
+        return _empty(path, "No feature pairs exceeded the redundancy threshold. This is good, but still inspect PCA and family structure.", "Top redundant pairs")
+    df = pairs.copy().sort_values("abs_spearman", ascending=False).head(top_n).sort_values("abs_spearman", ascending=True)
+    labels = [f"{a}\n× {b}" for a,b in zip(df["feature_1"].astype(str), df["feature_2"].astype(str))]
+    fig, ax = plt.subplots(figsize=(12, max(5.5, .45*len(df))))
+    colors = [RED if v >= .90 else GOLD for v in df["abs_spearman"].astype(float)]
+    ax.barh(labels, df["abs_spearman"].astype(float), color=colors)
+    ax.axvline(.80, color=GOLD, linestyle="--", linewidth=1)
+    ax.axvline(.90, color=RED, linestyle="--", linewidth=1)
+    ax.set_xlim(0,1); ax.set_xlabel("Absolute Spearman rho", color=MUTED)
+    _style(ax, "Strongly redundant feature pairs")
+    return _save(fig, path)
+
+
+def plot_relationship_family_matrix(family_matrix: pd.DataFrame, path: Path) -> Path:
+    if family_matrix is None or family_matrix.empty or not {"family_1","family_2","mean_abs_spearman"}.issubset(family_matrix.columns):
+        return _empty(path, "Family/block relationship matrix unavailable. Load a feature registry for stronger subsystem labels.", "Feature-family correlation matrix")
+    fams = sorted(set(family_matrix["family_1"].astype(str)).union(set(family_matrix["family_2"].astype(str))))
+    mat = pd.DataFrame(0.0, index=fams, columns=fams)
+    for _, r in family_matrix.iterrows():
+        a,b = str(r["family_1"]), str(r["family_2"])
+        v = float(r["mean_abs_spearman"])
+        mat.loc[a,b] = v; mat.loc[b,a] = v
+    fig, ax = plt.subplots(figsize=(9.6, 7.8))
+    im = ax.imshow(mat.to_numpy(float), vmin=0, vmax=max(.5, float(mat.to_numpy(float).max())), cmap="YlGnBu")
+    ax.set_xticks(range(len(fams))); ax.set_xticklabels(fams, rotation=35, ha="right", fontsize=9, color=MUTED)
+    ax.set_yticks(range(len(fams))); ax.set_yticklabels(fams, fontsize=9, color=MUTED)
+    ax.set_title("Mean absolute feature correlation by family", fontsize=14, fontweight="bold", color=NAVY, pad=12)
+    cbar = fig.colorbar(im, ax=ax, fraction=.03, pad=.02); cbar.set_label("Mean |rho|", color=MUTED); cbar.ax.tick_params(labelsize=8, colors=MUTED)
+    return _save(fig, path)
+
+
+def plot_relationship_pca_scree(pca_summary: pd.DataFrame, path: Path) -> Path:
+    if pca_summary is None or pca_summary.empty or "variance_percent" not in pca_summary.columns:
+        return _empty(path, "PCA requires at least two usable numeric features with enough non-missing observations.", "PCA scree")
+    df = pca_summary.copy().head(12)
+    x = np.arange(len(df))
+    fig, ax = plt.subplots(figsize=(10.5, 5.8))
+    ax.bar(x, df["variance_percent"].astype(float), color=TEAL)
+    ax.plot(x, df["cumulative_variance_percent"].astype(float), marker="o", color=NAVY, linewidth=2)
+    ax.set_xticks(x); ax.set_xticklabels(df["component"].astype(str), color=MUTED)
+    ax.set_ylabel("Variance explained (%)", color=MUTED)
+    ax.set_ylim(0, max(100, float(df["cumulative_variance_percent"].max())*1.05))
+    _style(ax, "PCA scree: unsupervised feature-space dimensionality")
+    return _save(fig, path)
+
+
+def plot_relationship_pca_scores(pca_scores: pd.DataFrame, feature_df: pd.DataFrame | None, path: Path) -> Path:
+    if pca_scores is None or pca_scores.empty or not {"PC1","PC2"}.issubset(pca_scores.columns):
+        return _empty(path, "PCA scores unavailable for this dataset.", "PCA recording map")
+    fig, ax = plt.subplots(figsize=(9.2, 6.6))
+    x = pd.to_numeric(pca_scores["PC1"], errors="coerce"); y = pd.to_numeric(pca_scores["PC2"], errors="coerce")
+    ax.scatter(x, y, s=28, alpha=.75, color=TEAL, edgecolor="white", linewidth=.35)
+    ax.axhline(0, color=GRID, linewidth=1); ax.axvline(0, color=GRID, linewidth=1)
+    ax.set_xlabel("PC1 score", color=MUTED); ax.set_ylabel("PC2 score", color=MUTED)
+    _style(ax, "Recording map in unsupervised feature space")
+    return _save(fig, path)
+
+
+def plot_relationship_pca_loadings(loadings: pd.DataFrame, path: Path, top_n: int = 18) -> Path:
+    if loadings is None or loadings.empty or not {"component","feature","loading"}.issubset(loadings.columns):
+        return _empty(path, "PCA loadings unavailable for this dataset.", "PCA top loadings")
+    df = loadings.copy()
+    df = df[df["component"].isin(["PC1","PC2","PC3"])].copy()
+    if df.empty:
+        return _empty(path, "No early-component loadings available.", "PCA top loadings")
+    # top across first 3 components
+    df = df.sort_values("abs_loading", ascending=False).head(top_n).sort_values("abs_loading", ascending=True)
+    labels = [f"{c}: {f}" for c,f in zip(df["component"].astype(str), df["feature"].astype(str))]
+    colors = [TEAL if v >= 0 else GOLD for v in df["loading"].astype(float)]
+    fig, ax = plt.subplots(figsize=(11.5, max(5.6, .38*len(df))))
+    ax.barh(labels, df["loading"].astype(float), color=colors)
+    ax.axvline(0, color=GRID, linewidth=1)
+    ax.set_xlabel("PCA loading", color=MUTED)
+    _style(ax, "Largest PCA loadings across early components")
+    return _save(fig, path)
+
+
+def plot_selected_feature_correlations(corr_long: pd.DataFrame, feature: str, path: Path, top_n: int = 30) -> Path:
+    if corr_long is None or corr_long.empty or not feature:
+        return _empty(path, "Select a feature after running relationship analysis.", "Selected feature correlations")
+    df = corr_long[(corr_long["feature_1"].astype(str)==feature) | (corr_long["feature_2"].astype(str)==feature)].copy()
+    if df.empty:
+        return _empty(path, f"No pairwise correlations involving {feature} were available.", "Selected feature correlations")
+    df["other_feature"] = np.where(df["feature_1"].astype(str)==feature, df["feature_2"].astype(str), df["feature_1"].astype(str))
+    df = df.dropna(subset=["abs_spearman"]).sort_values("abs_spearman", ascending=False).head(top_n).sort_values("abs_spearman", ascending=True)
+    fig, ax = plt.subplots(figsize=(11, max(5.5, .36*len(df))))
+    colors = [RED if abs(v) >= .80 else GOLD if abs(v) >= .60 else TEAL for v in df["spearman_rho"].astype(float)]
+    ax.barh(df["other_feature"].astype(str), df["spearman_rho"].astype(float), color=colors)
+    ax.axvline(0, color=GRID, linewidth=1)
+    ax.axvline(.80, color=RED, linestyle="--", linewidth=1, alpha=.8); ax.axvline(-.80, color=RED, linestyle="--", linewidth=1, alpha=.8)
+    ax.set_xlabel("Spearman rho", color=MUTED); ax.set_xlim(-1,1)
+    _style(ax, f"Strongest feature links for {feature}")
+    return _save(fig, path)
