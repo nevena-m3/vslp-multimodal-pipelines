@@ -6,6 +6,9 @@ multimodal, and generic feature tables.
 from __future__ import annotations
 
 import sys
+import json
+import shutil
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -13,7 +16,7 @@ import pandas as pd
 
 try:
     from PySide6.QtCore import Qt, QSize, QUrl
-    from PySide6.QtGui import QPixmap, QFont, QDesktopServices
+    from PySide6.QtGui import QPixmap, QFont, QDesktopServices, QColor, QBrush
     from PySide6.QtWidgets import (
         QApplication, QComboBox, QFileDialog, QFrame, QGridLayout, QGroupBox,
         QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox,
@@ -76,7 +79,7 @@ from vslp.analysis.features.plots import (
     plot_ml_export_manifest_summary
 )
 
-APP_VERSION = "v0.54"
+APP_VERSION = "v0.55"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -1061,6 +1064,7 @@ class FeatureAnalysisGUI(QMainWindow):
             self.update_screening_dashboard(outputs)
             self.update_reliability_dashboard(outputs)
             self.update_recommendations_dashboard(outputs)
+            self.update_export_dashboard(outputs)
             self.log(f"Overview/missingness plots generated in: {plots_dir}")
             self.preview_plot("role_counts", generate_if_missing=False)
         except Exception as exc:
@@ -2745,17 +2749,366 @@ class FeatureAnalysisGUI(QMainWindow):
         body = QWidget()
         layout = QVBoxLayout(body)
         layout.setContentsMargins(24, 24, 24, 24)
-        card = Card("Export / Report", "Write analysis tables and a compact HTML report to disk.")
+        layout.setSpacing(16)
+
+        card = Card(
+            "Export / Report",
+            "Final packaging screen. Review feature-readiness decisions, choose an export profile, write ML-ready tables, and generate a professional HTML report. No model is trained here."
+        )
+
+        self.export_metric_grid = QGridLayout()
+        self.export_metric_grid.setHorizontalSpacing(12)
+        self.export_metric_grid.setVerticalSpacing(12)
+        card.layout.addLayout(self.export_metric_grid)
+
+        control_row = QHBoxLayout()
+        control_row.addWidget(QLabel("Export profile:"))
+        self.export_profile_combo = QComboBox()
+        self.export_profile_combo.addItems([
+            "Recommended + caution (default ML starting set)",
+            "Recommended only (strict)",
+            "Review set (recommended + caution + review)",
+            "Full audit set (all features; not ML default)",
+        ])
+        self.export_profile_combo.setMinimumWidth(430)
+        self.export_profile_combo.currentTextChanged.connect(lambda _=None: self.update_export_dashboard(getattr(self, "outputs", {})))
+        control_row.addWidget(self.export_profile_combo)
+        control_row.addStretch(1)
+        refresh_btn = QPushButton("Refresh Preview")
+        refresh_btn.setProperty("secondary", True)
+        refresh_btn.clicked.connect(lambda: self.update_export_dashboard(getattr(self, "outputs", {})))
+        control_row.addWidget(refresh_btn)
+        package_btn = QPushButton("Create Export Package")
+        package_btn.clicked.connect(self.create_export_package)
+        control_row.addWidget(package_btn)
+        card.layout.addLayout(control_row)
+
+        guidance = QLabel(
+            "Use the profile selector to choose how conservative the exported feature matrix should be. Green features are clean default candidates; light-green features are usable with documented caution; gold/orange/red features should be reviewed, recomputed, or held out by default. The exported manifest always explains why each feature was included or held."
+        )
+        guidance.setWordWrap(True)
+        guidance.setStyleSheet(f"color:{INK}; background:#F7FAFD; border:1px solid {LINE}; border-radius:10px; padding:10px;")
+        card.layout.addWidget(guidance)
+
+        splitter = QSplitter(Qt.Horizontal)
+        left = QFrame(); left.setStyleSheet("QFrame { border:none; background:transparent; }")
+        left_layout = QVBoxLayout(left); left_layout.setContentsMargins(0,0,0,0); left_layout.setSpacing(8)
+        self.export_interpretation = QTextEdit()
+        self.export_interpretation.setReadOnly(True)
+        self.export_interpretation.setMinimumHeight(210)
+        left_layout.addWidget(self.export_interpretation)
         self.export_status = QTextEdit()
         self.export_status.setReadOnly(True)
-        self.export_status.setMinimumHeight(360)
-        card.layout.addWidget(self.export_status)
-        btn = QPushButton("Open Output Folder")
-        btn.clicked.connect(self.open_output_folder)
-        btn.setProperty("secondary", True)
-        card.layout.addWidget(btn)
+        self.export_status.setMinimumHeight(170)
+        self.export_status.setPlaceholderText("Export status messages will appear here.")
+        left_layout.addWidget(self.export_status)
+        splitter.addWidget(left)
+
+        right = QFrame(); right.setStyleSheet("QFrame { border:none; background:transparent; }")
+        right_layout = QVBoxLayout(right); right_layout.setContentsMargins(0,0,0,0); right_layout.setSpacing(8)
+        self.export_plot_preview = QLabel("Run Feature Analysis, then use Export / Report to preview the manifest summary.")
+        self.export_plot_preview.setAlignment(Qt.AlignCenter)
+        self.export_plot_preview.setMinimumHeight(360)
+        self.export_plot_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
+        right_layout.addWidget(self.export_plot_preview, 1)
+        plot_buttons = QHBoxLayout()
+        open_plot_btn = QPushButton("Open Current Plot")
+        open_plot_btn.setProperty("secondary", True)
+        open_plot_btn.clicked.connect(self.open_current_export_plot)
+        plot_buttons.addWidget(open_plot_btn)
+        open_report_btn = QPushButton("Open HTML Report")
+        open_report_btn.setProperty("secondary", True)
+        open_report_btn.clicked.connect(self.open_html_report)
+        plot_buttons.addWidget(open_report_btn)
+        open_folder_btn = QPushButton("Open Output Folder")
+        open_folder_btn.setProperty("secondary", True)
+        open_folder_btn.clicked.connect(self.open_output_folder)
+        plot_buttons.addWidget(open_folder_btn)
+        right_layout.addLayout(plot_buttons)
+        splitter.addWidget(right)
+        splitter.setSizes([430, 720])
+        card.layout.addWidget(splitter)
+
+        tabs = QTabWidget()
+        self.export_manifest_table = self._simple_table()
+        self.export_summary_table = self._simple_table()
+        self.export_profile_table = self._simple_table()
+        self.export_readme_table = self._simple_table()
+        tabs.addTab(self.export_manifest_table, "Color-coded feature manifest")
+        tabs.addTab(self.export_summary_table, "Readiness summary")
+        tabs.addTab(self.export_profile_table, "Exported tables")
+        tabs.addTab(self.export_readme_table, "Decision legend")
+        card.layout.addWidget(tabs)
+
         layout.addWidget(card)
         return self._wrap_scroll(body)
+
+    def _export_profile_key(self) -> str:
+        label = self.export_profile_combo.currentText() if hasattr(self, "export_profile_combo") else ""
+        if label.startswith("Recommended only"):
+            return "recommended_only"
+        if label.startswith("Review set"):
+            return "review_set"
+        if label.startswith("Full audit"):
+            return "full_audit"
+        return "recommended_plus_caution"
+
+    def _export_profile_label(self, profile: str) -> str:
+        return {
+            "recommended_only": "Recommended only (strict)",
+            "recommended_plus_caution": "Recommended + caution (default ML starting set)",
+            "review_set": "Review set (recommended + caution + review)",
+            "full_audit": "Full audit set (all features; not ML default)",
+        }.get(profile, profile)
+
+    def _selected_export_features(self, recs: pd.DataFrame, profile: str) -> pd.Series:
+        if recs is None or recs.empty or "feature" not in recs.columns:
+            return pd.Series(dtype=bool)
+        r = recs.get("readiness_recommendation", pd.Series([""] * len(recs))).astype(str)
+        if profile == "recommended_only":
+            return r.eq("recommended")
+        if profile == "review_set":
+            return r.isin(["recommended", "recommended_with_caution", "review_before_use"])
+        if profile == "full_audit":
+            return pd.Series([True] * len(recs), index=recs.index)
+        # Default: export clean and caution features. Prefer manifest flag when available.
+        if "ml_export_default" in recs.columns:
+            return recs["ml_export_default"].astype(str).str.lower().isin(["true", "1", "yes"]) | r.isin(["recommended", "recommended_with_caution"])
+        return r.isin(["recommended", "recommended_with_caution"])
+
+    def _export_decision_legend(self) -> pd.DataFrame:
+        return pd.DataFrame([
+            {"color": "green", "label": "recommended", "meaning": "Clean default candidate", "action": "Include in default export."},
+            {"color": "light green", "label": "recommended_with_caution", "meaning": "Usable with documented risk", "action": "Include in default export, but carry reasons forward."},
+            {"color": "gold", "label": "review_before_use", "meaning": "Manual review needed", "action": "Hold from default ML export unless justified."},
+            {"color": "orange", "label": "exclude_or_recompute", "meaning": "Technical/scientific issue likely", "action": "Recompute, sensitivity-check, or hold out."},
+            {"color": "red", "label": "exclude_by_default", "meaning": "Major support problem", "action": "Exclude by default; retain only for audit."},
+        ])
+
+    def _build_export_preview_tables(self, outputs: dict[str, pd.DataFrame]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        recs = outputs.get("feature_recommendations", pd.DataFrame()).copy() if outputs else pd.DataFrame()
+        profile = self._export_profile_key()
+        if recs.empty:
+            manifest = pd.DataFrame(columns=["feature", "final_include", "readiness_recommendation", "readiness_score", "primary_reasons", "recommended_action"])
+        else:
+            mask = self._selected_export_features(recs, profile)
+            manifest = recs.copy()
+            manifest["export_profile"] = self._export_profile_label(profile)
+            manifest["final_include"] = mask.values if len(mask) == len(manifest) else False
+            manifest["export_decision"] = manifest["final_include"].map({True: "include", False: "hold / exclude"})
+            keep_cols = [c for c in [
+                "feature", "final_include", "export_decision", "readiness_recommendation", "readiness_score",
+                "family_or_subsystem", "primary_reasons", "recommended_action", "missing_fraction",
+                "robust_outlier_fraction", "max_abs_qc_spearman", "max_abs_redundancy", "icc1_proxy",
+                "max_screening_effect", "export_profile"
+            ] if c in manifest.columns]
+            manifest = manifest[keep_cols].sort_values(["final_include", "readiness_score"], ascending=[False, False])
+
+        n_total = int(len(recs))
+        n_inc = int(manifest["final_include"].astype(bool).sum()) if "final_include" in manifest.columns else 0
+        n_hold = int(n_total - n_inc)
+        profile_table = pd.DataFrame([
+            {"export_profile": self._export_profile_label(profile), "n_total_features": n_total, "n_included_features": n_inc, "n_held_or_excluded_features": n_hold, "purpose": "Choose the feature matrix breadth before downstream ML."},
+            {"export_profile": "recommended_only", "n_total_features": n_total, "n_included_features": int((recs.get("readiness_recommendation", pd.Series(dtype=str)).astype(str) == "recommended").sum()) if not recs.empty else 0, "n_held_or_excluded_features": "—", "purpose": "Strictest clean set."},
+            {"export_profile": "recommended_plus_caution", "n_total_features": n_total, "n_included_features": int(recs.get("readiness_recommendation", pd.Series(dtype=str)).astype(str).isin(["recommended", "recommended_with_caution"]).sum()) if not recs.empty else 0, "n_held_or_excluded_features": "—", "purpose": "Default starting set for ML."},
+            {"export_profile": "review_set", "n_total_features": n_total, "n_included_features": int(recs.get("readiness_recommendation", pd.Series(dtype=str)).astype(str).isin(["recommended", "recommended_with_caution", "review_before_use"]).sum()) if not recs.empty else 0, "n_held_or_excluded_features": "—", "purpose": "Broad sensitivity/review set."},
+        ])
+        summary = outputs.get("feature_recommendation_summary", pd.DataFrame()).copy() if outputs else pd.DataFrame()
+        return manifest, summary, profile_table
+
+    def update_export_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
+        if not hasattr(self, "export_metric_grid"):
+            return
+        outputs = outputs or getattr(self, "outputs", {}) or {}
+        manifest, summary, profile_table = self._build_export_preview_tables(outputs)
+        while self.export_metric_grid.count():
+            item = self.export_metric_grid.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        recs = outputs.get("feature_recommendations", pd.DataFrame()) if outputs else pd.DataFrame()
+        included = int(manifest["final_include"].astype(bool).sum()) if "final_include" in manifest.columns else 0
+        total = int(len(recs))
+        held = max(total - included, 0)
+        strict = int(recs.get("readiness_recommendation", pd.Series(dtype=str)).astype(str).eq("recommended").sum()) if not recs.empty else 0
+        caution = int(recs.get("readiness_recommendation", pd.Series(dtype=str)).astype(str).eq("recommended_with_caution").sum()) if not recs.empty else 0
+        review = int(recs.get("readiness_recommendation", pd.Series(dtype=str)).astype(str).eq("review_before_use").sum()) if not recs.empty else 0
+        excluded = int(recs.get("readiness_recommendation", pd.Series(dtype=str)).astype(str).isin(["exclude_or_recompute", "exclude_by_default"]).sum()) if not recs.empty else 0
+        tiles = [
+            ("Profile", self._export_profile_label(self._export_profile_key()).split("(")[0].strip(), "selected export rule"),
+            ("Included", included, "features in exported matrix"),
+            ("Held", held, "review/exclude/audit only"),
+            ("Recommended", strict, "green"),
+            ("Caution", caution, "light green"),
+            ("Review", review, "gold"),
+            ("Excluded", excluded, "orange/red"),
+            ("Total", total, "feature recommendations"),
+        ]
+        for idx, (title, value, subtitle) in enumerate(tiles):
+            self.export_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx // 4, idx % 4)
+        self._fill_export_manifest_table(self.export_manifest_table, manifest)
+        self._fill_table(self.export_summary_table, summary)
+        self._fill_table(self.export_profile_table, profile_table)
+        self._fill_table(self.export_readme_table, self._export_decision_legend())
+        self.export_interpretation.setHtml(self._export_interpretation_html(included, held, total))
+        path = None
+        if hasattr(self, "plot_paths"):
+            path = self.plot_paths.get("ml_export_manifest_summary") or self.plot_paths.get("recommendation_counts")
+        if path and Path(path).exists():
+            self.current_export_plot = Path(path)
+            pix = QPixmap(str(path))
+            if not pix.isNull():
+                self.export_plot_preview.setPixmap(pix.scaled(self.export_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                self.export_plot_preview.setToolTip(str(path))
+
+    def _export_interpretation_html(self, included: int, held: int, total: int) -> str:
+        profile = self._export_profile_label(self._export_profile_key())
+        return f"""
+        <b>Export profile</b><br>{profile}<br><br>
+        <b>What this stage does</b><br>Creates transparent analysis and ML-preparation files from the completed Feature Analysis audit. The feature matrix includes <b>{included}</b> of <b>{total}</b> features under the selected rule; <b>{held}</b> features are held for review, recomputation, exclusion, or audit-only use.<br><br>
+        <b>Why include a feature?</b><br>Green/light-green features have adequate support across missingness, distribution shape, QC sensitivity, redundancy, reliability, and integrated recommendation score. Caution features are included only because their risks are documented and can be handled later in sensitivity analyses or fold-safe ML pipelines.<br><br>
+        <b>Why exclude or hold a feature?</b><br>Gold/orange/red features may have high missingness, zero/near-zero variance, implausible distribution, strong QC sensitivity, excessive outliers, redundancy, or insufficient repeatability. Holding them prevents silent leakage of low-quality measurements into modelling.<br><br>
+        <b>Important boundary</b><br>This export is not final ML feature selection. The future ML GUI must still perform imputation, scaling, transformations, feature selection, and validation inside cross-validation or training folds.
+        """
+
+    def _fill_export_manifest_table(self, table: QTableWidget, df: pd.DataFrame, max_rows: int = 1000) -> None:
+        self._fill_table(table, df, max_rows=max_rows)
+        if df is None or df.empty:
+            return
+        rec_col = list(df.columns).index("readiness_recommendation") if "readiness_recommendation" in df.columns else None
+        inc_col = list(df.columns).index("final_include") if "final_include" in df.columns else None
+        colors = {
+            "recommended": "#DDF6E8",
+            "recommended_with_caution": "#EEF8DD",
+            "review_before_use": "#FFF4D6",
+            "exclude_or_recompute": "#FFE2C2",
+            "exclude_by_default": "#FDE2DF",
+        }
+        for i in range(table.rowCount()):
+            rec = table.item(i, rec_col).text() if rec_col is not None and table.item(i, rec_col) else ""
+            include = table.item(i, inc_col).text().lower() in ["true", "1", "yes"] if inc_col is not None and table.item(i, inc_col) else False
+            bg = QColor(colors.get(rec, "#FFFFFF"))
+            for j in range(table.columnCount()):
+                item = table.item(i, j)
+                if item:
+                    item.setBackground(QBrush(bg))
+                    item.setForeground(QBrush(QColor(INK)))
+                    if j == inc_col:
+                        item.setText("INCLUDE" if include else "HOLD")
+                        item.setForeground(QBrush(QColor("#047857" if include else RED)))
+
+    def _make_export_package_tables(self) -> tuple[Path, dict[str, Path]]:
+        if self.feature_df is None:
+            self.load_and_map()
+        if self.feature_df is None:
+            raise RuntimeError("Load a primary feature table before exporting.")
+        if not getattr(self, "outputs", None):
+            outputs, feature_cols = self._build_analysis_outputs()
+            self.outputs = outputs
+        outputs = self.outputs
+        profile = self._export_profile_key()
+        profile_slug = profile.replace("_", "-")
+        base_dir = (self.output_dir if getattr(self, "output_dir", None) else Path(self.output_edit.text().strip()) / "feature_analysis")
+        export_dir = base_dir / "exports" / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{profile_slug}"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        manifest, summary, profile_table = self._build_export_preview_tables(outputs)
+        mapping = self.collect_mapping_from_table()
+        roles = role_lists(mapping)
+        id_cols = [c for c in roles.get(ROLE_IDENTIFIER, []) if c in self.feature_df.columns]
+        target_cols = [c for c in roles.get(ROLE_TARGET, []) if c in self.feature_df.columns]
+        cov_cols = [c for c in roles.get(ROLE_COVARIATE, []) if c in self.feature_df.columns]
+        qc_cols = [c for c in roles.get(ROLE_QC, []) if c in self.feature_df.columns]
+        include_features = manifest.loc[manifest.get("final_include", False).astype(bool), "feature"].astype(str).tolist() if not manifest.empty and "feature" in manifest.columns else []
+        include_features = [c for c in include_features if c in self.feature_df.columns]
+        paths: dict[str, Path] = {}
+        def write_df(name: str, df: pd.DataFrame) -> None:
+            out = export_dir / name
+            df.to_csv(out, index=False)
+            paths[name] = out
+        write_df("feature_export_manifest.csv", manifest)
+        write_df("feature_recommendation_summary.csv", summary)
+        write_df("export_profile_summary.csv", profile_table)
+        write_df("feature_recommendation_legend.csv", self._export_decision_legend())
+        matrix_cols = id_cols + include_features
+        write_df("ml_ready_feature_matrix.csv", self.feature_df[matrix_cols].copy() if matrix_cols else pd.DataFrame())
+        write_df("ml_target_table.csv", self.feature_df[id_cols + target_cols].copy() if target_cols else pd.DataFrame(columns=id_cols))
+        write_df("ml_covariate_table.csv", self.feature_df[id_cols + cov_cols].copy() if cov_cols else pd.DataFrame(columns=id_cols))
+        write_df("ml_qc_covariate_table_from_feature_table.csv", self.feature_df[id_cols + qc_cols].copy() if qc_cols else pd.DataFrame(columns=id_cols))
+        if self.qc_df is not None:
+            write_df("linked_qc_table.csv", self.qc_df.copy())
+        if self.meta_df is not None:
+            write_df("linked_metadata_table.csv", self.meta_df.copy())
+        config = {
+            "app_version": APP_VERSION,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "export_profile": self._export_profile_label(profile),
+            "n_total_features": int(len(outputs.get("feature_recommendations", pd.DataFrame()))),
+            "n_included_features": int(len(include_features)),
+            "feature_table": self.feature_picker.path,
+            "qc_table": self.qc_picker.path,
+            "metadata_table": self.meta_picker.path,
+            "registry_table": self.registry_picker.path,
+            "boundary": "Feature Analysis export only; no model trained; ML preprocessing and feature selection must be fold-safe.",
+        }
+        (export_dir / "export_config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
+        readme = f"""# VSLP Feature Analysis Export Package
+
+Export profile: {self._export_profile_label(profile)}
+
+Included feature count: {len(include_features)}
+
+This package is a downstream-analysis starting point, not a trained model and not final ML feature selection. The manifest documents why each feature was included or held. Imputation, scaling, transformations, feature selection, model fitting, and validation must occur inside the future ML pipeline to avoid leakage.
+
+Core files:
+- `ml_ready_feature_matrix.csv`: identifiers plus selected feature columns.
+- `ml_target_table.csv`: identifiers plus mapped target/outcome columns, if available.
+- `ml_covariate_table.csv`: identifiers plus mapped covariates, if available.
+- `ml_qc_covariate_table_from_feature_table.csv`: identifiers plus QC columns from the feature table, if available.
+- `linked_qc_table.csv`: optional externally loaded QC table.
+- `feature_export_manifest.csv`: color-coded decision logic in table form.
+- `export_config.json`: reproducibility metadata.
+
+Decision colors:
+- green = recommended, include by default.
+- light green = recommended with caution, include but document risk.
+- gold = review before use, hold from default ML unless justified.
+- orange/red = exclude, recompute, or audit-only by default.
+"""
+        (export_dir / "README.md").write_text(readme, encoding="utf-8")
+        report_path = export_dir / "vslp_feature_analysis_export_report.html"
+        self.write_report(report_path, outputs, export_manifest=manifest, export_profile=self._export_profile_label(profile))
+        zip_base = shutil.make_archive(str(export_dir), "zip", root_dir=export_dir)
+        paths["export_zip"] = Path(zip_base)
+        return export_dir, paths
+
+    def create_export_package(self) -> None:
+        try:
+            export_dir, paths = self._make_export_package_tables()
+            self.export_status.append(f"Export package created: {export_dir}")
+            if "export_zip" in paths:
+                self.export_status.append(f"Zip package: {paths['export_zip']}")
+            self.update_export_dashboard(getattr(self, "outputs", {}))
+            QMessageBox.information(self, "Export complete", f"Export package created:\n{export_dir}")
+            self.open_file(export_dir)
+        except Exception as exc:
+            QMessageBox.critical(self, "Export failed", str(exc))
+
+    def open_current_export_plot(self) -> None:
+        path = getattr(self, "current_export_plot", None)
+        if not path:
+            QMessageBox.information(self, "No current plot", "Run Feature Analysis first, then preview the Export / Report page.")
+            return
+        self.open_file(Path(path))
+
+    def open_html_report(self) -> None:
+        if not getattr(self, "output_dir", None):
+            QMessageBox.information(self, "No report yet", "Run Feature Analysis first.")
+            return
+        report = self.output_dir / "reports" / "vslp_feature_analysis_report.html"
+        if not report.exists():
+            QMessageBox.information(self, "No report yet", "Run Feature Analysis first to write the HTML report.")
+            return
+        self.open_file(report)
 
     def pick_output_folder(self) -> None:
         p = QFileDialog.getExistingDirectory(self, "Select output folder")
@@ -2894,6 +3247,7 @@ class FeatureAnalysisGUI(QMainWindow):
             self.update_screening_dashboard(outputs)
             self.update_reliability_dashboard(outputs)
             self.update_recommendations_dashboard(outputs)
+            self.update_export_dashboard(outputs)
             self.log(f"Analysis complete. Outputs written to: {self.output_dir}")
             self.show_page("overview")
         except Exception as exc:
@@ -2965,8 +3319,13 @@ class FeatureAnalysisGUI(QMainWindow):
             pix = QPixmap(str(recpath))
             if not pix.isNull():
                 self.recommendation_plot_preview.setPixmap(pix.scaled(self.recommendation_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        epath = getattr(self, "current_export_plot", None)
+        if epath and hasattr(self, "export_plot_preview"):
+            pix = QPixmap(str(epath))
+            if not pix.isNull():
+                self.export_plot_preview.setPixmap(pix.scaled(self.export_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
-    def write_report(self, path: Path, outputs: dict[str, pd.DataFrame]) -> None:
+    def write_report(self, path: Path, outputs: dict[str, pd.DataFrame], export_manifest: pd.DataFrame | None = None, export_profile: str = "Default export") -> None:
         inv = outputs.get("dataset_inventory", pd.DataFrame()).to_html(index=False, escape=False)
         roles = outputs.get("feature_role_summary", summarize_roles(outputs.get("feature_column_mapping", pd.DataFrame()))).to_html(index=False, escape=False)
         design = outputs.get("dataset_design_overview", pd.DataFrame()).to_html(index=False, escape=False)
@@ -2977,10 +3336,27 @@ class FeatureAnalysisGUI(QMainWindow):
         outrows = outputs.get("robust_outlier_flags", pd.DataFrame()).head(100).to_html(index=False, escape=False)
         rel = outputs.get("feature_reliability_screen", pd.DataFrame()).head(80).to_html(index=False, escape=False)
         recs = outputs.get("feature_recommendations", pd.DataFrame()).head(120).to_html(index=False, escape=False)
-        manifest = outputs.get("ml_export_manifest", pd.DataFrame()).head(200).to_html(index=False, escape=False)
+        manifest_df = export_manifest if export_manifest is not None else outputs.get("ml_export_manifest", pd.DataFrame())
+        manifest = manifest_df.head(300).to_html(index=False, escape=False)
+        rec_summary = outputs.get("feature_recommendation_summary", pd.DataFrame()).to_html(index=False, escape=False)
+        qc = outputs.get("qc_integration_summary", pd.DataFrame()).to_html(index=False, escape=False)
+        relationships = outputs.get("feature_relationship_summary", pd.DataFrame()).to_html(index=False, escape=False)
         html = f"""<!doctype html><html><head><meta charset='utf-8'><title>VSLP Feature Analysis Report</title>
-        <style>body{{font-family:Arial,sans-serif;margin:32px;color:#0E1726}} h1,h2{{color:#071A33}} table{{border-collapse:collapse;width:100%;font-size:12px;margin-bottom:24px}} td,th{{border:1px solid #D9E2EF;padding:6px}} th{{background:#EEF4FA}}</style></head><body>
-        <h1>VSLP Feature Analysis Report</h1><p>Version {APP_VERSION}. Descriptive feature audit only; not a diagnostic or ML-training report.</p>
+        <style>
+        body{{font-family:Arial,sans-serif;margin:32px;color:#0E1726;background:#F7FAFD}}
+        .page{{max-width:1280px;margin:auto;background:white;padding:30px;border:1px solid #D9E2EF;border-radius:16px}}
+        h1,h2,h3{{color:#071A33}}
+        .note{{background:#EEF8FF;border-left:5px solid #2DB7B0;padding:12px;margin:16px 0;border-radius:8px}}
+        .warn{{background:#FFF4D6;border-left:5px solid #B68B2D;padding:12px;margin:16px 0;border-radius:8px}}
+        table{{border-collapse:collapse;width:100%;font-size:12px;margin-bottom:24px}}
+        td,th{{border:1px solid #D9E2EF;padding:6px;vertical-align:top}} th{{background:#EEF4FA;color:#071A33}}
+        tr:has(td:nth-child(4):contains('recommended')){{background:#DDF6E8}}
+        </style></head><body><div class='page'>
+        <h1>VSLP Feature Analysis Report</h1>
+        <p><b>Version:</b> {APP_VERSION}. <b>Export profile:</b> {export_profile}.</p>
+        <div class='note'>This report is a descriptive feature audit and export-preparation report. It is not a diagnostic report and no machine-learning model has been trained.</div>
+        <div class='warn'>Imputation, scaling, transformation, feature selection, and model training must occur inside the downstream ML pipeline to avoid data leakage.</div>
+        <h2>Export decision summary</h2>{rec_summary}
         <h2>Dataset inventory</h2>{inv}
         <h2>Column-role summary</h2>{roles}
         <h2>Dataset design overview</h2>{design}
@@ -2989,9 +3365,12 @@ class FeatureAnalysisGUI(QMainWindow):
         <h2>Missingness by group</h2>{missgrp}
         <h2>Distribution / outlier review</h2>{distreview}
         <h2>Row-level outlier flags</h2>{outrows}
+        <h2>QC integration summary</h2>{qc}
+        <h2>Feature relationship summary</h2>{relationships}
         <h2>Initial feature reliability screen</h2>{rel}
         <h2>Integrated feature recommendations</h2>{recs}
-        <h2>ML export manifest preview</h2>{manifest}</body></html>"""
+        <h2>Export manifest preview</h2>{manifest}
+        </div></body></html>"""
         path.write_text(html, encoding="utf-8")
 
     def open_output_folder(self) -> None:
