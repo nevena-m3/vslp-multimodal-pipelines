@@ -638,3 +638,175 @@ def plot_selected_feature_diagnostic(
         ax.axis("off")
     fig.suptitle(f"Selected-feature distribution diagnostic: {feature}", fontsize=16, fontweight="bold", color=NAVY, y=1.02)
     return _save(fig, path)
+
+
+def plot_qc_artifact_model(path: Path) -> Path:
+    families = [
+        ("Additive\ninterference", "noise, hum, competing speech"),
+        ("Gain / level\ndynamics", "AGC, distance, level drift"),
+        ("Reverberation\n/ echo", "room tail, boundary blur"),
+        ("Channel / device\n/ platform", "filtering, bandwidth, codec"),
+        ("Nonlinear\ndistortion", "clipping, saturation"),
+        ("Temporal\ndiscontinuities", "dropouts, glitches, jumps"),
+    ]
+    fig, ax = plt.subplots(figsize=(12.5, 5.2))
+    ax.axis("off")
+    ax.text(0.5, 0.92, "Multidimensional QC interpretation model", ha="center", va="center", fontsize=16, fontweight="bold", color=NAVY)
+    ax.text(0.5, 0.84, "QC is interpreted as a vector of artifact families, not as one global good/bad score.", ha="center", va="center", fontsize=10.5, color=MUTED)
+    xs = np.linspace(0.08, 0.92, len(families))
+    for i, ((title, desc), x) in enumerate(zip(families, xs)):
+        color = [TEAL, GOLD, "#6B5DD3", "#4E7AA8", RED, "#7A8798"][i]
+        rect = plt.Rectangle((x-0.07, 0.34), 0.14, 0.30, transform=ax.transAxes, facecolor=color, alpha=0.95, edgecolor="white", linewidth=1.5)
+        ax.add_patch(rect)
+        ax.text(x, 0.53, title, ha="center", va="center", fontsize=9.5, fontweight="bold", color="white", transform=ax.transAxes)
+        ax.text(x, 0.27, desc, ha="center", va="center", fontsize=8.2, color=MUTED, transform=ax.transAxes, wrap=True)
+    ax.text(0.5, 0.12, "Use QC to ask whether feature variation, missingness, or outliers are plausibly explained by acquisition artifacts before interpreting them as speech physiology.", ha="center", va="center", fontsize=10, color=NAVY, transform=ax.transAxes, wrap=True)
+    return _save(fig, path)
+
+
+def plot_qc_family_burden(family_summary: pd.DataFrame, path: Path) -> Path:
+    if family_summary is None or family_summary.empty or "artifact_family" not in family_summary.columns:
+        return _empty(path, "No QC family summary was available. Load a QC table with qadd/qgain/qrev/qchan/qdist/qtemp/qdrop metrics.", "QC artifact-family burden")
+    df = family_summary.copy()
+    df["n_qc_metrics"] = pd.to_numeric(df.get("n_qc_metrics", 0), errors="coerce").fillna(0)
+    df["median_metric_iqr"] = pd.to_numeric(df.get("median_metric_iqr", np.nan), errors="coerce")
+    df["median_row_flag_fraction"] = pd.to_numeric(df.get("median_row_flag_fraction", np.nan), errors="coerce").fillna(0)
+    df = df.sort_values("n_qc_metrics", ascending=True)
+    fig, ax = plt.subplots(figsize=(11, max(5.2, 0.55 * len(df))))
+    vals = df["median_row_flag_fraction"].astype(float)
+    colors = [RED if v >= .20 else GOLD if v >= .05 else TEAL for v in vals]
+    labels = [f"{fam}  (metrics={int(n)})" for fam, n in zip(df["artifact_family"].astype(str), df["n_qc_metrics"])]
+    ax.barh(labels, vals, color=colors)
+    ax.set_xlabel("Median fraction of elevated QC metrics per row", color=MUTED)
+    ax.set_xlim(0, max(0.05, min(1.0, float(vals.max()) * 1.2 if len(vals) else .1)))
+    ax.axvline(.05, color=GOLD, linestyle="--", linewidth=1)
+    ax.axvline(.20, color=RED, linestyle="--", linewidth=1)
+    _style(ax, "QC burden by artifact family")
+    return _save(fig, path)
+
+
+def plot_qc_metric_distributions(qc_df: pd.DataFrame | None, catalog: pd.DataFrame, path: Path, max_metrics: int = 12) -> Path:
+    if qc_df is None or qc_df.empty or catalog is None or catalog.empty:
+        return _empty(path, "No numeric QC metrics were available for distribution plotting.", "QC metric distributions")
+    cat = catalog.copy()
+    cat["iqr"] = pd.to_numeric(cat.get("iqr", np.nan), errors="coerce")
+    cat = cat.sort_values("iqr", ascending=False).head(max_metrics)
+    cols = [c for c in cat["qc_variable"].astype(str).tolist() if c in qc_df.columns]
+    if not cols:
+        return _empty(path, "No catalogued QC variables were present in the QC table.", "QC metric distributions")
+    ncols = 3; nrows = int(np.ceil(len(cols)/ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(13, 3.3*nrows))
+    axes = np.array(axes).reshape(-1)
+    for ax, col in zip(axes, cols):
+        x = pd.to_numeric(qc_df[col], errors="coerce").dropna()
+        fam = str(cat.loc[cat["qc_variable"].astype(str).eq(col), "artifact_family"].iloc[0]) if (cat["qc_variable"].astype(str).eq(col)).any() else "QC"
+        if x.empty:
+            ax.text(.5, .5, "all missing", ha="center", va="center", color=MUTED); ax.axis("off"); continue
+        ax.hist(x, bins=min(26, max(6, int(np.sqrt(len(x))))), color=TEAL, alpha=.88, edgecolor="white")
+        ax.axvline(float(x.median()), color=NAVY, linestyle="--", linewidth=1)
+        ax.set_title(f"{col}\n{fam}", fontsize=8.5, color=NAVY)
+        _style(ax)
+    for ax in axes[len(cols):]:
+        ax.axis("off")
+    fig.suptitle("QC metric distributions: highest-spread indicators", fontsize=15, fontweight="bold", color=NAVY, y=1.01)
+    return _save(fig, path)
+
+
+def plot_qc_top_feature_associations(qc_corr: pd.DataFrame, path: Path, top_n: int = 25) -> Path:
+    required = {"feature", "qc_variable", "spearman_rho"}
+    if qc_corr is None or qc_corr.empty or not required.issubset(qc_corr.columns):
+        return _empty(path, "No feature-QC correlations were available. Load an aligned QC table.", "Feature-QC associations")
+    df = qc_corr.copy()
+    df["abs_rho"] = pd.to_numeric(df["spearman_rho"], errors="coerce").abs()
+    df = df.dropna(subset=["abs_rho"]).sort_values("abs_rho", ascending=False).head(top_n).sort_values("abs_rho", ascending=True)
+    if df.empty:
+        return _empty(path, "No non-missing feature-QC associations were available.", "Feature-QC associations")
+    labels = [f"{f}\n× {q}" for f, q in zip(df["feature"].astype(str), df["qc_variable"].astype(str))]
+    colors = [RED if r < 0 else TEAL for r in pd.to_numeric(df["spearman_rho"], errors="coerce").fillna(0)]
+    fig, ax = plt.subplots(figsize=(12, max(5.5, 0.42*len(df))))
+    ax.barh(labels, df["abs_rho"].astype(float), color=colors)
+    ax.set_xlabel("Absolute Spearman rho", color=MUTED)
+    ax.axvline(.30, color=GOLD, linestyle="--", linewidth=1, label="monitor |rho|=.30")
+    ax.axvline(.50, color=RED, linestyle="--", linewidth=1, label="review |rho|=.50")
+    _style(ax, "Strongest feature-QC monotonic associations")
+    ax.legend(frameon=False, fontsize=8)
+    return _save(fig, path)
+
+
+def plot_qc_feature_association_heatmap(family_assoc: pd.DataFrame, path: Path, top_features: int = 30) -> Path:
+    required = {"feature", "artifact_family", "max_abs_spearman"}
+    if family_assoc is None or family_assoc.empty or not required.issubset(family_assoc.columns):
+        return _empty(path, "No family-level feature-QC association summary was available.", "Feature × QC-family associations")
+    df = family_assoc.copy()
+    df["max_abs_spearman"] = pd.to_numeric(df["max_abs_spearman"], errors="coerce")
+    features = df.groupby("feature")["max_abs_spearman"].max().sort_values(ascending=False).head(top_features).index.tolist()
+    mat = df[df["feature"].isin(features)].pivot_table(index="feature", columns="artifact_family", values="max_abs_spearman", aggfunc="max").fillna(0)
+    if mat.empty:
+        return _empty(path, "No feature-QC-family matrix could be constructed.", "Feature × QC-family associations")
+    mat = mat.loc[features]
+    fig, ax = plt.subplots(figsize=(10.8, max(6.0, 0.28*len(mat))))
+    im = ax.imshow(mat.to_numpy(float), aspect="auto", vmin=0, vmax=max(.5, float(mat.to_numpy(float).max())), cmap="YlGnBu")
+    ax.set_xticks(range(len(mat.columns))); ax.set_xticklabels(mat.columns, rotation=35, ha="right", fontsize=8, color=MUTED)
+    ax.set_yticks(range(len(mat.index))); ax.set_yticklabels(mat.index, fontsize=7, color=MUTED)
+    ax.set_title("Feature sensitivity by QC artifact family", fontsize=14, fontweight="bold", color=NAVY, pad=12)
+    cbar = fig.colorbar(im, ax=ax, fraction=.025, pad=.02); cbar.set_label("max |Spearman rho|", color=MUTED); cbar.ax.tick_params(labelsize=8, colors=MUTED)
+    return _save(fig, path)
+
+
+def plot_qc_missingness_associations(missing_assoc: pd.DataFrame, path: Path, top_n: int = 25) -> Path:
+    if missing_assoc is None or missing_assoc.empty or "abs_spearman" not in missing_assoc.columns:
+        return _empty(path, "No QC-linked missingness associations were available.", "Missingness linked to QC")
+    df = missing_assoc.copy().dropna(subset=["abs_spearman"]).sort_values("abs_spearman", ascending=False).head(top_n).sort_values("abs_spearman", ascending=True)
+    if df.empty:
+        return _empty(path, "No non-missing QC-missingness associations were available.", "Missingness linked to QC")
+    labels = [f"{f}\n× {q}" for f, q in zip(df["feature"].astype(str), df["qc_variable"].astype(str))]
+    fig, ax = plt.subplots(figsize=(12, max(5.2, 0.42*len(df))))
+    ax.barh(labels, df["abs_spearman"].astype(float), color=GOLD)
+    ax.set_xlabel("Absolute Spearman rho between feature-missing indicator and QC metric", color=MUTED)
+    ax.axvline(.30, color=RED, linestyle="--", linewidth=1)
+    _style(ax, "Feature missingness associated with QC metrics")
+    return _save(fig, path)
+
+
+def plot_qc_row_burden(row_burden: pd.DataFrame, path: Path, top_n: int = 35) -> Path:
+    if row_burden is None or row_burden.empty or "total_qc_flags" not in row_burden.columns:
+        return _empty(path, "No row-level QC burden summary was available.", "Row-level QC burden")
+    df = row_burden.copy()
+    df["total_qc_flags"] = pd.to_numeric(df["total_qc_flags"], errors="coerce").fillna(0)
+    df = df.sort_values("total_qc_flags", ascending=False).head(top_n).sort_values("total_qc_flags", ascending=True)
+    if df.empty or df["total_qc_flags"].max() == 0:
+        return _empty(path, "No rows exceeded robust QC elevation thresholds. Still review family distributions and feature-QC associations.", "Row-level QC burden")
+    label_col = next((c for c in ["file_name", "filename", "source_file", "record_key", "subject_id", "participant_id"] if c in df.columns), "row_index")
+    fig, ax = plt.subplots(figsize=(10.8, max(5.2, 0.35*len(df))))
+    ax.barh(df[label_col].astype(str), df["total_qc_flags"].astype(float), color=GOLD)
+    ax.set_xlabel("Number of elevated QC metrics", color=MUTED)
+    _style(ax, "Rows / recordings with highest QC burden")
+    return _save(fig, path)
+
+
+def plot_selected_feature_qc_scatter(feature_df: pd.DataFrame, qc_df: pd.DataFrame | None, feature: str, qc_variable: str, path: Path) -> Path:
+    if feature_df is None or feature_df.empty or qc_df is None or qc_df.empty or not feature or not qc_variable:
+        return _empty(path, "Select one feature and one QC variable after loading an aligned QC table.", "Selected feature × QC metric")
+    # Align by common key if possible, else by row order when lengths match.
+    join_keys = [k for k in ["record_key", "file_name", "filename", "source_file", "audio_file", "subject_id", "participant_id"] if k in feature_df.columns and k in qc_df.columns]
+    if join_keys:
+        merged = feature_df[[join_keys[0], feature]].merge(qc_df[[join_keys[0], qc_variable]], on=join_keys[0], how="inner")
+    elif len(feature_df) == len(qc_df):
+        merged = pd.DataFrame({feature: pd.to_numeric(feature_df[feature], errors="coerce"), qc_variable: pd.to_numeric(qc_df[qc_variable], errors="coerce")})
+    else:
+        return _empty(path, "QC table could not be aligned to the feature table for selected scatter plotting.", "Selected feature × QC metric")
+    x = pd.to_numeric(merged[qc_variable], errors="coerce")
+    y = pd.to_numeric(merged[feature], errors="coerce")
+    pair = pd.DataFrame({"x": x, "y": y}).dropna()
+    if len(pair) < 4:
+        return _empty(path, "Too few paired non-missing observations for this feature/QC pair.", "Selected feature × QC metric")
+    rho = pair["x"].corr(pair["y"], method="spearman") if pair["x"].nunique() > 1 and pair["y"].nunique() > 1 else np.nan
+    fig, ax = plt.subplots(figsize=(9.5, 6.0))
+    ax.scatter(pair["x"], pair["y"], s=28, alpha=.72, color=TEAL, edgecolor="white", linewidth=.35)
+    ax.set_xlabel(qc_variable, color=MUTED)
+    ax.set_ylabel(feature, color=MUTED)
+    title = f"{feature} vs QC: {qc_variable}"
+    _style(ax, title)
+    if pd.notna(rho):
+        ax.text(.02, .98, f"Spearman ρ = {rho:.2f}\nn = {len(pair)}", transform=ax.transAxes, va="top", ha="left", fontsize=10, color=NAVY, bbox=dict(facecolor="white", edgecolor=GRID, boxstyle="round,pad=.35"))
+    return _save(fig, path)
