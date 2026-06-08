@@ -14,3 +14,5 @@ local_data/
 examples/test_runs/
 examples/test_data/audio_inputs/*
 !examples/test_data/audio_inputs/.gitkeep
+
+.venv-win/

@@ -33,7 +33,8 @@ from vslp.analysis.features.audit import (
     feature_qc_correlations, reliability_screen,
     missingness_feature_summary, missingness_row_summary, missingness_group_summary,
     missingness_family_summary, missingness_comissing_pairs,
-    robust_outlier_flags, expected_range_flags, distribution_review_summary
+    robust_outlier_flags, expected_range_flags, distribution_review_summary,
+    overview_readiness_summary, overview_feature_quality_landscape
 )
 from vslp.analysis.features.plots import (
     plot_role_counts, plot_group_counts, plot_feature_family_counts,
@@ -41,10 +42,12 @@ from vslp.analysis.features.plots import (
     plot_row_missingness_distribution, plot_missingness_by_group,
     plot_missingness_family_summary, plot_comissing_heatmap,
     plot_distribution_review_summary, plot_expected_range_flags,
-    plot_selected_feature_distribution, plot_group_feature_boxplot, plot_distribution_grid, plot_outlier_counts
+    plot_selected_feature_distribution, plot_group_feature_boxplot, plot_distribution_grid, plot_outlier_counts,
+    plot_overview_readiness_scorecard, plot_dataset_design_tiles,
+    plot_feature_quality_landscape, plot_feature_family_quality, plot_subject_task_matrix
 )
 
-APP_VERSION = "v0.46"
+APP_VERSION = "v0.47"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -491,7 +494,10 @@ class FeatureAnalysisGUI(QMainWindow):
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(16)
 
-        card = Card("Overview", "Dataset inventory, role counts, design structure, and first-pass readiness indicators.")
+        card = Card(
+            "Overview",
+            "Dataset orientation, design structure, feature coverage, and readiness for downstream feature review. This screen is descriptive; it does not perform ML."
+        )
 
         self.overview_metric_grid = QGridLayout()
         self.overview_metric_grid.setHorizontalSpacing(12)
@@ -506,18 +512,26 @@ class FeatureAnalysisGUI(QMainWindow):
         tabs = QTabWidget()
         tabs.setStyleSheet(f"QTabWidget::pane {{ border: 1px solid {LINE}; border-radius: 8px; background: #FFFFFF; }} QTabBar::tab {{ padding: 8px 14px; color: {NAVY}; }} QTabBar::tab:selected {{ background: #EAF8F7; border-bottom: 2px solid {TEAL}; }}")
 
+        self.overview_readiness_table = QTableWidget(0, 0)
         self.overview_inventory_table = QTableWidget(0, 0)
         self.overview_design_table = QTableWidget(0, 0)
         self.overview_roles_table = QTableWidget(0, 0)
         self.overview_family_table = QTableWidget(0, 0)
-        for t in [self.overview_inventory_table, self.overview_design_table, self.overview_roles_table, self.overview_family_table]:
+        self.overview_quality_table = QTableWidget(0, 0)
+        for t in [
+            self.overview_readiness_table, self.overview_inventory_table,
+            self.overview_design_table, self.overview_roles_table,
+            self.overview_family_table, self.overview_quality_table,
+        ]:
             t.setAlternatingRowColors(True)
             t.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
 
+        tabs.addTab(self.overview_readiness_table, "Readiness")
         tabs.addTab(self.overview_inventory_table, "Inventory")
         tabs.addTab(self.overview_roles_table, "Roles")
-        tabs.addTab(self.overview_design_table, "Design")
+        tabs.addTab(self.overview_design_table, "Design variables")
         tabs.addTab(self.overview_family_table, "Feature families")
+        tabs.addTab(self.overview_quality_table, "Feature quality")
         card.layout.addWidget(tabs)
 
         plot_panel = QFrame()
@@ -531,25 +545,43 @@ class FeatureAnalysisGUI(QMainWindow):
         plot_controls_layout = QVBoxLayout(plot_controls)
         plot_controls_layout.setContentsMargins(0, 0, 0, 0)
         plot_controls_layout.setSpacing(8)
-        plot_title = QLabel("Overview plots")
+        plot_title = QLabel("Overview plot gallery")
         plot_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
         plot_controls_layout.addWidget(plot_title)
-        plot_note = QLabel("Generate or preview dataset-orientation plots. Buttons create missing plots automatically after tables are loaded and an output folder is selected.")
+        plot_note = QLabel("Use this as a visual orientation board before Missingness, Distributions, QC, and ML export. Each plot is regenerated from the accepted column mapping.")
         plot_note.setWordWrap(True)
         plot_note.setStyleSheet(f"color:{MUTED}; border:none; background:transparent;")
         plot_controls_layout.addWidget(plot_note)
+
+        self.overview_plot_combo = QComboBox()
+        self.overview_plot_combo.addItems([
+            "Readiness scorecard",
+            "Dataset design tiles",
+            "Role counts",
+            "Task / group counts",
+            "Subject × task coverage",
+            "Feature-family coverage",
+            "Feature quality landscape",
+            "Feature availability heatmap",
+            "Top missing features",
+        ])
+        plot_controls_layout.addWidget(self.overview_plot_combo)
+        show_btn = QPushButton("Show selected plot")
+        show_btn.clicked.connect(self.preview_selected_overview_plot)
+        plot_controls_layout.addWidget(show_btn)
+
         for label, attr in [
-            ("Role counts", "role_counts"),
-            ("Task / group counts", "group_counts"),
-            ("Feature-family counts", "feature_family_counts"),
-            ("Feature availability", "feature_availability_heatmap"),
-            ("Top missing features", "missingness_top_features"),
+            ("Readiness", "overview_readiness_scorecard"),
+            ("Design tiles", "overview_design_tiles"),
+            ("Feature quality", "overview_feature_quality_landscape"),
+            ("Subject × task", "overview_subject_task_matrix"),
         ]:
             b = QPushButton(label)
             b.setProperty("secondary", True)
             b.clicked.connect(lambda _=False, a=attr: self.preview_plot(a))
             plot_controls_layout.addWidget(b)
-        regen = QPushButton("Regenerate all overview plots")
+
+        regen = QPushButton("Regenerate overview visuals")
         regen.clicked.connect(self.regenerate_overview_plots)
         plot_controls_layout.addWidget(regen)
         open_current = QPushButton("Open current plot file")
@@ -557,15 +589,25 @@ class FeatureAnalysisGUI(QMainWindow):
         open_current.clicked.connect(self.open_current_overview_plot)
         plot_controls_layout.addWidget(open_current)
         plot_controls_layout.addStretch(1)
-        plot_controls.setFixedWidth(245)
+        plot_controls.setFixedWidth(270)
         plot_panel_layout.addWidget(plot_controls)
 
+        preview_box = QFrame()
+        preview_box.setStyleSheet("QFrame { border:none; background:transparent; }")
+        preview_layout = QVBoxLayout(preview_box)
+        preview_layout.setContentsMargins(0, 0, 0, 0)
+        preview_layout.setSpacing(8)
+        self.overview_plot_caption = QLabel("Run Feature Analysis, then select a plot. The plot preview is embedded here and saved to feature_analysis/plots.")
+        self.overview_plot_caption.setWordWrap(True)
+        self.overview_plot_caption.setStyleSheet(f"color:{MUTED}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:9px;")
+        preview_layout.addWidget(self.overview_plot_caption)
         self.overview_plot_preview = QLabel("Run Feature Analysis, then select a plot on the left.")
         self.overview_plot_preview.setAlignment(Qt.AlignCenter)
-        self.overview_plot_preview.setMinimumHeight(420)
+        self.overview_plot_preview.setMinimumHeight(500)
         self.overview_plot_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.overview_plot_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
-        plot_panel_layout.addWidget(self.overview_plot_preview, 1)
+        preview_layout.addWidget(self.overview_plot_preview, 1)
+        plot_panel_layout.addWidget(preview_box, 1)
         card.layout.addWidget(plot_panel)
 
         layout.addWidget(card)
@@ -590,26 +632,52 @@ class FeatureAnalysisGUI(QMainWindow):
             if w:
                 w.deleteLater()
         inv = outputs.get("dataset_inventory", pd.DataFrame())
+        readiness = outputs.get("overview_readiness_summary", pd.DataFrame())
+        quality = outputs.get("overview_feature_quality_landscape", pd.DataFrame())
+
         def metric_value(name: str, default: object = "—") -> object:
             if inv.empty or "metric" not in inv.columns:
                 return default
             row = inv.loc[inv["metric"].eq(name)]
             return row["value"].iloc[0] if not row.empty else default
+
+        def score_value(name: str, default: object = "—") -> object:
+            if readiness.empty or "dimension" not in readiness.columns:
+                return default
+            row = readiness.loc[readiness["dimension"].astype(str).eq(name)]
+            if row.empty:
+                return default
+            return f"{float(row['score_0_100'].iloc[0]):.0f}"
+
+        n_review = 0
+        n_monitor = 0
+        if quality is not None and not quality.empty and "quality_status" in quality.columns:
+            n_review = int((quality["quality_status"].astype(str) == "review").sum())
+            n_monitor = int((quality["quality_status"].astype(str) == "monitor").sum())
+
         tiles = [
             ("Rows", metric_value("feature_table_rows"), "records / files"),
             ("Features", metric_value("detected_feature_columns"), "mapped feature columns"),
-            ("Numeric features", metric_value("numeric_feature_columns"), "usable for numeric audit"),
+            ("Numeric", metric_value("numeric_feature_columns"), "usable for quantitative audit"),
+            ("Completeness", score_value("Feature completeness"), "0–100 orientation score"),
+            ("Design", score_value("Design richness"), "group/task/session context"),
+            ("Review flags", n_review, f"monitor: {n_monitor}"),
             ("Subjects", metric_value("unique_subjects"), "if subject_id exists"),
             ("Tasks", metric_value("unique_tasks"), "if task exists"),
-            ("QC table", "yes" if str(metric_value("qc_table_loaded", False)).lower() == "true" else "no", "optional quality table"),
+            ("QC", "yes" if str(metric_value("qc_table_loaded", False)).lower() == "true" else "no", "artifact context"),
         ]
         for idx, (title, value, subtitle) in enumerate(tiles):
             self.overview_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx // 3, idx % 3)
+
+        self._fill_table(self.overview_readiness_table, outputs.get("overview_readiness_summary", pd.DataFrame()))
         self._fill_table(self.overview_inventory_table, outputs.get("dataset_inventory", pd.DataFrame()))
         self._fill_table(self.overview_roles_table, outputs.get("feature_role_summary", pd.DataFrame()))
         self._fill_table(self.overview_design_table, outputs.get("dataset_design_overview", pd.DataFrame()))
         self._fill_table(self.overview_family_table, outputs.get("feature_family_overview", pd.DataFrame()))
-        self.overview_note.setText("Overview generated. Review row counts, mapped features, detected labels/covariates, task balance, and feature-family coverage before interpreting distributions or ML-readiness.")
+        self._fill_table(self.overview_quality_table, outputs.get("overview_feature_quality_landscape", pd.DataFrame()))
+        self.overview_note.setText(
+            "Overview generated. Use this page to verify design context, mapped feature coverage, available metadata/QC context, and major feature-quality risks before interpreting downstream modules or exporting to ML."
+        )
 
     def _analysis_dirs(self) -> tuple[Path, Path, Path, Path]:
         if not getattr(self, "output_dir", None):
@@ -643,6 +711,8 @@ class FeatureAnalysisGUI(QMainWindow):
         group_missing = missingness_group_summary(self.feature_df, feature_cols)
         family_missing = missingness_family_summary(feature_missing)
         comissing = missingness_comissing_pairs(self.feature_df, feature_cols)
+        quality_landscape = overview_feature_quality_landscape(dist, self.registry_df)
+        readiness = overview_readiness_summary(self.feature_df, self.qc_df, self.meta_df, mapping, dist, feature_missing, groups)
         qc_corr = feature_qc_correlations(self.feature_df, self.qc_df, feature_cols)
         reliability = reliability_screen(dist, qc_corr)
         outputs = {
@@ -650,6 +720,8 @@ class FeatureAnalysisGUI(QMainWindow):
             "feature_role_summary": role_sum,
             "dataset_design_overview": design,
             "feature_family_overview": family,
+            "overview_readiness_summary": readiness,
+            "overview_feature_quality_landscape": quality_landscape,
             "group_counts": groups,
             "feature_column_mapping": mapping,
             "feature_distribution_summary": dist,
@@ -672,9 +744,14 @@ class FeatureAnalysisGUI(QMainWindow):
 
     def _generate_overview_plots(self, outputs: dict[str, pd.DataFrame], feature_cols: list[str], plots_dir: Path) -> dict[str, str]:
         paths = {}
+        paths["overview_readiness_scorecard"] = str(plot_overview_readiness_scorecard(outputs.get("overview_readiness_summary", pd.DataFrame()), plots_dir / "overview_readiness_scorecard.png"))
+        paths["overview_design_tiles"] = str(plot_dataset_design_tiles(outputs.get("dataset_design_overview", pd.DataFrame()), plots_dir / "overview_design_tiles.png"))
         paths["role_counts"] = str(plot_role_counts(outputs.get("feature_role_summary", pd.DataFrame()), plots_dir / "overview_role_counts.png"))
         paths["group_counts"] = str(plot_group_counts(outputs.get("group_counts", pd.DataFrame()), plots_dir / "overview_group_counts.png"))
+        paths["overview_subject_task_matrix"] = str(plot_subject_task_matrix(self.feature_df, plots_dir / "overview_subject_task_matrix.png"))
         paths["feature_family_counts"] = str(plot_feature_family_counts(outputs.get("feature_family_overview", pd.DataFrame()), plots_dir / "overview_feature_family_counts.png"))
+        paths["overview_feature_family_quality"] = str(plot_feature_family_quality(outputs.get("feature_family_overview", pd.DataFrame()), plots_dir / "overview_feature_family_quality.png"))
+        paths["overview_feature_quality_landscape"] = str(plot_feature_quality_landscape(outputs.get("overview_feature_quality_landscape", pd.DataFrame()), plots_dir / "overview_feature_quality_landscape.png"))
         paths["missingness_top_features"] = str(plot_missingness(outputs.get("feature_distribution_summary", pd.DataFrame()), plots_dir / "missingness_top_features.png"))
         paths["feature_availability_heatmap"] = str(plot_feature_availability_heatmap(self.feature_df, feature_cols, plots_dir / "feature_availability_heatmap.png"))
         # Missingness-specific plots are generated at the same time so that the Missingness page is immediately usable.
@@ -691,6 +768,36 @@ class FeatureAnalysisGUI(QMainWindow):
             paths["selected_feature_distribution"] = str(plot_selected_feature_distribution(self.feature_df, first_feature, plots_dir / "selected_feature_distribution.png"))
             paths["selected_feature_by_group"] = str(plot_group_feature_boxplot(self.feature_df, first_feature, plots_dir / "selected_feature_by_group.png"))
         return paths
+
+    def preview_selected_overview_plot(self) -> None:
+        label = self.overview_plot_combo.currentText() if hasattr(self, "overview_plot_combo") else ""
+        key_map = {
+            "Readiness scorecard": "overview_readiness_scorecard",
+            "Dataset design tiles": "overview_design_tiles",
+            "Role counts": "role_counts",
+            "Task / group counts": "group_counts",
+            "Subject × task coverage": "overview_subject_task_matrix",
+            "Feature-family coverage": "overview_feature_family_quality",
+            "Feature quality landscape": "overview_feature_quality_landscape",
+            "Feature availability heatmap": "feature_availability_heatmap",
+            "Top missing features": "missingness_top_features",
+        }
+        self.preview_plot(key_map.get(label, "overview_readiness_scorecard"))
+
+    def _overview_plot_caption_text(self, key: str) -> str:
+        captions = {
+            "overview_readiness_scorecard": "Readiness scorecard: quick orientation across completeness, numeric analyzability, metadata context, QC context, design richness, row depth, and feature breadth. It is not an ML score.",
+            "overview_design_tiles": "Dataset design tiles: shows whether subject, session, task, diagnosis/severity, sex/gender, and device columns are detected. Missing design variables limit stratified analyses.",
+            "role_counts": "Role counts: verifies that columns are mapped as features, identifiers, targets, covariates, QC variables, or ignored columns before analysis proceeds.",
+            "group_counts": "Group counts: shows balance across the most relevant detected grouping variable, usually task or diagnosis. Severe imbalance affects interpretation and downstream ML splitting.",
+            "overview_subject_task_matrix": "Subject × task coverage: shows repeated-measures/task coverage. Empty cells reveal missing task coverage and potential bias in task-specific summaries.",
+            "feature_family_counts": "Feature-family counts: shows coverage across acoustic/kinematic/other feature subsystems when registry labels are available.",
+            "overview_feature_family_quality": "Feature-family quality: combines family coverage with average missingness. Use it to see whether an entire subsystem is weak, not just individual features.",
+            "overview_feature_quality_landscape": "Feature quality landscape: each feature is positioned by missingness and robust outlier burden. Review-zone features need inspection before ML export.",
+            "feature_availability_heatmap": "Feature availability heatmap: row-by-feature matrix showing available versus missing feature values. Blocks of missingness often indicate task or computation support issues.",
+            "missingness_top_features": "Top missing features: first-pass ranking of features with the highest missingness. Detailed missingness review is handled in the Missingness menu.",
+        }
+        return captions.get(key, "Overview plot.")
 
     def regenerate_overview_plots(self) -> None:
         try:
@@ -726,6 +833,8 @@ class FeatureAnalysisGUI(QMainWindow):
             QMessageBox.information(self, "Plot unavailable", f"Plot file not found:\n{path}")
             return
         self.current_overview_plot = path
+        if hasattr(self, "overview_plot_caption"):
+            self.overview_plot_caption.setText(self._overview_plot_caption_text(key))
         self._show_overview_plot(path)
 
     def _show_overview_plot(self, path: Path) -> None:

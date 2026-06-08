@@ -658,3 +658,124 @@ def distribution_review_summary(dist: pd.DataFrame, expected: pd.DataFrame | Non
             "review_reason": "; ".join(reasons) if reasons else "no major distribution issue detected",
         })
     return pd.DataFrame(rows)
+
+
+def overview_readiness_summary(
+    feature_df: pd.DataFrame,
+    qc_df: pd.DataFrame | None,
+    meta_df: pd.DataFrame | None,
+    mapping: pd.DataFrame,
+    dist: pd.DataFrame | None = None,
+    feature_missing: pd.DataFrame | None = None,
+    group_counts_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """High-level readiness dimensions for the Overview page.
+
+    These are descriptive orientation scores, not ML performance scores. They are
+    intended to help the user see what kinds of downstream analyses are supported
+    by the current table: feature completeness, metadata context, QC context,
+    numeric analyzability, and design richness.
+    """
+    roles = role_lists(mapping)
+    feature_cols = roles.get(ROLE_FEATURE, [])
+    target_cols = roles.get(ROLE_TARGET, [])
+    covar_cols = roles.get(ROLE_COVARIATE, [])
+    id_cols = roles.get(ROLE_IDENTIFIER, [])
+    numeric_feats = numeric_columns(feature_df, feature_cols)
+    n_rows = len(feature_df)
+    n_features = len(feature_cols)
+    mean_missing = np.nan
+    if feature_missing is not None and not feature_missing.empty and "missing_fraction" in feature_missing.columns:
+        mean_missing = float(pd.to_numeric(feature_missing["missing_fraction"], errors="coerce").mean())
+    elif numeric_feats:
+        mean_missing = float(feature_df[numeric_feats].isna().mean().mean())
+    feature_completeness = 100.0 * (1.0 - mean_missing) if pd.notna(mean_missing) else 0.0
+    numeric_coverage = 100.0 * (len(numeric_feats) / n_features) if n_features else 0.0
+    qc_context = 100.0 if qc_df is not None and not qc_df.empty else 0.0
+    metadata_context = 0.0
+    if meta_df is not None and not meta_df.empty:
+        metadata_context = 100.0
+    elif target_cols or covar_cols:
+        metadata_context = 70.0
+    elif id_cols:
+        metadata_context = 35.0
+    design_components = 0
+    max_components = 5
+    for g in ["task", "diagnosis", "severity_bin", "sex_or_gender", "session"]:
+        if group_counts_df is not None and not group_counts_df.empty and "group_variable" in group_counts_df.columns and g in set(group_counts_df["group_variable"].astype(str)):
+            design_components += 1
+    design_richness = 100.0 * design_components / max_components
+    row_depth = min(100.0, 100.0 * n_rows / 100.0) if n_rows else 0.0
+    feature_depth = min(100.0, 100.0 * len(numeric_feats) / 50.0) if numeric_feats else 0.0
+    readiness = [
+        ("Feature completeness", feature_completeness, "Average availability across selected feature columns."),
+        ("Numeric analyzability", numeric_coverage, "Share of mapped features that are numeric and can enter quantitative audits."),
+        ("Metadata context", metadata_context, "Availability of labels, covariates, tasks, or a linked metadata table."),
+        ("QC context", qc_context, "Availability of QC metrics for artifact-sensitivity screening."),
+        ("Design richness", design_richness, "Availability of task, diagnosis/severity, sex/gender, session, or related grouping structure."),
+        ("Row depth", row_depth, "Whether enough rows are present for stable descriptive summaries."),
+        ("Feature breadth", feature_depth, "Whether enough numeric features are present for meaningful feature-space review."),
+    ]
+    rows = []
+    for dimension, score, interp in readiness:
+        score = float(np.clip(score, 0, 100))
+        if score >= 80:
+            status = "strong"
+        elif score >= 50:
+            status = "adequate"
+        elif score > 0:
+            status = "limited"
+        else:
+            status = "absent"
+        rows.append({"dimension": dimension, "score_0_100": round(score, 1), "status": status, "interpretation": interp})
+    return pd.DataFrame(rows)
+
+
+def overview_feature_quality_landscape(dist: pd.DataFrame | None, registry: pd.DataFrame | None = None) -> pd.DataFrame:
+    """Compact feature quality table for Overview plots.
+
+    Combines missingness, outlier burden, variance, and optional subsystem labels.
+    """
+    if dist is None or dist.empty:
+        return pd.DataFrame(columns=["feature", "family_or_subsystem", "missing_fraction", "robust_outlier_fraction", "n_valid", "quality_status", "quality_score"])
+    subsystem_lookup: dict[str, str] = {}
+    if registry is not None and not registry.empty:
+        fcol = next((c for c in ["feature", "feature_name", "name", "column"] if c in registry.columns), None)
+        scol = next((c for c in ["subsystem", "family", "feature_family", "group"] if c in registry.columns), None)
+        if fcol and scol:
+            for _, r in registry[[fcol, scol]].dropna().iterrows():
+                subsystem_lookup[str(r[fcol])] = str(r[scol])
+    rows = []
+    for _, r in dist.iterrows():
+        feature = str(r.get("feature", ""))
+        miss = float(r.get("missing_fraction", np.nan)) if pd.notna(r.get("missing_fraction", np.nan)) else np.nan
+        out = float(r.get("robust_outlier_fraction", np.nan)) if pd.notna(r.get("robust_outlier_fraction", np.nan)) else np.nan
+        n_valid = int(r.get("n", 0) or 0)
+        zero = bool(r.get("zero_variance", False))
+        penalty = 0.0
+        if pd.notna(miss):
+            penalty += min(70.0, 70.0 * miss)
+        if pd.notna(out):
+            penalty += min(25.0, 125.0 * out)
+        if zero:
+            penalty += 40.0
+        if n_valid < 3:
+            penalty += 30.0
+        score = float(np.clip(100.0 - penalty, 0, 100))
+        if zero or n_valid < 3 or (pd.notna(miss) and miss >= 0.50) or (pd.notna(out) and out >= 0.20):
+            status = "review"
+        elif (pd.notna(miss) and miss >= 0.20) or (pd.notna(out) and out >= 0.05):
+            status = "monitor"
+        else:
+            status = "ok"
+        rows.append({
+            "feature": feature,
+            "family_or_subsystem": subsystem_lookup.get(feature, "unclassified"),
+            "missing_fraction": miss,
+            "robust_outlier_fraction": out,
+            "n_valid": n_valid,
+            "zero_variance": zero,
+            "quality_status": status,
+            "quality_score": round(score, 1),
+        })
+    return pd.DataFrame(rows).sort_values(["quality_status", "quality_score", "feature"], ascending=[False, True, True])
