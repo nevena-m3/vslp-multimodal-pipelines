@@ -44,7 +44,9 @@ from vslp.analysis.features.audit import (
     feature_pca_summary, feature_pca_loadings, feature_pca_scores,
     build_group_outcome_screening,
     reliability_design_summary, reliability_subject_record_counts,
-    feature_repeatability_summary, reliability_family_summary
+    feature_repeatability_summary, reliability_family_summary,
+    feature_recommendation_table, feature_recommendation_summary,
+    feature_recommendation_reason_counts, feature_recommendation_family_summary
 )
 from vslp.analysis.features.plots import (
     plot_role_counts, plot_group_counts, plot_feature_family_counts,
@@ -68,10 +70,13 @@ from vslp.analysis.features.plots import (
     plot_screening_effect_landscape, plot_selected_feature_outcome,
     plot_reliability_status_counts, plot_reliability_icc_ranking,
     plot_reliability_variance_landscape, plot_reliability_family_summary,
-    plot_reliability_subject_counts, plot_selected_feature_reliability
+    plot_reliability_subject_counts, plot_selected_feature_reliability,
+    plot_recommendation_counts, plot_recommendation_score_landscape,
+    plot_recommendation_reason_counts, plot_recommendation_family_summary,
+    plot_ml_export_manifest_summary
 )
 
-APP_VERSION = "v0.53"
+APP_VERSION = "v0.54"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -372,6 +377,7 @@ class Sidebar(QFrame):
             ("relationships", "○  Feature Relationships"),
             ("screening", "○  Group / Outcome Screening"),
             ("reliability", "○  Reliability"),
+            ("recommendations", "○  Recommendations"),
             ("export", "○  Export / Report"),
         ]:
             b = QPushButton(text)
@@ -447,7 +453,7 @@ class FeatureAnalysisGUI(QMainWindow):
         self.mapping_df = pd.DataFrame()
         self.outputs: dict[str, pd.DataFrame] = {}
         self.output_dir: Optional[Path] = None
-        self.page_keys = ["project", "mapping", "overview", "missing", "dist", "qc", "relationships", "screening", "reliability", "export"]
+        self.page_keys = ["project", "mapping", "overview", "missing", "dist", "qc", "relationships", "screening", "reliability", "recommendations", "export"]
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -476,6 +482,7 @@ class FeatureAnalysisGUI(QMainWindow):
             "relationships": self._relationships_page(),
             "screening": self._screening_page(),
             "reliability": self._reliability_page(),
+            "recommendations": self._recommendations_page(),
             "export": self._export_page(),
         }
         for key in self.page_keys:
@@ -855,6 +862,20 @@ class FeatureAnalysisGUI(QMainWindow):
         reliability_subjects = reliability_subject_record_counts(self.feature_df, mapping)
         reliability_repeatability = feature_repeatability_summary(self.feature_df, feature_cols, mapping, self.registry_df)
         reliability_family = reliability_family_summary(reliability_repeatability)
+        recommendation_inputs = {
+            "screening_continuous_outcome_associations": screening.get("screening_continuous_outcome_associations", pd.DataFrame()),
+            "screening_categorical_group_associations": screening.get("screening_categorical_group_associations", pd.DataFrame()),
+        }
+        feature_recs = feature_recommendation_table(
+            dist, feature_missing, shape_audit, qc_corr, rel_redundant, reliability_repeatability, recommendation_inputs, self.registry_df
+        )
+        rec_summary = feature_recommendation_summary(feature_recs)
+        rec_reasons = feature_recommendation_reason_counts(feature_recs)
+        rec_family = feature_recommendation_family_summary(feature_recs)
+        ml_export_manifest = feature_recs[[c for c in [
+            "feature", "family_or_subsystem", "readiness_recommendation", "readiness_score",
+            "ml_export_default", "primary_reasons", "recommended_action"
+        ] if c in feature_recs.columns]].copy()
         outputs = {
             "dataset_inventory": inventory,
             "feature_role_summary": role_sum,
@@ -901,6 +922,11 @@ class FeatureAnalysisGUI(QMainWindow):
             "reliability_subject_record_counts": reliability_subjects,
             "feature_repeatability_summary": reliability_repeatability,
             "reliability_family_summary": reliability_family,
+            "feature_recommendations": feature_recs,
+            "feature_recommendation_summary": rec_summary,
+            "feature_recommendation_reason_counts": rec_reasons,
+            "feature_recommendation_family_summary": rec_family,
+            "ml_export_manifest": ml_export_manifest,
         }
         return outputs, feature_cols
 
@@ -975,6 +1001,11 @@ class FeatureAnalysisGUI(QMainWindow):
         paths["reliability_subject_counts"] = str(plot_reliability_subject_counts(outputs.get("reliability_subject_record_counts", pd.DataFrame()), plots_dir / "reliability_subject_counts.png"))
         if first_feature:
             paths["selected_feature_reliability"] = str(plot_selected_feature_reliability(self.feature_df, first_feature, plots_dir / "selected_feature_reliability.png"))
+        paths["recommendation_counts"] = str(plot_recommendation_counts(outputs.get("feature_recommendations", pd.DataFrame()), plots_dir / "recommendation_counts.png"))
+        paths["recommendation_score_landscape"] = str(plot_recommendation_score_landscape(outputs.get("feature_recommendations", pd.DataFrame()), plots_dir / "recommendation_score_landscape.png"))
+        paths["recommendation_reason_counts"] = str(plot_recommendation_reason_counts(outputs.get("feature_recommendation_reason_counts", pd.DataFrame()), plots_dir / "recommendation_reason_counts.png"))
+        paths["recommendation_family_summary"] = str(plot_recommendation_family_summary(outputs.get("feature_recommendation_family_summary", pd.DataFrame()), plots_dir / "recommendation_family_summary.png"))
+        paths["ml_export_manifest_summary"] = str(plot_ml_export_manifest_summary(outputs.get("ml_export_manifest", pd.DataFrame()), plots_dir / "ml_export_manifest_summary.png"))
         return paths
 
     def preview_selected_overview_plot(self) -> None:
@@ -1029,6 +1060,7 @@ class FeatureAnalysisGUI(QMainWindow):
             self.update_relationships_dashboard(outputs)
             self.update_screening_dashboard(outputs)
             self.update_reliability_dashboard(outputs)
+            self.update_recommendations_dashboard(outputs)
             self.log(f"Overview/missingness plots generated in: {plots_dir}")
             self.preview_plot("role_counts", generate_if_missing=False)
         except Exception as exc:
@@ -2540,6 +2572,175 @@ class FeatureAnalysisGUI(QMainWindow):
         layout.addWidget(card)
         return self._wrap_scroll(body)
 
+    def _recommendations_page(self) -> QWidget:
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
+        card = Card(
+            "Feature Recommendation",
+            "Integrated feature-readiness review. This screen combines missingness, distributions, QC sensitivity, redundancy, screening signal, and repeatability into transparent recommendations. It is not automatic ML feature selection."
+        )
+        self.recommendation_metric_grid = QGridLayout()
+        card.layout.addLayout(self.recommendation_metric_grid)
+        note = QLabel(
+            "Use this page after all diagnostic modules. Recommended features are default candidates for export, while caution/review/exclude labels document why a feature needs sensitivity checks, recomputation, or manual review."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet(f"background:#F7FAFD; color:{INK}; border:1px solid {LINE}; border-radius:10px; padding:10px;")
+        card.layout.addWidget(note)
+        tabs = QTabWidget()
+        self.recommendation_summary_table = self._simple_table()
+        self.recommendation_table = self._simple_table()
+        self.recommendation_reasons_table = self._simple_table()
+        self.recommendation_family_table = self._simple_table()
+        self.ml_export_manifest_table = self._simple_table()
+        for title, tbl in [
+            ("Summary", self.recommendation_summary_table),
+            ("Feature recommendations", self.recommendation_table),
+            ("Reason counts", self.recommendation_reasons_table),
+            ("Family summary", self.recommendation_family_table),
+            ("ML export manifest", self.ml_export_manifest_table),
+        ]:
+            tabs.addTab(tbl, title)
+        card.layout.addWidget(tabs, 1)
+        layout.addWidget(card)
+
+        plot_card = Card(
+            "Recommendation plot board",
+            "These plots explain the integrated readiness decision. Use them to document why features are exported, held for review, or excluded by default."
+        )
+        split = QSplitter(Qt.Horizontal)
+        left = QWidget(); left_l = QVBoxLayout(left); left_l.setContentsMargins(0,0,0,0); left_l.setSpacing(8)
+        for label, key in [
+            ("Readiness category counts", "recommendation_counts"),
+            ("Readiness landscape", "recommendation_score_landscape"),
+            ("Review reason counts", "recommendation_reason_counts"),
+            ("Readiness by family", "recommendation_family_summary"),
+            ("ML export manifest", "ml_export_manifest_summary"),
+        ]:
+            b = QPushButton(label)
+            b.setProperty("secondary", True)
+            b.clicked.connect(lambda _=False, k=key: self.preview_recommendation_plot(k))
+            left_l.addWidget(b)
+        left_l.addStretch(1)
+        open_btn = QPushButton("Open current plot file")
+        open_btn.setProperty("primary", True)
+        open_btn.clicked.connect(self.open_current_recommendation_plot)
+        left_l.addWidget(open_btn)
+
+        right = QWidget(); right_l = QVBoxLayout(right); right_l.setContentsMargins(0,0,0,0); right_l.setSpacing(10)
+        self.recommendation_plot_preview = QLabel("Run Feature Analysis, then choose a recommendation plot.")
+        self.recommendation_plot_preview.setAlignment(Qt.AlignCenter)
+        self.recommendation_plot_preview.setMinimumHeight(500)
+        self.recommendation_plot_preview.setStyleSheet(f"background:#FFFFFF; border:1px solid {LINE}; border-radius:12px; color:{MUTED};")
+        self.recommendation_interpretation_label = QLabel("Select a plot to see structured interpretation guidance.")
+        self.recommendation_interpretation_label.setWordWrap(True)
+        self.recommendation_interpretation_label.setStyleSheet(f"background:#FFFFFF; color:{INK}; border:1px solid {LINE}; border-radius:10px; padding:12px;")
+        right_l.addWidget(self.recommendation_plot_preview, 1)
+        right_l.addWidget(self.recommendation_interpretation_label)
+        split.addWidget(left); split.addWidget(right); split.setStretchFactor(1, 1)
+        plot_card.layout.addWidget(split)
+        layout.addWidget(plot_card, 1)
+        return self._wrap_scroll(body)
+
+    def update_recommendations_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
+        if not hasattr(self, "recommendation_table"):
+            return
+        while self.recommendation_metric_grid.count():
+            item = self.recommendation_metric_grid.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        recs = outputs.get("feature_recommendations", pd.DataFrame())
+        summary = outputs.get("feature_recommendation_summary", pd.DataFrame())
+        reasons = outputs.get("feature_recommendation_reason_counts", pd.DataFrame())
+        fam = outputs.get("feature_recommendation_family_summary", pd.DataFrame())
+        manifest = outputs.get("ml_export_manifest", pd.DataFrame())
+        def m(metric: str, default: object = 0) -> object:
+            if summary is None or summary.empty or "metric" not in summary.columns:
+                return default
+            row = summary.loc[summary["metric"].astype(str).eq(metric)]
+            return row["value"].iloc[0] if not row.empty else default
+        tiles = [
+            ("Features reviewed", m("features_reviewed", 0), "integrated audit"),
+            ("Recommended", m("recommended", 0), "clean default candidates"),
+            ("With caution", m("recommended_with_caution", 0), "export but document risk"),
+            ("Review before use", m("review_before_use", 0), "manual review / sensitivity"),
+            ("Exclude/recompute", int(m("exclude_or_recompute", 0)) + int(m("exclude_by_default", 0)), "hold out by default"),
+            ("Default ML export", m("default_ml_export_features", 0), "transparent manifest"),
+        ]
+        for idx, (title, value, subtitle) in enumerate(tiles):
+            self.recommendation_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx // 3, idx % 3)
+        self._fill_table(self.recommendation_summary_table, summary)
+        self._fill_table(self.recommendation_table, recs)
+        self._fill_table(self.recommendation_reasons_table, reasons)
+        self._fill_table(self.recommendation_family_table, fam)
+        self._fill_table(self.ml_export_manifest_table, manifest)
+
+    def preview_recommendation_plot(self, key: str) -> None:
+        if not hasattr(self, "plot_paths") or key not in self.plot_paths or not Path(self.plot_paths.get(key, "")).exists():
+            self.regenerate_overview_plots()
+        if not hasattr(self, "plot_paths") or key not in self.plot_paths:
+            QMessageBox.information(self, "Plot unavailable", "Run Feature Analysis first, or this recommendation plot could not be generated for the current dataset.")
+            return
+        path = Path(self.plot_paths[key])
+        if not path.exists():
+            QMessageBox.information(self, "Plot unavailable", f"Plot file not found:\n{path}")
+            return
+        self.current_recommendation_plot = path
+        self.update_recommendation_interpretation(key)
+        pix = QPixmap(str(path))
+        if pix.isNull():
+            self.recommendation_plot_preview.setText(f"Could not load plot:\n{path}")
+            return
+        self.recommendation_plot_preview.setPixmap(pix.scaled(self.recommendation_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self.recommendation_plot_preview.setToolTip(str(path))
+
+    def update_recommendation_interpretation(self, key: str) -> None:
+        if not hasattr(self, "recommendation_interpretation_label"):
+            return
+        captions = {
+            "recommendation_counts": (
+                "<b>What it shows</b><br>Number of features in each integrated readiness category.<br><br>"
+                "<b>Concerning pattern</b><br>Many review/exclude features means the dataset still has substantial missingness, QC, distributional, redundancy, or reliability risk.<br><br>"
+                "<b>Do not overinterpret</b><br>These are transparent review defaults, not automated feature selection.<br><br>"
+                "<b>Next check</b><br>Open the feature recommendations table and inspect reasons."
+            ),
+            "recommendation_score_landscape": (
+                "<b>What it shows</b><br>Feature readiness score versus missingness, with larger points indicating stronger QC association.<br><br>"
+                "<b>Concerning pattern</b><br>Low score, high missingness, and large point size together suggest a risky feature for ML export.<br><br>"
+                "<b>Do not overinterpret</b><br>A lower score does not prove the feature is invalid; it means more review is required.<br><br>"
+                "<b>Next check</b><br>Review Missingness, QC Integration, Distributions, and Reliability for that feature."
+            ),
+            "recommendation_reason_counts": (
+                "<b>What it shows</b><br>The most common reasons features were cautioned, reviewed, or excluded by default.<br><br>"
+                "<b>Concerning pattern</b><br>Dominant QC or missingness reasons suggest a dataset-level problem, not just individual bad features.<br><br>"
+                "<b>Do not overinterpret</b><br>Reason counts are not weighted by severity or clinical importance.<br><br>"
+                "<b>Next check</b><br>Use family summary to see whether reasons cluster by subsystem."
+            ),
+            "recommendation_family_summary": (
+                "<b>What it shows</b><br>Median readiness score by feature family/subsystem.<br><br>"
+                "<b>Concerning pattern</b><br>A low-scoring family may indicate subsystem-level computation, task-support, or acquisition-sensitivity problems.<br><br>"
+                "<b>Do not overinterpret</b><br>Family medians can hide strong individual features.<br><br>"
+                "<b>Next check</b><br>Inspect the family table and individual feature recommendations."
+            ),
+            "ml_export_manifest_summary": (
+                "<b>What it shows</b><br>How many features are included in the default ML export manifest versus held for review.<br><br>"
+                "<b>Concerning pattern</b><br>A very small export set means most features need review, recomputation, or better data support.<br><br>"
+                "<b>Do not overinterpret</b><br>This is not final ML selection; the ML GUI must still do fold-safe preprocessing and selection.<br><br>"
+                "<b>Next check</b><br>Export the manifest and use it as the starting feature set for ML."
+            ),
+        }
+        self.recommendation_interpretation_label.setText(captions.get(key, "Select a recommendation plot to see structured interpretation guidance."))
+
+    def open_current_recommendation_plot(self) -> None:
+        path = getattr(self, "current_recommendation_plot", None)
+        if not path:
+            QMessageBox.information(self, "No current plot", "Preview a recommendation plot first, then open the full-resolution file.")
+            return
+        self.open_file(Path(path))
+
+
     def _export_page(self) -> QWidget:
         body = QWidget()
         layout = QVBoxLayout(body)
@@ -2692,6 +2893,7 @@ class FeatureAnalysisGUI(QMainWindow):
             self.update_relationships_dashboard(outputs)
             self.update_screening_dashboard(outputs)
             self.update_reliability_dashboard(outputs)
+            self.update_recommendations_dashboard(outputs)
             self.log(f"Analysis complete. Outputs written to: {self.output_dir}")
             self.show_page("overview")
         except Exception as exc:
@@ -2706,6 +2908,7 @@ class FeatureAnalysisGUI(QMainWindow):
             "feature_relationships": "feature_relationship_summary",
             "group___outcome_screening": "screening_summary",
             "reliability": "feature_repeatability_summary",
+            "recommendations": "feature_recommendations",
         }
         for obj_suffix, key in targets.items():
             table = getattr(self, f"table_{obj_suffix}", None)
@@ -2757,6 +2960,11 @@ class FeatureAnalysisGUI(QMainWindow):
             pix = QPixmap(str(relpath))
             if not pix.isNull():
                 self.reliability_plot_preview.setPixmap(pix.scaled(self.reliability_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        recpath = getattr(self, "current_recommendation_plot", None)
+        if recpath and hasattr(self, "recommendation_plot_preview"):
+            pix = QPixmap(str(recpath))
+            if not pix.isNull():
+                self.recommendation_plot_preview.setPixmap(pix.scaled(self.recommendation_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
     def write_report(self, path: Path, outputs: dict[str, pd.DataFrame]) -> None:
         inv = outputs.get("dataset_inventory", pd.DataFrame()).to_html(index=False, escape=False)
@@ -2768,6 +2976,8 @@ class FeatureAnalysisGUI(QMainWindow):
         distreview = outputs.get("distribution_review_summary", pd.DataFrame()).head(100).to_html(index=False, escape=False)
         outrows = outputs.get("robust_outlier_flags", pd.DataFrame()).head(100).to_html(index=False, escape=False)
         rel = outputs.get("feature_reliability_screen", pd.DataFrame()).head(80).to_html(index=False, escape=False)
+        recs = outputs.get("feature_recommendations", pd.DataFrame()).head(120).to_html(index=False, escape=False)
+        manifest = outputs.get("ml_export_manifest", pd.DataFrame()).head(200).to_html(index=False, escape=False)
         html = f"""<!doctype html><html><head><meta charset='utf-8'><title>VSLP Feature Analysis Report</title>
         <style>body{{font-family:Arial,sans-serif;margin:32px;color:#0E1726}} h1,h2{{color:#071A33}} table{{border-collapse:collapse;width:100%;font-size:12px;margin-bottom:24px}} td,th{{border:1px solid #D9E2EF;padding:6px}} th{{background:#EEF4FA}}</style></head><body>
         <h1>VSLP Feature Analysis Report</h1><p>Version {APP_VERSION}. Descriptive feature audit only; not a diagnostic or ML-training report.</p>
@@ -2779,7 +2989,9 @@ class FeatureAnalysisGUI(QMainWindow):
         <h2>Missingness by group</h2>{missgrp}
         <h2>Distribution / outlier review</h2>{distreview}
         <h2>Row-level outlier flags</h2>{outrows}
-        <h2>Initial feature reliability screen</h2>{rel}</body></html>"""
+        <h2>Initial feature reliability screen</h2>{rel}
+        <h2>Integrated feature recommendations</h2>{recs}
+        <h2>ML export manifest preview</h2>{manifest}</body></html>"""
         path.write_text(html, encoding="utf-8")
 
     def open_output_folder(self) -> None:

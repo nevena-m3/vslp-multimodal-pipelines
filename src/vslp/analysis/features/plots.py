@@ -1229,3 +1229,92 @@ def plot_selected_feature_reliability(df: pd.DataFrame, feature: str, path: Path
     ax.set_ylabel(feature, color=MUTED)
     _style(ax, f"{feature}: within-subject repeatability")
     return _save(fig, path)
+
+
+def plot_recommendation_counts(recs: pd.DataFrame, path: Path) -> Path:
+    if recs is None or recs.empty or "readiness_recommendation" not in recs.columns:
+        return _empty(path, "No feature recommendation table was available.", "Feature recommendations")
+    order = ["recommended", "recommended_with_caution", "review_before_use", "exclude_or_recompute", "exclude_by_default"]
+    s = recs["readiness_recommendation"].astype(str).value_counts().reindex(order).fillna(0).astype(int)
+    colors = [TEAL, "#8CCB88", GOLD, "#E58E26", RED]
+    fig, ax = plt.subplots(figsize=(9.5, 5.0))
+    ax.barh([x.replace("_", " ") for x in s.index], s.values, color=colors)
+    ax.invert_yaxis(); ax.set_xlabel("Number of features", color=MUTED)
+    _style(ax, "Integrated feature readiness categories")
+    for i, v in enumerate(s.values):
+        ax.text(v + max(1, s.max() * .02), i, str(v), va="center", color=NAVY, fontweight="bold")
+    return _save(fig, path)
+
+
+def plot_recommendation_score_landscape(recs: pd.DataFrame, path: Path) -> Path:
+    if recs is None or recs.empty or "readiness_score" not in recs.columns:
+        return _empty(path, "No readiness scores were available.", "Feature readiness")
+    df = recs.copy()
+    df["readiness_score"] = pd.to_numeric(df["readiness_score"], errors="coerce")
+    df["missing_fraction"] = pd.to_numeric(df.get("missing_fraction", np.nan), errors="coerce")
+    df["max_abs_qc_spearman"] = pd.to_numeric(df.get("max_abs_qc_spearman", np.nan), errors="coerce")
+    df = df.dropna(subset=["readiness_score"])
+    if df.empty:
+        return _empty(path, "No numeric readiness scores were available.", "Feature readiness")
+    fig, ax = plt.subplots(figsize=(10, 6))
+    x = df["missing_fraction"].fillna(0)
+    y = df["readiness_score"]
+    qc = df["max_abs_qc_spearman"].fillna(0)
+    sizes = 30 + 240 * qc.clip(0, 1)
+    colors = df["readiness_recommendation"].map({"recommended": TEAL, "recommended_with_caution": "#8CCB88", "review_before_use": GOLD, "exclude_or_recompute": "#E58E26", "exclude_by_default": RED}).fillna(MUTED)
+    ax.scatter(x, y, s=sizes, c=colors, alpha=.82, edgecolor="white", linewidth=.8)
+    ax.axhline(80, color=TEAL, linestyle="--", linewidth=1, alpha=.65)
+    ax.axhline(60, color=GOLD, linestyle="--", linewidth=1, alpha=.65)
+    ax.axhline(40, color=RED, linestyle="--", linewidth=1, alpha=.65)
+    ax.set_xlim(-.02, 1.02); ax.set_ylim(-2, 102)
+    ax.set_xlabel("Missing fraction", color=MUTED)
+    ax.set_ylabel("Integrated readiness score", color=MUTED)
+    _style(ax, "Feature readiness landscape")
+    ax.text(.01, 83, "recommended zone", color=TEAL, fontsize=9)
+    ax.text(.01, 63, "caution/review boundary", color=GOLD, fontsize=9)
+    ax.text(.01, 43, "review/exclude boundary", color=RED, fontsize=9)
+    return _save(fig, path)
+
+
+def plot_recommendation_reason_counts(reasons: pd.DataFrame, path: Path, top_n: int = 18) -> Path:
+    if reasons is None or reasons.empty or "reason" not in reasons.columns:
+        return _empty(path, "No recommendation reasons were available.", "Recommendation reasons")
+    df = reasons.copy().head(top_n)
+    df["n_features"] = pd.to_numeric(df.get("n_features", 0), errors="coerce").fillna(0)
+    fig, ax = plt.subplots(figsize=(10, max(4.8, .38 * len(df))))
+    ax.barh(df["reason"].astype(str), df["n_features"], color=GOLD)
+    ax.invert_yaxis(); ax.set_xlabel("Number of affected features", color=MUTED)
+    _style(ax, "Most common review reasons")
+    return _save(fig, path)
+
+
+def plot_recommendation_family_summary(family: pd.DataFrame, path: Path) -> Path:
+    if family is None or family.empty or "family_or_subsystem" not in family.columns:
+        return _empty(path, "No family-level recommendation summary was available.", "Recommendations by family")
+    df = family.copy().sort_values("median_readiness_score", ascending=True)
+    df["median_readiness_score"] = pd.to_numeric(df.get("median_readiness_score", np.nan), errors="coerce")
+    fig, ax = plt.subplots(figsize=(10, max(4.8, .42 * len(df))))
+    colors = [TEAL if v >= 80 else GOLD if v >= 60 else RED for v in df["median_readiness_score"].fillna(0)]
+    ax.barh(df["family_or_subsystem"].astype(str), df["median_readiness_score"], color=colors)
+    ax.set_xlim(0, 100); ax.set_xlabel("Median readiness score", color=MUTED)
+    ax.axvline(80, color=TEAL, linestyle="--", linewidth=1, alpha=.6)
+    ax.axvline(60, color=GOLD, linestyle="--", linewidth=1, alpha=.6)
+    ax.axvline(40, color=RED, linestyle="--", linewidth=1, alpha=.6)
+    _style(ax, "Feature readiness by family/subsystem")
+    return _save(fig, path)
+
+
+def plot_ml_export_manifest_summary(recs: pd.DataFrame, path: Path) -> Path:
+    if recs is None or recs.empty or "ml_export_default" not in recs.columns:
+        return _empty(path, "No export manifest was available.", "ML export manifest")
+    df = recs.copy()
+    included = int(df["ml_export_default"].astype(bool).sum())
+    excluded = int(len(df) - included)
+    fig, ax = plt.subplots(figsize=(7.2, 5.2))
+    ax.bar(["Default export", "Hold for review"], [included, excluded], color=[TEAL, GOLD])
+    ax.set_ylabel("Number of features", color=MUTED)
+    _style(ax, "Transparent ML export manifest")
+    for i, v in enumerate([included, excluded]):
+        ax.text(i, v + max(1, len(df) * .02), str(v), ha="center", color=NAVY, fontweight="bold")
+    ax.text(.5, -.20, "Export labels are review defaults, not final ML feature selection.", transform=ax.transAxes, ha="center", color=MUTED, fontsize=9)
+    return _save(fig, path)

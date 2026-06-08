@@ -1897,3 +1897,241 @@ def reliability_family_summary(repeatability: pd.DataFrame) -> pd.DataFrame:
         interp = "Family appears stable" if np.isfinite(med) and med >= .75 else ("Family has mixed repeatability" if np.isfinite(med) and med >= .5 else "Family requires repeatability review")
         rows.append({"family_or_subsystem": fam, "n_features": int(len(sub)), "median_icc1_proxy": med, "n_stable": n_stable, "n_unstable_or_variable": n_var, "interpretation": interp})
     return pd.DataFrame(rows).sort_values("median_icc1_proxy", ascending=False, na_position="last")
+
+
+def feature_recommendation_table(
+    dist: pd.DataFrame | None,
+    missing: pd.DataFrame | None = None,
+    shape: pd.DataFrame | None = None,
+    qc_corr: pd.DataFrame | None = None,
+    redundant_pairs: pd.DataFrame | None = None,
+    repeatability: pd.DataFrame | None = None,
+    screening: dict[str, pd.DataFrame] | None = None,
+    registry: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    """Integrated feature-readiness recommendation table.
+
+    This is a transparent review aid, not automatic feature selection. It combines
+    outputs from the preceding Feature Analysis screens into conservative readiness
+    labels for downstream export/ML planning.
+    """
+    if dist is None or dist.empty or "feature" not in dist.columns:
+        return pd.DataFrame(columns=[
+            "feature", "family_or_subsystem", "readiness_recommendation", "readiness_score",
+            "primary_reasons", "recommended_action", "ml_export_default",
+            "missing_fraction", "robust_outlier_fraction", "zero_variance", "near_zero_variance",
+            "max_abs_qc_spearman", "max_abs_redundancy", "icc1_proxy", "max_screening_effect"
+        ])
+    base = dist.copy()
+    # Family/subsystem lookup from registry when available.
+    fam_lookup: dict[str, str] = {}
+    if registry is not None and not registry.empty:
+        def first(cols):
+            for c in cols:
+                if c in registry.columns:
+                    return c
+            return None
+        name_col = first(["feature", "feature_name", "name", "column"])
+        fam_col = first(["family", "feature_family", "subsystem", "domain", "artifact_family"])
+        if name_col and fam_col:
+            fam_lookup = dict(zip(registry[name_col].astype(str), registry[fam_col].astype(str)))
+    # Shape priorities.
+    shape_priority = {}
+    shape_reason = {}
+    if shape is not None and not shape.empty and "feature" in shape.columns:
+        if "priority" in shape.columns:
+            shape_priority = dict(zip(shape["feature"].astype(str), shape["priority"].astype(str)))
+        if "recommended_review" in shape.columns:
+            shape_reason = dict(zip(shape["feature"].astype(str), shape["recommended_review"].astype(str)))
+    # QC max association.
+    qc_max = {}
+    if qc_corr is not None and not qc_corr.empty and "feature" in qc_corr.columns:
+        tmp = qc_corr.copy()
+        col = "abs_spearman" if "abs_spearman" in tmp.columns else "spearman_rho"
+        tmp[col] = pd.to_numeric(tmp[col], errors="coerce").abs()
+        qc_max = tmp.groupby(tmp["feature"].astype(str))[col].max().to_dict()
+    # Redundancy.
+    red_max = {}
+    red_count = {}
+    if redundant_pairs is not None and not redundant_pairs.empty:
+        for _, r in redundant_pairs.iterrows():
+            f1 = str(r.get("feature_1", "")); f2 = str(r.get("feature_2", ""))
+            val = abs(float(r.get("abs_spearman", r.get("spearman_rho", np.nan)) or np.nan))
+            if not np.isfinite(val):
+                continue
+            for f in [f1, f2]:
+                if not f:
+                    continue
+                red_max[f] = max(red_max.get(f, 0.0), val)
+                red_count[f] = red_count.get(f, 0) + 1
+    # Repeatability.
+    icc_lookup = {}; reliability_lookup = {}
+    if repeatability is not None and not repeatability.empty and "feature" in repeatability.columns:
+        if "icc1_proxy" in repeatability.columns:
+            icc_lookup = dict(zip(repeatability["feature"].astype(str), pd.to_numeric(repeatability["icc1_proxy"], errors="coerce")))
+        if "reliability_status" in repeatability.columns:
+            reliability_lookup = dict(zip(repeatability["feature"].astype(str), repeatability["reliability_status"].astype(str)))
+    # Screening max effect across continuous/categorical outputs.
+    screen_max = {}
+    if screening:
+        for k in ["screening_continuous_outcome_associations", "screening_categorical_group_associations"]:
+            s = screening.get(k, pd.DataFrame())
+            if s is None or s.empty or "feature" not in s.columns:
+                continue
+            # Prefer explicit absolute effect columns.
+            candidates = ["abs_spearman", "abs_effect_size", "abs_effect", "effect_abs", "abs_cliffs_delta", "abs_scaled_median_difference"]
+            ecol = next((c for c in candidates if c in s.columns), None)
+            if ecol is None:
+                # Fallback to known signed columns.
+                signed = next((c for c in ["spearman_rho", "effect_size", "cliffs_delta", "scaled_median_difference"] if c in s.columns), None)
+                if signed is None:
+                    continue
+                vals = pd.to_numeric(s[signed], errors="coerce").abs()
+            else:
+                vals = pd.to_numeric(s[ecol], errors="coerce").abs()
+            for f, v in zip(s["feature"].astype(str), vals):
+                if pd.notna(v):
+                    screen_max[f] = max(screen_max.get(f, 0.0), float(v))
+    rows = []
+    for _, r in base.iterrows():
+        f = str(r.get("feature", ""))
+        miss = float(r.get("missing_fraction", np.nan)) if pd.notna(r.get("missing_fraction", np.nan)) else np.nan
+        out = float(r.get("robust_outlier_fraction", np.nan)) if pd.notna(r.get("robust_outlier_fraction", np.nan)) else np.nan
+        zero = bool(r.get("zero_variance", False))
+        nzv = bool(r.get("near_zero_variance", False))
+        n = int(r.get("n", 0) or 0)
+        qcv = qc_max.get(f, np.nan)
+        redv = red_max.get(f, np.nan)
+        redn = red_count.get(f, 0)
+        icc = icc_lookup.get(f, np.nan)
+        relstat = reliability_lookup.get(f, "not_evaluable")
+        shpri = shape_priority.get(f, "ok")
+        seff = screen_max.get(f, np.nan)
+        score = 100
+        reasons = []
+        action = []
+        if n < 10:
+            score -= 30; reasons.append("very small valid n"); action.append("insufficient data; review support before export")
+        if zero:
+            score -= 55; reasons.append("zero variance"); action.append("exclude by default unless kept for audit only")
+        elif nzv:
+            score -= 20; reasons.append("near-zero variance"); action.append("monitor; weak information in this dataset")
+        if np.isfinite(miss):
+            if miss >= .80:
+                score -= 45; reasons.append("extreme missingness"); action.append("exclude/recompute unless scientifically required")
+            elif miss >= .50:
+                score -= 30; reasons.append("high missingness"); action.append("review missing-data mechanism")
+            elif miss >= .20:
+                score -= 12; reasons.append("moderate missingness"); action.append("retain with missingness sensitivity checks")
+        if np.isfinite(out):
+            if out >= .20:
+                score -= 20; reasons.append("high robust outlier burden"); action.append("inspect extreme rows and QC")
+            elif out >= .08:
+                score -= 8; reasons.append("moderate outlier burden"); action.append("monitor distribution tails")
+        if shpri == "review":
+            score -= 18; reasons.append("distribution shape review")
+        elif shpri == "monitor":
+            score -= 8; reasons.append("distribution shape monitor")
+        if np.isfinite(qcv):
+            if qcv >= .70:
+                score -= 30; reasons.append("strong QC association"); action.append("do not interpret without QC sensitivity/covariate analysis")
+            elif qcv >= .50:
+                score -= 18; reasons.append("moderate QC association"); action.append("export with QC caution")
+            elif qcv >= .30:
+                score -= 7; reasons.append("weak/moderate QC association")
+        if np.isfinite(redv):
+            if redv >= .90:
+                score -= 10; reasons.append("near-duplicate redundancy"); action.append("consider one representative per redundant block in ML")
+            elif redv >= .80:
+                score -= 5; reasons.append("strong redundancy")
+        if relstat in ["unstable", "variable"]:
+            score -= 18 if relstat == "unstable" else 10; reasons.append(f"{relstat} repeatability"); action.append("avoid longitudinal interpretation without reliability sensitivity")
+        elif relstat == "not_evaluable":
+            score -= 4; reasons.append("repeatability not evaluable")
+        score = int(max(0, min(100, round(score))))
+        # Recommendation labels.
+        if zero or n < 5 or (np.isfinite(miss) and miss >= .80):
+            rec = "exclude_by_default"
+            export_default = False
+        elif score >= 80:
+            rec = "recommended"
+            export_default = True
+        elif score >= 60:
+            rec = "recommended_with_caution"
+            export_default = True
+        elif score >= 40:
+            rec = "review_before_use"
+            export_default = False
+        else:
+            rec = "exclude_or_recompute"
+            export_default = False
+        if not action:
+            action = ["eligible for downstream ML export after standard leakage-safe preprocessing"]
+        rows.append({
+            "feature": f,
+            "family_or_subsystem": fam_lookup.get(f, r.get("family_or_subsystem", "unclassified")),
+            "readiness_recommendation": rec,
+            "readiness_score": score,
+            "primary_reasons": "; ".join(reasons) if reasons else "no major review flags detected",
+            "recommended_action": "; ".join(dict.fromkeys(action)),
+            "ml_export_default": bool(export_default),
+            "missing_fraction": miss,
+            "robust_outlier_fraction": out,
+            "zero_variance": zero,
+            "near_zero_variance": nzv,
+            "max_abs_qc_spearman": qcv,
+            "max_abs_redundancy": redv,
+            "redundant_pair_count_abs_rho_ge_0_80": int(redn),
+            "icc1_proxy": icc,
+            "reliability_status": relstat,
+            "max_screening_effect": seff,
+            "shape_priority": shpri,
+            "shape_review_note": shape_reason.get(f, ""),
+        })
+    out = pd.DataFrame(rows)
+    order = {"recommended": 0, "recommended_with_caution": 1, "review_before_use": 2, "exclude_or_recompute": 3, "exclude_by_default": 4}
+    out["_ord"] = out["readiness_recommendation"].map(order).fillna(9)
+    out = out.sort_values(["_ord", "readiness_score", "feature"], ascending=[True, False, True]).drop(columns=["_ord"])
+    return out
+
+
+def feature_recommendation_summary(recs: pd.DataFrame | None) -> pd.DataFrame:
+    if recs is None or recs.empty:
+        return pd.DataFrame([{"metric": "features_reviewed", "value": 0, "interpretation": "No feature recommendations were generated."}])
+    rows = [{"metric": "features_reviewed", "value": int(len(recs)), "interpretation": "Number of numeric feature columns assessed by the integrated recommendation layer."}]
+    for label in ["recommended", "recommended_with_caution", "review_before_use", "exclude_or_recompute", "exclude_by_default"]:
+        n = int((recs["readiness_recommendation"].astype(str) == label).sum())
+        rows.append({"metric": label, "value": n, "interpretation": "Integrated readiness category count."})
+    rows.append({"metric": "default_ml_export_features", "value": int(recs.get("ml_export_default", pd.Series(dtype=bool)).astype(bool).sum()), "interpretation": "Features included by default in the transparent ML-ready export manifest."})
+    med = pd.to_numeric(recs.get("readiness_score", pd.Series(dtype=float)), errors="coerce").median()
+    rows.append({"metric": "median_readiness_score", "value": float(med) if pd.notna(med) else np.nan, "interpretation": "Median integrated feature readiness score on a 0-100 screening scale."})
+    return pd.DataFrame(rows)
+
+
+def feature_recommendation_reason_counts(recs: pd.DataFrame | None) -> pd.DataFrame:
+    if recs is None or recs.empty or "primary_reasons" not in recs.columns:
+        return pd.DataFrame(columns=["reason", "n_features", "interpretation"])
+    counts = {}
+    for txt in recs["primary_reasons"].fillna("").astype(str):
+        for part in [p.strip() for p in txt.split(";") if p.strip() and p.strip() != "no major review flags detected"]:
+            counts[part] = counts.get(part, 0) + 1
+    rows = [{"reason": k, "n_features": v, "interpretation": "Number of features carrying this integrated review flag."} for k, v in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))]
+    return pd.DataFrame(rows)
+
+
+def feature_recommendation_family_summary(recs: pd.DataFrame | None) -> pd.DataFrame:
+    if recs is None or recs.empty:
+        return pd.DataFrame(columns=["family_or_subsystem", "n_features", "median_readiness_score", "recommended_or_caution", "review_or_exclude", "interpretation"])
+    df = recs.copy()
+    df["family_or_subsystem"] = df.get("family_or_subsystem", "unclassified").fillna("unclassified").astype(str)
+    df["readiness_score"] = pd.to_numeric(df.get("readiness_score", np.nan), errors="coerce")
+    good = df["readiness_recommendation"].isin(["recommended", "recommended_with_caution"])
+    bad = df["readiness_recommendation"].isin(["review_before_use", "exclude_or_recompute", "exclude_by_default"])
+    out = df.assign(_good=good, _bad=bad).groupby("family_or_subsystem").agg(
+        n_features=("feature", "count"),
+        median_readiness_score=("readiness_score", "median"),
+        recommended_or_caution=("_good", "sum"),
+        review_or_exclude=("_bad", "sum"),
+    ).reset_index().sort_values("median_readiness_score", ascending=False)
+    out["interpretation"] = np.where(out["review_or_exclude"] > out["recommended_or_caution"], "Family requires review before ML export.", "Family has mostly usable/reviewable features.")
+    return out
