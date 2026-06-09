@@ -12,15 +12,25 @@ from .landmarks import (
     verify_mediapipe_runtime,
 )
 from .mediapipe_runtime import mediapipe_environment_status, FACE_LANDMARKER_MODEL_URL
-from .normalization import write_normalization_config
-from .features import KINEMATIC_FEATURE_SPECS, KINEMATIC_FEATURE_GROUPS, DEFAULT_KINEMATIC_FEATURE_IDS, QC_FEATURE_REQUIREMENTS, feature_registry_dataframe
+from .normalization import NormalizationConfig, write_normalization_config, run_normalization, run_normalization_from_selection
+from .video_qc import VideoQCConfig, run_video_qc
+from .features import (
+    DEFAULT_KINEMATIC_FEATURE_IDS,
+    KINEMATIC_FEATURE_GROUPS,
+    KINEMATIC_FEATURE_SPECS,
+    QC_FEATURE_REQUIREMENTS,
+    FeatureComputationConfig,
+    feature_registry_dataframe,
+    run_feature_computation,
+)
+from .aggregation import TemporalAggregationConfig, run_temporal_aggregation
 from .reports import write_scaffold_report
 
 __all__ = [
     "LANDMARK_PRESETS", "NORMALIZATION_METHODS", "AGGREGATION_PROFILES", "VideoIngestConfig",
     "run_ingest", "discover_videos", "link_metadata", "load_metadata", "LandmarkRunConfig",
     "write_landmark_plan", "run_mediapipe_landmarks", "download_default_model",
-    "KINEMATIC_FEATURE_SPECS", "KINEMATIC_FEATURE_GROUPS", "DEFAULT_KINEMATIC_FEATURE_IDS", "QC_FEATURE_REQUIREMENTS", "feature_registry_dataframe",
     "mediapipe_capability_note", "mediapipe_environment_status", "FACE_LANDMARKER_MODEL_URL",
-    "write_normalization_config", "write_scaffold_report",
+    "NormalizationConfig", "write_normalization_config", "run_normalization", "run_normalization_from_selection",
+    "VideoQCConfig", "run_video_qc", "FeatureComputationConfig", "run_feature_computation", "TemporalAggregationConfig", "run_temporal_aggregation", "write_scaffold_report",
 ]

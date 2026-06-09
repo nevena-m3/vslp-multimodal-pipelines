@@ -71,15 +71,21 @@ from vslp.analysis.kinematics import (
     run_ingest,
     write_landmark_plan,
     write_normalization_config,
-    write_scaffold_report,
+    run_normalization_from_selection,
+    run_video_qc,
+    DEFAULT_KINEMATIC_FEATURE_IDS,
     KINEMATIC_FEATURE_GROUPS,
     KINEMATIC_FEATURE_SPECS,
-    DEFAULT_KINEMATIC_FEATURE_IDS,
     QC_FEATURE_REQUIREMENTS,
+    FeatureComputationConfig,
+    run_feature_computation,
+    TemporalAggregationConfig,
+    run_temporal_aggregation,
+    write_scaffold_report,
 )
 from vslp.analysis.kinematics.schemas import DEFAULT_VIDEO_EXTENSIONS, parse_int_list
 
-APP_VERSION = "v0.65"
+APP_VERSION = "v0.68.1"
 BRAND_DIR = Path(__file__).resolve().parent / "assets" / "branding"
 LAB_LOGO = BRAND_DIR / "lab_logo.png"
 UOFT_LOGO = BRAND_DIR / "uoft_logo.png"
@@ -441,7 +447,7 @@ class LandmarkMeshCanvas(QWidget):
 
         painter.setFont(QFont("Segoe UI", 8))
         painter.setPen(QColor("#E2E8F0"))
-        footer = f"Source: {self.source_label} | visible landmarks: {len(self.points)} | selected: {len(self.selected)} | zoom: {self.zoom_factor:.1f}× | left-click point, drag to pan, wheel to zoom"
+        footer = f"Source: {self.source_label} | visible landmarks: {len(self.points)} | selected: {len(self.selected)} | zoom: {self.zoom_factor:.1f}x | left-click point, drag to pan, wheel to zoom"
         painter.drawText(18, self.height() - 13, footer)
 
 
@@ -458,9 +464,10 @@ class KinematicsPipelineWindow(QMainWindow):
         self.metadata_path: Path | None = None
         self.last_report_html: Path | None = None
         self.landmark_indices: tuple[int, ...] = LANDMARK_PRESETS["ALS oral-motor core 15"]
-        self.selected_feature_ids: set[str] = set(DEFAULT_KINEMATIC_FEATURE_IDS)
         self._thread: QThread | None = None
         self._worker: Worker | None = None
+        self._worker_done_callback: Callable[[object], None] | None = None
+        self._busy_task_name: str | None = None
         self._landmark_overlay_loaded = False
         self._landmark_frame_reload_timer = QTimer(self)
         self._landmark_frame_reload_timer.setSingleShot(True)
@@ -501,7 +508,7 @@ class KinematicsPipelineWindow(QMainWindow):
         subtitle = QLabel(f"Kinematics Pipeline GUI {APP_VERSION}")
         subtitle.setObjectName("SubtitleLabel")
         ip_notice = QLabel(
-            "© 2026 Nevena Musikic & Yana Yunusova\n"
+            "(c) 2026 Nevena Musikic & Yana Yunusova\n"
             "Speech Production Lab, University of Toronto"
         )
         ip_notice.setObjectName("IPNoticeLabel")
@@ -661,6 +668,61 @@ class KinematicsPipelineWindow(QMainWindow):
 
     def _log(self, message: str) -> None:
         self.log_box.appendPlainText(message)
+        self.log_box.verticalScrollBar().setValue(self.log_box.verticalScrollBar().maximum())
+
+    def _set_progress_idle(self, value: int = 0) -> None:
+        if hasattr(self, "progress"):
+            self.progress.setRange(0, 100)
+            self.progress.setValue(max(0, min(100, int(value))))
+            self.progress.setFormat("Idle" if value == 0 else f"{int(value)}%")
+
+    def _set_progress_busy(self, label: str) -> None:
+        if hasattr(self, "progress"):
+            self.progress.setRange(0, 0)
+            self.progress.setFormat(label)
+
+    def _start_worker(self, name: str, func: Callable, kwargs: dict, done_callback: Callable[[object], None]) -> None:
+        if self._thread is not None:
+            QMessageBox.information(self, "Stage already running", "Wait for the current stage to finish before starting another stage.")
+            return
+        self._busy_task_name = name
+        self._worker_done_callback = done_callback
+        self._thread = QThread(self)
+        self._worker = Worker(name, func, kwargs)
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.started.connect(self._on_worker_started)
+        self._worker.message.connect(self._log)
+        self._worker.failed.connect(self._on_worker_failed)
+        self._worker.finished.connect(self._on_worker_finished)
+        self._worker.finished.connect(lambda *_: self._thread.quit())
+        self._worker.failed.connect(lambda *_: self._thread.quit())
+        self._thread.finished.connect(self._thread.deleteLater)
+        self._thread.finished.connect(self._clear_worker_state)
+        self._thread.start()
+
+    def _on_worker_started(self, name: str) -> None:
+        self._set_progress_busy(f"Running: {name}")
+        self._log(f"[RUNNING] {name}")
+
+    def _on_worker_failed(self, name: str, error: str) -> None:
+        self._set_progress_idle(0)
+        self._log(f"[FAILED] {name}: {error}")
+        QMessageBox.critical(self, f"{name} failed", error[:4000])
+
+    def _on_worker_finished(self, name: str, result: object) -> None:
+        self._set_progress_idle(100)
+        self._log(f"[DONE] {name}")
+        callback = self._worker_done_callback
+        if callback is not None:
+            callback(result)
+        QTimer.singleShot(900, lambda: self._set_progress_idle(0))
+
+    def _clear_worker_state(self) -> None:
+        self._thread = None
+        self._worker = None
+        self._worker_done_callback = None
+        self._busy_task_name = None
 
     def _stage_status_text(self, status: str) -> str:
         if status in {"completed", "detected"}:
@@ -671,7 +733,7 @@ class KinematicsPipelineWindow(QMainWindow):
             return "* failed"
         if status == "running":
             return "* running"
-        return f"○ {status}"
+        return f"o {status}"
 
     def _refresh_stage_cards(self) -> None:
         for key, record in self.stage_records.items():
@@ -993,14 +1055,27 @@ class KinematicsPipelineWindow(QMainWindow):
         self.norm_combo.setCurrentText("intercanthal_distance")
         self.norm_desc = QLabel(NORMALIZATION_METHODS["intercanthal_distance"]); self.norm_desc.setWordWrap(True); self.norm_desc.setObjectName("SubtitleLabel")
         self.norm_combo.currentTextChanged.connect(lambda name: self.norm_desc.setText(NORMALIZATION_METHODS.get(name, "")))
-        self.head_stabilize_check = QCheckBox("Enable future head-pose stabilization placeholder")
-        self.head_stabilize_check.setChecked(False)
-        btn = QPushButton("Write Normalization Config")
+        self.center_landmark_spin = QSpinBox(); self.center_landmark_spin.setRange(0, 477); self.center_landmark_spin.setValue(1)
+        self.norm_overwrite_check = QCheckBox("Overwrite existing normalized landmark files")
+        self.norm_overwrite_check.setChecked(True)
+        config_btn = QPushButton("Write Normalization Config Only")
+        config_btn.clicked.connect(self.write_normalization_config_only)
+        btn = QPushButton("Run Computational Normalization")
         btn.setObjectName("RunButton"); btn.clicked.connect(self.run_normalization_stage)
-        grid.addWidget(QLabel("Method"), 0, 0); grid.addWidget(self.norm_combo, 0, 1); grid.addWidget(btn, 0, 2)
-        grid.addWidget(QLabel("Interpretation"), 1, 0); grid.addWidget(self.norm_desc, 1, 1, 1, 2)
-        grid.addWidget(QLabel("Head stabilization"), 2, 0); grid.addWidget(self.head_stabilize_check, 2, 1, 1, 2)
+        grid.addWidget(QLabel("Method"), 0, 0); grid.addWidget(self.norm_combo, 0, 1); grid.addWidget(config_btn, 0, 2); grid.addWidget(btn, 0, 3)
+        grid.addWidget(QLabel("Interpretation"), 1, 0); grid.addWidget(self.norm_desc, 1, 1, 1, 3)
+        grid.addWidget(QLabel("Center landmark"), 2, 0); grid.addWidget(self.center_landmark_spin, 2, 1)
+        grid.addWidget(QLabel("Output policy"), 2, 2); grid.addWidget(self.norm_overwrite_check, 2, 3)
         layout.addWidget(group)
+        qc = self._info_panel(
+            "Computation and QC",
+            "The stage reads full MediaPipe landmark CSVs, uses the visual landmark selection as the working subset, centers coordinates on the selected center landmark, scales by the selected anatomical scale, and writes one normalized CSV per video. QC fields report detected-face fraction, valid-scale fraction, selected-landmark availability, missing selected landmarks, and whether each video is OK or QC-flagged."
+        )
+        layout.addWidget(qc)
+        self.norm_results_table = QTableWidget(0, 8)
+        self.norm_results_table.setHorizontalHeaderLabels(["Video", "Status", "Frames", "Face %", "Scale", "Scale valid %", "Selected complete %", "Output"])
+        self.norm_results_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        layout.addWidget(self.norm_results_table)
         self.norm_table = QTableWidget(0, 2)
         self.norm_table.setHorizontalHeaderLabels(["Method", "Use / caution"])
         self._fill_table(self.norm_table, pd.DataFrame([{"Method": k, "Use / caution": v} for k, v in NORMALIZATION_METHODS.items()]), max_rows=30)
@@ -1012,22 +1087,32 @@ class KinematicsPipelineWindow(QMainWindow):
         container = QWidget(); layout = QVBoxLayout(container)
         layout.addWidget(self._info_panel(
             "Info",
-            "Video QC will separate visual/acquisition problems from facial motor signal. For now this page defines the QC taxonomy that will be quantified after landmark extraction is connected.",
+            "Video QC now computes automated landmark-extraction risk summaries from the MediaPipe CSVs. It flags pass/review/fail for analyst review using face visibility, long no-face gaps, and landmark frame-to-frame stability. QC does not automatically exclude videos.",
         ))
         qc_rows = [
-            ("Decode / container QC", "Unreadable files, fps problems, duration/frame-count inconsistencies, codec/container warnings."),
-            ("Face visibility QC", "Face-detected fraction, long no-face gaps, partial face visibility, occlusion risk."),
-            ("Pose / head-motion QC", "Head rotation, large translations, off-axis views, pose instability."),
-            ("Illumination QC", "Low light, overexposure, flicker, contrast instability."),
-            ("Landmark stability QC", "Tracking jitter, coordinate jumps, interpolation burden, landmark dropout."),
-            ("Task / adherence QC", "Wrong task, failed repetition structure, mouth hidden, off-screen movement, non-target behavior."),
+            ("Face visibility QC", "Face-detected fraction and dropped-frame burden."),
+            ("Long gap QC", "Maximum consecutive no-face frames and gap fraction."),
+            ("Landmark stability QC", "Median and p95 frame-to-frame displacement for the selected landmark set."),
+            ("Review status", "Conservative pass/review/fail flag with written rationale; no automatic exclusion."),
         ]
-        table = QTableWidget(0, 2); table.setHorizontalHeaderLabels(["QC family", "What it will measure"])
-        self._fill_table(table, pd.DataFrame(qc_rows, columns=["QC family", "What it will measure"]), max_rows=20)
+        table = QTableWidget(0, 2); table.setHorizontalHeaderLabels(["QC family", "Current computation"])
+        self._fill_table(table, pd.DataFrame(qc_rows, columns=["QC family", "Current computation"]), max_rows=20)
         layout.addWidget(table)
-        btn = QPushButton("Write Video QC Placeholder")
-        btn.setObjectName("RunButton"); btn.clicked.connect(self.run_qc_placeholder)
-        layout.addWidget(btn)
+        btn_row = QHBoxLayout()
+        btn = QPushButton("Run Landmark / Video QC")
+        btn.setObjectName("RunButton"); btn.clicked.connect(self.run_video_qc_stage)
+        refresh = QPushButton("Refresh QC Table")
+        refresh.clicked.connect(self._load_video_qc_summary)
+        btn_row.addWidget(btn); btn_row.addWidget(refresh); btn_row.addStretch(1)
+        layout.addLayout(btn_row)
+        self.video_qc_label = QLabel("No video QC summary loaded yet.")
+        self.video_qc_label.setObjectName("SubtitleLabel")
+        self.video_qc_label.setWordWrap(True)
+        layout.addWidget(self.video_qc_label)
+        self.video_qc_table = QTableWidget(0, 0)
+        self.video_qc_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.video_qc_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        layout.addWidget(self.video_qc_table)
         layout.addStretch(1)
         return self._scrollable(container)
 
@@ -1037,7 +1122,7 @@ class KinematicsPipelineWindow(QMainWindow):
         layout.setSpacing(10)
         layout.addWidget(self._info_panel(
             "Info",
-            "Select kinematic feature groups or individual features. This mirrors the acoustic feature selector: every feature has a subsystem, implementation status, tier, landmark dependencies, native signal, normalization policy and scalar-reduction rule.",
+            "Compute kinematic features from normalized MediaPipe landmark trajectories. This tab now mirrors the acoustic Features stage: choose feature families, inspect landmark dependencies and QC gates, configure computation policy, run the stage, then review the feature table.",
         ))
 
         body = QHBoxLayout()
@@ -1072,31 +1157,30 @@ class KinematicsPipelineWindow(QMainWindow):
         selected_layout.addWidget(self.feature_selected_label)
         self.feature_selected_box = QPlainTextEdit()
         self.feature_selected_box.setReadOnly(True)
-        self.feature_selected_box.setMaximumHeight(165)
+        self.feature_selected_box.setMaximumHeight(120)
         selected_layout.addWidget(self.feature_selected_box)
         right.addWidget(selected_group)
 
-        param_group = QGroupBox("Feature parameters")
+        param_group = QGroupBox("Computation settings")
         param_grid = QGridLayout(param_group)
-        self.kin_norm_policy_combo = QComboBox()
-        self.kin_norm_policy_combo.addItems(list(NORMALIZATION_METHODS.keys()))
-        self.kin_norm_policy_combo.setCurrentText("intercanthal_distance")
-        self.kin_segment_policy_combo = QComboBox()
-        self.kin_segment_policy_combo.addItems(["whole_signal_or_table_windows", "movement_segmented", "task_specific_windows"] )
-        self.kin_missing_policy_combo = QComboBox()
-        self.kin_missing_policy_combo.addItems(["preserve_nan_then_clean", "strict_drop_failed_frames", "interpolate_short_gaps_only"] )
-        param_grid.addWidget(QLabel("Normalization policy"), 0, 0)
-        param_grid.addWidget(self.kin_norm_policy_combo, 0, 1)
-        param_grid.addWidget(QLabel("Segmentation policy"), 1, 0)
-        param_grid.addWidget(self.kin_segment_policy_combo, 1, 1)
-        param_grid.addWidget(QLabel("Missing landmark policy"), 2, 0)
-        param_grid.addWidget(self.kin_missing_policy_combo, 2, 1)
+        self.feature_smoothing_cutoff = QDoubleSpinBox(); self.feature_smoothing_cutoff.setRange(0.5, 20.0); self.feature_smoothing_cutoff.setSingleStep(0.5); self.feature_smoothing_cutoff.setValue(6.0); self.feature_smoothing_cutoff.setSuffix(" Hz")
+        self.feature_sigma_extreme = QDoubleSpinBox(); self.feature_sigma_extreme.setRange(3.0, 10.0); self.feature_sigma_extreme.setSingleStep(0.5); self.feature_sigma_extreme.setValue(5.0)
+        self.feature_sigma_tight = QDoubleSpinBox(); self.feature_sigma_tight.setRange(1.5, 6.0); self.feature_sigma_tight.setSingleStep(0.25); self.feature_sigma_tight.setValue(3.0)
+        self.feature_onset_frac = QDoubleSpinBox(); self.feature_onset_frac.setRange(0.01, 0.40); self.feature_onset_frac.setSingleStep(0.01); self.feature_onset_frac.setValue(0.10)
+        self.feature_offset_frac = QDoubleSpinBox(); self.feature_offset_frac.setRange(0.50, 0.99); self.feature_offset_frac.setSingleStep(0.01); self.feature_offset_frac.setValue(0.90)
+        self.feature_use_smoothing = QCheckBox("Smooth cleaned trajectories before feature computation"); self.feature_use_smoothing.setChecked(True)
+        param_grid.addWidget(QLabel("Low-pass cutoff"), 0, 0); param_grid.addWidget(self.feature_smoothing_cutoff, 0, 1)
+        param_grid.addWidget(QLabel("Extreme outlier sigma"), 0, 2); param_grid.addWidget(self.feature_sigma_extreme, 0, 3)
+        param_grid.addWidget(QLabel("Tight outlier sigma"), 1, 0); param_grid.addWidget(self.feature_sigma_tight, 1, 1)
+        param_grid.addWidget(QLabel("Movement onset fraction"), 1, 2); param_grid.addWidget(self.feature_onset_frac, 1, 3)
+        param_grid.addWidget(QLabel("Movement offset fraction"), 2, 0); param_grid.addWidget(self.feature_offset_frac, 2, 1)
+        param_grid.addWidget(self.feature_use_smoothing, 2, 2, 1, 2)
         right.addWidget(param_group)
 
         detail_group = QGroupBox("Feature interpretation")
         detail_layout = QVBoxLayout(detail_group)
         self.feature_detail_box = QTextBrowser()
-        self.feature_detail_box.setMinimumHeight(170)
+        self.feature_detail_box.setMinimumHeight(160)
         self.feature_detail_box.setOpenExternalLinks(False)
         detail_layout.addWidget(self.feature_detail_box)
         right.addWidget(detail_group)
@@ -1110,22 +1194,36 @@ class KinematicsPipelineWindow(QMainWindow):
         right.addWidget(qc_group)
 
         run_row = QHBoxLayout()
-        write_plan = QPushButton("Write Feature Computation Plan")
-        write_plan.setObjectName("RunButton")
-        write_plan.clicked.connect(self.run_features_placeholder)
-        run_row.addWidget(write_plan)
-        run_row.addStretch(1)
+        plan_btn = QPushButton("Write Feature Computation Plan")
+        plan_btn.clicked.connect(self.write_feature_computation_plan)
+        run_btn = QPushButton("Run Kinematic Feature Computation")
+        run_btn.setObjectName("RunButton")
+        run_btn.clicked.connect(self.run_feature_computation_stage)
+        refresh_btn = QPushButton("Refresh Feature Outputs")
+        refresh_btn.clicked.connect(self._load_feature_results)
+        run_row.addWidget(plan_btn); run_row.addWidget(run_btn); run_row.addWidget(refresh_btn); run_row.addStretch(1)
         right.addLayout(run_row)
 
         body.addWidget(left, stretch=3)
         body.addLayout(right, stretch=2)
         layout.addLayout(body, stretch=1)
+
+        self.feature_results_label = QLabel("No kinematic feature table loaded yet.")
+        self.feature_results_label.setObjectName("SubtitleLabel")
+        layout.addWidget(self.feature_results_label)
+        self.feature_results_table = QTableWidget(0, 0)
+        self.feature_results_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.feature_results_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        layout.addWidget(self.feature_results_table)
+
         self._populate_feature_tree()
         return self._scrollable(container)
 
     def _populate_feature_tree(self) -> None:
         if not hasattr(self, "feature_tree"):
             return
+        if not hasattr(self, "selected_feature_ids"):
+            self.selected_feature_ids = set(DEFAULT_KINEMATIC_FEATURE_IDS)
         self.feature_tree.blockSignals(True)
         self.feature_tree.clear()
         for group, specs in KINEMATIC_FEATURE_GROUPS.items():
@@ -1191,7 +1289,7 @@ class KinematicsPipelineWindow(QMainWindow):
         return None
 
     def _selected_feature_specs(self):
-        return [spec for spec in KINEMATIC_FEATURE_SPECS if spec.feature_id in self.selected_feature_ids]
+        return [spec for spec in KINEMATIC_FEATURE_SPECS if spec.feature_id in getattr(self, "selected_feature_ids", set(DEFAULT_KINEMATIC_FEATURE_IDS))]
 
     def _refresh_feature_summary(self) -> None:
         if not hasattr(self, "feature_selected_label"):
@@ -1234,22 +1332,22 @@ class KinematicsPipelineWindow(QMainWindow):
         self.feature_detail_box.setHtml(
             f"<b>{spec.label}</b><br>"
             f"<b>ID:</b> {spec.feature_id}<br>"
-            f"<b>Subsystem:</b> {spec.group}<br>"
+            f"<b>Group:</b> {spec.group}<br>"
             f"<b>Status:</b> {spec.status} | <b>Tier:</b> {spec.tier}<br>"
-            f"<b>Required landmarks:</b> {', '.join(map(str, spec.landmarks))}<br>"
-            f"<b>Normalization:</b> {spec.normalization}<br>"
+            f"<b>Landmarks:</b> {', '.join(map(str, spec.landmarks))}<br>"
             f"<b>Native signal:</b> {spec.native_signal}<br>"
             f"<b>Unit:</b> {spec.unit}<br>"
-            f"<b>Scalar reduction:</b> {spec.aggregation}<br>"
-            f"<b>Source formula:</b> {spec.source_function}<br><br>"
-            f"{spec.interpretation}"
+            f"<b>Normalization:</b> {spec.normalization}<br>"
+            f"<b>Scalar aggregation:</b> {spec.aggregation}<br><br>"
+            f"<b>Interpretation:</b> {spec.interpretation}<br>"
+            f"<b>Computation source:</b> {spec.source_function}"
         )
 
     def _build_aggregation_tab(self) -> QWidget:
         container = QWidget(); layout = QVBoxLayout(container)
         layout.addWidget(self._info_panel(
             "Info",
-            "Frame-level features are time series. Temporal aggregation defines how to create one scalar feature row per video without hiding the policy used to collapse movement over time.",
+            "Collapse frame-level kinematic time series into per-video scalar tables using an explicit, auditable aggregation policy. This stage does not delete time-series evidence; it writes a separate aggregation layer for export and review.",
         ))
         group = QGroupBox("Temporal aggregation profile")
         grid = QGridLayout(group)
@@ -1257,15 +1355,33 @@ class KinematicsPipelineWindow(QMainWindow):
         self.agg_combo.setCurrentText("robust_default")
         self.agg_desc = QLabel(AGGREGATION_PROFILES["robust_default"]); self.agg_desc.setWordWrap(True); self.agg_desc.setObjectName("SubtitleLabel")
         self.agg_combo.currentTextChanged.connect(lambda name: self.agg_desc.setText(AGGREGATION_PROFILES.get(name, "")))
-        btn = QPushButton("Write Aggregation Plan")
-        btn.setObjectName("RunButton"); btn.clicked.connect(self.run_aggregation_placeholder)
-        grid.addWidget(QLabel("Aggregation profile"), 0, 0); grid.addWidget(self.agg_combo, 0, 1); grid.addWidget(btn, 0, 2)
+        self.agg_include_raw = QCheckBox("Include raw unsmoothed feature signals")
+        self.agg_include_raw.setChecked(False)
+        self.agg_include_velocity = QCheckBox("Include velocity-derived signals")
+        self.agg_include_velocity.setChecked(True)
+        self.agg_min_valid = QDoubleSpinBox(); self.agg_min_valid.setRange(0.0, 1.0); self.agg_min_valid.setSingleStep(0.05); self.agg_min_valid.setDecimals(2); self.agg_min_valid.setValue(0.50)
+        self.agg_min_detected = QDoubleSpinBox(); self.agg_min_detected.setRange(0.0, 1.0); self.agg_min_detected.setSingleStep(0.05); self.agg_min_detected.setDecimals(2); self.agg_min_detected.setValue(0.60)
+        run_btn = QPushButton("Run Temporal Aggregation")
+        run_btn.setObjectName("RunButton"); run_btn.clicked.connect(self.run_temporal_aggregation_stage)
+        refresh_btn = QPushButton("Refresh Aggregation Outputs")
+        refresh_btn.clicked.connect(self._load_aggregation_results)
+        grid.addWidget(QLabel("Aggregation profile"), 0, 0); grid.addWidget(self.agg_combo, 0, 1, 1, 2)
         grid.addWidget(QLabel("Interpretation"), 1, 0); grid.addWidget(self.agg_desc, 1, 1, 1, 2)
+        grid.addWidget(QLabel("Minimum valid fraction per signal"), 2, 0); grid.addWidget(self.agg_min_valid, 2, 1)
+        grid.addWidget(QLabel("Minimum detected-face fraction"), 3, 0); grid.addWidget(self.agg_min_detected, 3, 1)
+        grid.addWidget(self.agg_include_raw, 4, 1, 1, 2)
+        grid.addWidget(self.agg_include_velocity, 5, 1, 1, 2)
+        grid.addWidget(run_btn, 6, 1); grid.addWidget(refresh_btn, 6, 2)
         layout.addWidget(group)
         table = QTableWidget(0, 2); table.setHorizontalHeaderLabels(["Profile", "Recommended use"])
         self._fill_table(table, pd.DataFrame([{"Profile": k, "Recommended use": v} for k, v in AGGREGATION_PROFILES.items()]), max_rows=20)
         layout.addWidget(table)
-        layout.addStretch(1)
+        self.aggregation_results_label = QLabel("No temporal aggregation table loaded yet."); self.aggregation_results_label.setObjectName("SubtitleLabel")
+        layout.addWidget(self.aggregation_results_label)
+        self.aggregation_results_table = QTableWidget(0, 0)
+        self.aggregation_results_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.aggregation_results_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        layout.addWidget(self.aggregation_results_table)
         return self._scrollable(container)
 
     def _build_inspector_tab(self) -> QWidget:
@@ -1362,7 +1478,7 @@ class KinematicsPipelineWindow(QMainWindow):
         self.ingest_summary_label.setText(f"{len(df)} candidate videos detected. Formats/codecs/resolutions summarized below.")
         if not df.empty:
             tmp = df.copy()
-            tmp["Resolution"] = tmp["width"].fillna(0).astype(int).astype(str) + " × " + tmp["height"].fillna(0).astype(int).astype(str)
+            tmp["Resolution"] = tmp["width"].fillna(0).astype(int).astype(str) + " x " + tmp["height"].fillna(0).astype(int).astype(str)
             grouped = tmp.groupby(["extension", "codec_name", "Resolution"], dropna=False).size().reset_index(name="Files")
             grouped.columns = ["Detected format", "Video codec", "Resolution", "Files"]
             self._fill_table(self.ingest_format_table, grouped, max_rows=60)
@@ -1463,7 +1579,7 @@ class KinematicsPipelineWindow(QMainWindow):
         self._landmark_video_rows = []
         manifest = self._landmarks_manifest_path()
         if manifest is None:
-            QMessageBox.information(self, "No landmark manifest", "Run Landmarks → Run MediaPipe Landmark Extraction first.")
+            QMessageBox.information(self, "No landmark manifest", "Run Landmarks -> Run MediaPipe Landmark Extraction first.")
             return
         try:
             df = pd.read_csv(manifest)
@@ -1538,7 +1654,7 @@ class KinematicsPipelineWindow(QMainWindow):
         self.landmark_frame_spin.blockSignals(False)
         self.landmark_frame_slider.blockSignals(False)
         if hasattr(self, "selection_feedback_label"):
-            self.selection_feedback_label.setText(f"Selected video changed. Frame range: 0–{max_frame}. Click 'Load Real Frame + MediaPipe Overlay' to refresh the display, or keep auto-reload enabled after the first load.")
+            self.selection_feedback_label.setText(f"Selected video changed. Frame range: 0-{max_frame}. Click 'Load Real Frame + MediaPipe Overlay' to refresh the display, or keep auto-reload enabled after the first load.")
         if bool(getattr(self, "_landmark_overlay_loaded", False)) and hasattr(self, "auto_reload_frame_checkbox") and self.auto_reload_frame_checkbox.isChecked():
             self._landmark_frame_reload_timer.start(80)
 
@@ -1701,7 +1817,7 @@ class KinematicsPipelineWindow(QMainWindow):
             if candidate.exists():
                 self.ingest_manifest_csv = candidate
                 return candidate
-        QMessageBox.warning(self, "Missing ingest", "Run Setup → Run Video Ingest before landmark extraction.")
+        QMessageBox.warning(self, "Missing ingest", "Run Setup -> Run Video Ingest before landmark extraction.")
         return None
 
     def _update_landmark_runtime_label(self) -> None:
@@ -1850,13 +1966,68 @@ class KinematicsPipelineWindow(QMainWindow):
             self.stage_records["selection"] = StageRecord(status="completed", manifest_path=str(path))
             self._refresh_stage_cards(); self._log(f"Selected {len(self.landmark_indices)} landmarks: {path}")
 
-    def run_normalization_stage(self) -> None:
+    def write_normalization_config_only(self) -> None:
         out = self._path_or_warn(self.output_edit, "an output project folder")
         if out is None:
             return
         path = write_normalization_config(out, self.norm_combo.currentText())
-        self.stage_records["normalization"] = StageRecord(status="completed", manifest_path=str(path))
+        self.stage_records["normalization"] = StageRecord(status="configured", manifest_path=str(path))
         self._refresh_stage_cards(); self._log(f"Normalization config written: {path}")
+
+    def run_normalization_stage(self) -> None:
+        out = self._path_or_warn(self.output_edit, "an output project folder")
+        if out is None:
+            return
+        try:
+            selected = tuple(self.landmark_indices) if getattr(self, "landmark_indices", None) else None
+            self.progress.setValue(10)
+            self._log("Starting computational normalization...")
+            result = run_normalization_from_selection(
+                out,
+                self.norm_combo.currentText(),
+                selected_landmarks=selected,
+                preset=getattr(self, "preset_combo", None).currentText() if hasattr(self, "preset_combo") else "ALS oral-motor core 15",
+                center_landmark=int(self.center_landmark_spin.value()),
+                overwrite=bool(self.norm_overwrite_check.isChecked()),
+            )
+            self.progress.setValue(85)
+            self._load_normalization_results(result.get("manifest_csv"))
+            manifest = result.get("manifest_csv")
+            self.stage_records["normalization"] = StageRecord(status="completed", manifest_path=str(manifest))
+            self._refresh_stage_cards()
+            self.progress.setValue(100)
+            self._log(
+                f"Normalized {result.get('n_videos', 0)} videos "
+                f"(ok={result.get('n_ok', 0)}, qc_flagged={result.get('n_qc_flagged', 0)}, errors={result.get('n_error', 0)}): {manifest}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.progress.setValue(0)
+            self._log(f"Normalization failed: {exc}")
+            QMessageBox.critical(self, "Normalization failed", str(exc))
+
+    def _load_normalization_results(self, manifest_csv) -> None:
+        if not manifest_csv:
+            return
+        path = Path(str(manifest_csv))
+        if not path.exists():
+            return
+        df = pd.read_csv(path)
+        rows = []
+        for _, rec in df.iterrows():
+            face_pct = pd.to_numeric(pd.Series([rec.get("face_detected_fraction")]), errors="coerce").iloc[0]
+            scale_pct = pd.to_numeric(pd.Series([rec.get("scale_valid_fraction")]), errors="coerce").iloc[0]
+            sel_pct = pd.to_numeric(pd.Series([rec.get("selected_complete_frame_fraction")]), errors="coerce").iloc[0]
+            rows.append({
+                "Video": rec.get("video_id", ""),
+                "Status": rec.get("status", ""),
+                "Frames": rec.get("n_frames", ""),
+                "Face %": "" if pd.isna(face_pct) else f"{face_pct * 100:.1f}",
+                "Scale": rec.get("scale_source", ""),
+                "Scale valid %": "" if pd.isna(scale_pct) else f"{scale_pct * 100:.1f}",
+                "Selected complete %": "" if pd.isna(sel_pct) else f"{sel_pct * 100:.1f}",
+                "Output": Path(str(rec.get("output_csv", ""))).name,
+            })
+        self._fill_table(self.norm_results_table, pd.DataFrame(rows), max_rows=200)
 
     def _write_placeholder(self, stage_key: str, rel: str, payload: dict, message: str) -> None:
         out = self._path_or_warn(self.output_edit, "an output project folder")
@@ -1868,46 +2039,205 @@ class KinematicsPipelineWindow(QMainWindow):
         self.stage_records[stage_key] = StageRecord(status="completed", manifest_path=str(path))
         self._refresh_stage_cards(); self._log(f"{message}: {path}")
 
-    def run_qc_placeholder(self) -> None:
-        self._write_placeholder("qc", "005_video_qc/tables/video_qc_plan.json", {"status": "placeholder", "families": ["decode", "face_visibility", "pose", "illumination", "landmark_stability", "task_adherence"]}, "Video QC plan written")
+    def run_video_qc_stage(self) -> None:
+        out = self._path_or_warn(self.output_edit, "an output project folder")
+        if out is None:
+            return
+        manifest = self._landmarks_manifest_path()
+        if manifest is None:
+            QMessageBox.warning(self, "Missing landmarks", "Run Landmarks -> Run MediaPipe Landmark Extraction before video QC.")
+            return
+        self.stage_records["qc"] = StageRecord(status="running")
+        self._refresh_stage_cards()
+        self._start_worker("Landmark / video QC", run_video_qc, {"output_root": out, "landmarks_manifest_csv": manifest}, self._finish_video_qc_stage)
+
+    def _finish_video_qc_stage(self, result: object) -> None:
+        res = dict(result)
+        summary_csv = Path(res["summary_csv"])
+        self.stage_records["qc"] = StageRecord(status="completed", manifest_path=str(summary_csv))
+        self._refresh_stage_cards()
+        self._log(f"Video QC completed: {res.get('n_videos', 0)} video(s); status counts={res.get('status_counts', {})}. Summary: {summary_csv}")
+        self._load_video_qc_summary(summary_csv)
+
+    def _load_video_qc_summary(self, path: Path | None = None) -> None:
+        out_text = self.output_edit.text().strip() if hasattr(self, "output_edit") else ""
+        if path is None and out_text:
+            path = Path(out_text).expanduser().resolve() / "kinematics" / "005_video_qc" / "tables" / "landmark_video_qc_summary.csv"
+        if path is None or not Path(path).exists():
+            if hasattr(self, "video_qc_label"):
+                self.video_qc_label.setText("No video QC summary found yet.")
+            return
+        df = pd.read_csv(path)
+        if hasattr(self, "video_qc_label"):
+            counts = df.get("qc_status", pd.Series(dtype=str)).value_counts(dropna=False).to_dict() if not df.empty else {}
+            self.video_qc_label.setText(f"Loaded QC summary: {path}. Status counts: {counts}")
+        cols = [c for c in ["video_id", "qc_status", "face_detected_fraction", "n_frames", "n_faces_detected", "max_no_face_gap_frames", "p95_frame_displacement", "qc_rationale"] if c in df.columns]
+        if hasattr(self, "video_qc_table"):
+            self._fill_table(self.video_qc_table, df[cols] if cols else df, max_rows=200)
+
+    def write_feature_computation_plan(self) -> None:
+        """Write an auditable feature-computation plan before running the stage."""
+        out = self._path_or_warn(self.output_edit, "an output project folder")
+        if out is None:
+            return
+        selected_features = sorted(getattr(self, "selected_feature_ids", set(DEFAULT_KINEMATIC_FEATURE_IDS)))
+        selected_specs = [spec for spec in KINEMATIC_FEATURE_SPECS if spec.feature_id in set(selected_features)]
+        tables_dir = out / "kinematics" / "006_features" / "tables"
+        tables_dir.mkdir(parents=True, exist_ok=True)
+        plan_json = tables_dir / "feature_computation_plan.json"
+        plan_csv = tables_dir / "feature_computation_plan.csv"
+        rows = []
+        for spec in selected_specs:
+            rows.append({
+                "feature_id": spec.feature_id,
+                "group": spec.group,
+                "label": spec.label,
+                "status": spec.status,
+                "tier": spec.tier,
+                "native_signal": spec.native_signal,
+                "unit": spec.unit,
+                "landmarks": ",".join(map(str, spec.landmarks)),
+                "normalization": spec.normalization,
+                "aggregation": spec.aggregation,
+                "interpretation": spec.interpretation,
+                "source_function": spec.source_function,
+            })
+        pd.DataFrame(rows).to_csv(plan_csv, index=False)
+        payload = {
+            "stage": "006_features",
+            "version": APP_VERSION,
+            "selected_feature_ids": selected_features,
+            "n_selected_features": len(selected_features),
+            "selected_landmarks": list(getattr(self, "landmark_indices", [])),
+            "normalization_dependency": "normalized landmarks from kinematics/004_normalization/tables/normalized_landmarks_manifest.csv",
+            "qc_dependency": "landmark/video QC from kinematics/005_video_qc/tables/landmark_video_qc_summary.csv",
+            "settings": {
+                "smoothing_cutoff_hz": float(self.feature_smoothing_cutoff.value()) if hasattr(self, "feature_smoothing_cutoff") else None,
+                "extreme_outlier_sigma": float(self.feature_sigma_extreme.value()) if hasattr(self, "feature_sigma_extreme") else None,
+                "tight_outlier_sigma": float(self.feature_sigma_tight.value()) if hasattr(self, "feature_sigma_tight") else None,
+                "movement_onset_fraction": float(self.feature_onset_frac.value()) if hasattr(self, "feature_onset_frac") else None,
+                "movement_offset_fraction": float(self.feature_offset_frac.value()) if hasattr(self, "feature_offset_frac") else None,
+                "use_smoothed_signals": bool(self.feature_use_smoothing.isChecked()) if hasattr(self, "feature_use_smoothing") else None,
+            },
+            "feature_table_csv": str(plan_csv),
+            "qc_requirements": list(QC_FEATURE_REQUIREMENTS),
+            "note": "Plan only. It does not compute features or modify landmark/normalization outputs.",
+        }
+        plan_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        self._log(f"Feature computation plan written: {plan_json}")
+        QMessageBox.information(self, "Feature plan written", f"Feature computation plan written:\n{plan_json}")
+
+    def run_feature_computation_stage(self) -> None:
+        out = self._path_or_warn(self.output_edit, "an output project folder")
+        if out is None:
+            return
+        norm_manifest = out / "kinematics" / "004_normalization" / "tables" / "normalized_landmarks_manifest.csv"
+        if not norm_manifest.exists():
+            QMessageBox.warning(self, "Missing normalization", "Run Normalization -> Run Computational Normalization before feature computation.")
+            return
+        cfg = FeatureComputationConfig(
+            selected_landmarks=tuple(self.landmark_indices),
+            selected_preset=self.selection_preset_combo.currentText() if hasattr(self, "selection_preset_combo") else "custom",
+            smoothing_cutoff_hz=float(self.feature_smoothing_cutoff.value()),
+            outlier_sigma_extreme=float(self.feature_sigma_extreme.value()),
+            outlier_sigma_tight=float(self.feature_sigma_tight.value()),
+            onset_frac=float(self.feature_onset_frac.value()),
+            offset_frac=float(self.feature_offset_frac.value()),
+            use_smoothed_signals=bool(self.feature_use_smoothing.isChecked()),
+            overwrite=True,
+        )
+        selected_features = sorted(getattr(self, "selected_feature_ids", set(DEFAULT_KINEMATIC_FEATURE_IDS)))
+        self._log(f"Feature computation selected {len(selected_features)} feature definition(s): {', '.join(selected_features) if selected_features else 'none'}")
+        self.stage_records["features"] = StageRecord(status="running")
+        self._refresh_stage_cards()
+        self._start_worker("Kinematic feature computation", run_feature_computation, {"output_root": out, "cfg": cfg}, self._finish_feature_computation_stage)
+
+    def _finish_feature_computation_stage(self, result: object) -> None:
+        res = dict(result)
+        features_csv = Path(res["features_csv"])
+        self.stage_records["features"] = StageRecord(status="completed", manifest_path=str(features_csv))
+        self._refresh_stage_cards()
+        self._log(f"Feature computation completed: {res.get('n_videos', 0)} video(s); ok={res.get('n_ok', 0)}, qc_flagged={res.get('n_qc_flagged', 0)}, error={res.get('n_error', 0)}. Features: {features_csv}")
+        self._load_feature_results(features_csv)
+
+    def _load_feature_results(self, path: Path | None = None) -> None:
+        out_text = self.output_edit.text().strip() if hasattr(self, "output_edit") else ""
+        if path is None and out_text:
+            path = Path(out_text).expanduser().resolve() / "kinematics" / "006_features" / "tables" / "kinematic_features.csv"
+        if path is None or not Path(path).exists():
+            if hasattr(self, "feature_results_label"):
+                self.feature_results_label.setText("No kinematic feature table loaded yet.")
+            return
+        df = pd.read_csv(path)
+        if hasattr(self, "feature_results_label"):
+            counts = df.get("status", pd.Series(dtype=str)).value_counts(dropna=False).to_dict() if not df.empty else {}
+            self.feature_results_label.setText(f"Loaded kinematic features: {path}. Status counts: {counts}")
+        preferred = [
+            "video_id", "status", "n_frames", "face_detected_fraction", "n_movements",
+            "mouth_aperture_median", "mouth_aperture_range_p05_p95",
+            "outer_lip_spread_median", "lip_aspect_ratio_median",
+            "jaw_to_nose_median", "corner_vertical_asymmetry_median", "feature_qc_flags",
+        ]
+        cols = [c for c in preferred if c in df.columns]
+        if hasattr(self, "feature_results_table"):
+            self._fill_table(self.feature_results_table, df[cols] if cols else df, max_rows=200)
 
     def run_features_placeholder(self) -> None:
-        specs = self._selected_feature_specs() if hasattr(self, "selected_feature_ids") else []
-        required_landmarks = sorted({idx for spec in specs for idx in spec.landmarks})
-        payload = {
-            "status": "planned",
-            "note": "This stage records the selected kinematic feature computation policy. Numerical execution will use the same formulas as the uploaded kinematics analysis script in the next computation patch.",
-            "selected_features": [spec.feature_id for spec in specs],
-            "n_selected_features": len(specs),
-            "feature_groups": sorted({spec.group for spec in specs}),
-            "required_landmarks": required_landmarks,
-            "selected_landmarks_from_visual_selector": list(self.landmark_indices),
-            "normalization_policy": self.kin_norm_policy_combo.currentText() if hasattr(self, "kin_norm_policy_combo") else "intercanthal_distance",
-            "segmentation_policy": self.kin_segment_policy_combo.currentText() if hasattr(self, "kin_segment_policy_combo") else "whole_signal_or_table_windows",
-            "missing_landmark_policy": self.kin_missing_policy_combo.currentText() if hasattr(self, "kin_missing_policy_combo") else "preserve_nan_then_clean",
-            "features": [
-                {
-                    "feature_id": spec.feature_id,
-                    "group": spec.group,
-                    "label": spec.label,
-                    "status": spec.status,
-                    "tier": spec.tier,
-                    "native_signal": spec.native_signal,
-                    "unit": spec.unit,
-                    "landmarks": list(spec.landmarks),
-                    "normalization": spec.normalization,
-                    "aggregation": spec.aggregation,
-                    "interpretation": spec.interpretation,
-                    "source_function": spec.source_function,
-                }
-                for spec in specs
-            ],
-            "qc_requirements": QC_FEATURE_REQUIREMENTS,
-        }
-        self._write_placeholder("features", "006_features/tables/feature_computation_plan.json", payload, "Feature computation plan written")
+        self.run_feature_computation_stage()
+
+    def run_temporal_aggregation_stage(self) -> None:
+        out = self._path_or_warn(self.output_edit, "an output project folder")
+        if out is None:
+            return
+        features_csv = out / "kinematics" / "006_features" / "tables" / "kinematic_features.csv"
+        if not features_csv.exists():
+            QMessageBox.warning(self, "Missing features", "Run Features -> Run Kinematic Feature Computation before temporal aggregation.")
+            return
+        cfg = TemporalAggregationConfig(
+            profile=self.agg_combo.currentText() if hasattr(self, "agg_combo") else "robust_default",
+            include_raw_signals=bool(self.agg_include_raw.isChecked()) if hasattr(self, "agg_include_raw") else False,
+            include_velocity_signals=bool(self.agg_include_velocity.isChecked()) if hasattr(self, "agg_include_velocity") else True,
+            min_valid_fraction=float(self.agg_min_valid.value()) if hasattr(self, "agg_min_valid") else 0.50,
+            min_detected_fraction=float(self.agg_min_detected.value()) if hasattr(self, "agg_min_detected") else 0.60,
+            overwrite=True,
+        )
+        self.stage_records["aggregation"] = StageRecord(status="running")
+        self._refresh_stage_cards()
+        self._start_worker("Temporal aggregation", run_temporal_aggregation, {"output_root": out, "cfg": cfg}, self._finish_temporal_aggregation_stage)
+
+    def _finish_temporal_aggregation_stage(self, result: object) -> None:
+        res = dict(result)
+        agg_csv = Path(res["aggregated_features_csv"])
+        self.stage_records["aggregation"] = StageRecord(status="completed", manifest_path=str(res.get("manifest_json", agg_csv)))
+        self._refresh_stage_cards()
+        self._log(f"Temporal aggregation completed: {res.get('n_videos', 0)} video(s); ok={res.get('n_ok', 0)}, qc_flagged={res.get('n_qc_flagged', 0)}, error={res.get('n_error', 0)}. Aggregated table: {agg_csv}")
+        self._load_aggregation_results(agg_csv)
+
+    def _load_aggregation_results(self, path: Path | None = None) -> None:
+        out_text = self.output_edit.text().strip() if hasattr(self, "output_edit") else ""
+        if path is None and out_text:
+            path = Path(out_text).expanduser().resolve() / "kinematics" / "007_aggregation" / "tables" / "kinematic_aggregated_features.csv"
+        if path is None or not Path(path).exists():
+            if hasattr(self, "aggregation_results_label"):
+                self.aggregation_results_label.setText("No temporal aggregation table loaded yet.")
+            return
+        df = pd.read_csv(path)
+        if hasattr(self, "aggregation_results_label"):
+            counts = df.get("status", pd.Series(dtype=str)).value_counts(dropna=False).to_dict() if not df.empty else {}
+            self.aggregation_results_label.setText(f"Loaded temporal aggregation: {path}. Status counts: {counts}")
+        preferred = [
+            "video_id", "status", "aggregation_profile", "n_frames", "duration_s",
+            "face_detected_fraction", "n_signals_aggregated", "n_movements",
+            "mouth_aperture_median", "mouth_aperture_iqr", "mouth_aperture_range_p05_p95",
+            "outer_lip_spread_median", "lip_aspect_ratio_median",
+            "jaw_to_nose_median", "aggregation_qc_flags",
+        ]
+        cols = [c for c in preferred if c in df.columns]
+        if hasattr(self, "aggregation_results_table"):
+            self._fill_table(self.aggregation_results_table, df[cols] if cols else df, max_rows=200)
 
     def run_aggregation_placeholder(self) -> None:
-        self._write_placeholder("aggregation", "007_aggregation/tables/aggregation_plan.json", {"profile": self.agg_combo.currentText(), "description": AGGREGATION_PROFILES.get(self.agg_combo.currentText(), "")}, "Aggregation plan written")
+        self.run_temporal_aggregation_stage()
 
     def refresh_inspector(self) -> None:
         out_text = self.output_edit.text().strip()
@@ -1961,7 +2291,7 @@ class KinematicsPipelineWindow(QMainWindow):
         self.run_landmark_plan_stage()
         self.run_selection_stage()
         self.run_normalization_stage()
-        self.run_qc_placeholder()
+        self.run_video_qc_stage()
         self.run_features_placeholder()
         self.run_aggregation_placeholder()
         self.run_report_stage()
