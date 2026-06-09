@@ -94,3 +94,29 @@ def selected_landmarks_from_preset(name: str) -> tuple[int, ...]:
     if name not in LANDMARK_PRESETS:
         raise KeyError(f"Unknown landmark preset: {name}")
     return LANDMARK_PRESETS[name]
+
+WORKFLOW_STAGES = [
+    ("Setup", "Discover and structurally probe videos", "000_ingest"),
+    ("Metadata", "Link subjects, sessions, tasks, clinical labels", "001_metadata"),
+    ("Landmarks", "Extract MediaPipe Face Landmarker trajectories", "002_landmarks"),
+    ("Selection", "Choose clinically meaningful landmark subsets", "003_selection"),
+    ("Normalization", "Scale/stabilize coordinates before features", "004_normalization"),
+    ("Video QC", "Quantify landmark/visibility/acquisition quality", "005_video_qc"),
+    ("Features", "Compute frame/movement-level kinematics", "006_features"),
+    ("Aggregation", "Collapse time series transparently", "007_aggregation"),
+    ("Inspector", "Review tables, manifests, and QC evidence", "008_inspector"),
+    ("Reports", "Export reproducible package and report", "009_reports"),
+]
+
+STAGE_GUIDANCE = {
+    "setup": {"purpose": "Create a reproducible inventory of all candidate videos before any transformation.", "decision": "Confirm expected videos are present, readable, and assigned plausible task guesses before moving on."},
+    "metadata": {"purpose": "Attach participant/session/task/clinical context without requiring it for landmark extraction.", "decision": "Verify IDs/tasks/sessions align; unresolved metadata should be documented rather than forced."},
+    "landmarks": {"purpose": "Configure the MediaPipe Face Landmarker stage and document extraction assumptions.", "decision": "Keep confidence thresholds traceable; higher thresholds increase missing frames, lower thresholds may accept uncertain frames."},
+    "selection": {"purpose": "Reduce the full face mesh to reproducible, anatomically meaningful landmark sets.", "decision": "Use ALS oral-motor core by default; choose broader sets for exploratory facial expressivity or hypomimia analysis."},
+    "normalization": {"purpose": "Define how distances and movements are scaled so values are comparable across camera distance and face size.", "decision": "Intercanthal distance is default for oral/jaw kinematics; raw normalized coordinates are audit only."},
+    "qc": {"purpose": "Separate visual/acquisition problems from true facial movement signals.", "decision": "QC should flag and explain risk; it should not automatically exclude videos without analyst review."},
+    "features": {"purpose": "Compute interpretable kinematic signals from cleaned, normalized landmark trajectories.", "decision": "Document which features are raw trajectories, movement-derived summaries, or exploratory outputs."},
+    "aggregation": {"purpose": "Turn time-series features into one row per video while preserving clinically relevant variability.", "decision": "Use robust default summaries for ML-ready exports; retain movement/time-series evidence for audit."},
+    "inspector": {"purpose": "Let the analyst inspect stage outputs before trusting downstream tables.", "decision": "Use this to detect wrong paths, metadata mismatch, missing landmark outputs, or unexpected warnings."},
+    "reports": {"purpose": "Package the run into a reproducible, SOP-aligned report.", "decision": "Use the report as the handoff artifact before feature-analysis/ML stages."},
+}
