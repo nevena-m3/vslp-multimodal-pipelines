@@ -1,4 +1,4 @@
-"""VSLP Kinematics Pipeline GUI v0.65.
+"""VSLP Kinematics Pipeline GUI v0.63.
 
 This GUI intentionally mirrors the acoustic pipeline layout: left stage sidebar,
 institutional branding strip, top tabs, run log, and compact scientific workflow
@@ -9,7 +9,6 @@ later patches; this pass establishes the production-quality outline and user flo
 from __future__ import annotations
 
 import json
-import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -63,7 +62,6 @@ from vslp.analysis.kinematics import (
     bootstrap_mediapipe_runtime,
     download_default_model,
     run_mediapipe_landmarks,
-    run_video_qc,
     verify_mediapipe_runtime,
     mediapipe_environment_status,
     link_metadata,
@@ -71,13 +69,10 @@ from vslp.analysis.kinematics import (
     run_ingest,
     write_landmark_plan,
     write_normalization_config,
+    run_normalization_from_selection,
     write_scaffold_report,
 )
 from vslp.analysis.kinematics.schemas import DEFAULT_VIDEO_EXTENSIONS, parse_int_list
-
-# Suppress repetitive FFmpeg/WebM container warnings emitted by OpenCV when
-# previewing videos. Decode/read failures are still surfaced through GUI QC.
-os.environ.setdefault("OPENCV_FFMPEG_LOGLEVEL", "-8")
 
 APP_VERSION = "v0.65"
 BRAND_DIR = Path(__file__).resolve().parent / "assets" / "branding"
@@ -441,7 +436,7 @@ class LandmarkMeshCanvas(QWidget):
 
         painter.setFont(QFont("Segoe UI", 8))
         painter.setPen(QColor("#E2E8F0"))
-        footer = f"Source: {self.source_label} | visible landmarks: {len(self.points)} | selected: {len(self.selected)} | zoom: {self.zoom_factor:.1f}× | left-click point, drag to pan, wheel to zoom"
+        footer = f"Source: {self.source_label} | visible landmarks: {len(self.points)} | selected: {len(self.selected)} | zoom: {self.zoom_factor:.1f}x | left-click point, drag to pan, wheel to zoom"
         painter.drawText(18, self.height() - 13, footer)
 
 
@@ -460,8 +455,6 @@ class KinematicsPipelineWindow(QMainWindow):
         self.landmark_indices: tuple[int, ...] = LANDMARK_PRESETS["ALS oral-motor core 15"]
         self._thread: QThread | None = None
         self._worker: Worker | None = None
-        self._worker_done_callback: Callable[[object], None] | None = None
-        self._busy_task_name: str | None = None
         self._landmark_overlay_loaded = False
         self._landmark_frame_reload_timer = QTimer(self)
         self._landmark_frame_reload_timer.setSingleShot(True)
@@ -502,7 +495,7 @@ class KinematicsPipelineWindow(QMainWindow):
         subtitle = QLabel(f"Kinematics Pipeline GUI {APP_VERSION}")
         subtitle.setObjectName("SubtitleLabel")
         ip_notice = QLabel(
-            "© 2026 Nevena Musikic & Yana Yunusova\n"
+            "(c) 2026 Nevena Musikic & Yana Yunusova\n"
             "Speech Production Lab, University of Toronto"
         )
         ip_notice.setObjectName("IPNoticeLabel")
@@ -662,61 +655,6 @@ class KinematicsPipelineWindow(QMainWindow):
 
     def _log(self, message: str) -> None:
         self.log_box.appendPlainText(message)
-        self.log_box.verticalScrollBar().setValue(self.log_box.verticalScrollBar().maximum())
-
-    def _set_progress_idle(self, value: int = 0) -> None:
-        if hasattr(self, "progress"):
-            self.progress.setRange(0, 100)
-            self.progress.setValue(max(0, min(100, int(value))))
-            self.progress.setFormat("Idle" if value == 0 else f"{int(value)}%")
-
-    def _set_progress_busy(self, label: str) -> None:
-        if hasattr(self, "progress"):
-            self.progress.setRange(0, 0)
-            self.progress.setFormat(label)
-
-    def _start_worker(self, name: str, func: Callable, kwargs: dict, done_callback: Callable[[object], None]) -> None:
-        if self._thread is not None:
-            QMessageBox.information(self, "Stage already running", "Wait for the current stage to finish before starting another stage.")
-            return
-        self._busy_task_name = name
-        self._worker_done_callback = done_callback
-        self._thread = QThread(self)
-        self._worker = Worker(name, func, kwargs)
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.started.connect(self._on_worker_started)
-        self._worker.message.connect(self._log)
-        self._worker.failed.connect(self._on_worker_failed)
-        self._worker.finished.connect(self._on_worker_finished)
-        self._worker.finished.connect(lambda *_: self._thread.quit())
-        self._worker.failed.connect(lambda *_: self._thread.quit())
-        self._thread.finished.connect(self._thread.deleteLater)
-        self._thread.finished.connect(self._clear_worker_state)
-        self._thread.start()
-
-    def _on_worker_started(self, name: str) -> None:
-        self._set_progress_busy(f"Running: {name}")
-        self._log(f"[RUNNING] {name}")
-
-    def _on_worker_failed(self, name: str, error: str) -> None:
-        self._set_progress_idle(0)
-        self._log(f"[FAILED] {name}: {error}")
-        QMessageBox.critical(self, f"{name} failed", error[:4000])
-
-    def _on_worker_finished(self, name: str, result: object) -> None:
-        self._set_progress_idle(100)
-        self._log(f"[DONE] {name}")
-        callback = self._worker_done_callback
-        if callback is not None:
-            callback(result)
-        QTimer.singleShot(900, lambda: self._set_progress_idle(0))
-
-    def _clear_worker_state(self) -> None:
-        self._thread = None
-        self._worker = None
-        self._worker_done_callback = None
-        self._busy_task_name = None
 
     def _stage_status_text(self, status: str) -> str:
         if status in {"completed", "detected"}:
@@ -727,7 +665,7 @@ class KinematicsPipelineWindow(QMainWindow):
             return "* failed"
         if status == "running":
             return "* running"
-        return f"○ {status}"
+        return f"o {status}"
 
     def _refresh_stage_cards(self) -> None:
         for key, record in self.stage_records.items():
@@ -1049,14 +987,27 @@ class KinematicsPipelineWindow(QMainWindow):
         self.norm_combo.setCurrentText("intercanthal_distance")
         self.norm_desc = QLabel(NORMALIZATION_METHODS["intercanthal_distance"]); self.norm_desc.setWordWrap(True); self.norm_desc.setObjectName("SubtitleLabel")
         self.norm_combo.currentTextChanged.connect(lambda name: self.norm_desc.setText(NORMALIZATION_METHODS.get(name, "")))
-        self.head_stabilize_check = QCheckBox("Enable future head-pose stabilization placeholder")
-        self.head_stabilize_check.setChecked(False)
-        btn = QPushButton("Write Normalization Config")
+        self.center_landmark_spin = QSpinBox(); self.center_landmark_spin.setRange(0, 477); self.center_landmark_spin.setValue(1)
+        self.norm_overwrite_check = QCheckBox("Overwrite existing normalized landmark files")
+        self.norm_overwrite_check.setChecked(True)
+        config_btn = QPushButton("Write Normalization Config Only")
+        config_btn.clicked.connect(self.write_normalization_config_only)
+        btn = QPushButton("Run Computational Normalization")
         btn.setObjectName("RunButton"); btn.clicked.connect(self.run_normalization_stage)
-        grid.addWidget(QLabel("Method"), 0, 0); grid.addWidget(self.norm_combo, 0, 1); grid.addWidget(btn, 0, 2)
-        grid.addWidget(QLabel("Interpretation"), 1, 0); grid.addWidget(self.norm_desc, 1, 1, 1, 2)
-        grid.addWidget(QLabel("Head stabilization"), 2, 0); grid.addWidget(self.head_stabilize_check, 2, 1, 1, 2)
+        grid.addWidget(QLabel("Method"), 0, 0); grid.addWidget(self.norm_combo, 0, 1); grid.addWidget(config_btn, 0, 2); grid.addWidget(btn, 0, 3)
+        grid.addWidget(QLabel("Interpretation"), 1, 0); grid.addWidget(self.norm_desc, 1, 1, 1, 3)
+        grid.addWidget(QLabel("Center landmark"), 2, 0); grid.addWidget(self.center_landmark_spin, 2, 1)
+        grid.addWidget(QLabel("Output policy"), 2, 2); grid.addWidget(self.norm_overwrite_check, 2, 3)
         layout.addWidget(group)
+        qc = self._info_panel(
+            "Computation and QC",
+            "The stage reads full MediaPipe landmark CSVs, uses the visual landmark selection as the working subset, centers coordinates on the selected center landmark, scales by the selected anatomical scale, and writes one normalized CSV per video. QC fields report detected-face fraction, valid-scale fraction, selected-landmark availability, missing selected landmarks, and whether each video is OK or QC-flagged."
+        )
+        layout.addWidget(qc)
+        self.norm_results_table = QTableWidget(0, 8)
+        self.norm_results_table.setHorizontalHeaderLabels(["Video", "Status", "Frames", "Face %", "Scale", "Scale valid %", "Selected complete %", "Output"])
+        self.norm_results_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        layout.addWidget(self.norm_results_table)
         self.norm_table = QTableWidget(0, 2)
         self.norm_table.setHorizontalHeaderLabels(["Method", "Use / caution"])
         self._fill_table(self.norm_table, pd.DataFrame([{"Method": k, "Use / caution": v} for k, v in NORMALIZATION_METHODS.items()]), max_rows=30)
@@ -1068,32 +1019,22 @@ class KinematicsPipelineWindow(QMainWindow):
         container = QWidget(); layout = QVBoxLayout(container)
         layout.addWidget(self._info_panel(
             "Info",
-            "Video QC now computes automated landmark-extraction risk summaries from the MediaPipe CSVs. It flags pass/review/fail for analyst review using face visibility, long no-face gaps, and landmark frame-to-frame stability. QC does not automatically exclude videos.",
+            "Video QC will separate visual/acquisition problems from facial motor signal. For now this page defines the QC taxonomy that will be quantified after landmark extraction is connected.",
         ))
         qc_rows = [
-            ("Face visibility QC", "Face-detected fraction and dropped-frame burden."),
-            ("Long gap QC", "Maximum consecutive no-face frames and gap fraction."),
-            ("Landmark stability QC", "Median and p95 frame-to-frame displacement for the selected landmark set."),
-            ("Review status", "Conservative pass/review/fail flag with written rationale; no automatic exclusion."),
+            ("Decode / container QC", "Unreadable files, fps problems, duration/frame-count inconsistencies, codec/container warnings."),
+            ("Face visibility QC", "Face-detected fraction, long no-face gaps, partial face visibility, occlusion risk."),
+            ("Pose / head-motion QC", "Head rotation, large translations, off-axis views, pose instability."),
+            ("Illumination QC", "Low light, overexposure, flicker, contrast instability."),
+            ("Landmark stability QC", "Tracking jitter, coordinate jumps, interpolation burden, landmark dropout."),
+            ("Task / adherence QC", "Wrong task, failed repetition structure, mouth hidden, off-screen movement, non-target behavior."),
         ]
-        table = QTableWidget(0, 2); table.setHorizontalHeaderLabels(["QC family", "Current computation"])
-        self._fill_table(table, pd.DataFrame(qc_rows, columns=["QC family", "Current computation"]), max_rows=20)
+        table = QTableWidget(0, 2); table.setHorizontalHeaderLabels(["QC family", "What it will measure"])
+        self._fill_table(table, pd.DataFrame(qc_rows, columns=["QC family", "What it will measure"]), max_rows=20)
         layout.addWidget(table)
-        btn_row = QHBoxLayout()
-        btn = QPushButton("Run Landmark / Video QC")
-        btn.setObjectName("RunButton"); btn.clicked.connect(self.run_video_qc_stage)
-        refresh = QPushButton("Refresh QC Table")
-        refresh.clicked.connect(self._load_video_qc_summary)
-        btn_row.addWidget(btn); btn_row.addWidget(refresh); btn_row.addStretch(1)
-        layout.addLayout(btn_row)
-        self.video_qc_label = QLabel("No video QC summary loaded yet.")
-        self.video_qc_label.setObjectName("SubtitleLabel")
-        self.video_qc_label.setWordWrap(True)
-        layout.addWidget(self.video_qc_label)
-        self.video_qc_table = QTableWidget(0, 0)
-        self.video_qc_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.video_qc_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        layout.addWidget(self.video_qc_table)
+        btn = QPushButton("Write Video QC Placeholder")
+        btn.setObjectName("RunButton"); btn.clicked.connect(self.run_qc_placeholder)
+        layout.addWidget(btn)
         layout.addStretch(1)
         return self._scrollable(container)
 
@@ -1219,18 +1160,15 @@ class KinematicsPipelineWindow(QMainWindow):
             return
         self.input_root, self.output_root = inp, out
         cfg = VideoIngestConfig(input_root=inp, output_root=out, recursive=True, extensions=DEFAULT_VIDEO_EXTENSIONS)
-        self.stage_records["ingest"] = StageRecord(status="running")
-        self._refresh_stage_cards()
-        self._start_worker("Video ingest", run_ingest, {"cfg": cfg}, self._finish_ingest_stage)
-
-    def _finish_ingest_stage(self, result: object) -> None:
-        res = dict(result)
+        try:
+            res = run_ingest(cfg)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Ingest failed", str(exc)); return
         self.ingest_manifest_csv = Path(res["manifest_csv"])
         self.stage_records["ingest"] = StageRecord(status="completed", manifest_path=str(self.ingest_manifest_csv))
         self._refresh_stage_cards()
         self._log(f"Video ingest completed: {res['n_videos']} video(s).")
         self._load_ingest_summary()
-        self.refresh_landmark_video_choices()
 
     def _load_ingest_summary(self) -> None:
         if not self.ingest_manifest_csv or not self.ingest_manifest_csv.exists():
@@ -1239,7 +1177,7 @@ class KinematicsPipelineWindow(QMainWindow):
         self.ingest_summary_label.setText(f"{len(df)} candidate videos detected. Formats/codecs/resolutions summarized below.")
         if not df.empty:
             tmp = df.copy()
-            tmp["Resolution"] = tmp["width"].fillna(0).astype(int).astype(str) + " × " + tmp["height"].fillna(0).astype(int).astype(str)
+            tmp["Resolution"] = tmp["width"].fillna(0).astype(int).astype(str) + " x " + tmp["height"].fillna(0).astype(int).astype(str)
             grouped = tmp.groupby(["extension", "codec_name", "Resolution"], dropna=False).size().reset_index(name="Files")
             grouped.columns = ["Detected format", "Video codec", "Resolution", "Files"]
             self._fill_table(self.ingest_format_table, grouped, max_rows=60)
@@ -1248,14 +1186,10 @@ class KinematicsPipelineWindow(QMainWindow):
         if not self.ingest_manifest_csv or not self.ingest_manifest_csv.exists():
             QMessageBox.warning(self, "Missing ingest", "Run video ingest before metadata linking."); return
         meta = Path(self.metadata_edit.text()).expanduser().resolve() if self.metadata_edit.text().strip() else None
-        out_root = Path(self.output_edit.text()).expanduser().resolve()
-        self.stage_records["metadata"] = StageRecord(status="running")
-        self._refresh_stage_cards()
-        self._start_worker("Metadata linking", link_metadata, {"manifest_csv": self.ingest_manifest_csv, "metadata_path": meta, "output_dir": out_root}, self._finish_metadata_stage)
-
-    def _finish_metadata_stage(self, result: object) -> None:
-        res = dict(result)
-        out = Path(res.get("link_preview") or res.get("metadata_loaded"))
+        try:
+            out = link_metadata(self.ingest_manifest_csv, meta, Path(self.output_edit.text()).expanduser().resolve())
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Metadata failed", str(exc)); return
         self.stage_records["metadata"] = StageRecord(status="completed", manifest_path=str(out))
         self._refresh_stage_cards(); self._log(f"Metadata link preview written: {out}")
 
@@ -1344,7 +1278,7 @@ class KinematicsPipelineWindow(QMainWindow):
         self._landmark_video_rows = []
         manifest = self._landmarks_manifest_path()
         if manifest is None:
-            QMessageBox.information(self, "No landmark manifest", "Run Landmarks → Run MediaPipe Landmark Extraction first.")
+            QMessageBox.information(self, "No landmark manifest", "Run Landmarks -> Run MediaPipe Landmark Extraction first.")
             return
         try:
             df = pd.read_csv(manifest)
@@ -1419,7 +1353,7 @@ class KinematicsPipelineWindow(QMainWindow):
         self.landmark_frame_spin.blockSignals(False)
         self.landmark_frame_slider.blockSignals(False)
         if hasattr(self, "selection_feedback_label"):
-            self.selection_feedback_label.setText(f"Selected video changed. Frame range: 0–{max_frame}. Click 'Load Real Frame + MediaPipe Overlay' to refresh the display, or keep auto-reload enabled after the first load.")
+            self.selection_feedback_label.setText(f"Selected video changed. Frame range: 0-{max_frame}. Click 'Load Real Frame + MediaPipe Overlay' to refresh the display, or keep auto-reload enabled after the first load.")
         if bool(getattr(self, "_landmark_overlay_loaded", False)) and hasattr(self, "auto_reload_frame_checkbox") and self.auto_reload_frame_checkbox.isChecked():
             self._landmark_frame_reload_timer.start(80)
 
@@ -1438,7 +1372,6 @@ class KinematicsPipelineWindow(QMainWindow):
         return self._landmark_video_rows[min(idx, len(self._landmark_video_rows) - 1)]
 
     def _load_video_frame_pixmap(self, source_path: Path, frame_idx: int) -> QPixmap | None:
-        os.environ.setdefault("OPENCV_FFMPEG_LOGLEVEL", "-8")
         try:
             import cv2  # type: ignore
         except Exception as exc:  # noqa: BLE001
@@ -1509,7 +1442,6 @@ class KinematicsPipelineWindow(QMainWindow):
         rec = self._selected_landmark_video_row()
         if rec is None:
             return
-        self._set_progress_idle(15)
         landmark_csv = Path(str(rec.get("output_csv", ""))).expanduser()
         source_path = Path(str(rec.get("source_path", ""))).expanduser()
         if not landmark_csv.exists():
@@ -1518,13 +1450,10 @@ class KinematicsPipelineWindow(QMainWindow):
         try:
             points, frame_idx, face_detected, used_note = self._points_for_requested_frame(landmark_csv, requested)
         except Exception as exc:  # noqa: BLE001
-            self._set_progress_idle(0)
             QMessageBox.critical(self, "Could not load landmarks for frame", str(exc)); return
-        self._set_progress_idle(55)
         if len(points) < 20:
             QMessageBox.warning(self, "Sparse overlay", f"Only {len(points)} usable landmarks were available for frame {frame_idx}. Try another frame or inspect Landmark extraction coverage.")
         pixmap = self._load_video_frame_pixmap(source_path, frame_idx) if source_path.exists() else None
-        self._set_progress_idle(80)
         video_id = str(rec.get("video_id") or landmark_csv.stem.replace("-lmks", ""))
         self.landmark_canvas.set_overlay(
             pixmap,
@@ -1549,8 +1478,6 @@ class KinematicsPipelineWindow(QMainWindow):
             self.landmark_frame_slider.blockSignals(False)
         self._landmark_overlay_loaded = True
         self._update_selected_landmark_feedback()
-        self._set_progress_idle(100)
-        QTimer.singleShot(600, lambda: self._set_progress_idle(0))
         self._log(f"Loaded real-frame MediaPipe overlay: video={video_id}, frame={frame_idx}, points={len(points)}, source={source_path}")
 
     # Backward-compatible alias for older buttons/docs.
@@ -1589,7 +1516,7 @@ class KinematicsPipelineWindow(QMainWindow):
             if candidate.exists():
                 self.ingest_manifest_csv = candidate
                 return candidate
-        QMessageBox.warning(self, "Missing ingest", "Run Setup → Run Video Ingest before landmark extraction.")
+        QMessageBox.warning(self, "Missing ingest", "Run Setup -> Run Video Ingest before landmark extraction.")
         return None
 
     def _update_landmark_runtime_label(self) -> None:
@@ -1683,23 +1610,15 @@ class KinematicsPipelineWindow(QMainWindow):
                 "python -m pip install opencv-python mediapipe",
             )
             return
-        self.stage_records["landmarks"] = StageRecord(status="running")
-        self._refresh_stage_cards()
-        self._start_worker(
-            "MediaPipe landmark extraction",
-            run_mediapipe_landmarks,
-            {"output_root": out, "cfg": cfg, "manifest_csv": manifest},
-            self._finish_landmark_extraction_stage,
-        )
-
-    def _finish_landmark_extraction_stage(self, result: object) -> None:
-        res = dict(result)
+        try:
+            res = run_mediapipe_landmarks(out, cfg, manifest)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "MediaPipe extraction failed", str(exc)); return
         manifest_csv = Path(res["manifest_csv"])
         self.stage_records["landmarks"] = StageRecord(status="completed" if int(res.get("n_error", 0)) == 0 else "completed_with_warnings", manifest_path=str(manifest_csv))
         self._refresh_stage_cards()
         self._log(f"MediaPipe landmarks completed: {res['n_ok']} ok, {res['n_error']} error, {res['n_skipped_existing']} skipped. Manifest: {manifest_csv}")
         self._load_landmark_summary(manifest_csv)
-        self.refresh_landmark_video_choices()
         QMessageBox.information(self, "Landmark extraction complete", f"Processed {res['n_ok']} video(s).\nManifest:\n{manifest_csv}")
 
     def _load_landmark_summary(self, manifest_csv: Path) -> None:
@@ -1746,13 +1665,68 @@ class KinematicsPipelineWindow(QMainWindow):
             self.stage_records["selection"] = StageRecord(status="completed", manifest_path=str(path))
             self._refresh_stage_cards(); self._log(f"Selected {len(self.landmark_indices)} landmarks: {path}")
 
-    def run_normalization_stage(self) -> None:
+    def write_normalization_config_only(self) -> None:
         out = self._path_or_warn(self.output_edit, "an output project folder")
         if out is None:
             return
         path = write_normalization_config(out, self.norm_combo.currentText())
-        self.stage_records["normalization"] = StageRecord(status="completed", manifest_path=str(path))
+        self.stage_records["normalization"] = StageRecord(status="configured", manifest_path=str(path))
         self._refresh_stage_cards(); self._log(f"Normalization config written: {path}")
+
+    def run_normalization_stage(self) -> None:
+        out = self._path_or_warn(self.output_edit, "an output project folder")
+        if out is None:
+            return
+        try:
+            selected = tuple(self.landmark_indices) if getattr(self, "landmark_indices", None) else None
+            self.progress.setValue(10)
+            self._log("Starting computational normalization...")
+            result = run_normalization_from_selection(
+                out,
+                self.norm_combo.currentText(),
+                selected_landmarks=selected,
+                preset=getattr(self, "preset_combo", None).currentText() if hasattr(self, "preset_combo") else "ALS oral-motor core 15",
+                center_landmark=int(self.center_landmark_spin.value()),
+                overwrite=bool(self.norm_overwrite_check.isChecked()),
+            )
+            self.progress.setValue(85)
+            self._load_normalization_results(result.get("manifest_csv"))
+            manifest = result.get("manifest_csv")
+            self.stage_records["normalization"] = StageRecord(status="completed", manifest_path=str(manifest))
+            self._refresh_stage_cards()
+            self.progress.setValue(100)
+            self._log(
+                f"Normalized {result.get('n_videos', 0)} videos "
+                f"(ok={result.get('n_ok', 0)}, qc_flagged={result.get('n_qc_flagged', 0)}, errors={result.get('n_error', 0)}): {manifest}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.progress.setValue(0)
+            self._log(f"Normalization failed: {exc}")
+            QMessageBox.critical(self, "Normalization failed", str(exc))
+
+    def _load_normalization_results(self, manifest_csv) -> None:
+        if not manifest_csv:
+            return
+        path = Path(str(manifest_csv))
+        if not path.exists():
+            return
+        df = pd.read_csv(path)
+        rows = []
+        for _, rec in df.iterrows():
+            face_pct = pd.to_numeric(pd.Series([rec.get("face_detected_fraction")]), errors="coerce").iloc[0]
+            scale_pct = pd.to_numeric(pd.Series([rec.get("scale_valid_fraction")]), errors="coerce").iloc[0]
+            sel_pct = pd.to_numeric(pd.Series([rec.get("selected_complete_frame_fraction")]), errors="coerce").iloc[0]
+            rows.append({
+                "Video": rec.get("video_id", ""),
+                "Status": rec.get("status", ""),
+                "Frames": rec.get("n_frames", ""),
+                "Face %": "" if pd.isna(face_pct) else f"{face_pct * 100:.1f}",
+                "Scale": rec.get("scale_source", ""),
+                "Scale valid %": "" if pd.isna(scale_pct) else f"{scale_pct * 100:.1f}",
+                "Selected complete %": "" if pd.isna(sel_pct) else f"{sel_pct * 100:.1f}",
+                "Output": Path(str(rec.get("output_csv", ""))).name,
+            })
+        self._fill_table(self.norm_results_table, pd.DataFrame(rows), max_rows=200)
 
     def _write_placeholder(self, stage_key: str, rel: str, payload: dict, message: str) -> None:
         out = self._path_or_warn(self.output_edit, "an output project folder")
@@ -1764,44 +1738,8 @@ class KinematicsPipelineWindow(QMainWindow):
         self.stage_records[stage_key] = StageRecord(status="completed", manifest_path=str(path))
         self._refresh_stage_cards(); self._log(f"{message}: {path}")
 
-    def run_video_qc_stage(self) -> None:
-        out = self._path_or_warn(self.output_edit, "an output project folder")
-        if out is None:
-            return
-        manifest = self._landmarks_manifest_path()
-        if manifest is None:
-            QMessageBox.warning(self, "Missing landmarks", "Run Landmarks -> Run MediaPipe Landmark Extraction before video QC.")
-            return
-        self.stage_records["qc"] = StageRecord(status="running")
-        self._refresh_stage_cards()
-        self._start_worker("Landmark / video QC", run_video_qc, {"output_root": out, "landmarks_manifest_csv": manifest}, self._finish_video_qc_stage)
-
-    def _finish_video_qc_stage(self, result: object) -> None:
-        res = dict(result)
-        summary_csv = Path(res["summary_csv"])
-        self.stage_records["qc"] = StageRecord(status="completed", manifest_path=str(summary_csv))
-        self._refresh_stage_cards()
-        self._log(f"Video QC completed: {res.get('n_videos', 0)} video(s); status counts={res.get('status_counts', {})}. Summary: {summary_csv}")
-        self._load_video_qc_summary(summary_csv)
-
-    def _load_video_qc_summary(self, path: Path | None = None) -> None:
-        out_text = self.output_edit.text().strip() if hasattr(self, "output_edit") else ""
-        if path is None and out_text:
-            path = Path(out_text).expanduser().resolve() / "kinematics" / "005_video_qc" / "tables" / "landmark_video_qc_summary.csv"
-        if path is None or not Path(path).exists():
-            if hasattr(self, "video_qc_label"):
-                self.video_qc_label.setText("No video QC summary found yet.")
-            return
-        df = pd.read_csv(path)
-        if hasattr(self, "video_qc_label"):
-            counts = df.get("qc_status", pd.Series(dtype=str)).value_counts(dropna=False).to_dict() if not df.empty else {}
-            self.video_qc_label.setText(f"Loaded QC summary: {path}. Status counts: {counts}")
-        cols = [c for c in ["video_id", "qc_status", "face_detected_fraction", "n_frames", "n_faces_detected", "max_no_face_gap_frames", "p95_frame_displacement", "qc_rationale"] if c in df.columns]
-        if hasattr(self, "video_qc_table"):
-            self._fill_table(self.video_qc_table, df[cols] if cols else df, max_rows=200)
-
     def run_qc_placeholder(self) -> None:
-        self.run_video_qc_stage()
+        self._write_placeholder("qc", "005_video_qc/tables/video_qc_plan.json", {"status": "placeholder", "families": ["decode", "face_visibility", "pose", "illumination", "landmark_stability", "task_adherence"]}, "Video QC plan written")
 
     def run_features_placeholder(self) -> None:
         self._write_placeholder("features", "006_features/tables/feature_computation_plan.json", {"status": "placeholder", "selected_landmarks": list(self.landmark_indices)}, "Feature computation plan written")
@@ -1861,7 +1799,7 @@ class KinematicsPipelineWindow(QMainWindow):
         self.run_landmark_plan_stage()
         self.run_selection_stage()
         self.run_normalization_stage()
-        self.run_video_qc_stage()
+        self.run_qc_placeholder()
         self.run_features_placeholder()
         self.run_aggregation_placeholder()
         self.run_report_stage()
