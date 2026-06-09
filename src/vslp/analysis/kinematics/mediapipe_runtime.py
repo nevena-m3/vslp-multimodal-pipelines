@@ -60,6 +60,73 @@ def mediapipe_environment_status() -> MediaPipeEnvironmentStatus:
     return MediaPipeEnvironmentStatus(cv2_ok, mp_ok, cv2_version, mp_version, " | ".join(messages))
 
 
+def install_mediapipe_runtime(*, upgrade: bool = False, timeout_sec: int = 900) -> dict:
+    """Install the runtime packages required for real FaceLandmarker extraction.
+
+    This uses the active Python interpreter (``sys.executable``), so in the GUI it
+    installs into the same virtual environment that launched VSLP. It is intended
+    for workstation setup, not for every run. A GUI restart is recommended after a
+    fresh install, although the current process can usually import the packages
+    immediately.
+    """
+    import subprocess
+    import sys
+
+    packages = ["opencv-python", "mediapipe"]
+    cmd = [sys.executable, "-m", "pip", "install", *packages]
+    if upgrade:
+        cmd.insert(5, "--upgrade")
+    started = time.time()
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=timeout_sec,
+        check=False,
+    )
+    status = mediapipe_environment_status()
+    return {
+        "command": " ".join(cmd),
+        "returncode": int(proc.returncode),
+        "stdout": proc.stdout[-8000:],
+        "stderr": proc.stderr[-8000:],
+        "elapsed_sec": round(time.time() - started, 3),
+        "environment": asdict(status),
+        "ok": bool(proc.returncode == 0 and status.opencv_available and status.mediapipe_available),
+    }
+
+
+def ensure_mediapipe_runtime_ready(model_path: Path | str, *, auto_download_model: bool = True) -> dict:
+    """Preflight check for real MediaPipe extraction.
+
+    Raises a RuntimeError with actionable instructions if opencv-python,
+    mediapipe, or the FaceLandmarker model bundle is missing. This prevents the
+    GUI from silently producing an all-error manifest when the runtime is not set
+    up.
+    """
+    status = mediapipe_environment_status()
+    missing = []
+    if not status.opencv_available:
+        missing.append("opencv-python")
+    if not status.mediapipe_available:
+        missing.append("mediapipe")
+    if missing:
+        raise RuntimeError(
+            "MediaPipe runtime is not installed in this Python environment. "
+            f"Missing: {', '.join(missing)}. Use the Landmarks tab button "
+            "'Install / Verify MediaPipe Runtime', or run: python -m pip install opencv-python mediapipe"
+        )
+    model = Path(model_path).expanduser().resolve()
+    if not model.exists():
+        if auto_download_model:
+            download_face_landmarker_model(model, overwrite=False)
+        else:
+            raise FileNotFoundError(
+                f"FaceLandmarker model not found: {model}. Use 'Download Default Model' first."
+            )
+    return {"environment": asdict(mediapipe_environment_status()), "model_path": str(model), "model_exists": model.exists()}
+
+
 def download_face_landmarker_model(model_path: Path | str, *, overwrite: bool = False) -> Path:
     """Download Google's Face Landmarker .task bundle to ``model_path``.
 

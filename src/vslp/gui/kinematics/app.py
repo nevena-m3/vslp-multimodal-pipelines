@@ -1,4 +1,4 @@
-"""VSLP Kinematics Pipeline GUI v0.58.
+"""VSLP Kinematics Pipeline GUI v0.60.
 
 This GUI intentionally mirrors the acoustic pipeline layout: left stage sidebar,
 institutional branding strip, top tabs, run log, and compact scientific workflow
@@ -58,8 +58,10 @@ from vslp.analysis.kinematics import (
     NORMALIZATION_METHODS,
     LandmarkRunConfig,
     VideoIngestConfig,
+    bootstrap_mediapipe_runtime,
     download_default_model,
     run_mediapipe_landmarks,
+    verify_mediapipe_runtime,
     mediapipe_environment_status,
     link_metadata,
     mediapipe_capability_note,
@@ -70,7 +72,7 @@ from vslp.analysis.kinematics import (
 )
 from vslp.analysis.kinematics.schemas import DEFAULT_VIDEO_EXTENSIONS, parse_int_list
 
-APP_VERSION = "v0.59"
+APP_VERSION = "v0.60"
 BRAND_DIR = Path(__file__).resolve().parent / "assets" / "branding"
 LAB_LOGO = BRAND_DIR / "lab_logo.png"
 UOFT_LOGO = BRAND_DIR / "uoft_logo.png"
@@ -778,6 +780,33 @@ class KinematicsPipelineWindow(QMainWindow):
             f"{f' ({status.mediapipe_version})' if status.mediapipe_version else ''}. "
             f"{status.message}"
         )
+
+    def bootstrap_mediapipe_runtime_stage(self) -> None:
+        self._log("Checking/installing MediaPipe runtime into the active Python environment...")
+        try:
+            result = bootstrap_mediapipe_runtime()
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "MediaPipe runtime setup failed", str(exc))
+            self._log(f"MediaPipe runtime setup failed: {exc}")
+            return
+        self._update_landmark_runtime_label()
+        if result.get("ok"):
+            QMessageBox.information(
+                self,
+                "MediaPipe runtime ready",
+                "opencv-python and mediapipe are available in this environment. "
+                "If this was a fresh install, restart the GUI if extraction still reports missing imports.",
+            )
+        else:
+            QMessageBox.warning(
+                self,
+                "MediaPipe runtime incomplete",
+                "The install command finished but the runtime is still not fully available. "
+                "Open the run log for details, or restart the GUI and try again.",
+            )
+        self._log(f"MediaPipe runtime setup command: {result.get('command')}")
+        if result.get("stderr"):
+            self._log("pip stderr tail: " + str(result.get("stderr"))[-1200:])
 
     def download_landmarker_model(self) -> None:
         try:
