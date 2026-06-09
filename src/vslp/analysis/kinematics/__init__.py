@@ -15,6 +15,7 @@ from .mediapipe_runtime import mediapipe_environment_status, FACE_LANDMARKER_MOD
 from .normalization import NormalizationConfig, write_normalization_config, run_normalization, run_normalization_from_selection
 from .video_qc import VideoQCConfig, run_video_qc
 from .features import FeatureComputationConfig, run_feature_computation
+from .aggregation import TemporalAggregationConfig, run_temporal_aggregation
 from .reports import write_scaffold_report
 
 __all__ = [
@@ -23,5 +24,5 @@ __all__ = [
     "write_landmark_plan", "run_mediapipe_landmarks", "download_default_model",
     "mediapipe_capability_note", "mediapipe_environment_status", "FACE_LANDMARKER_MODEL_URL",
     "NormalizationConfig", "write_normalization_config", "run_normalization", "run_normalization_from_selection",
-    "VideoQCConfig", "run_video_qc", "FeatureComputationConfig", "run_feature_computation", "write_scaffold_report",
+    "VideoQCConfig", "run_video_qc", "FeatureComputationConfig", "run_feature_computation", "TemporalAggregationConfig", "run_temporal_aggregation", "write_scaffold_report",
 ]

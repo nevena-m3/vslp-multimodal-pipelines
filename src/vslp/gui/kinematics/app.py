@@ -73,11 +73,13 @@ from vslp.analysis.kinematics import (
     run_video_qc,
     FeatureComputationConfig,
     run_feature_computation,
+    TemporalAggregationConfig,
+    run_temporal_aggregation,
     write_scaffold_report,
 )
 from vslp.analysis.kinematics.schemas import DEFAULT_VIDEO_EXTENSIONS, parse_int_list
 
-APP_VERSION = "v0.66"
+APP_VERSION = "v0.67"
 BRAND_DIR = Path(__file__).resolve().parent / "assets" / "branding"
 LAB_LOGO = BRAND_DIR / "lab_logo.png"
 UOFT_LOGO = BRAND_DIR / "uoft_logo.png"
@@ -1163,7 +1165,7 @@ class KinematicsPipelineWindow(QMainWindow):
         container = QWidget(); layout = QVBoxLayout(container)
         layout.addWidget(self._info_panel(
             "Info",
-            "Frame-level features are time series. Temporal aggregation defines how to create one scalar feature row per video without hiding the policy used to collapse movement over time.",
+            "Collapse frame-level kinematic time series into per-video scalar tables using an explicit, auditable aggregation policy. This stage does not delete time-series evidence; it writes a separate aggregation layer for export and review.",
         ))
         group = QGroupBox("Temporal aggregation profile")
         grid = QGridLayout(group)
@@ -1171,15 +1173,33 @@ class KinematicsPipelineWindow(QMainWindow):
         self.agg_combo.setCurrentText("robust_default")
         self.agg_desc = QLabel(AGGREGATION_PROFILES["robust_default"]); self.agg_desc.setWordWrap(True); self.agg_desc.setObjectName("SubtitleLabel")
         self.agg_combo.currentTextChanged.connect(lambda name: self.agg_desc.setText(AGGREGATION_PROFILES.get(name, "")))
-        btn = QPushButton("Write Aggregation Plan")
-        btn.setObjectName("RunButton"); btn.clicked.connect(self.run_aggregation_placeholder)
-        grid.addWidget(QLabel("Aggregation profile"), 0, 0); grid.addWidget(self.agg_combo, 0, 1); grid.addWidget(btn, 0, 2)
+        self.agg_include_raw = QCheckBox("Include raw unsmoothed feature signals")
+        self.agg_include_raw.setChecked(False)
+        self.agg_include_velocity = QCheckBox("Include velocity-derived signals")
+        self.agg_include_velocity.setChecked(True)
+        self.agg_min_valid = QDoubleSpinBox(); self.agg_min_valid.setRange(0.0, 1.0); self.agg_min_valid.setSingleStep(0.05); self.agg_min_valid.setDecimals(2); self.agg_min_valid.setValue(0.50)
+        self.agg_min_detected = QDoubleSpinBox(); self.agg_min_detected.setRange(0.0, 1.0); self.agg_min_detected.setSingleStep(0.05); self.agg_min_detected.setDecimals(2); self.agg_min_detected.setValue(0.60)
+        run_btn = QPushButton("Run Temporal Aggregation")
+        run_btn.setObjectName("RunButton"); run_btn.clicked.connect(self.run_temporal_aggregation_stage)
+        refresh_btn = QPushButton("Refresh Aggregation Outputs")
+        refresh_btn.clicked.connect(self._load_aggregation_results)
+        grid.addWidget(QLabel("Aggregation profile"), 0, 0); grid.addWidget(self.agg_combo, 0, 1, 1, 2)
         grid.addWidget(QLabel("Interpretation"), 1, 0); grid.addWidget(self.agg_desc, 1, 1, 1, 2)
+        grid.addWidget(QLabel("Minimum valid fraction per signal"), 2, 0); grid.addWidget(self.agg_min_valid, 2, 1)
+        grid.addWidget(QLabel("Minimum detected-face fraction"), 3, 0); grid.addWidget(self.agg_min_detected, 3, 1)
+        grid.addWidget(self.agg_include_raw, 4, 1, 1, 2)
+        grid.addWidget(self.agg_include_velocity, 5, 1, 1, 2)
+        grid.addWidget(run_btn, 6, 1); grid.addWidget(refresh_btn, 6, 2)
         layout.addWidget(group)
         table = QTableWidget(0, 2); table.setHorizontalHeaderLabels(["Profile", "Recommended use"])
         self._fill_table(table, pd.DataFrame([{"Profile": k, "Recommended use": v} for k, v in AGGREGATION_PROFILES.items()]), max_rows=20)
         layout.addWidget(table)
-        layout.addStretch(1)
+        self.aggregation_results_label = QLabel("No temporal aggregation table loaded yet."); self.aggregation_results_label.setObjectName("SubtitleLabel")
+        layout.addWidget(self.aggregation_results_label)
+        self.aggregation_results_table = QTableWidget(0, 0)
+        self.aggregation_results_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.aggregation_results_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        layout.addWidget(self.aggregation_results_table)
         return self._scrollable(container)
 
     def _build_inspector_tab(self) -> QWidget:
@@ -1929,8 +1949,59 @@ class KinematicsPipelineWindow(QMainWindow):
     def run_features_placeholder(self) -> None:
         self.run_feature_computation_stage()
 
+    def run_temporal_aggregation_stage(self) -> None:
+        out = self._path_or_warn(self.output_edit, "an output project folder")
+        if out is None:
+            return
+        features_csv = out / "kinematics" / "006_features" / "tables" / "kinematic_features.csv"
+        if not features_csv.exists():
+            QMessageBox.warning(self, "Missing features", "Run Features -> Run Kinematic Feature Computation before temporal aggregation.")
+            return
+        cfg = TemporalAggregationConfig(
+            profile=self.agg_combo.currentText() if hasattr(self, "agg_combo") else "robust_default",
+            include_raw_signals=bool(self.agg_include_raw.isChecked()) if hasattr(self, "agg_include_raw") else False,
+            include_velocity_signals=bool(self.agg_include_velocity.isChecked()) if hasattr(self, "agg_include_velocity") else True,
+            min_valid_fraction=float(self.agg_min_valid.value()) if hasattr(self, "agg_min_valid") else 0.50,
+            min_detected_fraction=float(self.agg_min_detected.value()) if hasattr(self, "agg_min_detected") else 0.60,
+            overwrite=True,
+        )
+        self.stage_records["aggregation"] = StageRecord(status="running")
+        self._refresh_stage_cards()
+        self._start_worker("Temporal aggregation", run_temporal_aggregation, {"output_root": out, "cfg": cfg}, self._finish_temporal_aggregation_stage)
+
+    def _finish_temporal_aggregation_stage(self, result: object) -> None:
+        res = dict(result)
+        agg_csv = Path(res["aggregated_features_csv"])
+        self.stage_records["aggregation"] = StageRecord(status="completed", manifest_path=str(res.get("manifest_json", agg_csv)))
+        self._refresh_stage_cards()
+        self._log(f"Temporal aggregation completed: {res.get('n_videos', 0)} video(s); ok={res.get('n_ok', 0)}, qc_flagged={res.get('n_qc_flagged', 0)}, error={res.get('n_error', 0)}. Aggregated table: {agg_csv}")
+        self._load_aggregation_results(agg_csv)
+
+    def _load_aggregation_results(self, path: Path | None = None) -> None:
+        out_text = self.output_edit.text().strip() if hasattr(self, "output_edit") else ""
+        if path is None and out_text:
+            path = Path(out_text).expanduser().resolve() / "kinematics" / "007_aggregation" / "tables" / "kinematic_aggregated_features.csv"
+        if path is None or not Path(path).exists():
+            if hasattr(self, "aggregation_results_label"):
+                self.aggregation_results_label.setText("No temporal aggregation table loaded yet.")
+            return
+        df = pd.read_csv(path)
+        if hasattr(self, "aggregation_results_label"):
+            counts = df.get("status", pd.Series(dtype=str)).value_counts(dropna=False).to_dict() if not df.empty else {}
+            self.aggregation_results_label.setText(f"Loaded temporal aggregation: {path}. Status counts: {counts}")
+        preferred = [
+            "video_id", "status", "aggregation_profile", "n_frames", "duration_s",
+            "face_detected_fraction", "n_signals_aggregated", "n_movements",
+            "mouth_aperture_median", "mouth_aperture_iqr", "mouth_aperture_range_p05_p95",
+            "outer_lip_spread_median", "lip_aspect_ratio_median",
+            "jaw_to_nose_median", "aggregation_qc_flags",
+        ]
+        cols = [c for c in preferred if c in df.columns]
+        if hasattr(self, "aggregation_results_table"):
+            self._fill_table(self.aggregation_results_table, df[cols] if cols else df, max_rows=200)
+
     def run_aggregation_placeholder(self) -> None:
-        self._write_placeholder("aggregation", "007_aggregation/tables/aggregation_plan.json", {"profile": self.agg_combo.currentText(), "description": AGGREGATION_PROFILES.get(self.agg_combo.currentText(), "")}, "Aggregation plan written")
+        self.run_temporal_aggregation_stage()
 
     def refresh_inspector(self) -> None:
         out_text = self.output_edit.text().strip()
