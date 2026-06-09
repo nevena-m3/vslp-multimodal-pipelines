@@ -1,4 +1,4 @@
-"""VSLP Kinematics Pipeline GUI v0.72.
+"""VSLP Kinematics Pipeline GUI v0.73.
 
 This GUI intentionally mirrors the acoustic pipeline layout: left stage sidebar,
 institutional branding strip, top tabs, run log, and compact scientific workflow
@@ -73,6 +73,8 @@ from vslp.analysis.kinematics import (
     summarize_ingest_manifest,
     build_format_summary,
     build_warning_summary,
+    analyze_landmark_selection,
+    write_selected_landmarks,
     write_landmark_plan,
     write_normalization_config,
     run_normalization_from_selection,
@@ -89,7 +91,7 @@ from vslp.analysis.kinematics import (
 )
 from vslp.analysis.kinematics.schemas import DEFAULT_VIDEO_EXTENSIONS, parse_int_list
 
-APP_VERSION = "v0.72"
+APP_VERSION = "v0.73"
 BRAND_DIR = Path(__file__).resolve().parent / "assets" / "branding"
 LAB_LOGO = BRAND_DIR / "lab_logo.png"
 UOFT_LOGO = BRAND_DIR / "uoft_logo.png"
@@ -1050,7 +1052,40 @@ class KinematicsPipelineWindow(QMainWindow):
             "Select the landmark subset that will drive default kinematic feature computation. Use the visual face-mesh selector to inspect extracted MediaPipe landmarks, click points to add/remove them, and save the selection for downstream normalization/features.",
         ))
 
-        group = QGroupBox("Landmark preset, real-frame overlay, and selection feedback")
+        selection_dashboard = QGroupBox("1. Selection readiness and scientific coverage")
+        selection_dashboard_layout = QGridLayout(selection_dashboard)
+        self.selection_metric_labels: dict[str, QLabel] = {}
+        selection_cards = [
+            ("Preset", "preset"),
+            ("Selected", "selected"),
+            ("Regions", "regions"),
+            ("Anchors", "anchors"),
+            ("Mouth", "mouth"),
+            ("Jaw", "jaw"),
+            ("Status", "status"),
+            ("Next", "next_step"),
+        ]
+        for idx, (title, key) in enumerate(selection_cards):
+            card = QFrame()
+            card.setObjectName("InfoPanel")
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(10, 8, 10, 8)
+            card_title = QLabel(title)
+            card_title.setObjectName("SubtitleLabel")
+            value = QLabel("-")
+            value.setObjectName("InfoTitle")
+            value.setWordWrap(True)
+            card_layout.addWidget(card_title)
+            card_layout.addWidget(value)
+            self.selection_metric_labels[key] = value
+            selection_dashboard_layout.addWidget(card, idx // 4, idx % 4)
+        self.selection_next_step_label = QLabel("Choose a preset, inspect it on a real frame, then save selected landmarks.")
+        self.selection_next_step_label.setObjectName("SubtitleLabel")
+        self.selection_next_step_label.setWordWrap(True)
+        selection_dashboard_layout.addWidget(self.selection_next_step_label, 2, 0, 1, 4)
+        layout.addWidget(selection_dashboard)
+
+        group = QGroupBox("2. Landmark preset, real-frame overlay, and selection feedback")
         grid = QGridLayout(group)
         self.preset_combo = QComboBox(); self.preset_combo.addItems(list(LANDMARK_PRESETS.keys()))
         self.preset_combo.currentTextChanged.connect(self.apply_landmark_preset)
@@ -1146,6 +1181,12 @@ class KinematicsPipelineWindow(QMainWindow):
         self.selected_landmark_table.setMaximumHeight(210)
         self.selected_landmark_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         right_panel.addWidget(self.selected_landmark_table)
+        self.selection_requirement_table = QTableWidget(0, 5)
+        self.selection_requirement_table.setHorizontalHeaderLabels(["Requirement", "Status", "Missing required", "Missing recommended", "Reason"])
+        self.selection_requirement_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.selection_requirement_table.setMaximumHeight(230)
+        self.selection_requirement_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        right_panel.addWidget(self.selection_requirement_table)
         wrapper = QWidget(); wrapper.setLayout(right_panel)
         mesh_row.addWidget(wrapper, stretch=1)
         layout.addLayout(mesh_row)
@@ -1718,6 +1759,10 @@ class KinematicsPipelineWindow(QMainWindow):
             self.landmark_canvas.set_selected(vals)
         self._update_selected_landmark_feedback()
 
+    def _set_selection_dashboard_value(self, key: str, value: object) -> None:
+        if hasattr(self, "selection_metric_labels") and key in self.selection_metric_labels:
+            self.selection_metric_labels[key].setText("-" if value is None else str(value))
+
     def _update_selected_landmark_feedback(self) -> None:
         if not hasattr(self, "selected_landmark_table"):
             return
@@ -1725,9 +1770,10 @@ class KinematicsPipelineWindow(QMainWindow):
             vals = list(parse_int_list(self.landmark_text.toPlainText()))
         except Exception:
             vals = []
+        diagnostics = analyze_landmark_selection(vals)
         rows = []
         regions = {}
-        for idx in vals:
+        for idx in diagnostics.selected_landmarks:
             region = LandmarkMeshCanvas.region_for(int(idx))
             regions[region] = regions.get(region, 0) + 1
             rows.append({
@@ -1737,18 +1783,39 @@ class KinematicsPipelineWindow(QMainWindow):
                 "Status": "selected",
             })
         self._fill_table(self.selected_landmark_table, pd.DataFrame(rows), max_rows=120)
+
+        req_rows = []
+        for result in diagnostics.requirement_results:
+            req_rows.append({
+                "Requirement": result.label,
+                "Status": result.status,
+                "Missing required": ", ".join(map(str, result.missing_required)),
+                "Missing recommended": ", ".join(map(str, result.missing_recommended)),
+                "Reason": result.reason,
+            })
+        if hasattr(self, "selection_requirement_table"):
+            self._fill_table(self.selection_requirement_table, pd.DataFrame(req_rows), max_rows=30)
+
+        anchor_result = next((r for r in diagnostics.requirement_results if r.requirement_id == "normalization_intercanthal"), None)
+        mouth_result = next((r for r in diagnostics.requirement_results if r.requirement_id == "mouth_aperture"), None)
+        jaw_result = next((r for r in diagnostics.requirement_results if r.requirement_id == "jaw_lower_face"), None)
+        self._set_selection_dashboard_value("preset", self.preset_combo.currentText() if hasattr(self, "preset_combo") else "custom")
+        self._set_selection_dashboard_value("selected", diagnostics.n_selected)
+        self._set_selection_dashboard_value("regions", len(diagnostics.region_counts))
+        self._set_selection_dashboard_value("anchors", anchor_result.status if anchor_result else "-")
+        self._set_selection_dashboard_value("mouth", mouth_result.status if mouth_result else "-")
+        self._set_selection_dashboard_value("jaw", jaw_result.status if jaw_result else "-")
+        self._set_selection_dashboard_value("status", diagnostics.status)
+        self._set_selection_dashboard_value("next_step", "Normalize" if diagnostics.status == "Complete" else "Review")
+        if hasattr(self, "selection_next_step_label"):
+            self.selection_next_step_label.setText(diagnostics.next_step)
+
         if hasattr(self, "selection_feedback_label"):
-            has_mouth = regions.get("mouth/lips", 0) >= 4
-            has_anchors = regions.get("eye/canthus anchors", 0) >= 2
-            has_jaw = regions.get("jaw/chin/lower face", 0) >= 1
-            supports = []
-            supports.append("mouth aperture" if has_mouth else "mouth aperture: incomplete")
-            supports.append("scale normalization anchors" if has_anchors else "scale anchors: incomplete")
-            supports.append("jaw/lower-face tracking" if has_jaw else "jaw tracking: incomplete")
             self.selection_feedback_label.setText(
-                f"Selected {len(vals)} landmarks. Region coverage: "
-                + (", ".join(f"{k}={v}" for k, v in sorted(regions.items())) if regions else "none")
-                + ". Supports: " + "; ".join(supports) + "."
+                f"Selected {diagnostics.n_selected} landmarks. Region coverage: "
+                + (", ".join(f"{k}={v}" for k, v in diagnostics.region_counts.items()) if diagnostics.region_counts else "none")
+                + f". Selection status: {diagnostics.status}. "
+                + diagnostics.next_step
             )
 
     def _landmark_tables_dir(self) -> Path | None:
@@ -2217,23 +2284,24 @@ class KinematicsPipelineWindow(QMainWindow):
             self.landmark_canvas.set_selected(self.landmark_indices)
         out = self._path_or_warn(self.output_edit, "an output project folder")
         if out:
-            path = out / "kinematics" / "003_selection" / "tables" / "selected_landmarks.json"
-            path.parent.mkdir(parents=True, exist_ok=True)
             preview = out / "kinematics" / "003_selection" / "figures" / "selected_landmark_mesh_preview.png"
             preview.parent.mkdir(parents=True, exist_ok=True)
             if hasattr(self, "landmark_canvas"):
                 self.landmark_canvas.grab().save(str(preview))
-            payload = {
-                "selected_landmarks": list(self.landmark_indices),
-                "n_selected": len(self.landmark_indices),
-                "preset": self.preset_combo.currentText(),
-                "mesh_source": getattr(getattr(self, "landmark_canvas", None), "source_label", "not_available"),
-                "preview_png": str(preview) if preview.exists() else None,
-                "interpretation": "Selected landmarks define the default subset for normalization and kinematic feature computation. Full extracted MediaPipe landmarks remain available for audit.",
-            }
-            path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-            self.stage_records["selection"] = StageRecord(status="completed", manifest_path=str(path))
-            self._refresh_stage_cards(); self._log(f"Selected {len(self.landmark_indices)} landmarks: {path}")
+            outputs = write_selected_landmarks(
+                out,
+                self.landmark_indices,
+                preset=self.preset_combo.currentText(),
+                mesh_source=getattr(getattr(self, "landmark_canvas", None), "source_label", "not_available"),
+                preview_png=str(preview) if preview.exists() else None,
+                app_version=APP_VERSION,
+            )
+            diagnostics = analyze_landmark_selection(self.landmark_indices)
+            stage_status = "completed" if diagnostics.status == "Complete" else "completed_with_warnings"
+            self.stage_records["selection"] = StageRecord(status=stage_status, manifest_path=str(outputs["selected_json"]), summary_path=str(outputs["summary_csv"]))
+            self._refresh_stage_cards()
+            self._update_selected_landmark_feedback()
+            self._log(f"Selected {len(self.landmark_indices)} landmarks: {outputs['selected_json']} | status={diagnostics.status}")
 
     def write_normalization_config_only(self) -> None:
         out = self._path_or_warn(self.output_edit, "an output project folder")
