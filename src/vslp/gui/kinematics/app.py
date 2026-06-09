@@ -58,6 +58,9 @@ from vslp.analysis.kinematics import (
     NORMALIZATION_METHODS,
     LandmarkRunConfig,
     VideoIngestConfig,
+    download_default_model,
+    run_mediapipe_landmarks,
+    mediapipe_environment_status,
     link_metadata,
     mediapipe_capability_note,
     run_ingest,
@@ -67,7 +70,7 @@ from vslp.analysis.kinematics import (
 )
 from vslp.analysis.kinematics.schemas import DEFAULT_VIDEO_EXTENSIONS, parse_int_list
 
-APP_VERSION = "v0.58"
+APP_VERSION = "v0.59"
 BRAND_DIR = Path(__file__).resolve().parent / "assets" / "branding"
 LAB_LOGO = BRAND_DIR / "lab_logo.png"
 UOFT_LOGO = BRAND_DIR / "uoft_logo.png"
@@ -456,7 +459,7 @@ class KinematicsPipelineWindow(QMainWindow):
         layout = QVBoxLayout(container)
         layout.addWidget(self._info_panel(
             "Info",
-            "This stage will run Google MediaPipe Face Landmarker over each accepted video and write per-frame 3D facial landmarks. Frames with no detected face are preserved as missing data rather than silently dropped.",
+            "Run Google MediaPipe Face Landmarker over each accepted video and write one per-frame landmark CSV per video. Frames with no detected face are preserved as NaN rows instead of being silently removed, so landmark gaps are auditable.",
         ))
         group = QGroupBox("MediaPipe Face Landmarker configuration")
         form = QGridLayout(group)
@@ -464,22 +467,42 @@ class KinematicsPipelineWindow(QMainWindow):
         self.detection_conf_spin = QDoubleSpinBox(); self.detection_conf_spin.setRange(0.0, 1.0); self.detection_conf_spin.setSingleStep(0.05); self.detection_conf_spin.setValue(0.50)
         self.presence_conf_spin = QDoubleSpinBox(); self.presence_conf_spin.setRange(0.0, 1.0); self.presence_conf_spin.setSingleStep(0.05); self.presence_conf_spin.setValue(0.50)
         self.tracking_conf_spin = QDoubleSpinBox(); self.tracking_conf_spin.setRange(0.0, 1.0); self.tracking_conf_spin.setSingleStep(0.05); self.tracking_conf_spin.setValue(0.50)
+        self.expected_landmarks_spin = QSpinBox(); self.expected_landmarks_spin.setRange(468, 500); self.expected_landmarks_spin.setValue(478)
         browse_model = QPushButton("Browse Model")
         browse_model.clicked.connect(self.browse_model_file)
+        download_model = QPushButton("Download Default Model")
+        download_model.clicked.connect(self.download_landmarker_model)
         form.addWidget(QLabel("FaceLandmarker .task model"), 0, 0)
         form.addWidget(self.model_path_edit, 0, 1)
         form.addWidget(browse_model, 0, 2)
+        form.addWidget(download_model, 0, 3)
         form.addWidget(QLabel("Detection confidence"), 1, 0); form.addWidget(self.detection_conf_spin, 1, 1)
         form.addWidget(QLabel("Presence confidence"), 2, 0); form.addWidget(self.presence_conf_spin, 2, 1)
         form.addWidget(QLabel("Tracking confidence"), 3, 0); form.addWidget(self.tracking_conf_spin, 3, 1)
+        form.addWidget(QLabel("Expected landmark columns"), 4, 0); form.addWidget(self.expected_landmarks_spin, 4, 1)
         layout.addWidget(group)
-        note = QPlainTextEdit(); note.setReadOnly(True); note.setMaximumHeight(135)
+        note = QPlainTextEdit(); note.setReadOnly(True); note.setMaximumHeight(150)
         note.setPlainText(mediapipe_capability_note())
         layout.addWidget(note)
-        btn = QPushButton("Write Landmark Extraction Plan")
-        btn.setObjectName("RunButton")
-        btn.clicked.connect(self.run_landmark_plan_stage)
-        layout.addWidget(btn)
+        btn_row = QHBoxLayout()
+        plan_btn = QPushButton("Write Landmark Extraction Plan")
+        plan_btn.clicked.connect(self.run_landmark_plan_stage)
+        run_btn = QPushButton("Run MediaPipe Landmark Extraction")
+        run_btn.setObjectName("RunButton")
+        run_btn.clicked.connect(self.run_landmark_extraction_stage)
+        btn_row.addWidget(plan_btn)
+        btn_row.addWidget(run_btn)
+        layout.addLayout(btn_row)
+        self.landmark_runtime_label = QLabel("Runtime not checked yet.")
+        self.landmark_runtime_label.setObjectName("SubtitleLabel")
+        self.landmark_runtime_label.setWordWrap(True)
+        layout.addWidget(self.landmark_runtime_label)
+        self.landmark_summary_table = QTableWidget(0, 7)
+        self.landmark_summary_table.setHorizontalHeaderLabels(["Video", "Status", "Frames", "Face frames", "Dropped", "Detected %", "Output"])
+        self.landmark_summary_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.landmark_summary_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.landmark_summary_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        layout.addWidget(self.landmark_summary_table)
         layout.addStretch(1)
         return self._scrollable(container)
 
@@ -673,7 +696,7 @@ class KinematicsPipelineWindow(QMainWindow):
         for sub in ["000_ingest", "001_metadata", "002_landmarks", "003_selection", "004_normalization", "005_video_qc", "006_features", "007_aggregation", "008_inspector", "009_reports"]:
             (project_dir / sub).mkdir(parents=True, exist_ok=True)
         manifest = project_dir / "project_manifest.json"
-        manifest.write_text(json.dumps({"project_name": self.project_name_edit.text(), "task": self.task_name_edit.text(), "schema": "vslp_kinematics_project_v0.58"}, indent=2), encoding="utf-8")
+        manifest.write_text(json.dumps({"project_name": self.project_name_edit.text(), "task": self.task_name_edit.text(), "schema": "vslp_kinematics_project_v0.59"}, indent=2), encoding="utf-8")
         self.stage_records["project"] = StageRecord(status="completed", manifest_path=str(manifest))
         self._refresh_stage_cards()
         self._log(f"Initialized kinematics project: {project_dir}")
@@ -725,21 +748,91 @@ class KinematicsPipelineWindow(QMainWindow):
     def _landmark_config(self) -> LandmarkRunConfig:
         return LandmarkRunConfig(
             model_path=self.model_path_edit.text().strip() or "models/face_landmarker.task",
+            selected_preset=self.preset_combo.currentText() if hasattr(self, "preset_combo") else "ALS oral-motor core 15",
             selected_landmarks=parse_int_list(self.landmark_text.toPlainText()),
             min_face_detection_confidence=float(self.detection_conf_spin.value()),
             min_face_presence_confidence=float(self.presence_conf_spin.value()),
             min_tracking_confidence=float(self.tracking_conf_spin.value()),
             normalization_method=self.norm_combo.currentText() if hasattr(self, "norm_combo") else "intercanthal_distance",
+            n_landmarks=int(self.expected_landmarks_spin.value()) if hasattr(self, "expected_landmarks_spin") else 478,
         )
+
+    def _require_ingest_manifest(self) -> Path | None:
+        if self.ingest_manifest_csv and self.ingest_manifest_csv.exists():
+            return self.ingest_manifest_csv
+        out_text = self.output_edit.text().strip()
+        if out_text:
+            candidate = Path(out_text).expanduser().resolve() / "kinematics" / "000_ingest" / "tables" / "video_ingest_manifest.csv"
+            if candidate.exists():
+                self.ingest_manifest_csv = candidate
+                return candidate
+        QMessageBox.warning(self, "Missing ingest", "Run Setup → Run Video Ingest before landmark extraction.")
+        return None
+
+    def _update_landmark_runtime_label(self) -> None:
+        status = mediapipe_environment_status()
+        self.landmark_runtime_label.setText(
+            f"OpenCV: {'available' if status.opencv_available else 'missing'}"
+            f"{f' ({status.opencv_version})' if status.opencv_version else ''}; "
+            f"MediaPipe: {'available' if status.mediapipe_available else 'missing'}"
+            f"{f' ({status.mediapipe_version})' if status.mediapipe_version else ''}. "
+            f"{status.message}"
+        )
+
+    def download_landmarker_model(self) -> None:
+        try:
+            path = download_default_model(self._path_or_warn(self.output_edit, "an output project folder") or Path.cwd(), self._landmark_config())
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Model download failed", str(exc)); return
+        self.model_path_edit.setText(str(path))
+        QMessageBox.information(self, "Model ready", f"FaceLandmarker model is available at:\n{path}")
+        self._log(f"MediaPipe FaceLandmarker model ready: {path}")
 
     def run_landmark_plan_stage(self) -> None:
         out = self._path_or_warn(self.output_edit, "an output project folder")
-        if out is None:
+        manifest = self._require_ingest_manifest()
+        if out is None or manifest is None:
             return
         cfg = self._landmark_config()
-        path = write_landmark_plan(out, cfg)
-        self.stage_records["landmarks"] = StageRecord(status="completed", manifest_path=str(path))
+        path = write_landmark_plan(out, cfg, manifest_csv=manifest)
+        self.stage_records["landmarks"] = StageRecord(status="planned", manifest_path=str(path))
+        self._update_landmark_runtime_label()
         self._refresh_stage_cards(); self._log(f"Landmark extraction plan written: {path}")
+
+    def run_landmark_extraction_stage(self) -> None:
+        out = self._path_or_warn(self.output_edit, "an output project folder")
+        manifest = self._require_ingest_manifest()
+        if out is None or manifest is None:
+            return
+        cfg = self._landmark_config()
+        self._update_landmark_runtime_label()
+        try:
+            res = run_mediapipe_landmarks(out, cfg, manifest)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "MediaPipe extraction failed", str(exc)); return
+        manifest_csv = Path(res["manifest_csv"])
+        self.stage_records["landmarks"] = StageRecord(status="completed" if int(res.get("n_error", 0)) == 0 else "completed_with_warnings", manifest_path=str(manifest_csv))
+        self._refresh_stage_cards()
+        self._log(f"MediaPipe landmarks completed: {res['n_ok']} ok, {res['n_error']} error, {res['n_skipped_existing']} skipped. Manifest: {manifest_csv}")
+        self._load_landmark_summary(manifest_csv)
+        QMessageBox.information(self, "Landmark extraction complete", f"Processed {res['n_ok']} video(s).\nManifest:\n{manifest_csv}")
+
+    def _load_landmark_summary(self, manifest_csv: Path) -> None:
+        if not manifest_csv.exists():
+            return
+        df = pd.read_csv(manifest_csv)
+        if df.empty:
+            self.landmark_summary_table.setRowCount(0); self.landmark_summary_table.setColumnCount(0); return
+        preview = pd.DataFrame({
+            "Video": df.get("video_id", ""),
+            "Status": df.get("status", ""),
+            "Frames": df.get("n_frames", ""),
+            "Face frames": df.get("n_faces_detected", ""),
+            "Dropped": df.get("n_dropped", ""),
+            "Detected %": (pd.to_numeric(df.get("face_detected_fraction"), errors="coerce") * 100).round(1),
+            "Output": df.get("output_csv", ""),
+        })
+        self._fill_table(self.landmark_summary_table, preview, max_rows=100)
 
     def run_selection_stage(self) -> None:
         try:
