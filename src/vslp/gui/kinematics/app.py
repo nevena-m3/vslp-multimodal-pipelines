@@ -1,4 +1,4 @@
-"""VSLP Kinematics Pipeline GUI v0.71.
+"""VSLP Kinematics Pipeline GUI v0.72.
 
 This GUI intentionally mirrors the acoustic pipeline layout: left stage sidebar,
 institutional branding strip, top tabs, run log, and compact scientific workflow
@@ -89,7 +89,7 @@ from vslp.analysis.kinematics import (
 )
 from vslp.analysis.kinematics.schemas import DEFAULT_VIDEO_EXTENSIONS, parse_int_list
 
-APP_VERSION = "v0.71"
+APP_VERSION = "v0.72"
 BRAND_DIR = Path(__file__).resolve().parent / "assets" / "branding"
 LAB_LOGO = BRAND_DIR / "lab_logo.png"
 UOFT_LOGO = BRAND_DIR / "uoft_logo.png"
@@ -522,6 +522,7 @@ class KinematicsPipelineWindow(QMainWindow):
         side_layout.addWidget(ip_notice)
 
         self.stage_labels: dict[str, QLabel] = {}
+        self.stage_status_dots: dict[str, QFrame] = {}
         self.stage_cards: dict[str, QFrame] = {}
         for key, label in [
             ("project", "Project"),
@@ -541,12 +542,21 @@ class KinematicsPipelineWindow(QMainWindow):
             card_layout.setContentsMargins(9, 7, 9, 7)
             label_widget = QLabel(label)
             label_widget.setStyleSheet("font-weight: 700;")
+            status_row = QHBoxLayout()
+            status_row.setContentsMargins(0, 0, 0, 0)
+            status_row.setSpacing(6)
+            status_dot = QFrame()
+            status_dot.setObjectName("StageStatusDot")
+            status_dot.setFixedSize(10, 10)
             status_lbl = QLabel("Not run")
             status_lbl.setObjectName("SubtitleLabel")
+            status_row.addWidget(status_dot)
+            status_row.addWidget(status_lbl, stretch=1)
             card_layout.addWidget(label_widget)
-            card_layout.addWidget(status_lbl)
+            card_layout.addLayout(status_row)
             card.setMaximumHeight(62)
             self.stage_labels[key] = status_lbl
+            self.stage_status_dots[key] = status_dot
             self.stage_cards[key] = card
             side_layout.addWidget(card)
 
@@ -728,21 +738,34 @@ class KinematicsPipelineWindow(QMainWindow):
         self._worker_done_callback = None
         self._busy_task_name = None
 
-    def _stage_status_text(self, status: str) -> str:
-        if status in {"completed", "detected"}:
-            return f"* {status}"
-        if status == "completed_with_warnings":
-            return "* completed with warnings"
-        if status == "failed":
-            return "* failed"
-        if status == "running":
-            return "* running"
-        return f"o {status}"
+    def _stage_status_presentation(self, status: str) -> tuple[str, str]:
+        """Return human-readable sidebar status text and indicator color."""
+        normalized = str(status or "Not run").strip().lower().replace(" ", "_")
+        if normalized in {"completed", "detected"}:
+            return "Complete", "#22C55E"
+        if normalized == "completed_with_warnings":
+            return "Complete - review", "#F59E0B"
+        if normalized == "failed":
+            return "Failed", "#EF4444"
+        if normalized == "running":
+            return "Running", "#38BDF8"
+        if normalized in {"configured", "planned"}:
+            return normalized.capitalize(), "#AFC8DE"
+        if normalized == "stale":
+            return "Stale", "#A855F7"
+        if normalized in {"not_run", "none", ""}:
+            return "Not run", "#64748B"
+        return str(status), "#64748B"
 
     def _refresh_stage_cards(self) -> None:
         for key, record in self.stage_records.items():
             if key in self.stage_labels:
-                self.stage_labels[key].setText(self._stage_status_text(record.status))
+                text, color = self._stage_status_presentation(record.status)
+                self.stage_labels[key].setText(text)
+                if key in self.stage_status_dots:
+                    self.stage_status_dots[key].setStyleSheet(
+                        f"QFrame#StageStatusDot {{ background-color: {color}; border: 1px solid #D8E8F8; border-radius: 5px; }}"
+                    )
 
     def _fill_table(self, table: QTableWidget, df: pd.DataFrame, max_rows: int = 300) -> None:
         if df is None or df.empty:
@@ -926,7 +949,41 @@ class KinematicsPipelineWindow(QMainWindow):
             "Info",
             "Run Google MediaPipe Face Landmarker over each accepted video and write one per-frame landmark CSV per video. Frames with no detected face are preserved as NaN rows instead of being silently removed, so landmark gaps are auditable.",
         ))
-        group = QGroupBox("MediaPipe Face Landmarker configuration")
+
+        readiness_group = QGroupBox("1. Landmark extraction readiness")
+        readiness_layout = QGridLayout(readiness_group)
+        self.landmark_metric_labels: dict[str, QLabel] = {}
+        landmark_cards = [
+            ("Runtime", "runtime"),
+            ("Plan", "plan"),
+            ("Videos", "videos"),
+            ("OK", "ok"),
+            ("Errors", "errors"),
+            ("Mean detection", "mean_detection"),
+            ("Status", "status"),
+            ("Next", "next_step"),
+        ]
+        for idx, (title, key) in enumerate(landmark_cards):
+            card = QFrame()
+            card.setObjectName("InfoPanel")
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(10, 8, 10, 8)
+            card_title = QLabel(title)
+            card_title.setObjectName("SubtitleLabel")
+            value = QLabel("-")
+            value.setObjectName("InfoTitle")
+            value.setWordWrap(True)
+            card_layout.addWidget(card_title)
+            card_layout.addWidget(value)
+            self.landmark_metric_labels[key] = value
+            readiness_layout.addWidget(card, idx // 4, idx % 4)
+        self.landmark_next_step_label = QLabel("Run Setup -> Video Ingest first, then write the landmark plan or run extraction.")
+        self.landmark_next_step_label.setObjectName("SubtitleLabel")
+        self.landmark_next_step_label.setWordWrap(True)
+        readiness_layout.addWidget(self.landmark_next_step_label, 2, 0, 1, 4)
+        layout.addWidget(readiness_group)
+
+        group = QGroupBox("2. MediaPipe Face Landmarker configuration")
         form = QGridLayout(group)
         self.model_path_edit = QLineEdit("models/face_landmarker.task")
         self.detection_conf_spin = QDoubleSpinBox(); self.detection_conf_spin.setRange(0.0, 1.0); self.detection_conf_spin.setSingleStep(0.05); self.detection_conf_spin.setValue(0.50)
@@ -972,6 +1029,10 @@ class KinematicsPipelineWindow(QMainWindow):
         self.landmark_runtime_label.setObjectName("SubtitleLabel")
         self.landmark_runtime_label.setWordWrap(True)
         layout.addWidget(self.landmark_runtime_label)
+        self.landmark_summary_label = QLabel("No landmark extraction results yet.")
+        self.landmark_summary_label.setObjectName("SubtitleLabel")
+        self.landmark_summary_label.setWordWrap(True)
+        layout.addWidget(self.landmark_summary_label)
         self.landmark_summary_table = QTableWidget(0, 7)
         self.landmark_summary_table.setHorizontalHeaderLabels(["Video", "Status", "Frames", "Face frames", "Dropped", "Detected %", "Output"])
         self.landmark_summary_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
@@ -1912,6 +1973,70 @@ class KinematicsPipelineWindow(QMainWindow):
         self._update_selected_landmark_feedback()
         self._log(f"Loaded real-frame MediaPipe overlay: video={video_id}, frame={frame_idx}, points={len(points)}, source={source_path}")
 
+    def _set_landmark_dashboard_value(self, key: str, value: object) -> None:
+        if hasattr(self, "landmark_metric_labels") and key in self.landmark_metric_labels:
+            self.landmark_metric_labels[key].setText("-" if value is None else str(value))
+
+    def _update_landmark_dashboard_from_manifest(self, manifest_csv: Path | None = None) -> None:
+        """Refresh landmark extraction dashboard cards from the current manifest."""
+        manifest = manifest_csv or self._landmarks_manifest_path()
+        status = mediapipe_environment_status()
+        runtime_text = "Ready" if status.opencv_available and status.mediapipe_available else "Missing"
+        self._set_landmark_dashboard_value("runtime", runtime_text)
+        if manifest is None or not Path(manifest).exists():
+            self._set_landmark_dashboard_value("videos", "0")
+            self._set_landmark_dashboard_value("ok", "0")
+            self._set_landmark_dashboard_value("errors", "0")
+            self._set_landmark_dashboard_value("mean_detection", "-")
+            self._set_landmark_dashboard_value("status", "Not run")
+            self._set_landmark_dashboard_value("next_step", "Plan/run")
+            if hasattr(self, "landmark_next_step_label"):
+                if self._require_ingest_manifest_silent() is None:
+                    self.landmark_next_step_label.setText("Run Setup -> Video Ingest before landmark extraction.")
+                else:
+                    self.landmark_next_step_label.setText("Ingest is available. Write the landmark extraction plan or run MediaPipe extraction.")
+            return
+        try:
+            df = pd.read_csv(manifest)
+        except Exception:
+            self._set_landmark_dashboard_value("status", "Review")
+            if hasattr(self, "landmark_next_step_label"):
+                self.landmark_next_step_label.setText(f"Could not read landmark manifest: {manifest}")
+            return
+        n_videos = int(len(df))
+        statuses = df.get("status", pd.Series(dtype=str)).astype(str).str.lower() if not df.empty else pd.Series(dtype=str)
+        n_ok = int(statuses.isin(["ok", "skipped_existing"]).sum()) if not df.empty else 0
+        n_error = int(statuses.eq("error").sum()) if not df.empty else 0
+        mean_det = pd.to_numeric(df.get("face_detected_fraction"), errors="coerce").mean() if not df.empty else float("nan")
+        if n_videos == 0:
+            stage_status = "Not run"
+            next_step = "Run MediaPipe extraction."
+        elif n_error > 0:
+            stage_status = "Review"
+            next_step = "Review failed videos and extraction errors before selection/normalization."
+        else:
+            stage_status = "Complete"
+            next_step = "Next: open Landmark Selection and inspect the real-frame overlay."
+        self._set_landmark_dashboard_value("videos", n_videos)
+        self._set_landmark_dashboard_value("ok", n_ok)
+        self._set_landmark_dashboard_value("errors", n_error)
+        self._set_landmark_dashboard_value("mean_detection", "-" if pd.isna(mean_det) else f"{mean_det * 100:.1f}%")
+        self._set_landmark_dashboard_value("status", stage_status)
+        self._set_landmark_dashboard_value("next_step", "Selection" if stage_status == "Complete" else "Review")
+        if hasattr(self, "landmark_next_step_label"):
+            self.landmark_next_step_label.setText(next_step)
+
+    def _require_ingest_manifest_silent(self) -> Path | None:
+        if self.ingest_manifest_csv and self.ingest_manifest_csv.exists():
+            return self.ingest_manifest_csv
+        out_text = self.output_edit.text().strip() if hasattr(self, "output_edit") else ""
+        if out_text:
+            candidate = Path(out_text).expanduser().resolve() / "kinematics" / "000_ingest" / "tables" / "video_ingest_manifest.csv"
+            if candidate.exists():
+                self.ingest_manifest_csv = candidate
+                return candidate
+        return None
+
     # Backward-compatible alias for older buttons/docs.
     def load_mesh_from_latest_landmarks(self) -> None:
         self.refresh_landmark_video_choices()
@@ -1960,6 +2085,8 @@ class KinematicsPipelineWindow(QMainWindow):
             f"{f' ({status.mediapipe_version})' if status.mediapipe_version else ''}. "
             f"{status.message}"
         )
+        if hasattr(self, "landmark_metric_labels"):
+            self._set_landmark_dashboard_value("runtime", "Ready" if status.opencv_available and status.mediapipe_available else "Missing")
 
     def bootstrap_mediapipe_runtime_stage(self) -> None:
         self._log("Checking/installing MediaPipe runtime into the active Python environment...")
@@ -2005,7 +2132,9 @@ class KinematicsPipelineWindow(QMainWindow):
         cfg = self._landmark_config()
         path = write_landmark_plan(out, cfg, manifest_csv=manifest)
         self.stage_records["landmarks"] = StageRecord(status="planned", manifest_path=str(path))
+        self._set_landmark_dashboard_value("plan", "Written")
         self._update_landmark_runtime_label()
+        self._update_landmark_dashboard_from_manifest(None)
         self._refresh_stage_cards(); self._log(f"Landmark extraction plan written: {path}")
 
     def run_landmark_extraction_stage(self) -> None:
@@ -2069,6 +2198,15 @@ class KinematicsPipelineWindow(QMainWindow):
             "Output": df.get("output_csv", ""),
         })
         self._fill_table(self.landmark_summary_table, preview, max_rows=100)
+        n_error = int((df.get("status", pd.Series(dtype=str)).astype(str).str.lower() == "error").sum()) if not df.empty else 0
+        mean_det = pd.to_numeric(df.get("face_detected_fraction"), errors="coerce").mean() if not df.empty else float("nan")
+        if hasattr(self, "landmark_summary_label"):
+            self.landmark_summary_label.setText(
+                f"Loaded landmark manifest: {len(df)} video(s), {n_error} error(s), "
+                f"mean detected-frame fraction={'-' if pd.isna(mean_det) else f'{mean_det * 100:.1f}%'}"
+            )
+        self._set_landmark_dashboard_value("plan", "Written")
+        self._update_landmark_dashboard_from_manifest(manifest_csv)
 
     def run_selection_stage(self) -> None:
         try:
@@ -2396,6 +2534,11 @@ class KinematicsPipelineWindow(QMainWindow):
 
     def refresh_latest_outputs(self) -> None:
         self._load_ingest_summary()
+        landmark_manifest = self._landmarks_manifest_path()
+        if landmark_manifest is not None:
+            self._load_landmark_summary(landmark_manifest)
+        elif hasattr(self, "landmark_metric_labels"):
+            self._update_landmark_dashboard_from_manifest(None)
         self.refresh_inspector()
         self._log("Refreshed latest kinematics outputs.")
 
