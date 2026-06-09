@@ -1,4 +1,4 @@
-"""VSLP Kinematics Pipeline GUI v0.73.
+"""VSLP Kinematics Pipeline GUI v0.74.
 
 This GUI intentionally mirrors the acoustic pipeline layout: left stage sidebar,
 institutional branding strip, top tabs, run log, and compact scientific workflow
@@ -23,6 +23,7 @@ try:
     from PySide6.QtWidgets import (
         QApplication,
         QAbstractItemView,
+        QAbstractSpinBox,
         QCheckBox,
         QComboBox,
         QFileDialog,
@@ -91,7 +92,7 @@ from vslp.analysis.kinematics import (
 )
 from vslp.analysis.kinematics.schemas import DEFAULT_VIDEO_EXTENSIONS, parse_int_list
 
-APP_VERSION = "v0.73"
+APP_VERSION = "v0.74"
 BRAND_DIR = Path(__file__).resolve().parent / "assets" / "branding"
 LAB_LOGO = BRAND_DIR / "lab_logo.png"
 UOFT_LOGO = BRAND_DIR / "uoft_logo.png"
@@ -204,7 +205,9 @@ class LandmarkMeshCanvas(QWidget):
         self.frame_label = ""
         self.show_all_labels = False
         self.show_mesh_edges = True
-        self.point_radius = 3.3
+        self.point_radius = 4.6
+        self.selected_point_radius = 9.0
+        self.high_contrast_landmarks = True
         self.zoom_factor = 1.0
         self.auto_zoom_face = True
         self.view_center = (0.5, 0.5)
@@ -416,19 +419,24 @@ class LandmarkMeshCanvas(QWidget):
             for a, b in self.MOUTH_EDGES:
                 self._draw_edge(painter, a, b, QColor(225, 29, 72, 180), 1.6)
 
-        painter.setPen(Qt.NoPen)
+        # High-contrast landmark rendering: every point gets a dark halo and bright rim so
+        # landmarks remain visible on skin, teeth, shadows, and high-contrast clinical video.
         for idx, (x, y) in self.points.items():
             if idx in self.selected:
                 continue
             p = self._to_screen(x, y)
             region = self.region_for(idx)
             base = self.REGION_COLORS.get(region, self.REGION_COLORS["other"])
-            color = QColor(base)
-            color.setAlpha(160 if region != "other" else 100)
+            fill = QColor(base)
+            fill.setAlpha(230 if region != "other" else 170)
             if idx == self.hover_idx:
-                color = QColor("#FDE047")
-            painter.setBrush(QBrush(color))
-            radius = self.point_radius + (2.0 if idx == self.hover_idx else 0.0)
+                fill = QColor("#FDE047")
+            radius = self.point_radius + (2.5 if idx == self.hover_idx else 0.0)
+            painter.setPen(QPen(QColor(0, 0, 0, 220), 4.2))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(p, radius + 1.7, radius + 1.7)
+            painter.setPen(QPen(QColor("#F8FAFC"), 1.5))
+            painter.setBrush(QBrush(fill))
             painter.drawEllipse(p, radius, radius)
 
         painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
@@ -436,20 +444,35 @@ class LandmarkMeshCanvas(QWidget):
             if idx not in self.points:
                 continue
             p = self._to_screen(*self.points[idx])
-            painter.setPen(QPen(QColor("#FFFFFF"), 1.3))
-            painter.setBrush(QBrush(QColor("#10B981")))
-            painter.drawEllipse(p, 7.2, 7.2)
-            painter.setPen(QColor("#052E1A"))
-            painter.drawText(int(p.x() + 8), int(p.y() - 8), str(idx))
+            radius = self.selected_point_radius
+            # Selected points use a thick black outer halo, white rim, and neon fill.
+            painter.setPen(QPen(QColor(0, 0, 0, 235), 5.0))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawEllipse(p, radius + 2.2, radius + 2.2)
+            painter.setPen(QPen(QColor("#FFFFFF"), 2.2))
+            painter.setBrush(QBrush(QColor("#22C55E")))
+            painter.drawEllipse(p, radius, radius)
+            label_bg = QRectF(p.x() + 8, p.y() - 21, 32, 17)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(QColor(0, 0, 0, 185)))
+            painter.drawRoundedRect(label_bg, 4, 4)
+            painter.setPen(QColor("#FFFFFF"))
+            painter.drawText(label_bg, Qt.AlignCenter, str(idx))
 
         if self.hover_idx is not None and self.hover_idx not in self.selected:
             p = self._to_screen(*self.points[self.hover_idx])
-            painter.setPen(QPen(QColor("#B45309"), 1.5))
+            painter.setPen(QPen(QColor(0, 0, 0, 235), 4.4))
             painter.setBrush(Qt.NoBrush)
-            painter.drawEllipse(p, 10, 10)
+            painter.drawEllipse(p, 13, 13)
+            painter.setPen(QPen(QColor("#FDE047"), 2.4))
+            painter.drawEllipse(p, 11, 11)
             painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
-            painter.setPen(QColor("#78350F"))
-            painter.drawText(int(p.x() + 10), int(p.y() - 10), str(self.hover_idx))
+            label_bg = QRectF(p.x() + 10, p.y() - 23, 32, 17)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QBrush(QColor(0, 0, 0, 185)))
+            painter.drawRoundedRect(label_bg, 4, 4)
+            painter.setPen(QColor("#FDE047"))
+            painter.drawText(label_bg, Qt.AlignCenter, str(self.hover_idx))
 
         painter.setFont(QFont("Segoe UI", 8))
         painter.setPen(QColor("#E2E8F0"))
@@ -1091,7 +1114,7 @@ class KinematicsPipelineWindow(QMainWindow):
         self.preset_combo.currentTextChanged.connect(self.apply_landmark_preset)
         self.landmark_video_combo = QComboBox()
         self.landmark_video_combo.currentIndexChanged.connect(self._landmark_video_changed)
-        self.landmark_frame_spin = QSpinBox(); self.landmark_frame_spin.setRange(0, 999999); self.landmark_frame_spin.setValue(0)
+        self.landmark_frame_spin = QSpinBox(); self.landmark_frame_spin.setRange(0, 999999); self.landmark_frame_spin.setValue(0); self.landmark_frame_spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
         self.landmark_frame_slider = QSlider(Qt.Horizontal); self.landmark_frame_slider.setRange(0, 0)
         self.landmark_frame_slider.valueChanged.connect(self._landmark_slider_changed)
         self.landmark_frame_spin.valueChanged.connect(self._landmark_spin_changed)
@@ -1102,6 +1125,18 @@ class KinematicsPipelineWindow(QMainWindow):
         load_frame_btn = QPushButton("Load Real Frame + MediaPipe Overlay")
         load_frame_btn.setObjectName("RunButton")
         load_frame_btn.clicked.connect(self.load_real_frame_landmark_overlay)
+        prev10_btn = QPushButton("-10")
+        prev10_btn.setToolTip("Move 10 frames earlier and reload the overlay if auto-reload is enabled.")
+        prev10_btn.clicked.connect(lambda: self._step_landmark_frame(-10))
+        prev1_btn = QPushButton("Prev")
+        prev1_btn.setToolTip("Move one frame earlier.")
+        prev1_btn.clicked.connect(lambda: self._step_landmark_frame(-1))
+        next1_btn = QPushButton("Next")
+        next1_btn.setToolTip("Move one frame later.")
+        next1_btn.clicked.connect(lambda: self._step_landmark_frame(1))
+        next10_btn = QPushButton("+10")
+        next10_btn.setToolTip("Move 10 frames later and reload the overlay if auto-reload is enabled.")
+        next10_btn.clicked.connect(lambda: self._step_landmark_frame(10))
         apply_btn = QPushButton("Apply / Save Selected Landmarks")
         apply_btn.setObjectName("RunButton")
         apply_btn.clicked.connect(self.run_selection_stage)
@@ -1110,7 +1145,7 @@ class KinematicsPipelineWindow(QMainWindow):
         preview_btn = QPushButton("Save Overlay Preview PNG")
         preview_btn.clicked.connect(self.save_landmark_mesh_preview)
         grid.addWidget(QLabel("Video"), 0, 0); grid.addWidget(self.landmark_video_combo, 0, 1); grid.addWidget(refresh_videos_btn, 0, 2); grid.addWidget(load_frame_btn, 0, 3)
-        grid.addWidget(QLabel("Frame"), 1, 0); grid.addWidget(self.landmark_frame_spin, 1, 1); grid.addWidget(self.landmark_frame_slider, 1, 2, 1, 2)
+        grid.addWidget(QLabel("Frame"), 1, 0); grid.addWidget(self.landmark_frame_spin, 1, 1); grid.addWidget(prev10_btn, 1, 2); grid.addWidget(prev1_btn, 1, 3); grid.addWidget(self.landmark_frame_slider, 2, 1, 1, 2); grid.addWidget(next1_btn, 2, 3); grid.addWidget(next10_btn, 2, 4)
         grid.addWidget(QLabel("Preset"), 2, 0); grid.addWidget(self.preset_combo, 2, 1); grid.addWidget(apply_btn, 2, 2); grid.addWidget(preview_btn, 2, 3)
         grid.addWidget(QLabel("Selected landmark indices"), 3, 0); grid.addWidget(self.landmark_text, 3, 1, 1, 2); grid.addWidget(clear_btn, 3, 3)
         layout.addWidget(group)
@@ -1166,7 +1201,7 @@ class KinematicsPipelineWindow(QMainWindow):
             "<p><b>2.</b> Choose a representative frame and click <b>Load Real Frame + MediaPipe Overlay</b>. "
             "This shows the actual patient/video frame with actual Google MediaPipe points overlaid.</p>"
             "<p><b>3.</b> Select a preset or use region quick-select. Click directly on points to add/remove landmarks.</p>"
-            "<p><b>Feedback:</b> selected points appear green and labelled. Hovering shows landmark ID and approximate region/function.</p>"
+            "<p><b>Feedback:</b> selected points have a thick green high-contrast halo and label. Unselected points have bright rims; hovering shows landmark ID and approximate region/function.</p>"
             "<p><b>Navigation:</b> use <b>Zoom to Face</b>, mouse wheel, and drag empty space to pan. If the face looks small, keep auto-zoom enabled or press Zoom to Face.</p>"
             "<p><b>Scientific note:</b> keep eye/canthus anchors for scaling, mouth/lip points for aperture/spread, and bilateral points for symmetry. Avoid points that appear unstable, occluded, or poorly detected on the real frame.</p>"
         )
@@ -1865,6 +1900,20 @@ class KinematicsPipelineWindow(QMainWindow):
                 self.landmark_video_combo.setCurrentIndex(0)
                 self._landmark_video_changed(0)
             self._log(f"Loaded {len(self._landmark_video_rows)} landmark video option(s) from {manifest}")
+
+    def _step_landmark_frame(self, delta: int) -> None:
+        """Move the selected frame by a fixed step without relying on spinbox arrows."""
+        if not hasattr(self, "landmark_frame_spin"):
+            return
+        lo = int(self.landmark_frame_spin.minimum())
+        hi = int(self.landmark_frame_spin.maximum())
+        current = int(self.landmark_frame_spin.value())
+        target = min(hi, max(lo, current + int(delta)))
+        if target == current:
+            return
+        self.landmark_frame_spin.setValue(target)
+        # If auto-reload is off, explicit frame buttons still move the controls but
+        # do not force expensive video reads. The user can press Reload Current Frame.
 
     def _landmark_slider_changed(self, value: int) -> None:
         """Synchronize the frame spinbox with the slider and optionally reload the overlay.
