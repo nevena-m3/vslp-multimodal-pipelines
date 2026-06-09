@@ -1,21 +1,27 @@
-"""VSLP Kinematics GUI scaffold and commercial workflow outline.
+"""VSLP Kinematics Pipeline GUI v0.58.
 
-This version is intentionally a polished, user-facing scaffold. It defines the
-full kinematics workflow, visual structure, recommended decision points, and
-initial lightweight backends for ingest/metadata/planning. Heavy MediaPipe and
-feature computation execution will be connected in later patches.
+This GUI intentionally mirrors the acoustic pipeline layout: left stage sidebar,
+institutional branding strip, top tabs, run log, and compact scientific workflow
+panels. Heavy MediaPipe extraction and final feature computation are connected in
+later patches; this pass establishes the production-quality outline and user flow.
 """
 
 from __future__ import annotations
 
+import json
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
+
+import pandas as pd
 
 try:
-    from PySide6.QtCore import Qt, QSize, QUrl
-    from PySide6.QtGui import QDesktopServices, QPixmap
+    from PySide6.QtCore import QObject, QThread, Qt, Signal
+    from PySide6.QtGui import QPixmap
     from PySide6.QtWidgets import (
         QApplication,
+        QAbstractItemView,
         QCheckBox,
         QComboBox,
         QFileDialog,
@@ -23,21 +29,21 @@ try:
         QGridLayout,
         QGroupBox,
         QHBoxLayout,
+        QHeaderView,
         QLabel,
         QLineEdit,
-        QListWidget,
         QMainWindow,
         QMessageBox,
-        QPushButton,
         QPlainTextEdit,
+        QProgressBar,
+        QPushButton,
         QScrollArea,
-        QSizePolicy,
         QSpinBox,
-        QStackedWidget,
+        QDoubleSpinBox,
         QTableWidget,
         QTableWidgetItem,
+        QTabWidget,
         QTextBrowser,
-        QTextEdit,
         QVBoxLayout,
         QWidget,
     )
@@ -45,8 +51,6 @@ except Exception as exc:  # pragma: no cover
     raise SystemExit(
         "PySide6 is required to launch the kinematics GUI. Install with: pip install -e '.[gui]'"
     ) from exc
-
-import pandas as pd
 
 from vslp.analysis.kinematics import (
     AGGREGATION_PROFILES,
@@ -63,815 +67,814 @@ from vslp.analysis.kinematics import (
 )
 from vslp.analysis.kinematics.schemas import DEFAULT_VIDEO_EXTENSIONS, parse_int_list
 
-APP_TITLE = "VSLP Kinematics Pipeline"
-APP_VERSION = "v0.57 outline"
-COPYRIGHT_TEXT = "© 2026 Speech Production Lab, University of Toronto. Internal research software; not a clinical diagnostic device."
-BRAND_DIR = Path(__file__).parent / "assets" / "branding"
+APP_VERSION = "v0.58"
+BRAND_DIR = Path(__file__).resolve().parent / "assets" / "branding"
 LAB_LOGO = BRAND_DIR / "lab_logo.png"
 UOFT_LOGO = BRAND_DIR / "uoft_logo.png"
 
-NAV_ITEMS = [
-    ("setup", "1  Setup / Ingest"),
-    ("metadata", "2  Metadata"),
-    ("landmarks", "3  Face Landmarks"),
-    ("selection", "4  Landmark Selection"),
-    ("normalization", "5  Normalization"),
-    ("qc", "6  Video QC"),
-    ("features", "7  Feature Computation"),
-    ("aggregation", "8  Temporal Aggregation"),
-    ("inspector", "9  Data Inspector"),
-    ("reports", "10 Reports & Outputs"),
-]
 
-WORKFLOW_STAGES = [
-    ("Setup", "Discover and structurally probe videos", "000_ingest"),
-    ("Metadata", "Link subjects, sessions, tasks, clinical labels", "001_metadata"),
-    ("Landmarks", "Extract MediaPipe Face Landmarker trajectories", "002_landmarks"),
-    ("Selection", "Choose clinically meaningful landmark subsets", "003_selection"),
-    ("Normalization", "Scale/stabilize coordinates before features", "004_normalization"),
-    ("Video QC", "Quantify landmark/visibility/acquisition quality", "005_video_qc"),
-    ("Features", "Compute frame/movement-level kinematics", "006_features"),
-    ("Aggregation", "Collapse time series transparently", "007_aggregation"),
-    ("Inspector", "Review tables, manifests, and QC evidence", "008_inspector"),
-    ("Reports", "Export reproducible package and report", "009_reports"),
-]
-
-STAGE_GUIDANCE = {
-    "setup": {
-        "purpose": "Create a reproducible inventory of all candidate videos before any transformation.",
-        "inputs": "Folder containing MP4/WebM/MOV/MKV/AVI/WMV/3GP or other supported video containers.",
-        "outputs": "video_ingest_manifest.csv/json with source paths, codec/container, fps, duration, frame count estimate, task guess, and warnings.",
-        "decision": "Confirm that expected videos are present, readable, and assigned plausible task guesses before moving on.",
-    },
-    "metadata": {
-        "purpose": "Attach participant/session/task/clinical context without requiring it for landmark extraction.",
-        "inputs": "Optional CSV/XLSX metadata table.",
-        "outputs": "Conservative link preview and metadata summary.",
-        "decision": "Verify that IDs/tasks/sessions align; unresolved metadata should be documented rather than forced.",
-    },
-    "landmarks": {
-        "purpose": "Configure the MediaPipe Face Landmarker stage and document extraction assumptions.",
-        "inputs": "Ingest manifest and optional FaceLandmarker .task model.",
-        "outputs": "landmark extraction plan, run configuration, and later per-video landmark CSVs.",
-        "decision": "Keep confidence thresholds traceable. Higher thresholds increase missing frames; lower thresholds may accept uncertain frames.",
-    },
-    "selection": {
-        "purpose": "Reduce the full face mesh to reproducible, anatomically meaningful landmark sets.",
-        "inputs": "MediaPipe landmark indices and recommended presets.",
-        "outputs": "Selected landmark list for downstream features; full landmarks remain available for audit.",
-        "decision": "Use ALS oral-motor core by default; choose broader sets for exploratory facial expressivity or hypomimia analysis.",
-    },
-    "normalization": {
-        "purpose": "Define how distances and movements are scaled so values are comparable across camera distance and face size.",
-        "inputs": "Selected anchor landmarks and normalization method.",
-        "outputs": "normalization_config.json describing the chosen coordinate policy.",
-        "decision": "Intercanthal distance is default for oral/jaw kinematics; raw normalized coordinates are audit only.",
-    },
-    "qc": {
-        "purpose": "Separate visual/acquisition problems from true facial movement signals.",
-        "inputs": "Video structural metrics, face-detected frames, landmark trajectories, illumination/pose/stability indicators.",
-        "outputs": "Video QC table, QC flags, visual-quality covariates, and interpretation notes.",
-        "decision": "QC should flag and explain risk. It should not automatically exclude videos without analyst review.",
-    },
-    "features": {
-        "purpose": "Compute interpretable kinematic signals from cleaned, normalized landmark trajectories.",
-        "inputs": "Landmark CSVs, selected landmarks, normalization configuration, QC indicators.",
-        "outputs": "Frame-level trajectories, movement-level summaries, and feature-computation audit tables.",
-        "decision": "Document which features are raw trajectories, movement-derived summaries, or exploratory outputs.",
-    },
-    "aggregation": {
-        "purpose": "Turn time-series features into one row per video while preserving clinically relevant variability.",
-        "inputs": "Frame-level and movement-level kinematic features.",
-        "outputs": "Per-video scalar feature matrix plus aggregation policy/audit.",
-        "decision": "Use robust default summaries for ML-ready exports; retain movement/time-series evidence for audit.",
-    },
-    "inspector": {
-        "purpose": "Let the analyst inspect stage outputs before trusting downstream tables.",
-        "inputs": "Any stage table or manifest created by the GUI.",
-        "outputs": "Previewed tables and opened artifacts.",
-        "decision": "Use this to detect wrong input paths, metadata mismatch, missing landmark outputs, or unexpected warnings.",
-    },
-    "reports": {
-        "purpose": "Package the run into a reproducible, SOP-aligned report.",
-        "inputs": "Stage manifests, configurations, selected presets, normalization choices, QC/feature outputs.",
-        "outputs": "HTML report, output folder, and future export bundle.",
-        "decision": "Use the report as the handoff artifact before feature-analysis/ML stages.",
-    },
-}
-
-PRESET_DESCRIPTIONS = {
-    "ALS oral-motor core 15": "Default starting set for visible oral-motor kinematics. Focuses on mouth aperture, lip spread, commissures, jaw/lower face and eye/canthus anchors for scale normalization.",
-    "Lower-face jaw/lip kinematics": "More lower-face and jaw-emphasis landmarks for mouth opening, closing, jaw excursion, and lip aperture analyses.",
-    "Lip symmetry and lateralization": "Commissure- and eye-anchor-heavy set for left/right symmetry, lateralized deviation and coordination checks.",
-    "Parkinson hypomimia / facial expressivity": "Adds brow and peri-orbital landmarks to support reduced expressivity/hypomimia-oriented exploration.",
-    "Broad audit 30": "A broader quality and feature-audit set. Useful during development, but not recommended as the first ML-ready feature subset.",
-}
+@dataclass
+class StageRecord:
+    status: str = "Not run"
+    summary_path: str | None = None
+    report_path: str | None = None
+    manifest_path: str | None = None
+    errors_path: str | None = None
 
 
-def set_app_style(app: QApplication) -> None:
-    app.setStyleSheet("""
-    QWidget { background: #F4F7FB; color: #172033; font-family: 'Segoe UI', Arial, sans-serif; font-size: 10.5pt; }
-    QMainWindow { background: #F4F7FB; }
-    QLabel#Title { font-size: 22pt; font-weight: 800; color: #10233F; }
-    QLabel#Subtitle { color: #526173; font-size: 10.5pt; line-height: 135%; }
-    QLabel#Eyebrow { color: #1769AA; font-size: 8.5pt; font-weight: 800; letter-spacing: 1px; text-transform: uppercase; }
-    QLabel#CardTitle { font-size: 12.5pt; font-weight: 800; color: #12345A; }
-    QLabel#MetricValue { font-size: 19pt; font-weight: 800; color: #12345A; }
-    QLabel#MetricLabel { font-size: 8.8pt; font-weight: 700; color: #526173; }
-    QLabel#Footer { color: #657386; font-size: 8.4pt; }
-    QFrame#Card, QGroupBox { background: #FFFFFF; border: 1px solid #DCE5F2; border-radius: 16px; padding: 12px; }
-    QFrame#MiniCard { background: #FFFFFF; border: 1px solid #DCE5F2; border-radius: 14px; padding: 10px; }
-    QFrame#StageBlock { background: #F9FBFE; border: 1px solid #DCE5F2; border-left: 5px solid #1769AA; border-radius: 14px; padding: 10px; }
-    QFrame#StageBlockDone { background: #F0F8F3; border: 1px solid #CBE8D3; border-left: 5px solid #2D9C55; border-radius: 14px; padding: 10px; }
-    QFrame#StageBlockFuture { background: #FFF9EC; border: 1px solid #F3D899; border-left: 5px solid #D69B00; border-radius: 14px; padding: 10px; }
-    QGroupBox::title { color: #12345A; font-weight: 800; subcontrol-origin: margin; left: 12px; padding: 0 6px; }
-    QPushButton { background: #FFFFFF; color: #10233F; border: 1px solid #B8C7DA; border-radius: 9px; padding: 8px 12px; font-weight: 700; }
-    QPushButton:hover { background: #EEF6FF; border-color: #78A7D8; color: #10233F; }
-    QPushButton:pressed { background: #DCEEFF; color: #10233F; }
-    QPushButton#Primary { background: #1769AA; color: #FFFFFF; border-color: #1769AA; }
-    QPushButton#Primary:hover { background: #0F5B96; color: #FFFFFF; }
-    QPushButton#Success { background: #2D9C55; color: #FFFFFF; border-color: #2D9C55; }
-    QPushButton#Success:hover { background: #248B49; color: #FFFFFF; }
-    QLineEdit, QPlainTextEdit, QTextEdit, QTextBrowser, QComboBox, QSpinBox { background: #FFFFFF; color: #172033; border: 1px solid #B8C7DA; border-radius: 8px; padding: 6px; selection-background-color: #CFE5FF; selection-color: #172033; }
-    QTextBrowser { line-height: 135%; }
-    QComboBox QAbstractItemView { background: #FFFFFF; color: #172033; selection-background-color: #D9ECFF; selection-color: #172033; border: 1px solid #B8C7DA; }
-    QTableWidget { background: #FFFFFF; alternate-background-color: #F6FAFF; gridline-color: #E1E9F3; color: #172033; selection-background-color: #D9ECFF; selection-color: #172033; border: 1px solid #DCE5F2; border-radius: 8px; }
-    QHeaderView::section { background: #EAF1F8; color: #10233F; border: 0px; border-right: 1px solid #D2DEEA; padding: 6px; font-weight: 800; }
-    QListWidget#Nav { background: #10233F; color: #DDEBFA; border: 0px; padding: 8px; font-weight: 650; }
-    QListWidget#Nav::item { padding: 11px 12px; border-radius: 8px; margin: 3px; }
-    QListWidget#Nav::item:selected { background: #1E78BE; color: #FFFFFF; }
-    QListWidget#Nav::item:hover { background: #193756; color: #FFFFFF; }
-    QScrollArea { border: 0px; background: #F4F7FB; }
-    QMessageBox { background: #FFFFFF; color: #172033; }
-    QMessageBox QLabel { background: #FFFFFF; color: #172033; }
-    QMessageBox QPushButton { background: #FFFFFF; color: #172033; border: 1px solid #B8C7DA; border-radius: 8px; padding: 7px 14px; }
-    """)
+class Worker(QObject):
+    started = Signal(str)
+    finished = Signal(str, object)
+    failed = Signal(str, str)
+    message = Signal(str)
 
-
-class Card(QFrame):
-    def __init__(self, title: str | None = None, subtitle: str | None = None):
+    def __init__(self, name: str, func: Callable, kwargs: dict):
         super().__init__()
-        self.setObjectName("Card")
-        self.layout = QVBoxLayout(self)
-        self.layout.setSpacing(10)
-        if title:
-            lab = QLabel(title)
-            lab.setObjectName("CardTitle")
-            lab.setWordWrap(True)
-            self.layout.addWidget(lab)
-        if subtitle:
-            sub = QLabel(subtitle)
-            sub.setObjectName("Subtitle")
-            sub.setWordWrap(True)
-            self.layout.addWidget(sub)
+        self.name = name
+        self.func = func
+        self.kwargs = kwargs
+
+    def run(self) -> None:
+        self.started.emit(self.name)
+        self.message.emit(f"Starting {self.name}...")
+        try:
+            result = self.func(**self.kwargs)
+        except Exception as exc:  # noqa: BLE001
+            import traceback
+
+            self.failed.emit(self.name, f"{exc}\n\n{traceback.format_exc()}")
+            return
+        self.message.emit(f"Finished {self.name}.")
+        self.finished.emit(self.name, result)
 
 
-class KinematicsGUI(QMainWindow):
-    def __init__(self):
+class KinematicsPipelineWindow(QMainWindow):
+    def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle(APP_TITLE)
-        self.resize(1540, 940)
+        self.setWindowTitle("VSLP - Kinematics Pipeline")
+        self.resize(1480, 900)
+        self.setMinimumSize(1180, 760)
+
         self.input_root: Path | None = None
         self.output_root: Path | None = None
         self.ingest_manifest_csv: Path | None = None
         self.metadata_path: Path | None = None
         self.last_report_html: Path | None = None
-        self.landmark_indices = LANDMARK_PRESETS["ALS oral-motor core 15"]
+        self.landmark_indices: tuple[int, ...] = LANDMARK_PRESETS["ALS oral-motor core 15"]
+        self._thread: QThread | None = None
+        self._worker: Worker | None = None
 
-        root = QWidget()
-        self.setCentralWidget(root)
-        main = QHBoxLayout(root)
-        main.setContentsMargins(0, 0, 0, 0)
-        main.setSpacing(0)
-
-        self.nav = QListWidget()
-        self.nav.setObjectName("Nav")
-        self.nav.setFixedWidth(260)
-        for _, label in NAV_ITEMS:
-            self.nav.addItem(label)
-        main.addWidget(self.nav)
-
-        self.stack = QStackedWidget()
-        main.addWidget(self.stack, 1)
-        self.pages = {
-            "setup": self._setup_page(),
-            "metadata": self._metadata_page(),
-            "landmarks": self._landmarks_page(),
-            "selection": self._selection_page(),
-            "normalization": self._normalization_page(),
-            "qc": self._qc_page(),
-            "features": self._features_page(),
-            "aggregation": self._aggregation_page(),
-            "inspector": self._inspector_page(),
-            "reports": self._reports_page(),
+        self.stage_records: dict[str, StageRecord] = {
+            "project": StageRecord(),
+            "metadata": StageRecord(),
+            "ingest": StageRecord(),
+            "landmarks": StageRecord(),
+            "selection": StageRecord(),
+            "normalization": StageRecord(),
+            "qc": StageRecord(),
+            "features": StageRecord(),
+            "aggregation": StageRecord(),
+            "reports": StageRecord(),
         }
-        for key, _ in NAV_ITEMS:
-            self.stack.addWidget(self.pages[key])
-        self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
-        self.nav.setCurrentRow(0)
+        self._build_ui()
+        self._refresh_stage_cards()
 
-    # ------------------------------------------------------------------
-    # Shared UI helpers
-    # ------------------------------------------------------------------
-    def _logo(self, path: Path, fallback: str, width: int = 138, height: int = 52) -> QLabel:
-        lab = QLabel()
-        lab.setFixedSize(width, height)
-        lab.setAlignment(Qt.AlignCenter)
-        if path.exists():
-            pix = QPixmap(str(path))
-            if not pix.isNull():
-                lab.setPixmap(pix.scaled(QSize(width, height), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-                return lab
-        lab.setText(fallback)
-        lab.setStyleSheet("font-weight:800;color:#12345A;background:#FFFFFF;border:1px solid #DCE5F2;border-radius:8px;")
-        return lab
+    # ---------------------------- UI BUILD ----------------------------
+    def _build_ui(self) -> None:
+        central = QWidget()
+        self.setCentralWidget(central)
+        root = QHBoxLayout(central)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(16)
 
-    def _page(self, title: str, subtitle: str, key: str) -> QWidget:
-        outer = QWidget()
-        outer_lay = QVBoxLayout(outer)
-        outer_lay.setContentsMargins(0, 0, 0, 0)
-        outer_lay.setSpacing(0)
+        sidebar = QFrame()
+        sidebar.setObjectName("Sidebar")
+        sidebar.setFixedWidth(260)
+        side_layout = QVBoxLayout(sidebar)
+        side_layout.setContentsMargins(12, 12, 12, 12)
+        side_layout.setSpacing(7)
+
+        title = QLabel("VSLP")
+        title.setObjectName("AppTitleLabel")
+        subtitle = QLabel(f"Kinematics Pipeline GUI {APP_VERSION}")
+        subtitle.setObjectName("SubtitleLabel")
+        ip_notice = QLabel(
+            "© 2026 Nevena Musikic & Yana Yunusova\n"
+            "Speech Production Lab, University of Toronto"
+        )
+        ip_notice.setObjectName("IPNoticeLabel")
+        ip_notice.setWordWrap(True)
+        side_layout.addWidget(title)
+        side_layout.addWidget(subtitle)
+        side_layout.addWidget(ip_notice)
+
+        self.stage_labels: dict[str, QLabel] = {}
+        self.stage_cards: dict[str, QFrame] = {}
+        for key, label in [
+            ("project", "Project"),
+            ("metadata", "Metadata"),
+            ("ingest", "Ingest"),
+            ("landmarks", "Face Landmarks"),
+            ("selection", "Landmark Selection"),
+            ("normalization", "Normalization"),
+            ("qc", "Video QC"),
+            ("features", "Feature Computation"),
+            ("aggregation", "Temporal Aggregation"),
+            ("reports", "Reports"),
+        ]:
+            card = QFrame()
+            card.setObjectName("Card")
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(9, 7, 9, 7)
+            label_widget = QLabel(label)
+            label_widget.setStyleSheet("font-weight: 700;")
+            status_lbl = QLabel("Not run")
+            status_lbl.setObjectName("SubtitleLabel")
+            card_layout.addWidget(label_widget)
+            card_layout.addWidget(status_lbl)
+            card.setMaximumHeight(62)
+            self.stage_labels[key] = status_lbl
+            self.stage_cards[key] = card
+            side_layout.addWidget(card)
+
+        side_layout.addStretch(1)
+        self.refresh_outputs_btn = QPushButton("Refresh Latest Outputs")
+        self.refresh_outputs_btn.clicked.connect(self.refresh_latest_outputs)
+        side_layout.addWidget(self.refresh_outputs_btn)
+
+        self.run_all_btn = QPushButton("Run Full Kinematics Workflow")
+        self.run_all_btn.setObjectName("RunButton")
+        self.run_all_btn.clicked.connect(self.run_all)
+        side_layout.addWidget(self.run_all_btn)
+
+        self.open_output_btn = QPushButton("Open Output Project Folder")
+        self.open_output_btn.setObjectName("OpenButton")
+        self.open_output_btn.clicked.connect(self.open_output_root)
+        side_layout.addWidget(self.open_output_btn)
+        root.addWidget(sidebar)
+
+        main_col = QVBoxLayout()
+        main_col.setSpacing(16)
+        main_col.addWidget(self._build_branding_bar())
+
+        self.tabs = QTabWidget()
+        self.tabs.setUsesScrollButtons(True)
+        self.tabs.setElideMode(Qt.ElideRight)
+        self.tabs.addTab(self._build_setup_tab(), "Setup")
+        self.tabs.addTab(self._build_metadata_tab(), "Metadata")
+        self.tabs.addTab(self._build_landmarks_tab(), "Landmarks")
+        self.tabs.addTab(self._build_selection_tab(), "Landmark Selection")
+        self.tabs.addTab(self._build_normalization_tab(), "Normalization")
+        self.tabs.addTab(self._build_qc_tab(), "Video QC")
+        self.tabs.addTab(self._build_features_tab(), "Features")
+        self.tabs.addTab(self._build_aggregation_tab(), "Aggregation")
+        self.tabs.addTab(self._build_inspector_tab(), "Inspector")
+        self.tabs.addTab(self._build_reports_tab(), "Reports & Outputs")
+        main_col.addWidget(self.tabs, stretch=1)
+
+        log_group = QGroupBox("Run Log")
+        log_layout = QVBoxLayout(log_group)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.log_box = QPlainTextEdit()
+        self.log_box.setReadOnly(True)
+        self.log_box.setMinimumHeight(90)
+        self.log_box.setMaximumHeight(125)
+        log_layout.addWidget(self.progress)
+        log_layout.addWidget(self.log_box)
+        log_group.setMaximumHeight(180)
+        main_col.addWidget(log_group)
+        root.addLayout(main_col, stretch=1)
+
+    def _build_branding_bar(self) -> QFrame:
+        bar = QFrame()
+        bar.setObjectName("BrandingBar")
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(12, 8, 12, 8)
+        layout.setSpacing(12)
+        label = QLabel("VSLP Kinematics Pipeline")
+        label.setObjectName("BrandingTitle")
+        layout.addWidget(label)
+        layout.addStretch(1)
+        layout.addWidget(self._logo_or_text(LAB_LOGO, "Speech Production Lab", max_width=210, max_height=56))
+        layout.addWidget(self._logo_or_text(UOFT_LOGO, "University of Toronto", max_width=250, max_height=54))
+        bar.setMaximumHeight(76)
+        return bar
+
+    def _logo_or_text(self, logo_path: Path, fallback: str, max_width: int = 170, max_height: int = 42) -> QLabel:
+        widget = QLabel()
+        widget.setObjectName("LogoPlaceholder")
+        widget.setAlignment(Qt.AlignCenter)
+        widget.setMinimumWidth(min(max_width, 220))
+        widget.setMaximumWidth(max_width)
+        widget.setMaximumHeight(max_height)
+        if logo_path.exists():
+            pixmap = QPixmap(str(logo_path))
+            if not pixmap.isNull():
+                widget.setObjectName("LogoImage")
+                widget.setPixmap(pixmap.scaled(max_width, max_height, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                widget.setToolTip(str(logo_path))
+                return widget
+        widget.setText(fallback)
+        widget.setToolTip(f"Optional logo file not found: {logo_path}")
+        return widget
+
+    # ---------------------------- HELPERS ----------------------------
+    def _info_panel(self, title: str, body: str) -> QFrame:
+        panel = QFrame()
+        panel.setObjectName("InfoPanel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(14, 12, 14, 12)
+        title_label = QLabel(title)
+        title_label.setObjectName("InfoTitle")
+        body_label = QLabel(body)
+        body_label.setObjectName("InfoBody")
+        body_label.setWordWrap(True)
+        panel.setMaximumHeight(118)
+        layout.addWidget(title_label)
+        layout.addWidget(body_label)
+        return panel
+
+    def _scrollable(self, content: QWidget) -> QWidget:
+        wrapper = QWidget()
+        outer = QVBoxLayout(wrapper)
+        outer.setContentsMargins(0, 0, 0, 0)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        content = QWidget()
-        lay = QVBoxLayout(content)
-        lay.setContentsMargins(28, 22, 28, 22)
-        lay.setSpacing(14)
+        scroll.setFrameShape(QFrame.NoFrame)
         scroll.setWidget(content)
-        outer_lay.addWidget(scroll, 1)
+        outer.addWidget(scroll)
+        return wrapper
 
-        header = Card()
-        header_l = QHBoxLayout()
-        header_l.setContentsMargins(0, 0, 0, 0)
-        left = QVBoxLayout()
-        eyebrow = QLabel(f"{APP_TITLE} · {APP_VERSION}")
-        eyebrow.setObjectName("Eyebrow")
-        t = QLabel(title)
-        t.setObjectName("Title")
-        s = QLabel(subtitle)
-        s.setObjectName("Subtitle")
-        s.setWordWrap(True)
-        left.addWidget(eyebrow)
-        left.addWidget(t)
-        left.addWidget(s)
-        header_l.addLayout(left, 1)
-        header_l.addWidget(self._logo(LAB_LOGO, "SPL", 120, 52))
-        header_l.addWidget(self._logo(UOFT_LOGO, "UofT", 142, 52))
-        header.layout.addLayout(header_l)
-        lay.addWidget(header)
+    def _set_tooltip(self, widget: QWidget, text: str) -> None:
+        widget.setToolTip(text)
 
-        guide = self._guidance_card(key)
-        if guide:
-            lay.addWidget(guide)
-        outer.body = lay  # type: ignore[attr-defined]
-        return outer
-
-    def _guidance_card(self, key: str) -> Card | None:
-        info = STAGE_GUIDANCE.get(key)
-        if not info:
+    def _path_or_warn(self, edit: QLineEdit, label: str) -> Path | None:
+        text = edit.text().strip()
+        if not text:
+            QMessageBox.warning(self, "Missing path", f"Please select {label}.")
             return None
-        card = Card("Stage objective and decision rule")
-        grid = QGridLayout()
-        labels = [
-            ("Purpose", info["purpose"]),
-            ("Inputs", info["inputs"]),
-            ("Outputs", info["outputs"]),
-            ("Decision", info["decision"]),
-        ]
-        for r, (lab, txt) in enumerate(labels):
-            h = QLabel(lab)
-            h.setObjectName("Eyebrow")
-            h.setFixedWidth(110)
-            v = QLabel(txt)
-            v.setWordWrap(True)
-            grid.addWidget(h, r, 0, Qt.AlignTop)
-            grid.addWidget(v, r, 1)
-        card.layout.addLayout(grid)
-        return card
+        return Path(text).expanduser().resolve()
 
-    def _workflow_graphic(self) -> Card:
-        card = Card("Commercial workflow outline", "The kinematics GUI is organized as a controlled, reproducible pipeline. Early stages inventory and annotate videos; middle stages extract/normalize landmarks and compute features; final stages aggregate, inspect, and report results.")
-        grid = QGridLayout()
-        grid.setHorizontalSpacing(8)
-        grid.setVerticalSpacing(8)
-        for i, (name, desc, folder) in enumerate(WORKFLOW_STAGES):
-            block = QFrame()
-            block.setObjectName("StageBlockDone" if i <= 4 else "StageBlockFuture")
-            bl = QVBoxLayout(block)
-            bl.setContentsMargins(8, 8, 8, 8)
-            n = QLabel(f"{i+1}. {name}")
-            n.setStyleSheet("font-weight:800;color:#10233F;background:transparent;")
-            d = QLabel(desc)
-            d.setWordWrap(True)
-            d.setStyleSheet("color:#526173;background:transparent;font-size:9pt;")
-            f = QLabel(folder)
-            f.setStyleSheet("color:#1769AA;background:transparent;font-size:8.5pt;font-weight:700;")
-            bl.addWidget(n)
-            bl.addWidget(d)
-            bl.addWidget(f)
-            grid.addWidget(block, i // 5, i % 5)
-        card.layout.addLayout(grid)
-        note = QLabel("Green blocks are scaffolded and ready for configuration. Gold blocks are outlined now and will receive full backends in staged patches. This preserves the same professional development pattern used for the acoustic GUI.")
-        note.setWordWrap(True)
-        note.setObjectName("Subtitle")
-        card.layout.addWidget(note)
-        return card
+    def _log(self, message: str) -> None:
+        self.log_box.appendPlainText(message)
 
-    def _metric_card(self, label: str, value: str, note: str = "") -> QFrame:
-        f = QFrame()
-        f.setObjectName("MiniCard")
-        lay = QVBoxLayout(f)
-        lay.setSpacing(3)
-        v = QLabel(value)
-        v.setObjectName("MetricValue")
-        l = QLabel(label)
-        l.setObjectName("MetricLabel")
-        l.setWordWrap(True)
-        lay.addWidget(v)
-        lay.addWidget(l)
-        if note:
-            n = QLabel(note)
-            n.setWordWrap(True)
-            n.setObjectName("Subtitle")
-            lay.addWidget(n)
-        return f
+    def _stage_status_text(self, status: str) -> str:
+        if status in {"completed", "detected"}:
+            return f"● {status}"
+        if status == "completed_with_warnings":
+            return "● completed with warnings"
+        if status == "failed":
+            return "● failed"
+        if status == "running":
+            return "● running"
+        return f"○ {status}"
 
-    def _rich_text(self, html: str, minimum_height: int = 150) -> QTextBrowser:
-        box = QTextBrowser()
-        box.setOpenExternalLinks(True)
-        box.setMinimumHeight(minimum_height)
-        box.setHtml(html)
-        return box
+    def _refresh_stage_cards(self) -> None:
+        for key, record in self.stage_records.items():
+            if key in self.stage_labels:
+                self.stage_labels[key].setText(self._stage_status_text(record.status))
 
-    def _path_row(self, label: str, line: QLineEdit, callback) -> QWidget:
-        w = QWidget()
-        row = QHBoxLayout(w)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.addWidget(QLabel(label))
-        row.addWidget(line, 1)
-        btn = QPushButton("Browse…")
-        btn.clicked.connect(callback)
-        row.addWidget(btn)
-        return w
-
-    def _table(self) -> QTableWidget:
-        tbl = QTableWidget()
-        tbl.setAlternatingRowColors(True)
-        tbl.setSortingEnabled(True)
-        tbl.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        return tbl
-
-    def _fill_table(self, table: QTableWidget, df: pd.DataFrame, max_rows: int = 1000) -> None:
-        table.setSortingEnabled(False)
-        show = df.head(max_rows).copy()
-        table.setRowCount(len(show))
-        table.setColumnCount(len(show.columns))
-        table.setHorizontalHeaderLabels([str(c) for c in show.columns])
-        for r in range(len(show)):
-            for c, col in enumerate(show.columns):
-                table.setItem(r, c, QTableWidgetItem("" if pd.isna(show.iloc[r, c]) else str(show.iloc[r, c])))
+    def _fill_table(self, table: QTableWidget, df: pd.DataFrame, max_rows: int = 300) -> None:
+        if df is None or df.empty:
+            table.setRowCount(0)
+            table.setColumnCount(0)
+            return
+        df = df.head(max_rows).copy()
+        table.setColumnCount(len(df.columns))
+        table.setHorizontalHeaderLabels([str(c) for c in df.columns])
+        table.setRowCount(len(df))
+        for r, (_, row) in enumerate(df.iterrows()):
+            for c, value in enumerate(row):
+                item = QTableWidgetItem("" if pd.isna(value) else str(value))
+                table.setItem(r, c, item)
         table.resizeColumnsToContents()
-        table.setSortingEnabled(True)
+        table.horizontalHeader().setStretchLastSection(True)
 
-    # ------------------------------------------------------------------
-    # Setup / ingest
-    # ------------------------------------------------------------------
-    def _choose_input(self):
-        d = QFileDialog.getExistingDirectory(self, "Select folder containing videos")
-        if d:
-            self.input_root = Path(d)
-            self.input_line.setText(d)
+    # ---------------------------- TABS ----------------------------
+    def _build_setup_tab(self) -> QWidget:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setSpacing(12)
 
-    def _choose_output(self):
-        d = QFileDialog.getExistingDirectory(self, "Select output folder")
-        if d:
-            self.output_root = Path(d)
-            self.output_line.setText(d)
+        paths_group = QGroupBox("Project setup")
+        form = QGridLayout(paths_group)
+        self.input_edit = QLineEdit()
+        self.output_edit = QLineEdit()
+        self.project_name_edit = QLineEdit("VSLP Kinematics Project")
+        self.task_name_edit = QLineEdit()
+        self.task_name_edit.setPlaceholderText("e.g., Bamboo passage video, DDK-pa, DDK-pataka, smile, mouth open-close")
+        self._set_tooltip(self.input_edit, "Folder containing raw participant videos. Subfolders are searched recursively.")
+        self._set_tooltip(self.output_edit, "Root folder where VSLP writes kinematics outputs: tables, reports, logs, manifests, and future artifacts.")
+        self._set_tooltip(self.task_name_edit, "Optional task label used as fallback when filename/folder parsing is inconclusive.")
+        browse_in = QPushButton("Browse Input Folder")
+        browse_in.clicked.connect(self.browse_input_dir)
+        browse_out = QPushButton("Browse Output Folder")
+        browse_out.clicked.connect(self.browse_output_dir)
+        form.addWidget(QLabel("Input video folder"), 0, 0)
+        form.addWidget(self.input_edit, 0, 1)
+        form.addWidget(browse_in, 0, 2)
+        form.addWidget(QLabel("Output project folder"), 1, 0)
+        form.addWidget(self.output_edit, 1, 1)
+        form.addWidget(browse_out, 1, 2)
+        form.addWidget(QLabel("Project name"), 2, 0)
+        form.addWidget(self.project_name_edit, 2, 1, 1, 2)
+        form.addWidget(QLabel("Task being analyzed"), 3, 0)
+        form.addWidget(self.task_name_edit, 3, 1, 1, 2)
+        task_hint = QLabel("Examples: Bamboo passage video, DDK-pa, DDK-pataka, smile, mouth opening/closing, facial expression task")
+        task_hint.setObjectName("SubtitleLabel")
+        task_hint.setWordWrap(True)
+        form.addWidget(task_hint, 4, 1, 1, 2)
 
-    def _setup_page(self) -> QWidget:
-        page = self._page("Setup / Ingest", "Select a video folder, recursively discover supported video containers, probe structural video properties, and create an ingest manifest. Videos are read in place; they are not copied or converted at this stage.", "setup")
-        page.body.addWidget(self._workflow_graphic())  # type: ignore[attr-defined]
-        card = Card("Input / output", "Use a study-level folder when possible. The scanner accepts broad video formats and recursively preserves relative paths.")
-        self.input_line = QLineEdit()
-        self.output_line = QLineEdit()
-        card.layout.addWidget(self._path_row("Video folder", self.input_line, self._choose_input))
-        card.layout.addWidget(self._path_row("Output folder", self.output_line, self._choose_output))
-        opts = QHBoxLayout()
-        self.recursive_check = QCheckBox("Search subfolders recursively")
-        self.recursive_check.setChecked(True)
-        self.ext_line = QLineEdit(", ".join(sorted(DEFAULT_VIDEO_EXTENSIONS)))
-        opts.addWidget(self.recursive_check)
-        opts.addWidget(QLabel("Extensions"))
-        opts.addWidget(self.ext_line, 1)
-        card.layout.addLayout(opts)
-        run = QPushButton("Run Video Ingest")
-        run.setObjectName("Primary")
-        run.clicked.connect(self._run_ingest)
-        card.layout.addWidget(run)
-        page.body.addWidget(card)  # type: ignore[attr-defined]
+        workflow_group = QGroupBox("2. Project gate")
+        workflow_layout = QVBoxLayout(workflow_group)
+        btn_row = QHBoxLayout()
+        self.init_project_btn = QPushButton("Initialize Project")
+        self.init_project_btn.setObjectName("RunButton")
+        self.init_project_btn.clicked.connect(self.run_project_init)
+        self.ingest_btn = QPushButton("Run Video Ingest")
+        self.ingest_btn.clicked.connect(self.run_ingest_stage)
+        btn_row.addWidget(self.init_project_btn)
+        btn_row.addWidget(self.ingest_btn)
+        workflow_layout.addLayout(btn_row)
 
-        self.ingest_summary = QTextEdit()
-        self.ingest_summary.setReadOnly(True)
-        self.ingest_table = self._table()
-        page.body.addWidget(self.ingest_summary)
-        page.body.addWidget(self.ingest_table, 1)
-        return page
+        ingest_group = QGroupBox("3. Ingest summary")
+        ingest_layout = QVBoxLayout(ingest_group)
+        self.ingest_summary_label = QLabel("No ingest results yet.")
+        self.ingest_summary_label.setWordWrap(True)
+        self.ingest_summary_label.setObjectName("SubtitleLabel")
+        ingest_layout.addWidget(self.ingest_summary_label)
+        self.ingest_format_table = QTableWidget(0, 4)
+        self.ingest_format_table.setHorizontalHeaderLabels(["Detected format", "Video codec", "Resolution", "Files"])
+        self.ingest_format_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.ingest_format_table.setMaximumHeight(170)
+        self.ingest_format_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.ingest_format_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        ingest_layout.addWidget(self.ingest_format_table)
 
-    def _run_ingest(self):
-        try:
-            self.input_root = Path(self.input_line.text()).expanduser()
-            self.output_root = Path(self.output_line.text()).expanduser()
-            exts = frozenset(
-                e.strip().lower() if e.strip().startswith(".") else f".{e.strip().lower()}"
-                for e in self.ext_line.text().split(",")
-                if e.strip()
-            )
-            res = run_ingest(
-                VideoIngestConfig(
-                    input_root=self.input_root,
-                    output_root=self.output_root,
-                    recursive=self.recursive_check.isChecked(),
-                    extensions=exts,
-                )
-            )
-            self.ingest_manifest_csv = Path(res["manifest_csv"])
-            df = pd.read_csv(self.ingest_manifest_csv)
-            self._fill_table(self.ingest_table, df)
-            warnings = int((df.get("warning", pd.Series(dtype=str)).fillna("") != "").sum()) if len(df) else 0
-            self.ingest_summary.setText(
-                f"Ingest complete.\n\n"
-                f"Videos discovered: {res['n_videos']}\n"
-                f"Probe warnings: {warnings}\n"
-                f"Manifest: {self.ingest_manifest_csv}\n\n"
-                "Next: review warnings, then load metadata if available. Broad format support is intentional because browser recordings may arrive as WebM, MP4, MOV, MKV, AVI, WMV, or other containers."
-            )
-        except Exception as e:
-            QMessageBox.critical(self, "Ingest failed", str(e))
+        layout.addWidget(paths_group)
+        layout.addWidget(workflow_group)
+        layout.addWidget(ingest_group)
+        layout.addStretch(1)
+        return self._scrollable(container)
 
-    # ------------------------------------------------------------------
-    # Metadata
-    # ------------------------------------------------------------------
-    def _metadata_page(self) -> QWidget:
-        page = self._page("Metadata", "Load optional participant/session/task/clinical metadata and create a conservative link preview. This mirrors the acoustic GUI metadata philosophy: metadata is helpful but not required for landmark extraction.", "metadata")
-        card = Card("Metadata file", "Metadata should be linked conservatively. Ambiguous joins are reported rather than silently forced.")
-        self.metadata_line = QLineEdit()
-        card.layout.addWidget(self._path_row("CSV/XLSX metadata", self.metadata_line, self._choose_metadata))
-        btn = QPushButton("Load and Link Metadata Preview")
-        btn.setObjectName("Primary")
-        btn.clicked.connect(self._link_metadata)
-        card.layout.addWidget(btn)
-        page.body.addWidget(card)  # type: ignore[attr-defined]
+    def _build_metadata_tab(self) -> QWidget:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.addWidget(self._info_panel(
+            "Info",
+            "Metadata is optional for landmark extraction but essential for later linkage to subject, session, task, diagnosis, severity, and visit structure. The GUI links conservatively and never forces uncertain matches.",
+        ))
+        group = QGroupBox("Demographics / metadata CSV or XLSX")
+        grid = QGridLayout(group)
+        self.metadata_edit = QLineEdit()
+        self.metadata_edit.setPlaceholderText("optional metadata table; CSV/XLSX supported")
+        browse_btn = QPushButton("Browse Metadata")
+        browse_btn.clicked.connect(self.browse_metadata_file)
+        grid.addWidget(QLabel("Metadata file"), 0, 0)
+        grid.addWidget(self.metadata_edit, 0, 1)
+        grid.addWidget(browse_btn, 0, 2)
+        layout.addWidget(group)
+        required = QPlainTextEdit()
+        required.setReadOnly(True)
+        required.setMaximumHeight(130)
+        required.setPlainText(
+            "Recommended metadata: subject_id, session_id, visit/date, task, diagnosis/group, severity, video filename, device/camera if available.\n\n"
+            "Outputs will include metadata link preview, unmatched videos, unused metadata row samples, and a conservative linkage summary."
+        )
+        layout.addWidget(required)
+        run_btn = QPushButton("Run Metadata Linking")
+        run_btn.setObjectName("RunButton")
+        run_btn.clicked.connect(self.run_metadata_stage)
+        layout.addWidget(run_btn)
+        layout.addStretch(1)
+        return self._scrollable(container)
 
-        help_card = Card("Recommended metadata fields")
-        help_card.layout.addWidget(self._rich_text("""
-        <ul>
-          <li><b>Participant/session keys:</b> subject_id, session_id, visit, recording_date.</li>
-          <li><b>Task labels:</b> Bamboo passage, DDK, smile, mouth open/close, sustained posture, other task-specific labels.</li>
-          <li><b>Clinical context:</b> diagnosis, ALSFRS-R total, ALSFRS-R bulbar, severity bins, medication state when relevant.</li>
-          <li><b>Acquisition context:</b> device, camera type, platform/browser, external webcam indicator, environment notes.</li>
-        </ul>
-        """, 145))
-        page.body.addWidget(help_card)  # type: ignore[attr-defined]
-
-        self.metadata_summary = QTextEdit()
-        self.metadata_summary.setReadOnly(True)
-        self.metadata_table = self._table()
-        page.body.addWidget(self.metadata_summary)
-        page.body.addWidget(self.metadata_table, 1)
-        return page
-
-    def _choose_metadata(self):
-        f, _ = QFileDialog.getOpenFileName(self, "Select metadata CSV/XLSX", filter="Data files (*.csv *.xlsx *.xls)")
-        if f:
-            self.metadata_path = Path(f)
-            self.metadata_line.setText(f)
-
-    def _link_metadata(self):
-        try:
-            if not self.ingest_manifest_csv:
-                raise RuntimeError("Run Setup / Ingest first.")
-            if not self.metadata_line.text():
-                raise RuntimeError("Select a metadata file first.")
-            res = link_metadata(self.ingest_manifest_csv, Path(self.metadata_line.text()), self.output_root or Path.cwd())
-            df = pd.read_csv(res["link_preview"])
-            self._fill_table(self.metadata_table, df)
-            self.metadata_summary.setText(f"Metadata rows: {res['n_metadata_rows']}\nLink mode: {res['link_mode']}\nPreview: {res['link_preview']}")
-        except Exception as e:
-            QMessageBox.critical(self, "Metadata failed", str(e))
-
-    # ------------------------------------------------------------------
-    # Face landmarks
-    # ------------------------------------------------------------------
-    def _landmarks_page(self) -> QWidget:
-        page = self._page("Face Landmarks", "Configure Google MediaPipe Face Landmarker extraction. This scaffold records the run plan now; full extraction will be connected to the uploaded MediaPipe runner in the next patch.", "landmarks")
-        card = Card("MediaPipe configuration", "The GUI records all thresholds and model paths so landmark outputs are reproducible and auditable.")
-        self.model_line = QLineEdit()
-        card.layout.addWidget(self._path_row("FaceLandmarker .task model", self.model_line, self._choose_model))
-        grid = QGridLayout()
-        self.det_conf = QSpinBox(); self.det_conf.setRange(1, 99); self.det_conf.setValue(50); self.det_conf.setSuffix(" %")
-        self.pres_conf = QSpinBox(); self.pres_conf.setRange(1, 99); self.pres_conf.setValue(50); self.pres_conf.setSuffix(" %")
-        self.track_conf = QSpinBox(); self.track_conf.setRange(1, 99); self.track_conf.setValue(50); self.track_conf.setSuffix(" %")
-        grid.addWidget(QLabel("Detection confidence threshold"), 0, 0); grid.addWidget(self.det_conf, 0, 1)
-        grid.addWidget(QLabel("Presence confidence threshold"), 1, 0); grid.addWidget(self.pres_conf, 1, 1)
-        grid.addWidget(QLabel("Tracking confidence threshold"), 2, 0); grid.addWidget(self.track_conf, 2, 1)
-        card.layout.addLayout(grid)
-        card.layout.addWidget(self._rich_text("<b>Quality note.</b> " + mediapipe_capability_note(), 120))
+    def _build_landmarks_tab(self) -> QWidget:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.addWidget(self._info_panel(
+            "Info",
+            "This stage will run Google MediaPipe Face Landmarker over each accepted video and write per-frame 3D facial landmarks. Frames with no detected face are preserved as missing data rather than silently dropped.",
+        ))
+        group = QGroupBox("MediaPipe Face Landmarker configuration")
+        form = QGridLayout(group)
+        self.model_path_edit = QLineEdit("models/face_landmarker.task")
+        self.detection_conf_spin = QDoubleSpinBox(); self.detection_conf_spin.setRange(0.0, 1.0); self.detection_conf_spin.setSingleStep(0.05); self.detection_conf_spin.setValue(0.50)
+        self.presence_conf_spin = QDoubleSpinBox(); self.presence_conf_spin.setRange(0.0, 1.0); self.presence_conf_spin.setSingleStep(0.05); self.presence_conf_spin.setValue(0.50)
+        self.tracking_conf_spin = QDoubleSpinBox(); self.tracking_conf_spin.setRange(0.0, 1.0); self.tracking_conf_spin.setSingleStep(0.05); self.tracking_conf_spin.setValue(0.50)
+        browse_model = QPushButton("Browse Model")
+        browse_model.clicked.connect(self.browse_model_file)
+        form.addWidget(QLabel("FaceLandmarker .task model"), 0, 0)
+        form.addWidget(self.model_path_edit, 0, 1)
+        form.addWidget(browse_model, 0, 2)
+        form.addWidget(QLabel("Detection confidence"), 1, 0); form.addWidget(self.detection_conf_spin, 1, 1)
+        form.addWidget(QLabel("Presence confidence"), 2, 0); form.addWidget(self.presence_conf_spin, 2, 1)
+        form.addWidget(QLabel("Tracking confidence"), 3, 0); form.addWidget(self.tracking_conf_spin, 3, 1)
+        layout.addWidget(group)
+        note = QPlainTextEdit(); note.setReadOnly(True); note.setMaximumHeight(135)
+        note.setPlainText(mediapipe_capability_note())
+        layout.addWidget(note)
         btn = QPushButton("Write Landmark Extraction Plan")
-        btn.setObjectName("Primary")
-        btn.clicked.connect(self._write_landmark_plan)
-        card.layout.addWidget(btn)
-        page.body.addWidget(card)  # type: ignore[attr-defined]
+        btn.setObjectName("RunButton")
+        btn.clicked.connect(self.run_landmark_plan_stage)
+        layout.addWidget(btn)
+        layout.addStretch(1)
+        return self._scrollable(container)
 
-        pipeline = Card("Landmark extraction output contract")
-        pipeline.layout.addWidget(self._rich_text("""
-        <p>Expected future output for each accepted video:</p>
-        <ul>
-          <li><code>&lt;video_id&gt;-lmks.csv</code> containing frame, timestamp, face_detected, and x/y/z for each face landmark.</li>
-          <li>Frames with no detected face remain in the table as missing coordinates; they are not silently dropped.</li>
-          <li>Missing-frame burden, long gaps, tracking jumps, and interpolation burden will feed Video QC.</li>
-        </ul>
-        """, 145))
-        page.body.addWidget(pipeline)  # type: ignore[attr-defined]
+    def _build_selection_tab(self) -> QWidget:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.addWidget(self._info_panel(
+            "Info",
+            "Select the landmark subset that will drive default kinematic feature computation. Full MediaPipe landmarks remain available for audit; this page defines the default scientific subset.",
+        ))
+        group = QGroupBox("Landmark preset selection")
+        grid = QGridLayout(group)
+        self.preset_combo = QComboBox(); self.preset_combo.addItems(list(LANDMARK_PRESETS.keys()))
+        self.preset_combo.currentTextChanged.connect(self.apply_landmark_preset)
+        self.landmark_text = QPlainTextEdit(); self.landmark_text.setMaximumHeight(95)
+        self.landmark_text.setPlainText(", ".join(map(str, self.landmark_indices)))
+        apply_btn = QPushButton("Apply Selected Landmarks")
+        apply_btn.setObjectName("RunButton")
+        apply_btn.clicked.connect(self.run_selection_stage)
+        grid.addWidget(QLabel("Preset"), 0, 0); grid.addWidget(self.preset_combo, 0, 1); grid.addWidget(apply_btn, 0, 2)
+        grid.addWidget(QLabel("Selected landmark indices"), 1, 0); grid.addWidget(self.landmark_text, 1, 1, 1, 2)
+        layout.addWidget(group)
+        self.preset_table = QTableWidget(0, 3)
+        self.preset_table.setHorizontalHeaderLabels(["Preset", "N landmarks", "Indices"])
+        rows = []
+        for name, vals in LANDMARK_PRESETS.items():
+            rows.append({"Preset": name, "N landmarks": len(vals), "Indices": ", ".join(map(str, vals))})
+        self._fill_table(self.preset_table, pd.DataFrame(rows), max_rows=20)
+        layout.addWidget(self.preset_table)
+        layout.addStretch(1)
+        return self._scrollable(container)
 
-        self.landmark_summary = QTextEdit()
-        self.landmark_summary.setReadOnly(True)
-        self.landmark_table = self._table()
-        page.body.addWidget(self.landmark_summary)
-        page.body.addWidget(self.landmark_table, 1)
-        return page
+    def _build_normalization_tab(self) -> QWidget:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.addWidget(self._info_panel(
+            "Info",
+            "Normalization defines how coordinates and distances are scaled. Intercanthal distance is the default starting point for oral/jaw kinematics because it reduces camera-distance effects while staying anatomically interpretable.",
+        ))
+        group = QGroupBox("Normalization policy")
+        grid = QGridLayout(group)
+        self.norm_combo = QComboBox(); self.norm_combo.addItems(list(NORMALIZATION_METHODS.keys()))
+        self.norm_combo.setCurrentText("intercanthal_distance")
+        self.norm_desc = QLabel(NORMALIZATION_METHODS["intercanthal_distance"]); self.norm_desc.setWordWrap(True); self.norm_desc.setObjectName("SubtitleLabel")
+        self.norm_combo.currentTextChanged.connect(lambda name: self.norm_desc.setText(NORMALIZATION_METHODS.get(name, "")))
+        self.head_stabilize_check = QCheckBox("Enable future head-pose stabilization placeholder")
+        self.head_stabilize_check.setChecked(False)
+        btn = QPushButton("Write Normalization Config")
+        btn.setObjectName("RunButton"); btn.clicked.connect(self.run_normalization_stage)
+        grid.addWidget(QLabel("Method"), 0, 0); grid.addWidget(self.norm_combo, 0, 1); grid.addWidget(btn, 0, 2)
+        grid.addWidget(QLabel("Interpretation"), 1, 0); grid.addWidget(self.norm_desc, 1, 1, 1, 2)
+        grid.addWidget(QLabel("Head stabilization"), 2, 0); grid.addWidget(self.head_stabilize_check, 2, 1, 1, 2)
+        layout.addWidget(group)
+        self.norm_table = QTableWidget(0, 2)
+        self.norm_table.setHorizontalHeaderLabels(["Method", "Use / caution"])
+        self._fill_table(self.norm_table, pd.DataFrame([{"Method": k, "Use / caution": v} for k, v in NORMALIZATION_METHODS.items()]), max_rows=30)
+        layout.addWidget(self.norm_table)
+        layout.addStretch(1)
+        return self._scrollable(container)
 
-    def _choose_model(self):
-        f, _ = QFileDialog.getOpenFileName(self, "Select MediaPipe FaceLandmarker model", filter="MediaPipe model (*.task);;All files (*.*)")
-        if f:
-            self.model_line.setText(f)
+    def _build_qc_tab(self) -> QWidget:
+        container = QWidget(); layout = QVBoxLayout(container)
+        layout.addWidget(self._info_panel(
+            "Info",
+            "Video QC will separate visual/acquisition problems from facial motor signal. For now this page defines the QC taxonomy that will be quantified after landmark extraction is connected.",
+        ))
+        qc_rows = [
+            ("Decode / container QC", "Unreadable files, fps problems, duration/frame-count inconsistencies, codec/container warnings."),
+            ("Face visibility QC", "Face-detected fraction, long no-face gaps, partial face visibility, occlusion risk."),
+            ("Pose / head-motion QC", "Head rotation, large translations, off-axis views, pose instability."),
+            ("Illumination QC", "Low light, overexposure, flicker, contrast instability."),
+            ("Landmark stability QC", "Tracking jitter, coordinate jumps, interpolation burden, landmark dropout."),
+            ("Task / adherence QC", "Wrong task, failed repetition structure, mouth hidden, off-screen movement, non-target behavior."),
+        ]
+        table = QTableWidget(0, 2); table.setHorizontalHeaderLabels(["QC family", "What it will measure"])
+        self._fill_table(table, pd.DataFrame(qc_rows, columns=["QC family", "What it will measure"]), max_rows=20)
+        layout.addWidget(table)
+        btn = QPushButton("Write Video QC Placeholder")
+        btn.setObjectName("RunButton"); btn.clicked.connect(self.run_qc_placeholder)
+        layout.addWidget(btn)
+        layout.addStretch(1)
+        return self._scrollable(container)
 
-    def _write_landmark_plan(self):
+    def _build_features_tab(self) -> QWidget:
+        container = QWidget(); layout = QVBoxLayout(container)
+        layout.addWidget(self._info_panel(
+            "Info",
+            "Feature computation will convert cleaned, normalized landmark trajectories into mouth/jaw/lip movement features. This stage will plug in the uploaded computation scripts in later patches.",
+        ))
+        rows = [
+            ("Trajectory cleaning", "Interpolate missing frames, remove outliers, smooth trajectories."),
+            ("Geometry", "Mouth aperture, lip spread, jaw/lip distances, symmetry and lateralization."),
+            ("Kinematics", "Velocity, acceleration, path length, range of motion, timing of movement segments."),
+            ("Movement segmentation", "Open/close repetitions or task-specific movement windows."),
+            ("Audit outputs", "Per-video feature manifest, flags, configuration and computation policy."),
+        ]
+        table = QTableWidget(0, 2); table.setHorizontalHeaderLabels(["Feature layer", "Planned computation"])
+        self._fill_table(table, pd.DataFrame(rows, columns=["Feature layer", "Planned computation"]), max_rows=20)
+        layout.addWidget(table)
+        btn = QPushButton("Write Feature Computation Placeholder")
+        btn.setObjectName("RunButton"); btn.clicked.connect(self.run_features_placeholder)
+        layout.addWidget(btn)
+        layout.addStretch(1)
+        return self._scrollable(container)
+
+    def _build_aggregation_tab(self) -> QWidget:
+        container = QWidget(); layout = QVBoxLayout(container)
+        layout.addWidget(self._info_panel(
+            "Info",
+            "Frame-level features are time series. Temporal aggregation defines how to create one scalar feature row per video without hiding the policy used to collapse movement over time.",
+        ))
+        group = QGroupBox("Temporal aggregation profile")
+        grid = QGridLayout(group)
+        self.agg_combo = QComboBox(); self.agg_combo.addItems(list(AGGREGATION_PROFILES.keys()))
+        self.agg_combo.setCurrentText("robust_default")
+        self.agg_desc = QLabel(AGGREGATION_PROFILES["robust_default"]); self.agg_desc.setWordWrap(True); self.agg_desc.setObjectName("SubtitleLabel")
+        self.agg_combo.currentTextChanged.connect(lambda name: self.agg_desc.setText(AGGREGATION_PROFILES.get(name, "")))
+        btn = QPushButton("Write Aggregation Plan")
+        btn.setObjectName("RunButton"); btn.clicked.connect(self.run_aggregation_placeholder)
+        grid.addWidget(QLabel("Aggregation profile"), 0, 0); grid.addWidget(self.agg_combo, 0, 1); grid.addWidget(btn, 0, 2)
+        grid.addWidget(QLabel("Interpretation"), 1, 0); grid.addWidget(self.agg_desc, 1, 1, 1, 2)
+        layout.addWidget(group)
+        table = QTableWidget(0, 2); table.setHorizontalHeaderLabels(["Profile", "Recommended use"])
+        self._fill_table(table, pd.DataFrame([{"Profile": k, "Recommended use": v} for k, v in AGGREGATION_PROFILES.items()]), max_rows=20)
+        layout.addWidget(table)
+        layout.addStretch(1)
+        return self._scrollable(container)
+
+    def _build_inspector_tab(self) -> QWidget:
+        container = QWidget(); layout = QVBoxLayout(container)
+        layout.addWidget(self._info_panel("Info", "Preview the current kinematics stage tables and manifests before trusting downstream outputs."))
+        btn_row = QHBoxLayout()
+        refresh = QPushButton("Refresh Inspector")
+        refresh.clicked.connect(self.refresh_inspector)
+        open_out = QPushButton("Open Output Project Folder")
+        open_out.clicked.connect(self.open_output_root)
+        btn_row.addWidget(refresh); btn_row.addWidget(open_out); btn_row.addStretch(1)
+        layout.addLayout(btn_row)
+        self.inspector_label = QLabel("No table loaded yet."); self.inspector_label.setObjectName("SubtitleLabel")
+        layout.addWidget(self.inspector_label)
+        self.inspector_table = QTableWidget(0, 0)
+        self.inspector_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.inspector_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        layout.addWidget(self.inspector_table)
+        return self._scrollable(container)
+
+    def _build_reports_tab(self) -> QWidget:
+        container = QWidget(); layout = QVBoxLayout(container)
+        layout.addWidget(self._info_panel("Info", "Create a reproducible kinematics workflow report and open output artifacts."))
+        btn_row = QHBoxLayout()
+        create = QPushButton("Create Scaffold Report")
+        create.setObjectName("RunButton"); create.clicked.connect(self.run_report_stage)
+        open_report = QPushButton("Open HTML Report")
+        open_report.clicked.connect(self.open_report)
+        open_folder = QPushButton("Open Output Project Folder")
+        open_folder.clicked.connect(self.open_output_root)
+        btn_row.addWidget(create); btn_row.addWidget(open_report); btn_row.addWidget(open_folder); btn_row.addStretch(1)
+        layout.addLayout(btn_row)
+        self.report_box = QTextBrowser(); self.report_box.setMinimumHeight(340)
+        self.report_box.setHtml("<b>No report generated yet.</b><br>Run the report stage after configuring the workflow outline.")
+        layout.addWidget(self.report_box)
+        return self._scrollable(container)
+
+    # ---------------------------- ACTIONS ----------------------------
+    def browse_input_dir(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Select input video folder")
+        if path:
+            self.input_edit.setText(path); self.input_root = Path(path)
+
+    def browse_output_dir(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, "Select output project folder")
+        if path:
+            self.output_edit.setText(path); self.output_root = Path(path)
+
+    def browse_metadata_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Select metadata file", filter="Tables (*.csv *.xlsx *.xls);;All files (*.*)")
+        if path:
+            self.metadata_edit.setText(path); self.metadata_path = Path(path)
+
+    def browse_model_file(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Select MediaPipe FaceLandmarker model", filter="MediaPipe task (*.task);;All files (*.*)")
+        if path:
+            self.model_path_edit.setText(path)
+
+    def run_project_init(self) -> None:
+        out = self._path_or_warn(self.output_edit, "an output project folder")
+        if out is None:
+            return
+        self.output_root = out
+        project_dir = out / "kinematics"
+        for sub in ["000_ingest", "001_metadata", "002_landmarks", "003_selection", "004_normalization", "005_video_qc", "006_features", "007_aggregation", "008_inspector", "009_reports"]:
+            (project_dir / sub).mkdir(parents=True, exist_ok=True)
+        manifest = project_dir / "project_manifest.json"
+        manifest.write_text(json.dumps({"project_name": self.project_name_edit.text(), "task": self.task_name_edit.text(), "schema": "vslp_kinematics_project_v0.58"}, indent=2), encoding="utf-8")
+        self.stage_records["project"] = StageRecord(status="completed", manifest_path=str(manifest))
+        self._refresh_stage_cards()
+        self._log(f"Initialized kinematics project: {project_dir}")
+
+    def run_ingest_stage(self) -> None:
+        inp = self._path_or_warn(self.input_edit, "an input video folder")
+        out = self._path_or_warn(self.output_edit, "an output project folder")
+        if inp is None or out is None:
+            return
+        self.input_root, self.output_root = inp, out
+        cfg = VideoIngestConfig(input_root=inp, output_root=out, recursive=True, extensions=DEFAULT_VIDEO_EXTENSIONS)
         try:
-            if not self.ingest_manifest_csv:
-                raise RuntimeError("Run Setup / Ingest first.")
-            cfg = LandmarkRunConfig(
-                manifest_csv=self.ingest_manifest_csv,
-                output_root=self.output_root or Path.cwd(),
-                model_path=Path(self.model_line.text()) if self.model_line.text() else None,
-                selected_preset=self.preset_combo.currentText() if hasattr(self, "preset_combo") else "ALS oral-motor core 15",
-                selected_indices=self.landmark_indices,
-                min_face_detection_confidence=self.det_conf.value() / 100,
-                min_face_presence_confidence=self.pres_conf.value() / 100,
-                min_tracking_confidence=self.track_conf.value() / 100,
-            )
-            res = write_landmark_plan(cfg)
-            df = pd.read_csv(res["plan_csv"])
-            self._fill_table(self.landmark_table, df)
-            self.landmark_summary.setText(f"Landmark plan written for {res['n_videos']} videos.\nPlan: {res['plan_csv']}\nConfig: {res['config_json']}")
-        except Exception as e:
-            QMessageBox.critical(self, "Landmark planning failed", str(e))
+            res = run_ingest(cfg)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Ingest failed", str(exc)); return
+        self.ingest_manifest_csv = Path(res["manifest_csv"])
+        self.stage_records["ingest"] = StageRecord(status="completed", manifest_path=str(self.ingest_manifest_csv))
+        self._refresh_stage_cards()
+        self._log(f"Video ingest completed: {res['n_videos']} video(s).")
+        self._load_ingest_summary()
 
-    # ------------------------------------------------------------------
-    # Landmark selection
-    # ------------------------------------------------------------------
-    def _selection_page(self) -> QWidget:
-        page = self._page("Landmark Selection", "Select a clinically meaningful subset of face landmarks for downstream kinematic features. The full landmark CSV remains available for audit; selected sets control feature computation defaults.", "selection")
-        card = Card("Landmark preset", "Choose a validated starting configuration, then manually edit landmark indices only when the protocol requires it.")
-        self.preset_combo = QComboBox()
-        self.preset_combo.addItems(list(LANDMARK_PRESETS.keys()))
-        self.preset_combo.currentTextChanged.connect(self._preset_changed)
-        card.layout.addWidget(QLabel("Recommended configurations"))
-        card.layout.addWidget(self.preset_combo)
-        self.preset_info = self._rich_text(PRESET_DESCRIPTIONS[self.preset_combo.currentText()], 90)
-        card.layout.addWidget(self.preset_info)
-        self.landmark_text = QPlainTextEdit()
-        self.landmark_text.setPlainText(", ".join(map(str, self.landmark_indices)))
-        card.layout.addWidget(QLabel("Selected landmark indices"))
-        card.layout.addWidget(self.landmark_text)
-        row = QHBoxLayout()
-        apply = QPushButton("Use These Landmarks")
-        apply.setObjectName("Primary")
-        apply.clicked.connect(self._apply_landmark_text)
-        row.addWidget(apply)
-        row.addStretch(1)
-        card.layout.addLayout(row)
-        page.body.addWidget(card)  # type: ignore[attr-defined]
+    def _load_ingest_summary(self) -> None:
+        if not self.ingest_manifest_csv or not self.ingest_manifest_csv.exists():
+            return
+        df = pd.read_csv(self.ingest_manifest_csv)
+        self.ingest_summary_label.setText(f"{len(df)} candidate videos detected. Formats/codecs/resolutions summarized below.")
+        if not df.empty:
+            tmp = df.copy()
+            tmp["Resolution"] = tmp["width"].fillna(0).astype(int).astype(str) + " × " + tmp["height"].fillna(0).astype(int).astype(str)
+            grouped = tmp.groupby(["extension", "codec_name", "Resolution"], dropna=False).size().reset_index(name="Files")
+            grouped.columns = ["Detected format", "Video codec", "Resolution", "Files"]
+            self._fill_table(self.ingest_format_table, grouped, max_rows=60)
 
-        preset_card = Card("Preset comparison")
-        df = pd.DataFrame([
-            {"preset": k, "n_landmarks": len(v), "indices": ", ".join(map(str, v)), "recommended_use": PRESET_DESCRIPTIONS.get(k, "")}
-            for k, v in LANDMARK_PRESETS.items()
-        ])
-        self.preset_table = self._table()
-        self._fill_table(self.preset_table, df)
-        preset_card.layout.addWidget(self.preset_table)
-        page.body.addWidget(preset_card, 1)  # type: ignore[attr-defined]
-        return page
+    def run_metadata_stage(self) -> None:
+        if not self.ingest_manifest_csv or not self.ingest_manifest_csv.exists():
+            QMessageBox.warning(self, "Missing ingest", "Run video ingest before metadata linking."); return
+        meta = Path(self.metadata_edit.text()).expanduser().resolve() if self.metadata_edit.text().strip() else None
+        try:
+            out = link_metadata(self.ingest_manifest_csv, meta, Path(self.output_edit.text()).expanduser().resolve())
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Metadata failed", str(exc)); return
+        self.stage_records["metadata"] = StageRecord(status="completed", manifest_path=str(out))
+        self._refresh_stage_cards(); self._log(f"Metadata link preview written: {out}")
 
-    def _preset_changed(self, name: str):
-        self.landmark_indices = LANDMARK_PRESETS[name]
-        self.landmark_text.setPlainText(", ".join(map(str, self.landmark_indices)))
-        if hasattr(self, "preset_info"):
-            self.preset_info.setHtml(PRESET_DESCRIPTIONS.get(name, ""))
+    def apply_landmark_preset(self, name: str) -> None:
+        vals = LANDMARK_PRESETS.get(name, ())
+        self.landmark_text.setPlainText(", ".join(map(str, vals)))
 
-    def _apply_landmark_text(self):
+    def _landmark_config(self) -> LandmarkRunConfig:
+        return LandmarkRunConfig(
+            model_path=self.model_path_edit.text().strip() or "models/face_landmarker.task",
+            selected_landmarks=parse_int_list(self.landmark_text.toPlainText()),
+            min_face_detection_confidence=float(self.detection_conf_spin.value()),
+            min_face_presence_confidence=float(self.presence_conf_spin.value()),
+            min_tracking_confidence=float(self.tracking_conf_spin.value()),
+            normalization_method=self.norm_combo.currentText() if hasattr(self, "norm_combo") else "intercanthal_distance",
+        )
+
+    def run_landmark_plan_stage(self) -> None:
+        out = self._path_or_warn(self.output_edit, "an output project folder")
+        if out is None:
+            return
+        cfg = self._landmark_config()
+        path = write_landmark_plan(out, cfg)
+        self.stage_records["landmarks"] = StageRecord(status="completed", manifest_path=str(path))
+        self._refresh_stage_cards(); self._log(f"Landmark extraction plan written: {path}")
+
+    def run_selection_stage(self) -> None:
         try:
             self.landmark_indices = parse_int_list(self.landmark_text.toPlainText())
-            QMessageBox.information(self, "Landmarks updated", f"Selected {len(self.landmark_indices)} unique landmarks.")
-        except Exception as e:
-            QMessageBox.critical(self, "Invalid landmarks", str(e))
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "Invalid landmarks", str(exc)); return
+        out = self._path_or_warn(self.output_edit, "an output project folder")
+        if out:
+            path = out / "kinematics" / "003_selection" / "tables" / "selected_landmarks.json"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({"selected_landmarks": list(self.landmark_indices), "preset": self.preset_combo.currentText()}, indent=2), encoding="utf-8")
+            self.stage_records["selection"] = StageRecord(status="completed", manifest_path=str(path))
+            self._refresh_stage_cards(); self._log(f"Selected {len(self.landmark_indices)} landmarks: {path}")
 
-    # ------------------------------------------------------------------
-    # Normalization
-    # ------------------------------------------------------------------
-    def _normalization_page(self) -> QWidget:
-        page = self._page("Normalization", "Choose how frame-level landmark coordinates should be scaled/stabilized before feature computation. Intercanthal normalization is the recommended default for mouth/jaw kinematics.", "normalization")
-        card = Card("Normalization method", "Normalization is not cosmetic: it defines the measurement scale for all downstream kinematic features.")
-        self.norm_combo = QComboBox()
-        self.norm_combo.addItems(list(NORMALIZATION_METHODS.keys()))
-        self.norm_desc = self._rich_text(NORMALIZATION_METHODS[self.norm_combo.currentText()], 100)
-        self.norm_combo.currentTextChanged.connect(lambda n: self.norm_desc.setHtml(NORMALIZATION_METHODS[n]))
-        card.layout.addWidget(self.norm_combo)
-        card.layout.addWidget(self.norm_desc)
-        btn = QPushButton("Save Normalization Config")
-        btn.setObjectName("Primary")
-        btn.clicked.connect(self._save_norm)
-        card.layout.addWidget(btn)
-        page.body.addWidget(card)  # type: ignore[attr-defined]
-
-        method_card = Card("Method comparison")
-        norm_df = pd.DataFrame([{"method": k, "interpretation": v} for k, v in NORMALIZATION_METHODS.items()])
-        self.norm_table = self._table()
-        self._fill_table(self.norm_table, norm_df)
-        method_card.layout.addWidget(self.norm_table)
-        page.body.addWidget(method_card, 1)  # type: ignore[attr-defined]
-        return page
-
-    def _save_norm(self):
-        try:
-            path = write_normalization_config(self.output_root or Path.cwd(), self.norm_combo.currentText())
-            QMessageBox.information(self, "Normalization saved", f"Saved: {path}")
-        except Exception as e:
-            QMessageBox.critical(self, "Save failed", str(e))
-
-    # ------------------------------------------------------------------
-    # Video QC outline
-    # ------------------------------------------------------------------
-    def _qc_page(self) -> QWidget:
-        page = self._page("Video QC", "Planned multidimensional video/landmark QC. This will parallel acoustic QC but for visual acquisition and landmark-tracking validity.", "qc")
-        card = Card("Video QC families", "These families convert raw tracking problems into interpretable covariates and flags.")
-        qc_df = pd.DataFrame([
-            {"QC family": "Decode/container", "What it checks": "unreadable videos, variable fps, corrupted frames, duration mismatch", "Why it matters": "bad timing or missing frames distort derivatives and aggregation"},
-            {"QC family": "Face visibility", "What it checks": "no-face frames, long gaps, partial face, occlusion, off-screen face", "Why it matters": "missing landmarks drive interpolation and feature loss"},
-            {"QC family": "Pose/head motion", "What it checks": "excessive yaw/pitch/roll, rapid head movement, unstable camera", "Why it matters": "2D/3D landmark distances can change due to pose rather than articulator movement"},
-            {"QC family": "Illumination", "What it checks": "underexposure, overexposure, flicker, shadows, low contrast", "Why it matters": "landmark detection and stability can degrade under poor lighting"},
-            {"QC family": "Landmark stability", "What it checks": "jitter, impossible jumps, asymmetric tracking failure, high interpolation burden", "Why it matters": "movement features may reflect tracking noise"},
-            {"QC family": "Task/adherence", "What it checks": "wrong task, face not visible during target movement, non-target events", "Why it matters": "feature interpretation depends on correct task context"},
-        ])
-        self.qc_outline_table = self._table()
-        self._fill_table(self.qc_outline_table, qc_df)
-        card.layout.addWidget(self.qc_outline_table)
-        page.body.addWidget(card, 1)  # type: ignore[attr-defined]
-        return page
-
-    # ------------------------------------------------------------------
-    # Feature computation outline
-    # ------------------------------------------------------------------
-    def _features_page(self) -> QWidget:
-        page = self._page("Feature Computation", "Planned frame-level and movement-level kinematic feature computation. Your uploaded scripts will be connected here: cleaning, smoothing, movement segmentation, geometry, kinematic derivatives, and per-frame timeseries export.", "features")
-        card = Card("Feature computation families")
-        feature_df = pd.DataFrame([
-            {"family": "Mouth opening / jaw displacement", "examples": "vertical lower-lip/jaw displacement, aperture range", "primary signal": "normalized distance trajectory"},
-            {"family": "Lip spread / aspect ratio", "examples": "horizontal spread, vertical-to-horizontal aperture ratio", "primary signal": "commissure and lip aperture geometry"},
-            {"family": "Jaw lateralization", "examples": "left/right jaw deviation ratio", "primary signal": "distance to eye/canthus anchors"},
-            {"family": "Lip symmetry / coordination", "examples": "left-right commissure symmetry, cross-correlation", "primary signal": "paired lateral trajectories"},
-            {"family": "Kinematic derivatives", "examples": "velocity, acceleration, path length, range of motion", "primary signal": "time derivative of cleaned trajectories"},
-            {"family": "Movement segmentation", "examples": "opening/closing cycles, peak/trough windows", "primary signal": "task-specific repetitive motion"},
-        ])
-        self.feature_outline_table = self._table()
-        self._fill_table(self.feature_outline_table, feature_df)
-        card.layout.addWidget(self.feature_outline_table)
-        page.body.addWidget(card, 1)  # type: ignore[attr-defined]
-
-        guard = Card("Scientific guardrails")
-        guard.layout.addWidget(self._rich_text("""
-        <ul>
-          <li>Frame-level trajectories are not scalar biomarkers until cleaning, normalization, QC review, feature computation, and aggregation are documented.</li>
-          <li>Velocity and acceleration are highly sensitive to fps, smoothing, tracking jitter, and interpolation burden.</li>
-          <li>Movement-segmented features should only be used for tasks with interpretable repeated movements.</li>
-          <li>Feature computation should always export provenance: selected landmarks, normalization, smoothing, segmentation settings, and aggregation policy.</li>
-        </ul>
-        """, 150))
-        page.body.addWidget(guard)  # type: ignore[attr-defined]
-        return page
-
-    # ------------------------------------------------------------------
-    # Aggregation outline
-    # ------------------------------------------------------------------
-    def _aggregation_page(self) -> QWidget:
-        page = self._page("Temporal Aggregation", "Choose how frame-level kinematic timeseries are collapsed into one scalar row per video without hiding clinically meaningful variability.", "aggregation")
-        card = Card("Aggregation profile", "A scalar feature table is useful, but the collapse policy must be explicit because facial kinematics are naturally time-varying.")
-        self.agg_combo = QComboBox()
-        self.agg_combo.addItems(list(AGGREGATION_PROFILES.keys()))
-        self.agg_desc = self._rich_text(AGGREGATION_PROFILES[self.agg_combo.currentText()], 95)
-        self.agg_combo.currentTextChanged.connect(lambda n: self.agg_desc.setHtml(AGGREGATION_PROFILES[n]))
-        card.layout.addWidget(self.agg_combo)
-        card.layout.addWidget(self.agg_desc)
-        page.body.addWidget(card)  # type: ignore[attr-defined]
-
-        agg_card = Card("Aggregation strategy comparison")
-        agg_df = pd.DataFrame([{"profile": k, "description": v} for k, v in AGGREGATION_PROFILES.items()])
-        self.agg_table = self._table()
-        self._fill_table(self.agg_table, agg_df)
-        agg_card.layout.addWidget(self.agg_table)
-        page.body.addWidget(agg_card, 1)  # type: ignore[attr-defined]
-        return page
-
-    # ------------------------------------------------------------------
-    # Inspector / reports
-    # ------------------------------------------------------------------
-    def _inspector_page(self) -> QWidget:
-        page = self._page("Data Inspector", "Open and inspect stage outputs. This lightweight first version focuses on ingest, metadata, and landmark planning tables.", "inspector")
-        card = Card("Table preview")
-        row = QHBoxLayout()
-        btn_ing = QPushButton("Preview ingest manifest")
-        btn_ing.clicked.connect(lambda: self._preview_csv(self.ingest_manifest_csv))
-        btn_land = QPushButton("Preview landmark plan")
-        btn_land.clicked.connect(self._preview_landmark_plan)
-        row.addWidget(btn_ing)
-        row.addWidget(btn_land)
-        row.addStretch(1)
-        card.layout.addLayout(row)
-        self.inspect_table = self._table()
-        card.layout.addWidget(self.inspect_table)
-        page.body.addWidget(card, 1)  # type: ignore[attr-defined]
-        return page
-
-    def _preview_csv(self, path: Path | None):
-        if not path or not Path(path).exists():
-            QMessageBox.warning(self, "No table", "The requested table does not exist yet.")
+    def run_normalization_stage(self) -> None:
+        out = self._path_or_warn(self.output_edit, "an output project folder")
+        if out is None:
             return
-        self._fill_table(self.inspect_table, pd.read_csv(path))
+        path = write_normalization_config(out, self.norm_combo.currentText())
+        self.stage_records["normalization"] = StageRecord(status="completed", manifest_path=str(path))
+        self._refresh_stage_cards(); self._log(f"Normalization config written: {path}")
 
-    def _preview_landmark_plan(self):
-        if not self.output_root:
-            QMessageBox.warning(self, "No output", "Select an output folder first.")
+    def _write_placeholder(self, stage_key: str, rel: str, payload: dict, message: str) -> None:
+        out = self._path_or_warn(self.output_edit, "an output project folder")
+        if out is None:
             return
-        candidates = sorted((self.output_root / "kinematics" / "002_landmarks" / "tables").glob("landmark_extraction_plan.csv"))
-        self._preview_csv(candidates[0] if candidates else None)
+        path = out / "kinematics" / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        self.stage_records[stage_key] = StageRecord(status="completed", manifest_path=str(path))
+        self._refresh_stage_cards(); self._log(f"{message}: {path}")
 
-    def _reports_page(self) -> QWidget:
-        page = self._page("Reports & Outputs", "Create an initial HTML scaffold report and open the output folder. Full reports will expand as each kinematic computation stage is implemented.", "reports")
-        card = Card("Report actions")
-        row = QHBoxLayout()
-        b1 = QPushButton("Create Scaffold Report")
-        b1.setObjectName("Primary")
-        b1.clicked.connect(self._write_report)
-        b2 = QPushButton("Open HTML Report")
-        b2.clicked.connect(self._open_report)
-        b3 = QPushButton("Open Output Folder")
-        b3.clicked.connect(self._open_output)
-        row.addWidget(b1)
-        row.addWidget(b2)
-        row.addWidget(b3)
-        row.addStretch(1)
-        card.layout.addLayout(row)
-        self.report_text = QTextEdit()
-        self.report_text.setReadOnly(True)
-        card.layout.addWidget(self.report_text)
-        page.body.addWidget(card)  # type: ignore[attr-defined]
+    def run_qc_placeholder(self) -> None:
+        self._write_placeholder("qc", "005_video_qc/tables/video_qc_plan.json", {"status": "placeholder", "families": ["decode", "face_visibility", "pose", "illumination", "landmark_stability", "task_adherence"]}, "Video QC plan written")
 
-        doc = Card("Commercial/document-control notes")
-        doc.layout.addWidget(self._rich_text(f"""
-        <p><b>Copyright / ownership.</b> {COPYRIGHT_TEXT}</p>
-        <p><b>Intended use.</b> The kinematics GUI is a research workflow for video-based facial/oral kinematic feature preparation. It does not provide clinical diagnosis or automated clinical decision-making.</p>
-        <p><b>Reproducibility.</b> Every implemented stage should write configuration, manifest, and provenance files before downstream analysis.</p>
-        <p><b>Next backend milestones.</b> MediaPipe extraction, landmark/video QC, feature computation, aggregation/export, and then integration with the already completed Feature Analysis GUI.</p>
-        """, 190))
-        page.body.addWidget(doc)  # type: ignore[attr-defined]
-        return page
+    def run_features_placeholder(self) -> None:
+        self._write_placeholder("features", "006_features/tables/feature_computation_plan.json", {"status": "placeholder", "selected_landmarks": list(self.landmark_indices)}, "Feature computation plan written")
 
-    def _write_report(self):
-        try:
-            self.last_report_html = write_scaffold_report(self.output_root or Path.cwd())
-            self.report_text.setText(f"Report written:\n{self.last_report_html}")
-            QMessageBox.information(self, "Report complete", f"Report written:\n{self.last_report_html}")
-        except Exception as e:
-            QMessageBox.critical(self, "Report failed", str(e))
+    def run_aggregation_placeholder(self) -> None:
+        self._write_placeholder("aggregation", "007_aggregation/tables/aggregation_plan.json", {"profile": self.agg_combo.currentText(), "description": AGGREGATION_PROFILES.get(self.agg_combo.currentText(), "")}, "Aggregation plan written")
 
-    def _open_report(self):
+    def refresh_inspector(self) -> None:
+        out_text = self.output_edit.text().strip()
+        if not out_text:
+            return
+        root = Path(out_text) / "kinematics"
+        candidates = sorted(root.glob("**/*.csv"), key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
+        if not candidates:
+            self.inspector_label.setText("No CSV outputs found yet."); self.inspector_table.setRowCount(0); self.inspector_table.setColumnCount(0); return
+        path = candidates[0]
+        df = pd.read_csv(path)
+        self.inspector_label.setText(f"Previewing latest CSV: {path}")
+        self._fill_table(self.inspector_table, df, max_rows=300)
+
+    def run_report_stage(self) -> None:
+        out = self._path_or_warn(self.output_edit, "an output project folder")
+        if out is None:
+            return
+        report = write_scaffold_report(out)
+        self.last_report_html = report
+        self.stage_records["reports"] = StageRecord(status="completed", report_path=str(report))
+        self._refresh_stage_cards()
+        self.report_box.setHtml(report.read_text(encoding="utf-8"))
+        self._log(f"Kinematics report written: {report}")
+
+    def refresh_latest_outputs(self) -> None:
+        self._load_ingest_summary()
+        self.refresh_inspector()
+        self._log("Refreshed latest kinematics outputs.")
+
+    def open_output_root(self) -> None:
+        path_text = self.output_edit.text().strip()
+        if not path_text:
+            QMessageBox.information(self, "No output folder", "Select an output folder first."); return
+        path = Path(path_text).expanduser().resolve()
+        path.mkdir(parents=True, exist_ok=True)
+        import webbrowser
+        webbrowser.open(path.as_uri())
+
+    def open_report(self) -> None:
         if self.last_report_html and self.last_report_html.exists():
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.last_report_html)))
+            import webbrowser
+            webbrowser.open(self.last_report_html.as_uri())
         else:
-            QMessageBox.warning(self, "No report", "Create the scaffold report first.")
+            QMessageBox.information(self, "No report", "Create the report first.")
 
-    def _open_output(self):
-        path = self.output_root or Path.cwd()
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+    def run_all(self) -> None:
+        self.run_project_init()
+        self.run_ingest_stage()
+        self.run_metadata_stage()
+        self.run_landmark_plan_stage()
+        self.run_selection_stage()
+        self.run_normalization_stage()
+        self.run_qc_placeholder()
+        self.run_features_placeholder()
+        self.run_aggregation_placeholder()
+        self.run_report_stage()
 
 
-def main() -> int:
-    app = QApplication(sys.argv)
-    set_app_style(app)
-    win = KinematicsGUI()
+def launch_kinematics_gui() -> int:
+    app = QApplication.instance() or QApplication(sys.argv)
+    app.setApplicationName("VSLP")
+    try:
+        from vslp.gui.theme import build_dark_stylesheet
+        app.setStyleSheet(build_dark_stylesheet())
+    except Exception:
+        # Fallback mirrors the acoustic dark theme closely enough if the shared theme is unavailable.
+        app.setStyleSheet(
+            """
+            QWidget { background: #071727; color: #D8E8F8; font-family: 'Segoe UI', Arial, sans-serif; font-size: 10pt; }
+            QFrame#Sidebar { background: #0E253A; border: 1px solid #1B3A57; border-radius: 10px; }
+            QLabel#AppTitleLabel { font-size: 24pt; font-weight: 900; color: #FFFFFF; }
+            QLabel#SubtitleLabel, QLabel#IPNoticeLabel { color: #AFC8DE; font-size: 8.5pt; }
+            QFrame#Card, QGroupBox { background: #0C2033; border: 1px solid #1B3A57; border-radius: 8px; }
+            QFrame#BrandingBar { background: #F6F8FB; border-radius: 10px; }
+            QLabel#BrandingTitle { color: #06213A; font-weight: 800; }
+            QPushButton { background: #1D6791; color: white; border: 1px solid #2E7DAA; border-radius: 6px; padding: 7px 10px; font-weight: 700; }
+            QPushButton#RunButton { background: #16896F; }
+            QPushButton#OpenButton { background: #415A75; }
+            QLineEdit, QPlainTextEdit, QTextBrowser, QComboBox, QSpinBox, QDoubleSpinBox { background: #0B1D2E; color: #E7F3FF; border: 1px solid #244B6C; border-radius: 5px; padding: 5px; }
+            QTableWidget { background: #0B1D2E; color: #E7F3FF; gridline-color: #244B6C; selection-background-color: #254D70; selection-color: white; }
+            QHeaderView::section { background: #183B59; color: #FFFFFF; padding: 6px; border: 1px solid #244B6C; }
+            QTabWidget::pane { border: 1px solid #244B6C; }
+            QTabBar::tab { background: #102A42; color: #D8E8F8; padding: 8px 13px; border-top-left-radius: 5px; border-top-right-radius: 5px; }
+            QTabBar::tab:selected { background: #1D6791; color: #FFFFFF; }
+            """
+        )
+    win = KinematicsPipelineWindow()
     win.show()
     return app.exec()
 
 
-if __name__ == "__main__":
+def main() -> int:
+    return launch_kinematics_gui()
+
+
+if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(main())
