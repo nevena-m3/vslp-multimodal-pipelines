@@ -12,6 +12,8 @@ from .mediapipe_runtime import (
     DEFAULT_EXPECTED_LANDMARKS,
     FACE_LANDMARKER_MODEL_URL,
     download_face_landmarker_model,
+    ensure_mediapipe_runtime_ready,
+    install_mediapipe_runtime,
     mediapipe_environment_status,
     run_landmark_extraction_from_manifest,
 )
@@ -81,12 +83,23 @@ def download_default_model(output_root: Path | str, cfg: LandmarkRunConfig | Non
     return download_face_landmarker_model(Path(cfg.model_path), overwrite=False)
 
 
+def bootstrap_mediapipe_runtime() -> dict:
+    """Install/verify opencv-python and mediapipe in the active environment."""
+    return install_mediapipe_runtime(upgrade=False)
+
+
+def verify_mediapipe_runtime(cfg: LandmarkRunConfig, *, auto_download_model: bool = True) -> dict:
+    """Verify dependencies and model before a real extraction run."""
+    return ensure_mediapipe_runtime_ready(cfg.model_path, auto_download_model=auto_download_model)
+
+
 def run_mediapipe_landmarks(
     output_root: Path | str,
     cfg: LandmarkRunConfig,
     manifest_csv: Path | str,
 ) -> dict:
     """Run real MediaPipe Face Landmarker extraction from an ingest manifest."""
+    verify_mediapipe_runtime(cfg, auto_download_model=True)
     return run_landmark_extraction_from_manifest(
         manifest_csv,
         output_root,

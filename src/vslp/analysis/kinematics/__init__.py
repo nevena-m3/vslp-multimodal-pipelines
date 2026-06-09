@@ -6,8 +6,10 @@ from .landmarks import (
     LandmarkRunConfig,
     write_landmark_plan,
     run_mediapipe_landmarks,
+    bootstrap_mediapipe_runtime,
     download_default_model,
     mediapipe_capability_note,
+    verify_mediapipe_runtime,
 )
 from .mediapipe_runtime import mediapipe_environment_status, FACE_LANDMARKER_MODEL_URL
 from .normalization import write_normalization_config
