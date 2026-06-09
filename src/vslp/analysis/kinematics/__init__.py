@@ -13,6 +13,7 @@ from .landmarks import (
 )
 from .mediapipe_runtime import mediapipe_environment_status, FACE_LANDMARKER_MODEL_URL
 from .normalization import write_normalization_config
+from .video_qc import VideoQCConfig, run_video_qc
 from .reports import write_scaffold_report
 
 __all__ = [
@@ -20,5 +21,5 @@ __all__ = [
     "run_ingest", "discover_videos", "link_metadata", "load_metadata", "LandmarkRunConfig",
     "write_landmark_plan", "run_mediapipe_landmarks", "download_default_model",
     "mediapipe_capability_note", "mediapipe_environment_status", "FACE_LANDMARKER_MODEL_URL",
-    "write_normalization_config", "write_scaffold_report",
+    "write_normalization_config", "VideoQCConfig", "run_video_qc", "write_scaffold_report",
 ]
