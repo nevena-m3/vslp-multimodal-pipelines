@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -109,16 +110,184 @@ def probe_video(path: Path, *, root: Path, ffprobe_bin: str) -> VideoRecord:
         return VideoRecord(**{**asdict(base), "status": "warning", "warning": f"Probe failed: {e}"})
 
 
-def run_ingest(cfg: VideoIngestConfig) -> dict[str, Path | int]:
+def summarize_ingest_manifest(df: pd.DataFrame) -> dict[str, object]:
+    """Return dashboard-ready ingest metrics from a video manifest table.
+
+    The Setup tab uses these metrics as a structural readiness gate. This
+    intentionally stays operational: it describes video readability and format
+    consistency, not biological/kinematic signal quality.
+    """
+    columns = [
+        "status", "warning", "fps", "duration_sec", "n_frames_estimated",
+        "width", "height", "extension", "codec_name", "container_name",
+    ]
+    work = df.copy() if df is not None else pd.DataFrame(columns=columns)
+    for col in columns:
+        if col not in work.columns:
+            work[col] = pd.NA
+
+    n_videos = int(len(work))
+    status_text = work["status"].fillna("").astype(str).str.lower()
+    warning_text = work["warning"].fillna("").astype(str).str.strip()
+    readable_mask = status_text.eq("pass")
+    warning_mask = (~readable_mask) | warning_text.ne("")
+
+    readable_videos = int(readable_mask.sum())
+    warning_videos = int(warning_mask.sum())
+    unreadable_videos = int(n_videos - readable_videos)
+
+    fps = pd.to_numeric(work["fps"], errors="coerce")
+    duration = pd.to_numeric(work["duration_sec"], errors="coerce")
+    frames = pd.to_numeric(work["n_frames_estimated"], errors="coerce")
+
+    if n_videos == 0:
+        readiness = "FAIL"
+        next_step = "No supported videos were found. Check the input folder and supported extensions, then run ingest again."
+    elif readable_videos == 0:
+        readiness = "FAIL"
+        next_step = "No videos were structurally readable. Review ffprobe/OpenCV support, codecs, and file paths before landmark extraction."
+    elif warning_videos > 0:
+        readiness = "REVIEW"
+        next_step = "Some videos produced warnings. You can continue to landmark extraction, but review warnings before trusting features."
+    else:
+        readiness = "PASS"
+        next_step = "Dataset structure looks ready. Next: run MediaPipe landmark extraction."
+
+    def finite_stat(series: pd.Series, op: str) -> float | None:
+        vals = pd.to_numeric(series, errors="coerce").dropna()
+        if vals.empty:
+            return None
+        if op == "median":
+            return float(vals.median())
+        if op == "min":
+            return float(vals.min())
+        if op == "max":
+            return float(vals.max())
+        if op == "sum":
+            return float(vals.sum())
+        raise ValueError(op)
+
+    summary = {
+        "readiness": readiness,
+        "n_videos": n_videos,
+        "readable_videos": readable_videos,
+        "warning_videos": warning_videos,
+        "unreadable_videos": unreadable_videos,
+        "total_estimated_frames": int(frames.fillna(0).sum()) if not frames.empty else 0,
+        "median_fps": finite_stat(fps, "median"),
+        "min_fps": finite_stat(fps, "min"),
+        "max_fps": finite_stat(fps, "max"),
+        "median_duration_sec": finite_stat(duration, "median"),
+        "min_duration_sec": finite_stat(duration, "min"),
+        "max_duration_sec": finite_stat(duration, "max"),
+        "total_duration_sec": finite_stat(duration, "sum"),
+        "next_step": next_step,
+    }
+    return summary
+
+
+def build_format_summary(df: pd.DataFrame) -> pd.DataFrame:
+    """Group ingested videos by container/codec/resolution with robust medians."""
+    if df is None or df.empty:
+        return pd.DataFrame(columns=[
+            "extension", "codec_name", "container_name", "resolution", "files",
+            "median_fps", "median_duration_sec", "estimated_frames", "warnings",
+        ])
+    work = df.copy()
+    for col in ["width", "height", "fps", "duration_sec", "n_frames_estimated", "warning", "status", "extension", "codec_name", "container_name"]:
+        if col not in work.columns:
+            work[col] = pd.NA
+    width = pd.to_numeric(work["width"], errors="coerce")
+    height = pd.to_numeric(work["height"], errors="coerce")
+    work["resolution"] = width.fillna(0).astype(int).astype(str) + " x " + height.fillna(0).astype(int).astype(str)
+    work.loc[width.isna() | height.isna(), "resolution"] = "unknown"
+    work["has_warning"] = (~work["status"].fillna("").astype(str).str.lower().eq("pass")) | work["warning"].fillna("").astype(str).str.strip().ne("")
+    grouped = (
+        work.groupby(["extension", "codec_name", "container_name", "resolution"], dropna=False)
+        .agg(
+            files=("source_path", "size"),
+            median_fps=("fps", "median"),
+            median_duration_sec=("duration_sec", "median"),
+            estimated_frames=("n_frames_estimated", "sum"),
+            warnings=("has_warning", "sum"),
+        )
+        .reset_index()
+        .sort_values(["files", "extension"], ascending=[False, True])
+    )
+    return grouped
+
+
+def build_warning_summary(df: pd.DataFrame) -> pd.DataFrame:
+    """Return one row per video that requires review after structural ingest."""
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["video_id", "relative_path", "status", "warning"])
+    work = df.copy()
+    for col in ["video_id", "relative_path", "status", "warning"]:
+        if col not in work.columns:
+            work[col] = ""
+    warning_mask = (~work["status"].fillna("").astype(str).str.lower().eq("pass")) | work["warning"].fillna("").astype(str).str.strip().ne("")
+    return work.loc[warning_mask, ["video_id", "relative_path", "status", "warning"]].reset_index(drop=True)
+
+
+def run_ingest(cfg: VideoIngestConfig) -> dict[str, Path | int | str]:
     out_root = Path(cfg.output_root) / "kinematics" / "000_ingest"
     tables = out_root / "tables"
+    logs = out_root / "logs"
     tables.mkdir(parents=True, exist_ok=True)
+    logs.mkdir(parents=True, exist_ok=True)
     root = Path(cfg.input_root).expanduser().resolve()
     videos = discover_videos(root, recursive=cfg.recursive, extensions=cfg.extensions)
     rows = [probe_video(p, root=root, ffprobe_bin=cfg.ffprobe_bin) for p in videos]
     df = pd.DataFrame([asdict(r) for r in rows])
     manifest_csv = tables / "video_ingest_manifest.csv"
     manifest_json = tables / "video_ingest_manifest.json"
+    summary_csv = tables / "video_ingest_summary.csv"
+    summary_json = tables / "video_ingest_summary.json"
+    format_csv = tables / "video_format_summary.csv"
+    warnings_csv = tables / "video_ingest_warnings.csv"
+    log_path = logs / "video_ingest.log"
+
     df.to_csv(manifest_csv, index=False)
-    manifest_json.write_text(json.dumps({"n_videos": len(rows), "input_root": str(root), "rows": [asdict(r) for r in rows]}, indent=2), encoding="utf-8")
-    return {"output_root": out_root, "manifest_csv": manifest_csv, "manifest_json": manifest_json, "n_videos": len(rows)}
+    summary = summarize_ingest_manifest(df)
+    format_summary = build_format_summary(df)
+    warning_summary = build_warning_summary(df)
+    pd.DataFrame([summary]).to_csv(summary_csv, index=False)
+    format_summary.to_csv(format_csv, index=False)
+    warning_summary.to_csv(warnings_csv, index=False)
+    payload = {
+        "schema": "vslp_kinematics_video_ingest_v0.71",
+        "created_at_utc": datetime.now(timezone.utc).isoformat(),
+        "n_videos": len(rows),
+        "input_root": str(root),
+        "readiness": summary.get("readiness"),
+        "summary": summary,
+        "rows": [asdict(r) for r in rows],
+    }
+    manifest_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    summary_json.write_text(json.dumps({"schema": "vslp_kinematics_ingest_dashboard_v0.71", **payload}, indent=2), encoding="utf-8")
+    log_lines = [
+        f"created_at_utc={payload['created_at_utc']}",
+        f"input_root={root}",
+        f"n_videos={summary['n_videos']}",
+        f"readable_videos={summary['readable_videos']}",
+        f"warning_videos={summary['warning_videos']}",
+        f"readiness={summary['readiness']}",
+        f"next_step={summary['next_step']}",
+    ]
+    if not warning_summary.empty:
+        log_lines.append("warnings:")
+        for _, row in warning_summary.iterrows():
+            log_lines.append(f"- {row.get('video_id', '')}: {row.get('warning', '') or row.get('status', '')}")
+    log_path.write_text("\n".join(log_lines) + "\n", encoding="utf-8")
+    return {
+        "output_root": out_root,
+        "manifest_csv": manifest_csv,
+        "manifest_json": manifest_json,
+        "summary_csv": summary_csv,
+        "summary_json": summary_json,
+        "format_csv": format_csv,
+        "warnings_csv": warnings_csv,
+        "log_path": log_path,
+        "n_videos": len(rows),
+        "readiness": str(summary.get("readiness", "UNKNOWN")),
+    }

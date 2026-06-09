@@ -69,3 +69,30 @@ def test_raw_normalized_coordinates_method_uses_unit_scale(tmp_path: Path) -> No
     norm = pd.read_csv(out_df.loc[0, "output_csv"])
     assert set(norm["scale_source"]) == {"raw_unit_scale"}
     assert set(norm["scale_value_video_median"]) == {1.0}
+
+
+def test_normalization_flags_unstable_anchor_scale(tmp_path: Path) -> None:
+    tables = tmp_path / "kinematics" / "002_landmarks" / "tables"
+    tables.mkdir(parents=True)
+    lmks = tables / "unstable-lmks.csv"
+    rows = []
+    for frame, right_x in enumerate([0.60, 0.61, 0.95, 0.62]):
+        row = {"frame": frame, "timestamp_ms": frame * 33, "face_detected": True}
+        for idx in [1, 13, 14, 133, 362]:
+            row[f"{idx}_x"] = 0.50
+            row[f"{idx}_y"] = 0.50
+            row[f"{idx}_z"] = 0.0
+        row["133_x"], row["133_y"], row["133_z"] = 0.40, 0.40, 0.0
+        row["362_x"], row["362_y"], row["362_z"] = right_x, 0.40, 0.0
+        row["13_y"] = 0.55
+        row["14_y"] = 0.60
+        rows.append(row)
+    pd.DataFrame(rows).to_csv(lmks, index=False)
+    pd.DataFrame([{"video_id": "unstable", "source_path": "video.webm", "output_csv": str(lmks), "status": "ok"}]).to_csv(tables / "landmarks_manifest.csv", index=False)
+
+    result = run_normalization(tmp_path, NormalizationConfig(selected_landmarks=(13, 14)))
+    manifest = pd.read_csv(result["manifest_csv"])
+
+    assert manifest.loc[0, "status"] == "qc_flagged"
+    assert "normalization_scale_unstable" in str(manifest.loc[0, "qc_flags"])
+    assert float(manifest.loc[0, "scale_frame_to_frame_max_jump_fraction"]) > 0.25
