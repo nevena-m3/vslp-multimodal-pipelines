@@ -1,4 +1,4 @@
-"""VSLP Kinematics Pipeline GUI v0.74.
+"""VSLP Kinematics Pipeline GUI v0.75.
 
 This GUI intentionally mirrors the acoustic pipeline layout: left stage sidebar,
 institutional branding strip, top tabs, run log, and compact scientific workflow
@@ -92,7 +92,7 @@ from vslp.analysis.kinematics import (
 )
 from vslp.analysis.kinematics.schemas import DEFAULT_VIDEO_EXTENSIONS, parse_int_list
 
-APP_VERSION = "v0.74"
+APP_VERSION = "v0.75"
 BRAND_DIR = Path(__file__).resolve().parent / "assets" / "branding"
 LAB_LOGO = BRAND_DIR / "lab_logo.png"
 UOFT_LOGO = BRAND_DIR / "uoft_logo.png"
@@ -204,10 +204,12 @@ class LandmarkMeshCanvas(QWidget):
         self.source_label = "No real frame loaded yet"
         self.frame_label = ""
         self.show_all_labels = False
+        self.show_selected_labels = True
         self.show_mesh_edges = True
-        self.point_radius = 4.6
-        self.selected_point_radius = 9.0
-        self.high_contrast_landmarks = True
+        self.overlay_style = "Balanced"
+        self.point_radius = 3.8
+        self.selected_point_radius = 7.0
+        self.high_contrast_landmarks = False
         self.zoom_factor = 1.0
         self.auto_zoom_face = True
         self.view_center = (0.5, 0.5)
@@ -225,6 +227,27 @@ class LandmarkMeshCanvas(QWidget):
     @classmethod
     def label_for(cls, idx: int) -> str:
         return cls.LANDMARK_LABELS.get(idx, cls.region_for(idx))
+
+    def set_overlay_style(self, style: str) -> None:
+        self.overlay_style = style if style in {"Subtle", "Balanced", "High contrast"} else "Balanced"
+        if self.overlay_style == "Subtle":
+            self.point_radius = 3.0
+            self.selected_point_radius = 6.2
+        elif self.overlay_style == "High contrast":
+            self.point_radius = 4.5
+            self.selected_point_radius = 8.4
+        else:
+            self.point_radius = 3.8
+            self.selected_point_radius = 7.0
+        self.update()
+
+    def set_selected_labels_visible(self, visible: bool) -> None:
+        self.show_selected_labels = bool(visible)
+        self.update()
+
+    def set_mesh_edges_visible(self, visible: bool) -> None:
+        self.show_mesh_edges = bool(visible)
+        self.update()
 
     def set_overlay(self, frame: QPixmap | None, points: dict[int, tuple[float, float]], source_label: str, frame_label: str = "") -> None:
         self.frame_pixmap = frame
@@ -409,7 +432,7 @@ class LandmarkMeshCanvas(QWidget):
             painter.drawPixmap(dst, self.frame_pixmap, src)
         else:
             painter.setPen(QColor("#CBD5E1"))
-            painter.drawText(left + 24, top + 42, "No real video frame loaded. Run Landmarks, then click 'Load Real Frame + MediaPipe Overlay'.")
+            painter.drawText(left + 24, top + 42, "No real video frame loaded. Run Landmarks, then use Representative Detected Frame or Load Selected Frame.")
 
         if self.show_mesh_edges and self.points:
             for a, b in self.FACE_GUIDE_EDGES:
@@ -419,8 +442,17 @@ class LandmarkMeshCanvas(QWidget):
             for a, b in self.MOUTH_EDGES:
                 self._draw_edge(painter, a, b, QColor(225, 29, 72, 180), 1.6)
 
-        # High-contrast landmark rendering: every point gets a dark halo and bright rim so
-        # landmarks remain visible on skin, teeth, shadows, and high-contrast clinical video.
+        style = getattr(self, "overlay_style", "Balanced")
+        if style == "Subtle":
+            point_alpha, ring_alpha, halo_width, rim_width = 135, 150, 2.0, 0.8
+        elif style == "High contrast":
+            point_alpha, ring_alpha, halo_width, rim_width = 225, 230, 3.4, 1.4
+        else:
+            point_alpha, ring_alpha, halo_width, rim_width = 175, 190, 2.6, 1.1
+
+        # Review-grade rendering: landmarks need contrast, but should not obscure
+        # anatomy. The default is a restrained ring-plus-fill design; analysts can
+        # switch to High contrast only for low-quality or dark videos.
         for idx, (x, y) in self.points.items():
             if idx in self.selected:
                 continue
@@ -428,14 +460,15 @@ class LandmarkMeshCanvas(QWidget):
             region = self.region_for(idx)
             base = self.REGION_COLORS.get(region, self.REGION_COLORS["other"])
             fill = QColor(base)
-            fill.setAlpha(230 if region != "other" else 170)
+            fill.setAlpha(point_alpha if region != "other" else max(105, point_alpha - 45))
             if idx == self.hover_idx:
-                fill = QColor("#FDE047")
-            radius = self.point_radius + (2.5 if idx == self.hover_idx else 0.0)
-            painter.setPen(QPen(QColor(0, 0, 0, 220), 4.2))
+                fill = QColor("#FACC15")
+                fill.setAlpha(245)
+            radius = self.point_radius + (2.2 if idx == self.hover_idx else 0.0)
+            painter.setPen(QPen(QColor(3, 7, 18, ring_alpha), halo_width))
             painter.setBrush(Qt.NoBrush)
-            painter.drawEllipse(p, radius + 1.7, radius + 1.7)
-            painter.setPen(QPen(QColor("#F8FAFC"), 1.5))
+            painter.drawEllipse(p, radius + 1.2, radius + 1.2)
+            painter.setPen(QPen(QColor(248, 250, 252, max(110, ring_alpha - 35)), rim_width))
             painter.setBrush(QBrush(fill))
             painter.drawEllipse(p, radius, radius)
 
@@ -445,33 +478,33 @@ class LandmarkMeshCanvas(QWidget):
                 continue
             p = self._to_screen(*self.points[idx])
             radius = self.selected_point_radius
-            # Selected points use a thick black outer halo, white rim, and neon fill.
-            painter.setPen(QPen(QColor(0, 0, 0, 235), 5.0))
+            painter.setPen(QPen(QColor(3, 7, 18, 230), 3.2 if style != "Subtle" else 2.4))
             painter.setBrush(Qt.NoBrush)
-            painter.drawEllipse(p, radius + 2.2, radius + 2.2)
-            painter.setPen(QPen(QColor("#FFFFFF"), 2.2))
-            painter.setBrush(QBrush(QColor("#22C55E")))
+            painter.drawEllipse(p, radius + 1.8, radius + 1.8)
+            painter.setPen(QPen(QColor("#FDE68A"), 2.0))
+            painter.setBrush(QBrush(QColor("#0891B2")))
             painter.drawEllipse(p, radius, radius)
-            label_bg = QRectF(p.x() + 8, p.y() - 21, 32, 17)
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(QBrush(QColor(0, 0, 0, 185)))
-            painter.drawRoundedRect(label_bg, 4, 4)
-            painter.setPen(QColor("#FFFFFF"))
-            painter.drawText(label_bg, Qt.AlignCenter, str(idx))
+            if self.show_selected_labels:
+                label_bg = QRectF(p.x() + 8, p.y() - 21, 32, 17)
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QBrush(QColor(3, 7, 18, 190)))
+                painter.drawRoundedRect(label_bg, 4, 4)
+                painter.setPen(QColor("#FFF7ED"))
+                painter.drawText(label_bg, Qt.AlignCenter, str(idx))
 
         if self.hover_idx is not None and self.hover_idx not in self.selected:
             p = self._to_screen(*self.points[self.hover_idx])
-            painter.setPen(QPen(QColor(0, 0, 0, 235), 4.4))
+            painter.setPen(QPen(QColor(3, 7, 18, 235), 3.2))
             painter.setBrush(Qt.NoBrush)
-            painter.drawEllipse(p, 13, 13)
-            painter.setPen(QPen(QColor("#FDE047"), 2.4))
-            painter.drawEllipse(p, 11, 11)
+            painter.drawEllipse(p, 12, 12)
+            painter.setPen(QPen(QColor("#FACC15"), 2.0))
+            painter.drawEllipse(p, 10, 10)
             painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
             label_bg = QRectF(p.x() + 10, p.y() - 23, 32, 17)
             painter.setPen(Qt.NoPen)
-            painter.setBrush(QBrush(QColor(0, 0, 0, 185)))
+            painter.setBrush(QBrush(QColor(3, 7, 18, 190)))
             painter.drawRoundedRect(label_bg, 4, 4)
-            painter.setPen(QColor("#FDE047"))
+            painter.setPen(QColor("#FACC15"))
             painter.drawText(label_bg, Qt.AlignCenter, str(self.hover_idx))
 
         painter.setFont(QFont("Segoe UI", 8))
@@ -1115,28 +1148,26 @@ class KinematicsPipelineWindow(QMainWindow):
         self.landmark_video_combo = QComboBox()
         self.landmark_video_combo.currentIndexChanged.connect(self._landmark_video_changed)
         self.landmark_frame_spin = QSpinBox(); self.landmark_frame_spin.setRange(0, 999999); self.landmark_frame_spin.setValue(0); self.landmark_frame_spin.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self.landmark_frame_spin.setToolTip("Type an exact frame number, then press Enter or click Load Selected Frame.")
         self.landmark_frame_slider = QSlider(Qt.Horizontal); self.landmark_frame_slider.setRange(0, 0)
+        self.landmark_frame_slider.setTracking(True)
+        self.landmark_frame_slider.setPageStep(30)
+        self.landmark_frame_slider.setSingleStep(1)
         self.landmark_frame_slider.valueChanged.connect(self._landmark_slider_changed)
         self.landmark_frame_spin.valueChanged.connect(self._landmark_spin_changed)
+        self.landmark_frame_label = QLabel("Frame 0 / 0")
+        self.landmark_frame_label.setObjectName("SubtitleLabel")
         self.landmark_text = QPlainTextEdit(); self.landmark_text.setMaximumHeight(74)
         self.landmark_text.setPlainText(", ".join(map(str, self.landmark_indices)))
         refresh_videos_btn = QPushButton("Refresh Extracted Videos")
         refresh_videos_btn.clicked.connect(self.refresh_landmark_video_choices)
-        load_frame_btn = QPushButton("Load Real Frame + MediaPipe Overlay")
+        load_frame_btn = QPushButton("Load Selected Frame")
         load_frame_btn.setObjectName("RunButton")
+        load_frame_btn.setToolTip("Load the currently selected frame in the slider/numeric box.")
         load_frame_btn.clicked.connect(self.load_real_frame_landmark_overlay)
-        prev10_btn = QPushButton("-10")
-        prev10_btn.setToolTip("Move 10 frames earlier and reload the overlay if auto-reload is enabled.")
-        prev10_btn.clicked.connect(lambda: self._step_landmark_frame(-10))
-        prev1_btn = QPushButton("Prev")
-        prev1_btn.setToolTip("Move one frame earlier.")
-        prev1_btn.clicked.connect(lambda: self._step_landmark_frame(-1))
-        next1_btn = QPushButton("Next")
-        next1_btn.setToolTip("Move one frame later.")
-        next1_btn.clicked.connect(lambda: self._step_landmark_frame(1))
-        next10_btn = QPushButton("+10")
-        next10_btn.setToolTip("Move 10 frames later and reload the overlay if auto-reload is enabled.")
-        next10_btn.clicked.connect(lambda: self._step_landmark_frame(10))
+        best_frame_btn = QPushButton("Use Representative Detected Frame")
+        best_frame_btn.setToolTip("Jump to the middle frame with face_detected=True, then load it.")
+        best_frame_btn.clicked.connect(self.use_representative_landmark_frame)
         apply_btn = QPushButton("Apply / Save Selected Landmarks")
         apply_btn.setObjectName("RunButton")
         apply_btn.clicked.connect(self.run_selection_stage)
@@ -1144,10 +1175,12 @@ class KinematicsPipelineWindow(QMainWindow):
         clear_btn.clicked.connect(self.clear_visual_landmarks)
         preview_btn = QPushButton("Save Overlay Preview PNG")
         preview_btn.clicked.connect(self.save_landmark_mesh_preview)
-        grid.addWidget(QLabel("Video"), 0, 0); grid.addWidget(self.landmark_video_combo, 0, 1); grid.addWidget(refresh_videos_btn, 0, 2); grid.addWidget(load_frame_btn, 0, 3)
-        grid.addWidget(QLabel("Frame"), 1, 0); grid.addWidget(self.landmark_frame_spin, 1, 1); grid.addWidget(prev10_btn, 1, 2); grid.addWidget(prev1_btn, 1, 3); grid.addWidget(self.landmark_frame_slider, 2, 1, 1, 2); grid.addWidget(next1_btn, 2, 3); grid.addWidget(next10_btn, 2, 4)
-        grid.addWidget(QLabel("Preset"), 2, 0); grid.addWidget(self.preset_combo, 2, 1); grid.addWidget(apply_btn, 2, 2); grid.addWidget(preview_btn, 2, 3)
-        grid.addWidget(QLabel("Selected landmark indices"), 3, 0); grid.addWidget(self.landmark_text, 3, 1, 1, 2); grid.addWidget(clear_btn, 3, 3)
+        grid.addWidget(QLabel("Video"), 0, 0); grid.addWidget(self.landmark_video_combo, 0, 1, 1, 2); grid.addWidget(refresh_videos_btn, 0, 3)
+        grid.addWidget(QLabel("Frame scrubber"), 1, 0); grid.addWidget(self.landmark_frame_slider, 1, 1, 1, 3)
+        grid.addWidget(QLabel("Exact frame"), 2, 0); grid.addWidget(self.landmark_frame_spin, 2, 1); grid.addWidget(self.landmark_frame_label, 2, 2); grid.addWidget(load_frame_btn, 2, 3)
+        grid.addWidget(QLabel("Frame helper"), 3, 0); grid.addWidget(best_frame_btn, 3, 1, 1, 2)
+        grid.addWidget(QLabel("Preset"), 4, 0); grid.addWidget(self.preset_combo, 4, 1); grid.addWidget(apply_btn, 4, 2); grid.addWidget(preview_btn, 4, 3)
+        grid.addWidget(QLabel("Selected landmark indices"), 5, 0); grid.addWidget(self.landmark_text, 5, 1, 1, 2); grid.addWidget(clear_btn, 5, 3)
         layout.addWidget(group)
 
         region_group = QGroupBox("Region quick-select")
@@ -1169,8 +1202,16 @@ class KinematicsPipelineWindow(QMainWindow):
         self.auto_zoom_checkbox = QCheckBox("Auto-zoom to detected face")
         self.auto_zoom_checkbox.setChecked(True)
         self.auto_zoom_checkbox.toggled.connect(self._toggle_auto_zoom_landmark_canvas)
-        self.auto_reload_frame_checkbox = QCheckBox("Auto-reload frame while sliding")
+        self.auto_reload_frame_checkbox = QCheckBox("Auto-load while scrubbing")
         self.auto_reload_frame_checkbox.setChecked(True)
+        self.overlay_style_combo = QComboBox(); self.overlay_style_combo.addItems(["Subtle", "Balanced", "High contrast"]); self.overlay_style_combo.setCurrentText("Balanced")
+        self.overlay_style_combo.currentTextChanged.connect(lambda text: self.landmark_canvas.set_overlay_style(text) if hasattr(self, "landmark_canvas") else None)
+        self.show_selected_labels_checkbox = QCheckBox("Show selected IDs")
+        self.show_selected_labels_checkbox.setChecked(True)
+        self.show_selected_labels_checkbox.toggled.connect(lambda checked: self.landmark_canvas.set_selected_labels_visible(checked) if hasattr(self, "landmark_canvas") else None)
+        self.show_mesh_edges_checkbox = QCheckBox("Show guide edges")
+        self.show_mesh_edges_checkbox.setChecked(True)
+        self.show_mesh_edges_checkbox.toggled.connect(lambda checked: self.landmark_canvas.set_mesh_edges_visible(checked) if hasattr(self, "landmark_canvas") else None)
         zoom_in_btn = QPushButton("Zoom In")
         zoom_in_btn.clicked.connect(lambda: self.landmark_canvas.zoom_in())
         zoom_out_btn = QPushButton("Zoom Out")
@@ -1181,13 +1222,18 @@ class KinematicsPipelineWindow(QMainWindow):
         reset_view_btn.clicked.connect(lambda: self.landmark_canvas.reset_view())
         reload_btn = QPushButton("Reload Current Frame")
         reload_btn.clicked.connect(self.load_real_frame_landmark_overlay)
-        for w in [self.auto_zoom_checkbox, self.auto_reload_frame_checkbox, zoom_in_btn, zoom_out_btn, zoom_face_btn, reset_view_btn, reload_btn]:
+        zoom_layout.addWidget(self.auto_zoom_checkbox)
+        zoom_layout.addWidget(self.auto_reload_frame_checkbox)
+        zoom_layout.addWidget(QLabel("Overlay"))
+        zoom_layout.addWidget(self.overlay_style_combo)
+        for w in [self.show_selected_labels_checkbox, self.show_mesh_edges_checkbox, zoom_in_btn, zoom_out_btn, zoom_face_btn, reset_view_btn, reload_btn]:
             zoom_layout.addWidget(w)
         zoom_layout.addStretch(1)
         layout.addWidget(zoom_group)
 
         mesh_row = QHBoxLayout()
         self.landmark_canvas = LandmarkMeshCanvas()
+        self.landmark_canvas.set_overlay_style("Balanced")
         self.landmark_canvas.set_selected(self.landmark_indices)
         self.landmark_canvas.selection_changed.connect(self._canvas_selection_changed)
         mesh_row.addWidget(self.landmark_canvas, stretch=3)
@@ -1198,12 +1244,12 @@ class KinematicsPipelineWindow(QMainWindow):
         guide.setHtml(
             "<h3>How to use this workstation</h3>"
             "<p><b>1.</b> Run landmark extraction. Then click <b>Refresh Extracted Videos</b> and choose a video.</p>"
-            "<p><b>2.</b> Choose a representative frame and click <b>Load Real Frame + MediaPipe Overlay</b>. "
+            "<p><b>2.</b> Use <b>Use Representative Detected Frame</b> first, or scrub with the slider and click <b>Load Selected Frame</b>. "
             "This shows the actual patient/video frame with actual Google MediaPipe points overlaid.</p>"
             "<p><b>3.</b> Select a preset or use region quick-select. Click directly on points to add/remove landmarks.</p>"
-            "<p><b>Feedback:</b> selected points have a thick green high-contrast halo and label. Unselected points have bright rims; hovering shows landmark ID and approximate region/function.</p>"
-            "<p><b>Navigation:</b> use <b>Zoom to Face</b>, mouse wheel, and drag empty space to pan. If the face looks small, keep auto-zoom enabled or press Zoom to Face.</p>"
-            "<p><b>Scientific note:</b> keep eye/canthus anchors for scaling, mouth/lip points for aperture/spread, and bilateral points for symmetry. Avoid points that appear unstable, occluded, or poorly detected on the real frame.</p>"
+            "<p><b>Feedback:</b> selected points use a restrained cyan/gold ring and optional ID label. Change <b>Overlay</b> to Subtle or High contrast depending on the video.</p>"
+            "<p><b>Navigation:</b> the frame slider is the primary control. It can auto-load while scrubbing, or you can turn that off and load only the exact frame you want. Use mouse wheel to zoom and drag empty space to pan.</p>"
+            "<p><b>Normalization note:</b> default intercanthal scaling expects inner-canthus anchors <b>133</b> and <b>362</b>. The revised default presets include them. If those anchors are missing or unstable, normalization falls back explicitly to outer-eye anchors <b>33</b>/<b>263</b> and flags the run for review.</p>"
         )
         right_panel.addWidget(guide)
         self.selection_feedback_label = QLabel("No real overlay loaded yet. Run Landmarks, then load a real frame.")
@@ -1901,19 +1947,62 @@ class KinematicsPipelineWindow(QMainWindow):
                 self._landmark_video_changed(0)
             self._log(f"Loaded {len(self._landmark_video_rows)} landmark video option(s) from {manifest}")
 
-    def _step_landmark_frame(self, delta: int) -> None:
-        """Move the selected frame by a fixed step without relying on spinbox arrows."""
+    def _update_landmark_frame_label(self) -> None:
+        if not hasattr(self, "landmark_frame_label") or not hasattr(self, "landmark_frame_spin"):
+            return
+        current = int(self.landmark_frame_spin.value())
+        maximum = int(self.landmark_frame_spin.maximum())
+        self.landmark_frame_label.setText(f"Frame {current} / {maximum}")
+
+    def _set_landmark_frame_value(self, frame_idx: int, *, load: bool = False) -> None:
         if not hasattr(self, "landmark_frame_spin"):
             return
         lo = int(self.landmark_frame_spin.minimum())
         hi = int(self.landmark_frame_spin.maximum())
-        current = int(self.landmark_frame_spin.value())
-        target = min(hi, max(lo, current + int(delta)))
-        if target == current:
-            return
+        target = min(hi, max(lo, int(frame_idx)))
+        self.landmark_frame_spin.blockSignals(True)
         self.landmark_frame_spin.setValue(target)
-        # If auto-reload is off, explicit frame buttons still move the controls but
-        # do not force expensive video reads. The user can press Reload Current Frame.
+        self.landmark_frame_spin.blockSignals(False)
+        if hasattr(self, "landmark_frame_slider"):
+            self.landmark_frame_slider.blockSignals(True)
+            self.landmark_frame_slider.setValue(target)
+            self.landmark_frame_slider.blockSignals(False)
+        self._update_landmark_frame_label()
+        if load:
+            self.load_real_frame_landmark_overlay()
+
+    def use_representative_landmark_frame(self) -> None:
+        """Jump to the middle detected-face frame and load it.
+
+        This is more reliable for landmark selection than manual +/- buttons: it
+        uses the detection mask already produced by MediaPipe and avoids landing
+        on no-face or sparse-overlay frames.
+        """
+        rec = self._selected_landmark_video_row()
+        if rec is None:
+            return
+        landmark_csv = Path(str(rec.get("output_csv", ""))).expanduser()
+        if not landmark_csv.exists():
+            QMessageBox.warning(self, "Missing landmark CSV", f"Could not find landmark CSV:\n{landmark_csv}")
+            return
+        try:
+            df = pd.read_csv(landmark_csv, usecols=lambda c: c in {"frame", "face_detected"})
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Could not read landmark frames", str(exc))
+            return
+        if df.empty:
+            return
+        if "face_detected" in df.columns:
+            detected = df["face_detected"].astype(str).str.lower().isin(["true", "1", "yes", "y"])
+            candidates = df.loc[detected].copy()
+        else:
+            candidates = df.copy()
+        if candidates.empty:
+            QMessageBox.warning(self, "No detected-face frames", "This landmark CSV contains no face_detected=True rows. Try another video or rerun landmark extraction.")
+            return
+        chosen = candidates.iloc[len(candidates) // 2]
+        frame_idx = int(chosen.get("frame", candidates.index[len(candidates) // 2]))
+        self._set_landmark_frame_value(frame_idx, load=True)
 
     def _landmark_slider_changed(self, value: int) -> None:
         """Synchronize the frame spinbox with the slider and optionally reload the overlay.
@@ -1926,6 +2015,7 @@ class KinematicsPipelineWindow(QMainWindow):
             self.landmark_frame_spin.blockSignals(True)
             self.landmark_frame_spin.setValue(int(value))
             self.landmark_frame_spin.blockSignals(False)
+        self._update_landmark_frame_label()
         self._schedule_landmark_frame_reload()
 
     def _landmark_spin_changed(self, value: int) -> None:
@@ -1934,6 +2024,7 @@ class KinematicsPipelineWindow(QMainWindow):
             self.landmark_frame_slider.blockSignals(True)
             self.landmark_frame_slider.setValue(int(value))
             self.landmark_frame_slider.blockSignals(False)
+        self._update_landmark_frame_label()
         self._schedule_landmark_frame_reload()
 
     def _schedule_landmark_frame_reload(self) -> None:
@@ -1961,8 +2052,9 @@ class KinematicsPipelineWindow(QMainWindow):
         self.landmark_frame_slider.setValue(default_frame)
         self.landmark_frame_spin.blockSignals(False)
         self.landmark_frame_slider.blockSignals(False)
+        self._update_landmark_frame_label()
         if hasattr(self, "selection_feedback_label"):
-            self.selection_feedback_label.setText(f"Selected video changed. Frame range: 0-{max_frame}. Click 'Load Real Frame + MediaPipe Overlay' to refresh the display, or keep auto-reload enabled after the first load.")
+            self.selection_feedback_label.setText(f"Selected video changed. Frame range: 0-{max_frame}. Use the scrubber, Load Selected Frame, or Representative Detected Frame to refresh the display.")
         if bool(getattr(self, "_landmark_overlay_loaded", False)) and hasattr(self, "auto_reload_frame_checkbox") and self.auto_reload_frame_checkbox.isChecked():
             self._landmark_frame_reload_timer.start(80)
 
@@ -2081,10 +2173,12 @@ class KinematicsPipelineWindow(QMainWindow):
             self.landmark_frame_spin.blockSignals(True)
             self.landmark_frame_spin.setValue(frame_idx)
             self.landmark_frame_spin.blockSignals(False)
+            self._update_landmark_frame_label()
         if hasattr(self, "landmark_frame_slider") and self.landmark_frame_slider.maximum() >= frame_idx:
             self.landmark_frame_slider.blockSignals(True)
             self.landmark_frame_slider.setValue(frame_idx)
             self.landmark_frame_slider.blockSignals(False)
+            self._update_landmark_frame_label()
         self._landmark_overlay_loaded = True
         self._update_selected_landmark_feedback()
         self._log(f"Loaded real-frame MediaPipe overlay: video={video_id}, frame={frame_idx}, points={len(points)}, source={source_path}")

@@ -42,3 +42,12 @@ def test_selection_dashboard_strings_present_in_gui():
     assert "self.selection_metric_labels" in source
     assert "selection_requirement_table" in source
     assert "write_selected_landmarks" in source
+
+
+def test_default_oral_motor_preset_contains_intercanthal_anchors():
+    from vslp.analysis.kinematics.schemas import LANDMARK_PRESETS
+
+    default = set(LANDMARK_PRESETS["ALS oral-motor core 15"])
+    assert {133, 362}.issubset(default)
+    assert {33, 263}.issubset(default)
+    assert analyze_landmark_selection(LANDMARK_PRESETS["ALS oral-motor core 15"]).status == "Complete"
