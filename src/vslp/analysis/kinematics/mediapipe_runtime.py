@@ -210,6 +210,7 @@ def extract_landmarks_from_video(
     max_frames: int | None = None,
 ) -> dict:
     """Extract one per-frame MediaPipe landmark CSV from one video."""
+    os.environ.setdefault("OPENCV_FFMPEG_LOGLEVEL", "-8")
     import cv2  # type: ignore
 
     video_path = Path(video_path).expanduser().resolve()
