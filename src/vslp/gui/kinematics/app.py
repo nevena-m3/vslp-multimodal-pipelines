@@ -1,4 +1,4 @@
-"""VSLP Kinematics Pipeline GUI v0.63.
+"""VSLP Kinematics Pipeline GUI v0.71.
 
 This GUI intentionally mirrors the acoustic pipeline layout: left stage sidebar,
 institutional branding strip, top tabs, run log, and compact scientific workflow
@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -69,6 +70,9 @@ from vslp.analysis.kinematics import (
     link_metadata,
     mediapipe_capability_note,
     run_ingest,
+    summarize_ingest_manifest,
+    build_format_summary,
+    build_warning_summary,
     write_landmark_plan,
     write_normalization_config,
     run_normalization_from_selection,
@@ -85,7 +89,7 @@ from vslp.analysis.kinematics import (
 )
 from vslp.analysis.kinematics.schemas import DEFAULT_VIDEO_EXTENSIONS, parse_int_list
 
-APP_VERSION = "v0.68.1"
+APP_VERSION = "v0.71"
 BRAND_DIR = Path(__file__).resolve().parent / "assets" / "branding"
 LAB_LOGO = BRAND_DIR / "lab_logo.png"
 UOFT_LOGO = BRAND_DIR / "uoft_logo.png"
@@ -762,7 +766,12 @@ class KinematicsPipelineWindow(QMainWindow):
         layout = QVBoxLayout(container)
         layout.setSpacing(12)
 
-        paths_group = QGroupBox("Project setup")
+        layout.addWidget(self._info_panel(
+            "Project dashboard",
+            "Define the raw video dataset and output project folder, then run structural ingest. This stage checks video readability, format consistency, FPS, duration, resolution, and early warnings before landmark extraction.",
+        ))
+
+        paths_group = QGroupBox("1. Project definition")
         form = QGridLayout(paths_group)
         self.input_edit = QLineEdit()
         self.output_edit = QLineEdit()
@@ -801,25 +810,80 @@ class KinematicsPipelineWindow(QMainWindow):
         self.ingest_btn.clicked.connect(self.run_ingest_stage)
         btn_row.addWidget(self.init_project_btn)
         btn_row.addWidget(self.ingest_btn)
+        btn_row.addStretch(1)
         workflow_layout.addLayout(btn_row)
+        self.project_gate_message = QLabel("Select folders, initialize the project, then run video ingest.")
+        self.project_gate_message.setObjectName("SubtitleLabel")
+        self.project_gate_message.setWordWrap(True)
+        workflow_layout.addWidget(self.project_gate_message)
 
-        ingest_group = QGroupBox("3. Ingest summary")
+        readiness_group = QGroupBox("3. Dataset readiness")
+        readiness_layout = QGridLayout(readiness_group)
+        self.ingest_metric_labels: dict[str, QLabel] = {}
+        cards = [
+            ("Status", "status"),
+            ("Videos", "videos"),
+            ("Readable", "readable"),
+            ("Warnings", "warnings"),
+            ("Median FPS", "median_fps"),
+            ("Median duration", "median_duration"),
+            ("Estimated frames", "frames"),
+            ("FPS range", "fps_range"),
+        ]
+        for idx, (title, key) in enumerate(cards):
+            card = QFrame()
+            card.setObjectName("InfoPanel")
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(10, 8, 10, 8)
+            card_title = QLabel(title)
+            card_title.setObjectName("SubtitleLabel")
+            value = QLabel("-")
+            value.setObjectName("InfoTitle")
+            value.setWordWrap(True)
+            card_layout.addWidget(card_title)
+            card_layout.addWidget(value)
+            self.ingest_metric_labels[key] = value
+            readiness_layout.addWidget(card, idx // 4, idx % 4)
+        self.ingest_next_step_label = QLabel("No ingest results yet.")
+        self.ingest_next_step_label.setObjectName("SubtitleLabel")
+        self.ingest_next_step_label.setWordWrap(True)
+        readiness_layout.addWidget(self.ingest_next_step_label, 2, 0, 1, 4)
+
+        ingest_group = QGroupBox("4. Video format summary")
         ingest_layout = QVBoxLayout(ingest_group)
         self.ingest_summary_label = QLabel("No ingest results yet.")
         self.ingest_summary_label.setWordWrap(True)
         self.ingest_summary_label.setObjectName("SubtitleLabel")
         ingest_layout.addWidget(self.ingest_summary_label)
-        self.ingest_format_table = QTableWidget(0, 4)
-        self.ingest_format_table.setHorizontalHeaderLabels(["Detected format", "Video codec", "Resolution", "Files"])
+        self.ingest_format_table = QTableWidget(0, 9)
+        self.ingest_format_table.setHorizontalHeaderLabels([
+            "Extension", "Codec", "Container", "Resolution", "Files", "Median FPS", "Median duration", "Frames", "Warnings"
+        ])
         self.ingest_format_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.ingest_format_table.setMaximumHeight(170)
+        self.ingest_format_table.setMaximumHeight(190)
         self.ingest_format_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.ingest_format_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         ingest_layout.addWidget(self.ingest_format_table)
 
+        warnings_group = QGroupBox("5. Ingest warnings")
+        warnings_layout = QVBoxLayout(warnings_group)
+        self.ingest_warning_label = QLabel("No warnings yet.")
+        self.ingest_warning_label.setObjectName("SubtitleLabel")
+        self.ingest_warning_label.setWordWrap(True)
+        warnings_layout.addWidget(self.ingest_warning_label)
+        self.ingest_warning_table = QTableWidget(0, 4)
+        self.ingest_warning_table.setHorizontalHeaderLabels(["Video", "Relative path", "Status", "Warning"])
+        self.ingest_warning_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.ingest_warning_table.setMaximumHeight(165)
+        self.ingest_warning_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.ingest_warning_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        warnings_layout.addWidget(self.ingest_warning_table)
+
         layout.addWidget(paths_group)
         layout.addWidget(workflow_group)
+        layout.addWidget(readiness_group)
         layout.addWidget(ingest_group)
+        layout.addWidget(warnings_group)
         layout.addStretch(1)
         return self._scrollable(container)
 
@@ -1449,9 +1513,25 @@ class KinematicsPipelineWindow(QMainWindow):
         for sub in ["000_ingest", "001_metadata", "002_landmarks", "003_selection", "004_normalization", "005_video_qc", "006_features", "007_aggregation", "008_inspector", "009_reports"]:
             (project_dir / sub).mkdir(parents=True, exist_ok=True)
         manifest = project_dir / "project_manifest.json"
-        manifest.write_text(json.dumps({"project_name": self.project_name_edit.text(), "task": self.task_name_edit.text(), "schema": "vslp_kinematics_project_v0.62"}, indent=2), encoding="utf-8")
+        payload = {
+            "schema": "vslp_kinematics_project_v0.71",
+            "app_version": APP_VERSION,
+            "created_at_utc": datetime.now(timezone.utc).isoformat(),
+            "project_name": self.project_name_edit.text().strip() or "VSLP Kinematics Project",
+            "task": self.task_name_edit.text().strip(),
+            "input_video_folder": self.input_edit.text().strip(),
+            "output_project_folder": str(out),
+            "stage_order": [
+                "000_ingest", "001_metadata", "002_landmarks", "003_selection",
+                "004_normalization", "005_video_qc", "006_features",
+                "007_aggregation", "008_inspector", "009_reports",
+            ],
+        }
+        manifest.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         self.stage_records["project"] = StageRecord(status="completed", manifest_path=str(manifest))
         self._refresh_stage_cards()
+        if hasattr(self, "project_gate_message"):
+            self.project_gate_message.setText(f"Project initialized. Manifest: {manifest}")
         self._log(f"Initialized kinematics project: {project_dir}")
 
     def run_ingest_stage(self) -> None:
@@ -1466,22 +1546,73 @@ class KinematicsPipelineWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "Ingest failed", str(exc)); return
         self.ingest_manifest_csv = Path(res["manifest_csv"])
-        self.stage_records["ingest"] = StageRecord(status="completed", manifest_path=str(self.ingest_manifest_csv))
+        readiness = str(res.get("readiness", "UNKNOWN")).upper()
+        stage_status = "completed" if readiness == "PASS" else "completed_with_warnings" if readiness == "REVIEW" else "failed"
+        self.stage_records["ingest"] = StageRecord(status=stage_status, manifest_path=str(self.ingest_manifest_csv), summary_path=str(res.get("summary_csv", "")))
         self._refresh_stage_cards()
-        self._log(f"Video ingest completed: {res['n_videos']} video(s).")
+        self._log(f"Video ingest completed: {res['n_videos']} video(s); readiness={readiness}.")
+        if res.get("log_path"):
+            self._log(f"Ingest log: {res['log_path']}")
         self._load_ingest_summary()
 
     def _load_ingest_summary(self) -> None:
         if not self.ingest_manifest_csv or not self.ingest_manifest_csv.exists():
             return
         df = pd.read_csv(self.ingest_manifest_csv)
-        self.ingest_summary_label.setText(f"{len(df)} candidate videos detected. Formats/codecs/resolutions summarized below.")
-        if not df.empty:
-            tmp = df.copy()
-            tmp["Resolution"] = tmp["width"].fillna(0).astype(int).astype(str) + " x " + tmp["height"].fillna(0).astype(int).astype(str)
-            grouped = tmp.groupby(["extension", "codec_name", "Resolution"], dropna=False).size().reset_index(name="Files")
-            grouped.columns = ["Detected format", "Video codec", "Resolution", "Files"]
-            self._fill_table(self.ingest_format_table, grouped, max_rows=60)
+        summary = summarize_ingest_manifest(df)
+        fmt = build_format_summary(df)
+        warnings = build_warning_summary(df)
+
+        def fmt_num(value: object, digits: int = 2, suffix: str = "") -> str:
+            if value is None or pd.isna(value):
+                return "-"
+            try:
+                val = float(value)
+            except Exception:
+                return str(value)
+            if abs(val - round(val)) < 1e-9:
+                return f"{int(round(val))}{suffix}"
+            return f"{val:.{digits}f}{suffix}"
+
+        if hasattr(self, "ingest_metric_labels"):
+            self.ingest_metric_labels["status"].setText(str(summary.get("readiness", "-")))
+            self.ingest_metric_labels["videos"].setText(str(summary.get("n_videos", 0)))
+            self.ingest_metric_labels["readable"].setText(str(summary.get("readable_videos", 0)))
+            self.ingest_metric_labels["warnings"].setText(str(summary.get("warning_videos", 0)))
+            self.ingest_metric_labels["median_fps"].setText(fmt_num(summary.get("median_fps"), 2))
+            self.ingest_metric_labels["median_duration"].setText(fmt_num(summary.get("median_duration_sec"), 1, " s"))
+            self.ingest_metric_labels["frames"].setText(fmt_num(summary.get("total_estimated_frames"), 0))
+            self.ingest_metric_labels["fps_range"].setText(f"{fmt_num(summary.get('min_fps'), 2)} - {fmt_num(summary.get('max_fps'), 2)}")
+        if hasattr(self, "ingest_next_step_label"):
+            self.ingest_next_step_label.setText(str(summary.get("next_step", "No ingest results yet.")))
+        readiness = str(summary.get("readiness", "UNKNOWN"))
+        self.ingest_summary_label.setText(
+            f"{summary.get('n_videos', 0)} candidate videos detected; "
+            f"{summary.get('readable_videos', 0)} readable; "
+            f"{summary.get('warning_videos', 0)} with warnings. Readiness: {readiness}."
+        )
+        if hasattr(self, "project_gate_message"):
+            self.project_gate_message.setText(f"Ingest readiness: {readiness}. {summary.get('next_step', '')}")
+
+        display_fmt = fmt.copy()
+        for col in ["median_fps", "median_duration_sec"]:
+            if col in display_fmt.columns:
+                display_fmt[col] = pd.to_numeric(display_fmt[col], errors="coerce").round(2)
+        for col in ["estimated_frames", "warnings"]:
+            if col in display_fmt.columns:
+                display_fmt[col] = pd.to_numeric(display_fmt[col], errors="coerce").fillna(0).astype(int)
+        self._fill_table(self.ingest_format_table, display_fmt, max_rows=80)
+
+        if warnings.empty:
+            if hasattr(self, "ingest_warning_label"):
+                self.ingest_warning_label.setText("No structural ingest warnings.")
+            if hasattr(self, "ingest_warning_table"):
+                self._fill_table(self.ingest_warning_table, warnings, max_rows=80)
+        else:
+            if hasattr(self, "ingest_warning_label"):
+                self.ingest_warning_label.setText(f"{len(warnings)} video(s) need review before trusting downstream features.")
+            if hasattr(self, "ingest_warning_table"):
+                self._fill_table(self.ingest_warning_table, warnings, max_rows=120)
 
     def run_metadata_stage(self) -> None:
         if not self.ingest_manifest_csv or not self.ingest_manifest_csv.exists():

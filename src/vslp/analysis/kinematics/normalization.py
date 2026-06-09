@@ -28,6 +28,10 @@ class NormalizationConfig:
     center_landmark: int = 1
     min_face_detected_fraction: float = 0.60
     min_scale_valid_fraction: float = 0.60
+    max_scale_cv_review: float = 0.10
+    max_scale_cv_fail: float = 0.20
+    max_frame_scale_jump_review: float = 0.10
+    max_frame_scale_jump_fail: float = 0.25
     overwrite: bool = True
     notes: str = ""
 
@@ -72,6 +76,16 @@ def _distance(df: pd.DataFrame, a: int, b: int) -> pd.Series:
     return np.sqrt((df[ax] - df[bx]) ** 2 + (df[ay] - df[by]) ** 2 + (df[az] - df[bz]) ** 2)
 
 
+def _safe_face_mask(df: pd.DataFrame) -> pd.Series:
+    if "face_detected" not in df.columns:
+        return pd.Series([True] * len(df), index=df.index)
+    series = df["face_detected"]
+    if series.dtype == bool:
+        return series.fillna(False).astype(bool)
+    text = series.astype(str).str.lower().str.strip()
+    return text.isin(["true", "1", "yes", "y"])
+
+
 def load_selected_landmarks(output_root: Path | str, fallback_preset: str = "ALS oral-motor core 15") -> tuple[tuple[int, ...], str]:
     """Load visual workstation selection, falling back to the default preset."""
     path = _selection_json_path(output_root)
@@ -109,42 +123,40 @@ def write_normalization_config(output_root: Path | str, method: str, *, notes: s
     return path
 
 
-def _scale_series(df: pd.DataFrame, method: str) -> tuple[pd.Series, str, str]:
-    face_mask = df.get("face_detected", pd.Series([True] * len(df))).astype(bool)
+def _scale_series(df: pd.DataFrame, method: str) -> tuple[pd.Series, str, str, tuple[int, ...]]:
+    face_mask = _safe_face_mask(df)
     if method == "raw_normalized_coordinates":
-        return pd.Series([1.0] * len(df), index=df.index), "raw_unit_scale", "ok"
+        return pd.Series([1.0] * len(df), index=df.index), "raw_unit_scale", "raw_only", ()
     if method == "face_bbox_width":
         x_cols = [c for c in df.columns if c.endswith("_x")]
         if not x_cols:
-            return pd.Series([np.nan] * len(df), index=df.index), "face_bbox_width", "missing_x_columns"
-        values = df.loc[:, x_cols]
+            return pd.Series([np.nan] * len(df), index=df.index), "face_bbox_width", "missing_x_columns", ()
+        values = df.loc[:, x_cols].apply(pd.to_numeric, errors="coerce")
         scale = values.max(axis=1, skipna=True) - values.min(axis=1, skipna=True)
         scale = scale.where(face_mask)
-        return scale, "face_bbox_width", "ok"
+        return scale, "face_bbox_width", "ok", ()
+    effective_method = method
     if method == "procrustes_head_stabilized":
         # Computational placeholder: use intercanthal scaling now and explicitly
         # mark that rigid Procrustes rotation has not yet been applied.
-        method = "intercanthal_distance"
+        effective_method = "intercanthal_distance"
         status_suffix = "procrustes_not_yet_applied"
     else:
         status_suffix = "ok"
-    anchors = _METHOD_ANCHORS.get(method)
+    anchors = _METHOD_ANCHORS.get(effective_method)
     if not anchors:
-        return pd.Series([np.nan] * len(df), index=df.index), method, "unknown_method"
+        return pd.Series([np.nan] * len(df), index=df.index), effective_method, "unknown_method", ()
     a, b = anchors
     if not (_present_columns(df, a) and _present_columns(df, b)):
-        return pd.Series([np.nan] * len(df), index=df.index), f"landmark_distance_{a}_{b}", "missing_anchor_columns"
+        return pd.Series([np.nan] * len(df), index=df.index), f"landmark_distance_{a}_{b}", "missing_anchor_columns", anchors
     scale = _distance(df, a, b).where(face_mask)
-    return scale, f"landmark_distance_{a}_{b}", status_suffix
+    return scale, f"landmark_distance_{a}_{b}", status_suffix, anchors
 
 
 def _center_frame(df: pd.DataFrame, method: str, center_landmark: int) -> pd.DataFrame:
     if _present_columns(df, center_landmark):
         cx, cy, cz = _coord_columns(center_landmark)
         return pd.DataFrame({"center_x": df[cx], "center_y": df[cy], "center_z": df[cz]})
-    # Fallback to the midpoint of the default eye anchors if nose center is not
-    # available. If anchors are also unavailable, use zero so output columns are
-    # still present but QC will flag the problem via scale status.
     anchors = _METHOD_ANCHORS.get(method, _METHOD_ANCHORS["intercanthal_distance"])
     a, b = anchors if len(anchors) == 2 else _METHOD_ANCHORS["intercanthal_distance"]
     if _present_columns(df, a) and _present_columns(df, b):
@@ -152,6 +164,44 @@ def _center_frame(df: pd.DataFrame, method: str, center_landmark: int) -> pd.Dat
         bx, by, bz = _coord_columns(b)
         return pd.DataFrame({"center_x": (df[ax] + df[bx]) / 2.0, "center_y": (df[ay] + df[by]) / 2.0, "center_z": (df[az] + df[bz]) / 2.0})
     return pd.DataFrame({"center_x": 0.0, "center_y": 0.0, "center_z": 0.0}, index=df.index)
+
+
+def _scale_stability(scale_frame: pd.Series) -> dict[str, float | int]:
+    scale = pd.to_numeric(scale_frame, errors="coerce").to_numpy(dtype=float)
+    valid = scale[np.isfinite(scale) & (scale > 0)]
+    if valid.size == 0:
+        return {
+            "scale_value_video_median": math.nan,
+            "scale_value_iqr": math.nan,
+            "scale_value_cv": math.nan,
+            "scale_frame_to_frame_max_jump_fraction": math.nan,
+            "scale_frame_to_frame_p95_jump_fraction": math.nan,
+            "n_scale_valid_frames": 0,
+        }
+    median = float(np.nanmedian(valid))
+    q75, q25 = np.nanpercentile(valid, [75, 25])
+    iqr = float(q75 - q25)
+    cv = float(iqr / median) if np.isfinite(median) and median > 0 else math.nan
+    jumps: list[float] = []
+    prev: float | None = None
+    for value in scale:
+        if not np.isfinite(value) or value <= 0:
+            prev = None
+            continue
+        if prev is not None and prev > 0:
+            jumps.append(abs(float(value) - prev) / prev)
+        prev = float(value)
+    jump_arr = np.asarray(jumps, dtype=float)
+    max_jump = float(np.nanmax(jump_arr)) if jump_arr.size else 0.0
+    p95_jump = float(np.nanpercentile(jump_arr, 95)) if jump_arr.size else 0.0
+    return {
+        "scale_value_video_median": median,
+        "scale_value_iqr": iqr,
+        "scale_value_cv": cv,
+        "scale_frame_to_frame_max_jump_fraction": max_jump,
+        "scale_frame_to_frame_p95_jump_fraction": p95_jump,
+        "n_scale_valid_frames": int(valid.size),
+    }
 
 
 def normalize_landmark_file(input_csv: Path | str, output_csv: Path | str, cfg: NormalizationConfig) -> dict:
@@ -163,14 +213,15 @@ def normalize_landmark_file(input_csv: Path | str, output_csv: Path | str, cfg: 
     df = pd.read_csv(input_csv)
     if df.empty:
         raise ValueError(f"Landmark CSV is empty: {input_csv}")
-    if "face_detected" not in df.columns:
-        df["face_detected"] = True
-    face_detected = df["face_detected"].astype(bool)
-    scale_frame, scale_source, scale_status = _scale_series(df, cfg.method)
+    face_detected = _safe_face_mask(df)
+    df["face_detected"] = face_detected
+    scale_frame, scale_source, scale_status, anchors = _scale_series(df, cfg.method)
     valid_scale = np.isfinite(scale_frame.to_numpy(dtype=float)) & (scale_frame.to_numpy(dtype=float) > 0)
-    robust_scale = float(np.nanmedian(scale_frame[valid_scale])) if valid_scale.any() else math.nan
+    stability = _scale_stability(scale_frame)
+    robust_scale = float(stability["scale_value_video_median"])
     robust_scale_ok = bool(np.isfinite(robust_scale) and robust_scale > 0)
     center = _center_frame(df, cfg.method, cfg.center_landmark)
+    denom = robust_scale if robust_scale_ok else np.nan
     rows = pd.DataFrame({
         "frame": df.get("frame", pd.Series(range(len(df)))),
         "timestamp_ms": df.get("timestamp_ms", pd.Series([np.nan] * len(df))),
@@ -180,6 +231,7 @@ def normalize_landmark_file(input_csv: Path | str, output_csv: Path | str, cfg: 
         "scale_status": scale_status if robust_scale_ok else "invalid_scale",
         "scale_value_video_median": robust_scale,
         "scale_value_frame": scale_frame,
+        "scale_value_frame_to_video_ratio": scale_frame / denom,
         "scale_valid_frame": valid_scale,
         "center_landmark": cfg.center_landmark,
         "center_x": center["center_x"],
@@ -192,7 +244,6 @@ def normalize_landmark_file(input_csv: Path | str, output_csv: Path | str, cfg: 
             missing_selected.append(idx)
             continue
         x, y, z = _coord_columns(idx)
-        denom = robust_scale if robust_scale_ok else np.nan
         rows[f"{idx}_x_norm"] = (df[x] - center["center_x"]) / denom
         rows[f"{idx}_y_norm"] = (df[y] - center["center_y"]) / denom
         rows[f"{idx}_z_norm"] = (df[z] - center["center_z"]) / denom
@@ -213,12 +264,26 @@ def normalize_landmark_file(input_csv: Path | str, output_csv: Path | str, cfg: 
         selected_frame_fraction = math.nan
         mean_selected_availability = math.nan
     qc_flags = []
+    if cfg.method == "raw_normalized_coordinates":
+        qc_flags.append("normalization_method_raw_only")
+    if scale_status == "missing_anchor_columns":
+        qc_flags.append("normalization_anchor_missing")
     if not robust_scale_ok:
-        qc_flags.append("invalid_scale")
+        qc_flags.append("normalization_invalid_scale")
     if face_fraction < cfg.min_face_detected_fraction:
-        qc_flags.append("low_face_detected_fraction")
+        qc_flags.append("normalization_insufficient_face_frames")
     if scale_valid_fraction < cfg.min_scale_valid_fraction:
-        qc_flags.append("low_scale_valid_fraction")
+        qc_flags.append("normalization_insufficient_valid_frames")
+    scale_cv = float(stability["scale_value_cv"])
+    max_jump = float(stability["scale_frame_to_frame_max_jump_fraction"])
+    if np.isfinite(scale_cv) and scale_cv >= cfg.max_scale_cv_fail:
+        qc_flags.append("normalization_scale_unstable")
+    elif np.isfinite(scale_cv) and scale_cv >= cfg.max_scale_cv_review:
+        qc_flags.append("normalization_high_scale_cv")
+    if np.isfinite(max_jump) and max_jump >= cfg.max_frame_scale_jump_fail:
+        qc_flags.append("normalization_scale_unstable")
+    elif np.isfinite(max_jump) and max_jump >= cfg.max_frame_scale_jump_review:
+        qc_flags.append("normalization_high_frame_to_frame_jump")
     if missing_selected:
         qc_flags.append("missing_selected_landmark_columns")
     return {
@@ -228,15 +293,22 @@ def normalize_landmark_file(input_csv: Path | str, output_csv: Path | str, cfg: 
         "n_frames": n_frames,
         "n_face_detected": n_face,
         "face_detected_fraction": face_fraction,
+        "normalization_method": cfg.method,
         "scale_source": scale_source,
         "scale_status": scale_status,
+        "scale_anchor_landmarks": ",".join(map(str, anchors)),
         "scale_value_video_median": robust_scale,
+        "scale_value_iqr": stability["scale_value_iqr"],
+        "scale_value_cv": stability["scale_value_cv"],
+        "scale_frame_to_frame_max_jump_fraction": stability["scale_frame_to_frame_max_jump_fraction"],
+        "scale_frame_to_frame_p95_jump_fraction": stability["scale_frame_to_frame_p95_jump_fraction"],
+        "n_scale_valid_frames": stability["n_scale_valid_frames"],
         "scale_valid_fraction": scale_valid_fraction,
         "n_selected_landmarks": int(len(cfg.selected_landmarks)),
         "missing_selected_landmarks": ",".join(map(str, missing_selected)),
         "selected_complete_frame_fraction": selected_frame_fraction,
         "mean_selected_landmark_availability": mean_selected_availability,
-        "qc_flags": ";".join(qc_flags),
+        "qc_flags": ";".join(dict.fromkeys(qc_flags)),
     }
 
 

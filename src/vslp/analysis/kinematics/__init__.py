@@ -1,6 +1,6 @@
 """Kinematics analysis scaffold for the VSLP GUI."""
 from .schemas import LANDMARK_PRESETS, NORMALIZATION_METHODS, AGGREGATION_PROFILES, VideoIngestConfig
-from .ingest import run_ingest, discover_videos
+from .ingest import run_ingest, discover_videos, summarize_ingest_manifest, build_format_summary, build_warning_summary
 from .metadata import link_metadata, load_metadata
 from .landmarks import (
     LandmarkRunConfig,
@@ -28,7 +28,7 @@ from .reports import write_scaffold_report
 
 __all__ = [
     "LANDMARK_PRESETS", "NORMALIZATION_METHODS", "AGGREGATION_PROFILES", "VideoIngestConfig",
-    "run_ingest", "discover_videos", "link_metadata", "load_metadata", "LandmarkRunConfig",
+    "run_ingest", "discover_videos", "summarize_ingest_manifest", "build_format_summary", "build_warning_summary", "link_metadata", "load_metadata", "LandmarkRunConfig",
     "write_landmark_plan", "run_mediapipe_landmarks", "download_default_model",
     "mediapipe_capability_note", "mediapipe_environment_status", "FACE_LANDMARKER_MODEL_URL",
     "NormalizationConfig", "write_normalization_config", "run_normalization", "run_normalization_from_selection",
