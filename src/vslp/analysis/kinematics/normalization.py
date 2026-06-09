@@ -123,6 +123,23 @@ def write_normalization_config(output_root: Path | str, method: str, *, notes: s
     return path
 
 
+def _valid_scale_fraction(scale: pd.Series) -> float:
+    values = pd.to_numeric(scale, errors="coerce").to_numpy(dtype=float)
+    if values.size == 0:
+        return 0.0
+    return float(np.isfinite(values).sum() / values.size)
+
+
+def _landmark_pair_scale(df: pd.DataFrame, a: int, b: int, face_mask: pd.Series) -> pd.Series | None:
+    if not (_present_columns(df, a) and _present_columns(df, b)):
+        return None
+    scale = _distance(df, a, b).where(face_mask)
+    valid = np.isfinite(scale.to_numpy(dtype=float)) & (scale.to_numpy(dtype=float) > 0)
+    if not valid.any():
+        return None
+    return scale
+
+
 def _scale_series(df: pd.DataFrame, method: str) -> tuple[pd.Series, str, str, tuple[int, ...]]:
     face_mask = _safe_face_mask(df)
     if method == "raw_normalized_coordinates":
@@ -137,19 +154,33 @@ def _scale_series(df: pd.DataFrame, method: str) -> tuple[pd.Series, str, str, t
         return scale, "face_bbox_width", "ok", ()
     effective_method = method
     if method == "procrustes_head_stabilized":
-        # Computational placeholder: use intercanthal scaling now and explicitly
+        # Computational placeholder: use canthus scaling now and explicitly
         # mark that rigid Procrustes rotation has not yet been applied.
         effective_method = "intercanthal_distance"
         status_suffix = "procrustes_not_yet_applied"
     else:
         status_suffix = "ok"
+
+    if effective_method == "intercanthal_distance":
+        # Scientifically preferred scale: inner canthus landmarks 133/362.
+        # Practical fallback: outer eye anchors 33/263, because older presets and
+        # some difficult videos may not support reliable inner-canthus scaling.
+        # The fallback is explicit in the manifest so downstream review can see it.
+        inner = _landmark_pair_scale(df, 133, 362, face_mask)
+        if inner is not None:
+            return inner, "landmark_distance_133_362", status_suffix, (133, 362)
+        outer = _landmark_pair_scale(df, 33, 263, face_mask)
+        if outer is not None:
+            return outer, "landmark_distance_33_263", "fallback_outer_eye_anchors", (33, 263)
+        return pd.Series([np.nan] * len(df), index=df.index), "landmark_distance_133_362", "missing_anchor_columns", (133, 362)
+
     anchors = _METHOD_ANCHORS.get(effective_method)
     if not anchors:
         return pd.Series([np.nan] * len(df), index=df.index), effective_method, "unknown_method", ()
     a, b = anchors
-    if not (_present_columns(df, a) and _present_columns(df, b)):
+    scale = _landmark_pair_scale(df, a, b, face_mask)
+    if scale is None:
         return pd.Series([np.nan] * len(df), index=df.index), f"landmark_distance_{a}_{b}", "missing_anchor_columns", anchors
-    scale = _distance(df, a, b).where(face_mask)
     return scale, f"landmark_distance_{a}_{b}", status_suffix, anchors
 
 
@@ -268,6 +299,8 @@ def normalize_landmark_file(input_csv: Path | str, output_csv: Path | str, cfg: 
         qc_flags.append("normalization_method_raw_only")
     if scale_status == "missing_anchor_columns":
         qc_flags.append("normalization_anchor_missing")
+    if scale_status == "fallback_outer_eye_anchors":
+        qc_flags.append("normalization_anchor_fallback_used")
     if not robust_scale_ok:
         qc_flags.append("normalization_invalid_scale")
     if face_fraction < cfg.min_face_detected_fraction:

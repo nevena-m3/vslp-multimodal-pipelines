@@ -96,3 +96,32 @@ def test_normalization_flags_unstable_anchor_scale(tmp_path: Path) -> None:
     assert manifest.loc[0, "status"] == "qc_flagged"
     assert "normalization_scale_unstable" in str(manifest.loc[0, "qc_flags"])
     assert float(manifest.loc[0, "scale_frame_to_frame_max_jump_fraction"]) > 0.25
+
+
+def test_intercanthal_normalization_falls_back_to_outer_eye_when_inner_missing(tmp_path: Path) -> None:
+    tables = tmp_path / "kinematics" / "002_landmarks" / "tables"
+    tables.mkdir(parents=True)
+    lmks = tables / "fallback-lmks.csv"
+    rows = []
+    for frame in range(3):
+        row = {"frame": frame, "timestamp_ms": frame * 33, "face_detected": True}
+        for idx in [1, 13, 14, 33, 263]:
+            row[f"{idx}_x"] = 0.50
+            row[f"{idx}_y"] = 0.50
+            row[f"{idx}_z"] = 0.0
+        row["33_x"], row["33_y"], row["33_z"] = 0.35, 0.40, 0.0
+        row["263_x"], row["263_y"], row["263_z"] = 0.65, 0.40, 0.0
+        row["13_y"] = 0.55
+        row["14_y"] = 0.60
+        rows.append(row)
+    pd.DataFrame(rows).to_csv(lmks, index=False)
+    pd.DataFrame([{"video_id": "fallback", "source_path": "video.webm", "output_csv": str(lmks), "status": "ok"}]).to_csv(tables / "landmarks_manifest.csv", index=False)
+
+    result = run_normalization(tmp_path, NormalizationConfig(method="intercanthal_distance", selected_landmarks=(13, 14)))
+    manifest = pd.read_csv(result["manifest_csv"])
+
+    assert manifest.loc[0, "status"] == "qc_flagged"
+    assert manifest.loc[0, "scale_source"] == "landmark_distance_33_263"
+    assert manifest.loc[0, "scale_status"] == "fallback_outer_eye_anchors"
+    assert "normalization_anchor_fallback_used" in str(manifest.loc[0, "qc_flags"])
+    assert abs(float(manifest.loc[0, "scale_value_video_median"]) - 0.30) < 1e-9

@@ -19,11 +19,14 @@ DEFAULT_VIDEO_EXTENSIONS = frozenset({
 # reproducible starting point and are expected to be revised as the lab finalizes
 # the visible articulator feature set.
 LANDMARK_PRESETS: dict[str, tuple[int, ...]] = {
-    "ALS oral-motor core 15": (13, 14, 61, 291, 78, 308, 81, 311, 0, 17, 152, 199, 33, 263, 1),
-    "Lower-face jaw/lip kinematics": (13, 14, 17, 152, 175, 199, 200, 61, 291, 78, 308, 0, 164, 37, 267),
+    "ALS oral-motor core 17": (13, 14, 61, 291, 78, 308, 81, 311, 0, 17, 152, 199, 33, 133, 263, 362, 1),
+    # Backward-compatible alias kept for old configs; includes the two inner-canthus anchors required by default normalization.
+    "ALS oral-motor core 15": (13, 14, 61, 291, 78, 308, 81, 311, 0, 17, 152, 199, 33, 133, 263, 362, 1),
+    "Lower-face jaw/lip kinematics": (13, 14, 17, 152, 175, 199, 200, 61, 291, 78, 308, 0, 164, 37, 267, 133, 362),
     "Lip symmetry and lateralization": (61, 291, 78, 308, 57, 287, 40, 270, 33, 263, 133, 362, 152, 10, 1),
     "Parkinson hypomimia / facial expressivity": (70, 300, 105, 334, 159, 386, 145, 374, 61, 291, 13, 14, 0, 17, 152),
-    "Broad audit 30": (0, 1, 10, 13, 14, 17, 33, 37, 40, 57, 61, 70, 78, 81, 105, 133, 145, 152, 159, 164, 175, 199, 200, 263, 267, 270, 287, 291, 300, 308),
+    "Broad audit 31": (0, 1, 10, 13, 14, 17, 33, 37, 40, 57, 61, 70, 78, 81, 105, 133, 145, 152, 159, 164, 175, 199, 200, 263, 267, 270, 287, 291, 300, 308, 362),
+    "Broad audit 30": (0, 1, 10, 13, 14, 17, 33, 37, 40, 57, 61, 70, 78, 81, 105, 133, 145, 152, 159, 164, 175, 199, 200, 263, 267, 270, 287, 291, 300, 308, 362),
 }
 
 NORMALIZATION_METHODS: dict[str, str] = {
