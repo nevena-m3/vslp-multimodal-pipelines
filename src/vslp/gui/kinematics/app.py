@@ -474,6 +474,15 @@ class KinematicsPipelineWindow(QMainWindow):
         browse_model.clicked.connect(self.browse_model_file)
         download_model = QPushButton("Download Default Model")
         download_model.clicked.connect(self.download_landmarker_model)
+        install_runtime = QPushButton("Install / Verify MediaPipe Runtime")
+        install_runtime.setObjectName("RunButton")
+        install_runtime.clicked.connect(self.bootstrap_mediapipe_runtime_stage)
+        self.auto_prepare_mediapipe_check = QCheckBox("Auto-install missing runtime and download model before extraction")
+        self.auto_prepare_mediapipe_check.setChecked(True)
+        self.auto_prepare_mediapipe_check.setToolTip(
+            "Recommended for normal users. The GUI will install opencv-python/mediapipe into the active VSLP virtual environment if missing, "
+            "then download face_landmarker.task if needed before running extraction."
+        )
         form.addWidget(QLabel("FaceLandmarker .task model"), 0, 0)
         form.addWidget(self.model_path_edit, 0, 1)
         form.addWidget(browse_model, 0, 2)
@@ -482,6 +491,7 @@ class KinematicsPipelineWindow(QMainWindow):
         form.addWidget(QLabel("Presence confidence"), 2, 0); form.addWidget(self.presence_conf_spin, 2, 1)
         form.addWidget(QLabel("Tracking confidence"), 3, 0); form.addWidget(self.tracking_conf_spin, 3, 1)
         form.addWidget(QLabel("Expected landmark columns"), 4, 0); form.addWidget(self.expected_landmarks_spin, 4, 1)
+        form.addWidget(QLabel("Runtime setup"), 5, 0); form.addWidget(install_runtime, 5, 1, 1, 1); form.addWidget(self.auto_prepare_mediapipe_check, 5, 2, 1, 2)
         layout.addWidget(group)
         note = QPlainTextEdit(); note.setReadOnly(True); note.setMaximumHeight(150)
         note.setPlainText(mediapipe_capability_note())
@@ -835,6 +845,33 @@ class KinematicsPipelineWindow(QMainWindow):
             return
         cfg = self._landmark_config()
         self._update_landmark_runtime_label()
+        status = mediapipe_environment_status()
+        auto_prepare = bool(getattr(self, "auto_prepare_mediapipe_check", None) and self.auto_prepare_mediapipe_check.isChecked())
+        if (not status.opencv_available or not status.mediapipe_available) and auto_prepare:
+            reply = QMessageBox.question(
+                self,
+                "Install MediaPipe runtime?",
+                "OpenCV and/or MediaPipe are missing from this VSLP Python environment.\n\n"
+                "The GUI can install the required packages into the active virtual environment now:\n"
+                "  opencv-python\n"
+                "  mediapipe\n\n"
+                "This can take a few minutes and requires internet access. Continue?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if reply != QMessageBox.Yes:
+                return
+            self.bootstrap_mediapipe_runtime_stage()
+            status = mediapipe_environment_status()
+        if not status.opencv_available or not status.mediapipe_available:
+            QMessageBox.critical(
+                self,
+                "MediaPipe runtime missing",
+                "Real landmark extraction cannot run until opencv-python and mediapipe are installed.\n\n"
+                "Click 'Install / Verify MediaPipe Runtime' on the Landmarks tab, or run:\n"
+                "python -m pip install opencv-python mediapipe",
+            )
+            return
         try:
             res = run_mediapipe_landmarks(out, cfg, manifest)
         except Exception as exc:  # noqa: BLE001
