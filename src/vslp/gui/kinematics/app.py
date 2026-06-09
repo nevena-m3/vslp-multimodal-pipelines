@@ -1,4 +1,4 @@
-"""VSLP Kinematics Pipeline GUI v0.61.
+"""VSLP Kinematics Pipeline GUI v0.62.
 
 This GUI intentionally mirrors the acoustic pipeline layout: left stage sidebar,
 institutional branding strip, top tabs, run log, and compact scientific workflow
@@ -18,7 +18,7 @@ import pandas as pd
 
 try:
     from PySide6.QtCore import QPointF, QObject, QThread, Qt, Signal
-    from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPixmap
+    from PySide6.QtGui import QBrush, QColor, QFont, QImage, QPainter, QPen, QPixmap
     from PySide6.QtWidgets import (
         QApplication,
         QAbstractItemView,
@@ -37,6 +37,7 @@ try:
         QPlainTextEdit,
         QProgressBar,
         QPushButton,
+        QSlider,
         QScrollArea,
         QSpinBox,
         QDoubleSpinBox,
@@ -72,7 +73,7 @@ from vslp.analysis.kinematics import (
 )
 from vslp.analysis.kinematics.schemas import DEFAULT_VIDEO_EXTENSIONS, parse_int_list
 
-APP_VERSION = "v0.61"
+APP_VERSION = "v0.62"
 BRAND_DIR = Path(__file__).resolve().parent / "assets" / "branding"
 LAB_LOGO = BRAND_DIR / "lab_logo.png"
 UOFT_LOGO = BRAND_DIR / "uoft_logo.png"
@@ -114,64 +115,128 @@ class Worker(QObject):
 
 
 class LandmarkMeshCanvas(QWidget):
-    """Interactive 2D landmark selector for MediaPipe face-mesh points.
+    """Real-frame MediaPipe overlay selector.
 
-    The canvas displays either median x/y positions from an extracted landmark CSV
-    or a synthetic face-like fallback layout. Users can click points to toggle
-    inclusion in the active landmark subset. This is intentionally visual and
-    auditable: the text box remains the source of truth, and the canvas simply
-    makes the point set understandable.
+    Unlike the earlier abstract mesh view, this canvas is designed for clinical
+    review: it displays an actual frame from the selected video, overlays the
+    landmarks extracted by MediaPipe for that same frame, and lets the user click
+    directly on points to add/remove them from the working landmark set.
     """
 
     selection_changed = Signal(str)
 
+    REGION_SETS: dict[str, set[int]] = {
+        "mouth/lips": {0, 13, 14, 17, 37, 40, 57, 61, 78, 81, 82, 87, 88, 95, 146, 164, 178, 181, 185, 191, 267, 270, 287, 291, 308, 311, 312, 317, 318, 324, 375, 402, 405, 409, 415},
+        "jaw/chin/lower face": {17, 152, 175, 199, 200, 148, 176, 149, 150, 136, 172, 58, 132, 361, 288, 397, 365, 379, 378, 400},
+        "eye/canthus anchors": {33, 133, 159, 145, 263, 362, 386, 374, 246, 161, 160, 144, 163, 7, 466, 388, 387, 373, 390, 249},
+        "nose/midline": {1, 2, 4, 5, 6, 8, 9, 10, 94, 97, 98, 168, 195, 197, 326, 327},
+        "brows/upper face": {70, 105, 107, 336, 334, 300, 46, 52, 53, 65, 55, 285, 295, 282, 283, 276},
+        "cheeks/contour": {10, 21, 54, 58, 67, 93, 103, 127, 132, 136, 148, 149, 150, 152, 162, 172, 176, 234, 251, 284, 288, 297, 323, 332, 356, 361, 365, 377, 378, 379, 389, 397, 454},
+    }
+
+    REGION_COLORS = {
+        "mouth/lips": QColor("#E11D48"),
+        "jaw/chin/lower face": QColor("#F59E0B"),
+        "eye/canthus anchors": QColor("#2563EB"),
+        "nose/midline": QColor("#7C3AED"),
+        "brows/upper face": QColor("#0E9F6E"),
+        "cheeks/contour": QColor("#64748B"),
+        "other": QColor("#94A3B8"),
+    }
+
+    LANDMARK_LABELS = {
+        13: "upper inner lip / mouth aperture",
+        14: "lower inner lip / mouth aperture",
+        61: "left mouth corner / commissure",
+        291: "right mouth corner / commissure",
+        78: "left inner mouth corner",
+        308: "right inner mouth corner",
+        81: "upper lip support",
+        311: "upper lip support",
+        0: "midline lip/face reference",
+        17: "lower lip / lower-face support",
+        152: "chin / jaw anchor",
+        199: "lower-face reference",
+        33: "left outer eye/canthus anchor",
+        263: "right outer eye/canthus anchor",
+        1: "nose tip / midline reference",
+        70: "left brow/upper-face motion",
+        300: "right brow/upper-face motion",
+        105: "left brow support",
+        334: "right brow support",
+        159: "left upper eyelid",
+        386: "right upper eyelid",
+        145: "left lower eyelid",
+        374: "right lower eyelid",
+    }
+
+    MOUTH_EDGES = [(61, 78), (78, 13), (13, 308), (308, 291), (291, 14), (14, 61), (13, 14), (61, 291)]
+    EYE_EDGES = [(33, 133), (263, 362), (33, 159), (159, 133), (33, 145), (145, 133), (263, 386), (386, 362), (263, 374), (374, 362)]
+    FACE_GUIDE_EDGES = [(33, 263), (1, 152), (61, 291), (13, 14), (17, 152)]
+
     def __init__(self) -> None:
         super().__init__()
-        self.setMinimumSize(520, 520)
+        self.setMinimumSize(760, 560)
         self.setMouseTracking(True)
-        self.points: dict[int, tuple[float, float]] = self._synthetic_points(478)
+        self.points: dict[int, tuple[float, float]] = {}
         self.selected: set[int] = set()
         self.hover_idx: int | None = None
+        self.frame_pixmap: QPixmap | None = None
+        self.source_label = "No real frame loaded yet"
+        self.frame_label = ""
         self.show_all_labels = False
-        self.source_label = "Generic MediaPipe face-mesh template"
+        self.show_mesh_edges = True
+        self.point_radius = 3.3
 
-    @staticmethod
-    def _synthetic_points(n: int) -> dict[int, tuple[float, float]]:
-        import math
-        pts: dict[int, tuple[float, float]] = {}
-        for i in range(n):
-            # Deterministic face-like oval fallback. This is not anatomical ground truth;
-            # it simply prevents a blank canvas before real landmark CSVs exist.
-            ring = i % 37
-            band = (i // 37) % 13
-            theta = 2.0 * math.pi * ring / 37.0
-            rx = 0.18 + 0.26 * (band / 12.0)
-            ry = 0.12 + 0.34 * (band / 12.0)
-            x = 0.50 + rx * math.cos(theta) * (0.85 + 0.15 * math.sin(band))
-            y = 0.50 + ry * math.sin(theta)
-            pts[i] = (float(min(max(x, 0.04), 0.96)), float(min(max(y, 0.04), 0.96)))
-        return pts
+    @classmethod
+    def region_for(cls, idx: int) -> str:
+        for region, vals in cls.REGION_SETS.items():
+            if idx in vals:
+                return region
+        return "other"
+
+    @classmethod
+    def label_for(cls, idx: int) -> str:
+        return cls.LANDMARK_LABELS.get(idx, cls.region_for(idx))
+
+    def set_overlay(self, frame: QPixmap | None, points: dict[int, tuple[float, float]], source_label: str, frame_label: str = "") -> None:
+        self.frame_pixmap = frame
+        self.points = points or {}
+        self.source_label = source_label
+        self.frame_label = frame_label
+        self.hover_idx = None
+        self.update()
 
     def set_points(self, points: dict[int, tuple[float, float]], source_label: str) -> None:
-        if points:
-            self.points = points
-            self.source_label = source_label
-            self.update()
+        self.set_overlay(None, points, source_label)
 
     def set_selected(self, indices: list[int] | tuple[int, ...] | set[int]) -> None:
-        self.selected = {int(i) for i in indices if int(i) in self.points}
+        allowed = set(self.points.keys()) if self.points else set(range(0, 500))
+        self.selected = {int(i) for i in indices if int(i) in allowed}
         self.selection_changed.emit(", ".join(map(str, sorted(self.selected))))
         self.update()
 
     def selected_text(self) -> str:
         return ", ".join(map(str, sorted(self.selected)))
 
-    def _plot_rect(self):
-        margin = 36
-        return margin, margin + 18, self.width() - 2 * margin, self.height() - 2 * margin - 40
+    def _image_rect(self):
+        margin = 22
+        title_h = 38
+        footer_h = 34
+        avail_w = max(20, self.width() - 2 * margin)
+        avail_h = max(20, self.height() - title_h - footer_h - margin)
+        left = margin
+        top = title_h
+        if self.frame_pixmap is None or self.frame_pixmap.isNull():
+            return left, top, avail_w, avail_h
+        iw, ih = self.frame_pixmap.width(), self.frame_pixmap.height()
+        scale = min(avail_w / iw, avail_h / ih)
+        w = int(iw * scale)
+        h = int(ih * scale)
+        return int(left + (avail_w - w) / 2), int(top + (avail_h - h) / 2), w, h
 
     def _to_screen(self, x: float, y: float) -> QPointF:
-        left, top, w, h = self._plot_rect()
+        left, top, w, h = self._image_rect()
         return QPointF(left + x * w, top + y * h)
 
     def _nearest(self, pos) -> tuple[int | None, float]:
@@ -184,18 +249,20 @@ class LandmarkMeshCanvas(QWidget):
                 best_idx, best_d = idx, d
         return best_idx, best_d
 
-    def mouseMoveEvent(self, event):  # noqa: N802 - Qt override
-        idx, d = self._nearest(event.position())
-        self.hover_idx = idx if d <= 12 else None
+    def mouseMoveEvent(self, event):  # noqa: N802
+        idx, d = self._nearest(event.position()) if self.points else (None, 1e9)
+        self.hover_idx = idx if d <= 16 else None
         if self.hover_idx is not None:
-            self.setToolTip(f"Landmark {self.hover_idx}: click to toggle selection")
+            self.setToolTip(f"Landmark {self.hover_idx}: {self.label_for(self.hover_idx)}\nClick to add/remove")
+        else:
+            self.setToolTip("Load a real video frame with MediaPipe overlay, then click landmarks to select them.")
         self.update()
 
-    def mousePressEvent(self, event):  # noqa: N802 - Qt override
-        if event.button() != Qt.LeftButton:
+    def mousePressEvent(self, event):  # noqa: N802
+        if event.button() != Qt.LeftButton or not self.points:
             return
         idx, d = self._nearest(event.position())
-        if idx is not None and d <= 14:
+        if idx is not None and d <= 18:
             if idx in self.selected:
                 self.selected.remove(idx)
             else:
@@ -203,56 +270,82 @@ class LandmarkMeshCanvas(QWidget):
             self.selection_changed.emit(self.selected_text())
             self.update()
 
-    def paintEvent(self, event):  # noqa: N802 - Qt override
+    def _draw_edge(self, painter: QPainter, a: int, b: int, color: QColor, width: float = 1.1) -> None:
+        if a not in self.points or b not in self.points:
+            return
+        pa = self._to_screen(*self.points[a])
+        pb = self._to_screen(*self.points[b])
+        painter.setPen(QPen(color, width))
+        painter.drawLine(pa, pb)
+
+    def paintEvent(self, event):  # noqa: N802
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.fillRect(self.rect(), QColor("#F7FAFD"))
-        left, top, w, h = self._plot_rect()
-        painter.setPen(QPen(QColor("#C8D6E4"), 1))
-        painter.setBrush(QBrush(QColor("#FFFFFF")))
-        painter.drawRoundedRect(left, top, w, h, 12, 12)
-
-        painter.setFont(QFont("Segoe UI", 9, QFont.Weight.Bold))
+        painter.fillRect(self.rect(), QColor("#F8FAFC"))
+        painter.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
         painter.setPen(QColor("#0B2740"))
-        painter.drawText(18, 22, "Interactive MediaPipe face-mesh selector")
+        painter.drawText(18, 24, "Real video frame + Google MediaPipe overlay")
         painter.setFont(QFont("Segoe UI", 8))
         painter.setPen(QColor("#3E5B73"))
-        painter.drawText(18, self.height() - 12, f"Source: {self.source_label} | selected: {len(self.selected)} | click points to add/remove")
+        painter.drawText(18, 42, self.frame_label or "Load an extracted video/frame to inspect actual landmark placement.")
 
-        # Draw coarse facial orientation guides.
-        painter.setPen(QPen(QColor("#D7E2EC"), 1, Qt.DashLine))
-        painter.drawLine(int(left + 0.5 * w), top + 8, int(left + 0.5 * w), top + h - 8)
-        painter.drawLine(left + 8, int(top + 0.5 * h), left + w - 8, int(top + 0.5 * h))
+        left, top, w, h = self._image_rect()
+        painter.setPen(QPen(QColor("#CBD5E1"), 1))
+        painter.setBrush(QBrush(QColor("#FFFFFF")))
+        painter.drawRoundedRect(left, top, w, h, 8, 8)
+        if self.frame_pixmap is not None and not self.frame_pixmap.isNull():
+            painter.drawPixmap(left, top, w, h, self.frame_pixmap)
+        else:
+            painter.setPen(QColor("#64748B"))
+            painter.drawText(left + 24, top + 42, "No real video frame loaded. Run Landmarks, then click 'Load Real Frame + MediaPipe Overlay'.")
 
-        # All landmarks.
+        if self.show_mesh_edges and self.points:
+            for a, b in self.FACE_GUIDE_EDGES:
+                self._draw_edge(painter, a, b, QColor(255, 255, 255, 165), 1.4)
+            for a, b in self.EYE_EDGES:
+                self._draw_edge(painter, a, b, QColor(37, 99, 235, 155), 1.2)
+            for a, b in self.MOUTH_EDGES:
+                self._draw_edge(painter, a, b, QColor(225, 29, 72, 180), 1.6)
+
         painter.setPen(Qt.NoPen)
         for idx, (x, y) in self.points.items():
-            p = self._to_screen(x, y)
             if idx in self.selected:
                 continue
-            painter.setBrush(QBrush(QColor("#7B8FA3") if idx != self.hover_idx else QColor("#F3B13B")))
-            radius = 2.2 if idx != self.hover_idx else 4.4
+            p = self._to_screen(x, y)
+            region = self.region_for(idx)
+            base = self.REGION_COLORS.get(region, self.REGION_COLORS["other"])
+            color = QColor(base)
+            color.setAlpha(160 if region != "other" else 100)
+            if idx == self.hover_idx:
+                color = QColor("#FDE047")
+            painter.setBrush(QBrush(color))
+            radius = self.point_radius + (2.0 if idx == self.hover_idx else 0.0)
             painter.drawEllipse(p, radius, radius)
 
-        # Selected landmarks on top.
         painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
         for idx in sorted(self.selected):
-            x, y = self.points[idx]
-            p = self._to_screen(x, y)
-            painter.setPen(QPen(QColor("#FFFFFF"), 1))
-            painter.setBrush(QBrush(QColor("#0E9F6E")))
-            painter.drawEllipse(p, 6.2, 6.2)
-            painter.setPen(QColor("#063221"))
-            painter.drawText(int(p.x() + 7), int(p.y() - 7), str(idx))
+            if idx not in self.points:
+                continue
+            p = self._to_screen(*self.points[idx])
+            painter.setPen(QPen(QColor("#FFFFFF"), 1.3))
+            painter.setBrush(QBrush(QColor("#10B981")))
+            painter.drawEllipse(p, 7.2, 7.2)
+            painter.setPen(QColor("#052E1A"))
+            painter.drawText(int(p.x() + 8), int(p.y() - 8), str(idx))
 
         if self.hover_idx is not None and self.hover_idx not in self.selected:
-            x, y = self.points[self.hover_idx]
-            p = self._to_screen(x, y)
-            painter.setPen(QPen(QColor("#B66B00"), 1))
+            p = self._to_screen(*self.points[self.hover_idx])
+            painter.setPen(QPen(QColor("#B45309"), 1.5))
             painter.setBrush(Qt.NoBrush)
-            painter.drawEllipse(p, 8.5, 8.5)
-            painter.setPen(QColor("#723B00"))
-            painter.drawText(int(p.x() + 8), int(p.y() - 8), str(self.hover_idx))
+            painter.drawEllipse(p, 10, 10)
+            painter.setFont(QFont("Segoe UI", 8, QFont.Weight.Bold))
+            painter.setPen(QColor("#78350F"))
+            painter.drawText(int(p.x() + 10), int(p.y() - 10), str(self.hover_idx))
+
+        painter.setFont(QFont("Segoe UI", 8))
+        painter.setPen(QColor("#0F172A"))
+        footer = f"Source: {self.source_label} | visible landmarks: {len(self.points)} | selected: {len(self.selected)} | click point to toggle"
+        painter.drawText(18, self.height() - 13, footer)
 
 
 class KinematicsPipelineWindow(QMainWindow):
@@ -668,44 +761,80 @@ class KinematicsPipelineWindow(QMainWindow):
             "Select the landmark subset that will drive default kinematic feature computation. Use the visual face-mesh selector to inspect extracted MediaPipe landmarks, click points to add/remove them, and save the selection for downstream normalization/features.",
         ))
 
-        group = QGroupBox("Landmark preset and visual selection")
+        group = QGroupBox("Landmark preset, real-frame overlay, and selection feedback")
         grid = QGridLayout(group)
         self.preset_combo = QComboBox(); self.preset_combo.addItems(list(LANDMARK_PRESETS.keys()))
         self.preset_combo.currentTextChanged.connect(self.apply_landmark_preset)
-        self.landmark_text = QPlainTextEdit(); self.landmark_text.setMaximumHeight(88)
+        self.landmark_video_combo = QComboBox()
+        self.landmark_frame_spin = QSpinBox(); self.landmark_frame_spin.setRange(0, 999999); self.landmark_frame_spin.setValue(0)
+        self.landmark_frame_slider = QSlider(Qt.Horizontal); self.landmark_frame_slider.setRange(0, 0)
+        self.landmark_frame_slider.valueChanged.connect(lambda v: self.landmark_frame_spin.setValue(int(v)))
+        self.landmark_frame_spin.valueChanged.connect(lambda v: self.landmark_frame_slider.setValue(int(v)) if self.landmark_frame_slider.maximum() >= int(v) else None)
+        self.landmark_text = QPlainTextEdit(); self.landmark_text.setMaximumHeight(74)
         self.landmark_text.setPlainText(", ".join(map(str, self.landmark_indices)))
+        refresh_videos_btn = QPushButton("Refresh Extracted Videos")
+        refresh_videos_btn.clicked.connect(self.refresh_landmark_video_choices)
+        load_frame_btn = QPushButton("Load Real Frame + MediaPipe Overlay")
+        load_frame_btn.setObjectName("RunButton")
+        load_frame_btn.clicked.connect(self.load_real_frame_landmark_overlay)
         apply_btn = QPushButton("Apply / Save Selected Landmarks")
         apply_btn.setObjectName("RunButton")
         apply_btn.clicked.connect(self.run_selection_stage)
-        load_mesh_btn = QPushButton("Load Mesh From Extracted Landmarks")
-        load_mesh_btn.clicked.connect(self.load_mesh_from_latest_landmarks)
-        clear_btn = QPushButton("Clear Visual Selection")
+        clear_btn = QPushButton("Clear Selection")
         clear_btn.clicked.connect(self.clear_visual_landmarks)
-        preview_btn = QPushButton("Save Mesh Preview PNG")
+        preview_btn = QPushButton("Save Overlay Preview PNG")
         preview_btn.clicked.connect(self.save_landmark_mesh_preview)
-        grid.addWidget(QLabel("Preset"), 0, 0); grid.addWidget(self.preset_combo, 0, 1); grid.addWidget(apply_btn, 0, 2)
-        grid.addWidget(QLabel("Selected landmark indices"), 1, 0); grid.addWidget(self.landmark_text, 1, 1, 1, 2)
-        grid.addWidget(load_mesh_btn, 2, 1); grid.addWidget(clear_btn, 2, 2); grid.addWidget(preview_btn, 2, 3)
+        grid.addWidget(QLabel("Video"), 0, 0); grid.addWidget(self.landmark_video_combo, 0, 1); grid.addWidget(refresh_videos_btn, 0, 2); grid.addWidget(load_frame_btn, 0, 3)
+        grid.addWidget(QLabel("Frame"), 1, 0); grid.addWidget(self.landmark_frame_spin, 1, 1); grid.addWidget(self.landmark_frame_slider, 1, 2, 1, 2)
+        grid.addWidget(QLabel("Preset"), 2, 0); grid.addWidget(self.preset_combo, 2, 1); grid.addWidget(apply_btn, 2, 2); grid.addWidget(preview_btn, 2, 3)
+        grid.addWidget(QLabel("Selected landmark indices"), 3, 0); grid.addWidget(self.landmark_text, 3, 1, 1, 2); grid.addWidget(clear_btn, 3, 3)
         layout.addWidget(group)
+
+        region_group = QGroupBox("Region quick-select")
+        region_layout = QHBoxLayout(region_group)
+        for region_label, region_key in [
+            ("Mouth / lips", "mouth/lips"),
+            ("Jaw / chin", "jaw/chin/lower face"),
+            ("Eye anchors", "eye/canthus anchors"),
+            ("Nose / midline", "nose/midline"),
+            ("Brows / upper face", "brows/upper face"),
+        ]:
+            btn = QPushButton(region_label)
+            btn.clicked.connect(lambda _=False, rk=region_key: self.add_landmark_region(rk))
+            region_layout.addWidget(btn)
+        layout.addWidget(region_group)
 
         mesh_row = QHBoxLayout()
         self.landmark_canvas = LandmarkMeshCanvas()
         self.landmark_canvas.set_selected(self.landmark_indices)
         self.landmark_canvas.selection_changed.connect(self._canvas_selection_changed)
-        mesh_row.addWidget(self.landmark_canvas, stretch=2)
+        mesh_row.addWidget(self.landmark_canvas, stretch=3)
+        right_panel = QVBoxLayout()
         guide = QTextBrowser()
-        guide.setMinimumWidth(360)
-        guide.setMaximumWidth(460)
+        guide.setMinimumWidth(380)
+        guide.setMaximumWidth(500)
         guide.setHtml(
-            "<h3>How to use this selector</h3>"
-            "<p><b>1.</b> Run landmark extraction first, then click <b>Load Mesh From Extracted Landmarks</b>. "
-            "The canvas will use median x/y positions from a real extracted video, not an abstract diagram.</p>"
-            "<p><b>2.</b> Choose a preset such as <b>ALS oral-motor core 15</b>, then click individual points to add/remove landmarks.</p>"
-            "<p><b>3.</b> Save the selected set. This writes <code>selected_landmarks.json</code> and makes the selection explicit for normalization and feature computation.</p>"
-            "<p><b>Interpretation:</b> mouth/jaw/lip points are usually used for oral kinematics; eye/canthus points are often anchors for scale normalization. Full landmark CSVs remain available for audit.</p>"
-            "<p><b>Quality note:</b> if the visual mesh looks distorted or sparse, inspect Face Landmarks and Video QC before trusting downstream features.</p>"
+            "<h3>How to use this workstation</h3>"
+            "<p><b>1.</b> Run landmark extraction. Then click <b>Refresh Extracted Videos</b> and choose a video.</p>"
+            "<p><b>2.</b> Choose a representative frame and click <b>Load Real Frame + MediaPipe Overlay</b>. "
+            "This shows the actual patient/video frame with actual Google MediaPipe points overlaid.</p>"
+            "<p><b>3.</b> Select a preset or use region quick-select. Click directly on points to add/remove landmarks.</p>"
+            "<p><b>Feedback:</b> selected points appear green and labelled. Hovering shows landmark ID and approximate region/function.</p>"
+            "<p><b>Scientific note:</b> keep eye/canthus anchors for scaling, mouth/lip points for aperture/spread, and bilateral points for symmetry. Avoid points that appear unstable, occluded, or poorly detected on the real frame.</p>"
         )
-        mesh_row.addWidget(guide, stretch=1)
+        right_panel.addWidget(guide)
+        self.selection_feedback_label = QLabel("No real overlay loaded yet. Run Landmarks, then load a real frame.")
+        self.selection_feedback_label.setWordWrap(True)
+        self.selection_feedback_label.setObjectName("SubtitleLabel")
+        right_panel.addWidget(self.selection_feedback_label)
+        self.selected_landmark_table = QTableWidget(0, 4)
+        self.selected_landmark_table.setHorizontalHeaderLabels(["Landmark", "Region", "Meaning / use", "Status"])
+        self.selected_landmark_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.selected_landmark_table.setMaximumHeight(210)
+        self.selected_landmark_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        right_panel.addWidget(self.selected_landmark_table)
+        wrapper = QWidget(); wrapper.setLayout(right_panel)
+        mesh_row.addWidget(wrapper, stretch=1)
         layout.addLayout(mesh_row)
 
         self.preset_table = QTableWidget(0, 4)
@@ -886,7 +1015,7 @@ class KinematicsPipelineWindow(QMainWindow):
         for sub in ["000_ingest", "001_metadata", "002_landmarks", "003_selection", "004_normalization", "005_video_qc", "006_features", "007_aggregation", "008_inspector", "009_reports"]:
             (project_dir / sub).mkdir(parents=True, exist_ok=True)
         manifest = project_dir / "project_manifest.json"
-        manifest.write_text(json.dumps({"project_name": self.project_name_edit.text(), "task": self.task_name_edit.text(), "schema": "vslp_kinematics_project_v0.59"}, indent=2), encoding="utf-8")
+        manifest.write_text(json.dumps({"project_name": self.project_name_edit.text(), "task": self.task_name_edit.text(), "schema": "vslp_kinematics_project_v0.62"}, indent=2), encoding="utf-8")
         self.stage_records["project"] = StageRecord(status="completed", manifest_path=str(manifest))
         self._refresh_stage_cards()
         self._log(f"Initialized kinematics project: {project_dir}")
@@ -936,76 +1065,222 @@ class KinematicsPipelineWindow(QMainWindow):
         self.landmark_text.setPlainText(", ".join(map(str, vals)))
         if hasattr(self, "landmark_canvas"):
             self.landmark_canvas.set_selected(vals)
+        self._update_selected_landmark_feedback()
 
     def _canvas_selection_changed(self, text: str) -> None:
         if hasattr(self, "landmark_text"):
             self.landmark_text.setPlainText(text)
+        self._update_selected_landmark_feedback()
 
     def clear_visual_landmarks(self) -> None:
         if hasattr(self, "landmark_canvas"):
             self.landmark_canvas.set_selected([])
         self.landmark_text.setPlainText("")
+        self._update_selected_landmark_feedback()
 
-    def _latest_landmark_csv(self) -> Path | None:
+    def add_landmark_region(self, region: str) -> None:
+        current = set()
+        try:
+            current = set(parse_int_list(self.landmark_text.toPlainText()))
+        except Exception:
+            pass
+        current.update(LandmarkMeshCanvas.REGION_SETS.get(region, set()))
+        # Keep the set readable; selected values outside 0-477 are not expected but guarded.
+        vals = sorted(v for v in current if 0 <= int(v) < 478)
+        self.landmark_text.setPlainText(", ".join(map(str, vals)))
+        if hasattr(self, "landmark_canvas"):
+            self.landmark_canvas.set_selected(vals)
+        self._update_selected_landmark_feedback()
+
+    def _update_selected_landmark_feedback(self) -> None:
+        if not hasattr(self, "selected_landmark_table"):
+            return
+        try:
+            vals = list(parse_int_list(self.landmark_text.toPlainText()))
+        except Exception:
+            vals = []
+        rows = []
+        regions = {}
+        for idx in vals:
+            region = LandmarkMeshCanvas.region_for(int(idx))
+            regions[region] = regions.get(region, 0) + 1
+            rows.append({
+                "Landmark": int(idx),
+                "Region": region,
+                "Meaning / use": LandmarkMeshCanvas.label_for(int(idx)),
+                "Status": "selected",
+            })
+        self._fill_table(self.selected_landmark_table, pd.DataFrame(rows), max_rows=120)
+        if hasattr(self, "selection_feedback_label"):
+            has_mouth = regions.get("mouth/lips", 0) >= 4
+            has_anchors = regions.get("eye/canthus anchors", 0) >= 2
+            has_jaw = regions.get("jaw/chin/lower face", 0) >= 1
+            supports = []
+            supports.append("mouth aperture" if has_mouth else "mouth aperture: incomplete")
+            supports.append("scale normalization anchors" if has_anchors else "scale anchors: incomplete")
+            supports.append("jaw/lower-face tracking" if has_jaw else "jaw tracking: incomplete")
+            self.selection_feedback_label.setText(
+                f"Selected {len(vals)} landmarks. Region coverage: "
+                + (", ".join(f"{k}={v}" for k, v in sorted(regions.items())) if regions else "none")
+                + ". Supports: " + "; ".join(supports) + "."
+            )
+
+    def _landmark_tables_dir(self) -> Path | None:
         out_text = self.output_edit.text().strip()
         if not out_text:
             return None
-        tables = Path(out_text).expanduser().resolve() / "kinematics" / "002_landmarks" / "tables"
-        if not tables.exists():
-            return None
-        csvs = [p for p in tables.glob("*-lmks.csv") if p.is_file()]
-        if not csvs:
-            csvs = [p for p in tables.glob("**/*-lmks.csv") if p.is_file()]
-        if not csvs:
-            return None
-        return max(csvs, key=lambda p: p.stat().st_mtime)
+        return Path(out_text).expanduser().resolve() / "kinematics" / "002_landmarks" / "tables"
 
-    def _landmark_points_from_csv(self, csv_path: Path) -> dict[int, tuple[float, float]]:
-        df = pd.read_csv(csv_path)
-        if "face_detected" in df.columns:
-            detected = df[df["face_detected"].astype(str).str.lower().isin(["true", "1", "yes"])]
-            if not detected.empty:
-                df = detected
+    def _landmarks_manifest_path(self) -> Path | None:
+        tables = self._landmark_tables_dir()
+        if tables is None:
+            return None
+        path = tables / "landmarks_manifest.csv"
+        return path if path.exists() else None
+
+    def refresh_landmark_video_choices(self) -> None:
+        if not hasattr(self, "landmark_video_combo"):
+            return
+        self.landmark_video_combo.clear()
+        self._landmark_video_rows = []
+        manifest = self._landmarks_manifest_path()
+        if manifest is None:
+            QMessageBox.information(self, "No landmark manifest", "Run Landmarks → Run MediaPipe Landmark Extraction first.")
+            return
+        try:
+            df = pd.read_csv(manifest)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Could not read landmark manifest", str(exc)); return
+        for _, row in df.iterrows():
+            out_csv = str(row.get("output_csv", ""))
+            if not out_csv or not Path(out_csv).exists():
+                continue
+            video_id = str(row.get("video_id") or Path(out_csv).stem.replace("-lmks", ""))
+            status = str(row.get("status", ""))
+            frac = pd.to_numeric(pd.Series([row.get("face_detected_fraction")]), errors="coerce").iloc[0]
+            label = f"{video_id}  |  {status}  |  detected={frac*100:.1f}%" if pd.notna(frac) else f"{video_id}  |  {status}"
+            self._landmark_video_rows.append(dict(row))
+            self.landmark_video_combo.addItem(label)
+        if not self._landmark_video_rows:
+            QMessageBox.warning(self, "No usable landmark CSVs", "The manifest exists, but no *-lmks.csv files were found. Check the Landmarks tab result table.")
+        else:
+            first = self._landmark_video_rows[0]
+            n_frames = int(pd.to_numeric(pd.Series([first.get("n_frames")]), errors="coerce").fillna(0).iloc[0])
+            self.landmark_frame_spin.setRange(0, max(0, n_frames - 1))
+            self.landmark_frame_slider.setRange(0, max(0, n_frames - 1))
+            self._log(f"Loaded {len(self._landmark_video_rows)} landmark video option(s) from {manifest}")
+
+    def _selected_landmark_video_row(self) -> dict | None:
+        if not hasattr(self, "_landmark_video_rows") or not self._landmark_video_rows:
+            self.refresh_landmark_video_choices()
+        idx = self.landmark_video_combo.currentIndex() if hasattr(self, "landmark_video_combo") else -1
+        if idx < 0 or not getattr(self, "_landmark_video_rows", None):
+            return None
+        return self._landmark_video_rows[min(idx, len(self._landmark_video_rows) - 1)]
+
+    def _load_video_frame_pixmap(self, source_path: Path, frame_idx: int) -> QPixmap | None:
+        try:
+            import cv2  # type: ignore
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "OpenCV unavailable", f"Cannot load the source video frame because OpenCV is not available:\n{exc}")
+            return None
+        cap = cv2.VideoCapture(str(source_path))
+        if not cap.isOpened():
+            return None
+        try:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, int(frame_idx))
+            ok, frame_bgr = cap.read()
+            if not ok or frame_bgr is None:
+                return None
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            h, w, ch = frame_rgb.shape
+            qimg = QImage(frame_rgb.data, w, h, ch * w, QImage.Format_RGB888).copy()
+            return QPixmap.fromImage(qimg)
+        finally:
+            cap.release()
+
+    def _points_for_requested_frame(self, landmark_csv: Path, requested_frame: int) -> tuple[dict[int, tuple[float, float]], int, bool, str]:
+        df = pd.read_csv(landmark_csv)
+        if df.empty:
+            raise ValueError(f"Landmark CSV is empty: {landmark_csv}")
+        if "frame" in df.columns:
+            frames = pd.to_numeric(df["frame"], errors="coerce")
+            exact = df[frames == int(requested_frame)]
+        else:
+            exact = df.iloc[[min(max(0, int(requested_frame)), len(df)-1)]]
+        if exact.empty:
+            exact = df.iloc[[min(max(0, int(requested_frame)), len(df)-1)]]
+        face_detected = False
+        if "face_detected" in exact.columns:
+            face_detected = str(exact["face_detected"].iloc[0]).lower() in {"true", "1", "yes"}
+        used_note = "requested frame"
+        if not face_detected and "face_detected" in df.columns:
+            detected_mask = df["face_detected"].astype(str).str.lower().isin(["true", "1", "yes"])
+            detected_df = df[detected_mask].copy()
+            if not detected_df.empty:
+                if "frame" in detected_df.columns:
+                    detected_df["_dist"] = (pd.to_numeric(detected_df["frame"], errors="coerce") - int(requested_frame)).abs()
+                    exact = detected_df.sort_values("_dist").iloc[[0]].drop(columns=["_dist"])
+                else:
+                    exact = detected_df.iloc[[0]]
+                face_detected = True
+                used_note = "nearest detected-face frame"
+        row = exact.iloc[0]
+        actual_frame = int(row.get("frame", requested_frame)) if pd.notna(row.get("frame", requested_frame)) else int(requested_frame)
         points: dict[int, tuple[float, float]] = {}
-        for i in range(0, 478):
+        max_idx = 0
+        for col in df.columns:
+            if col.endswith("_x"):
+                try:
+                    max_idx = max(max_idx, int(col[:-2]))
+                except ValueError:
+                    pass
+        for i in range(max_idx + 1):
             xcol, ycol = f"{i}_x", f"{i}_y"
             if xcol not in df.columns or ycol not in df.columns:
                 continue
-            x = pd.to_numeric(df[xcol], errors="coerce").median()
-            y = pd.to_numeric(df[ycol], errors="coerce").median()
+            x = pd.to_numeric(pd.Series([row.get(xcol)]), errors="coerce").iloc[0]
+            y = pd.to_numeric(pd.Series([row.get(ycol)]), errors="coerce").iloc[0]
             if pd.notna(x) and pd.notna(y):
-                # Clamp MediaPipe normalized coordinates to the visible canvas range.
                 points[i] = (float(max(0.0, min(1.0, x))), float(max(0.0, min(1.0, y))))
-        return points
+        return points, actual_frame, face_detected, used_note
 
-    def load_mesh_from_latest_landmarks(self) -> None:
-        path = self._latest_landmark_csv()
-        if path is None:
-            QMessageBox.information(
-                self,
-                "No landmark CSV found",
-                "Run Landmarks → Run MediaPipe Landmark Extraction first. The visual selector can then display the median face mesh from an extracted video.",
-            )
+    def load_real_frame_landmark_overlay(self) -> None:
+        rec = self._selected_landmark_video_row()
+        if rec is None:
             return
+        landmark_csv = Path(str(rec.get("output_csv", ""))).expanduser()
+        source_path = Path(str(rec.get("source_path", ""))).expanduser()
+        if not landmark_csv.exists():
+            QMessageBox.warning(self, "Missing landmark CSV", f"Could not find landmark CSV:\n{landmark_csv}"); return
+        requested = int(self.landmark_frame_spin.value()) if hasattr(self, "landmark_frame_spin") else 0
         try:
-            points = self._landmark_points_from_csv(path)
+            points, frame_idx, face_detected, used_note = self._points_for_requested_frame(landmark_csv, requested)
         except Exception as exc:  # noqa: BLE001
-            QMessageBox.critical(self, "Could not load landmark mesh", str(exc))
-            return
+            QMessageBox.critical(self, "Could not load landmarks for frame", str(exc)); return
         if len(points) < 20:
-            QMessageBox.warning(
-                self,
-                "Sparse landmark file",
-                f"Only {len(points)} usable landmark points were found in:\n{path}\n\nCheck face_detected coverage before using this selection.",
-            )
-            return
-        self.landmark_canvas.set_points(points, f"Median mesh from {path.name}")
+            QMessageBox.warning(self, "Sparse overlay", f"Only {len(points)} usable landmarks were available for frame {frame_idx}. Try another frame or inspect Landmark extraction coverage.")
+        pixmap = self._load_video_frame_pixmap(source_path, frame_idx) if source_path.exists() else None
+        video_id = str(rec.get("video_id") or landmark_csv.stem.replace("-lmks", ""))
+        self.landmark_canvas.set_overlay(
+            pixmap,
+            points,
+            f"{video_id} / {landmark_csv.name}",
+            f"Video: {video_id} | frame {frame_idx} ({used_note}) | face_detected={face_detected} | landmarks visible={len(points)}",
+        )
         try:
             current = parse_int_list(self.landmark_text.toPlainText())
         except Exception:
             current = []
         self.landmark_canvas.set_selected(current)
-        self._log(f"Loaded visual face mesh from: {path} ({len(points)} usable landmark points)")
+        self.landmark_frame_spin.setValue(frame_idx)
+        self._update_selected_landmark_feedback()
+        self._log(f"Loaded real-frame MediaPipe overlay: video={video_id}, frame={frame_idx}, points={len(points)}, source={source_path}")
+
+    # Backward-compatible alias for older buttons/docs.
+    def load_mesh_from_latest_landmarks(self) -> None:
+        self.refresh_landmark_video_choices()
+        self.load_real_frame_landmark_overlay()
 
     def save_landmark_mesh_preview(self) -> None:
         out = self._path_or_warn(self.output_edit, "an output project folder")
@@ -1013,11 +1288,10 @@ class KinematicsPipelineWindow(QMainWindow):
             return
         fig_dir = out / "kinematics" / "003_selection" / "figures"
         fig_dir.mkdir(parents=True, exist_ok=True)
-        path = fig_dir / "selected_landmark_mesh_preview.png"
+        path = fig_dir / "selected_landmark_video_overlay_preview.png"
         self.landmark_canvas.grab().save(str(path))
-        QMessageBox.information(self, "Mesh preview saved", f"Saved current landmark-selection preview:\n{path}")
-        self._log(f"Saved landmark mesh preview: {path}")
-
+        QMessageBox.information(self, "Overlay preview saved", f"Saved current real-frame landmark overlay preview:\n{path}")
+        self._log(f"Saved landmark overlay preview: {path}")
     def _landmark_config(self) -> LandmarkRunConfig:
         return LandmarkRunConfig(
             model_path=self.model_path_edit.text().strip() or "models/face_landmarker.task",
