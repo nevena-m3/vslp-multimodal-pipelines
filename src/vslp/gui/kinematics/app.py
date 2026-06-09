@@ -1,4 +1,4 @@
-"""VSLP Kinematics Pipeline GUI v0.62.
+"""VSLP Kinematics Pipeline GUI v0.63.
 
 This GUI intentionally mirrors the acoustic pipeline layout: left stage sidebar,
 institutional branding strip, top tabs, run log, and compact scientific workflow
@@ -17,7 +17,7 @@ from typing import Callable
 import pandas as pd
 
 try:
-    from PySide6.QtCore import QPointF, QObject, QThread, Qt, Signal
+    from PySide6.QtCore import QPointF, QRectF, QObject, QThread, Qt, Signal, QTimer
     from PySide6.QtGui import QBrush, QColor, QFont, QImage, QPainter, QPen, QPixmap
     from PySide6.QtWidgets import (
         QApplication,
@@ -73,7 +73,7 @@ from vslp.analysis.kinematics import (
 )
 from vslp.analysis.kinematics.schemas import DEFAULT_VIDEO_EXTENSIONS, parse_int_list
 
-APP_VERSION = "v0.62"
+APP_VERSION = "v0.63"
 BRAND_DIR = Path(__file__).resolve().parent / "assets" / "branding"
 LAB_LOGO = BRAND_DIR / "lab_logo.png"
 UOFT_LOGO = BRAND_DIR / "uoft_logo.png"
@@ -187,6 +187,12 @@ class LandmarkMeshCanvas(QWidget):
         self.show_all_labels = False
         self.show_mesh_edges = True
         self.point_radius = 3.3
+        self.zoom_factor = 1.0
+        self.auto_zoom_face = True
+        self.view_center = (0.5, 0.5)
+        self._dragging = False
+        self._drag_start = None
+        self._drag_center = self.view_center
 
     @classmethod
     def region_for(cls, idx: int) -> str:
@@ -205,6 +211,8 @@ class LandmarkMeshCanvas(QWidget):
         self.source_label = source_label
         self.frame_label = frame_label
         self.hover_idx = None
+        if self.auto_zoom_face and self.points:
+            self.zoom_to_face(margin=0.18, emit=False)
         self.update()
 
     def set_points(self, points: dict[int, tuple[float, float]], source_label: str) -> None:
@@ -218,6 +226,49 @@ class LandmarkMeshCanvas(QWidget):
 
     def selected_text(self) -> str:
         return ", ".join(map(str, sorted(self.selected)))
+
+    def _view_window(self) -> tuple[float, float, float, float]:
+        z = max(1.0, float(self.zoom_factor))
+        width = 1.0 / z
+        height = 1.0 / z
+        cx, cy = self.view_center
+        x0 = min(max(0.0, cx - width / 2.0), max(0.0, 1.0 - width))
+        y0 = min(max(0.0, cy - height / 2.0), max(0.0, 1.0 - height))
+        return x0, y0, x0 + width, y0 + height
+
+    def set_zoom(self, factor: float, *, emit: bool = True) -> None:
+        self.zoom_factor = float(max(1.0, min(12.0, factor)))
+        if emit:
+            self.selection_changed.emit(self.selected_text())
+        self.update()
+
+    def zoom_in(self) -> None:
+        self.set_zoom(self.zoom_factor * 1.35)
+
+    def zoom_out(self) -> None:
+        self.set_zoom(self.zoom_factor / 1.35)
+
+    def reset_view(self) -> None:
+        self.zoom_factor = 1.0
+        self.view_center = (0.5, 0.5)
+        self.update()
+
+    def zoom_to_face(self, margin: float = 0.16, *, emit: bool = True) -> None:
+        if not self.points:
+            self.reset_view()
+            return
+        xs = [p[0] for p in self.points.values()]
+        ys = [p[1] for p in self.points.values()]
+        x0, x1 = max(0.0, min(xs) - margin), min(1.0, max(xs) + margin)
+        y0, y1 = max(0.0, min(ys) - margin), min(1.0, max(ys) + margin)
+        w = max(0.08, x1 - x0)
+        h = max(0.08, y1 - y0)
+        # Use one isotropic normalized zoom so clicking stays simple and the image is not distorted.
+        self.zoom_factor = float(max(1.0, min(12.0, min(1.0 / w, 1.0 / h))))
+        self.view_center = ((x0 + x1) / 2.0, (y0 + y1) / 2.0)
+        if emit:
+            self.selection_changed.emit(self.selected_text())
+        self.update()
 
     def _image_rect(self):
         margin = 22
@@ -237,7 +288,13 @@ class LandmarkMeshCanvas(QWidget):
 
     def _to_screen(self, x: float, y: float) -> QPointF:
         left, top, w, h = self._image_rect()
-        return QPointF(left + x * w, top + y * h)
+        vx0, vy0, vx1, vy1 = self._view_window()
+        return QPointF(left + ((x - vx0) / max(1e-9, vx1 - vx0)) * w, top + ((y - vy0) / max(1e-9, vy1 - vy0)) * h)
+
+    def _to_norm_delta(self, dx: float, dy: float) -> tuple[float, float]:
+        _left, _top, w, h = self._image_rect()
+        vx0, vy0, vx1, vy1 = self._view_window()
+        return dx / max(1.0, w) * (vx1 - vx0), dy / max(1.0, h) * (vy1 - vy0)
 
     def _nearest(self, pos) -> tuple[int | None, float]:
         best_idx = None
@@ -250,25 +307,56 @@ class LandmarkMeshCanvas(QWidget):
         return best_idx, best_d
 
     def mouseMoveEvent(self, event):  # noqa: N802
+        if self._dragging and self._drag_start is not None:
+            dx = event.position().x() - self._drag_start.x()
+            dy = event.position().y() - self._drag_start.y()
+            ndx, ndy = self._to_norm_delta(dx, dy)
+            cx, cy = self._drag_center
+            self.view_center = (cx - ndx, cy - ndy)
+            self.update()
+            return
         idx, d = self._nearest(event.position()) if self.points else (None, 1e9)
-        self.hover_idx = idx if d <= 16 else None
+        self.hover_idx = idx if d <= max(14, 22 / max(1.0, self.zoom_factor ** 0.25)) else None
         if self.hover_idx is not None:
-            self.setToolTip(f"Landmark {self.hover_idx}: {self.label_for(self.hover_idx)}\nClick to add/remove")
+            self.setToolTip(f"Landmark {self.hover_idx}: {self.label_for(self.hover_idx)}\nClick to add/remove. Drag empty space to pan; use zoom controls to inspect the mouth/face.")
         else:
-            self.setToolTip("Load a real video frame with MediaPipe overlay, then click landmarks to select them.")
+            self.setToolTip("Load a real video frame with MediaPipe overlay. Drag empty space to pan; use zoom controls to inspect points.")
         self.update()
 
     def mousePressEvent(self, event):  # noqa: N802
-        if event.button() != Qt.LeftButton or not self.points:
+        if not self.points:
+            return
+        if event.button() == Qt.RightButton:
+            self._dragging = True
+            self._drag_start = event.position()
+            self._drag_center = self.view_center
+            return
+        if event.button() != Qt.LeftButton:
             return
         idx, d = self._nearest(event.position())
-        if idx is not None and d <= 18:
+        threshold = 18 if self.zoom_factor <= 2 else 22
+        if idx is not None and d <= threshold:
             if idx in self.selected:
                 self.selected.remove(idx)
             else:
                 self.selected.add(idx)
             self.selection_changed.emit(self.selected_text())
             self.update()
+        else:
+            self._dragging = True
+            self._drag_start = event.position()
+            self._drag_center = self.view_center
+
+    def mouseReleaseEvent(self, event):  # noqa: N802
+        self._dragging = False
+        self._drag_start = None
+
+    def wheelEvent(self, event):  # noqa: N802
+        delta = event.angleDelta().y()
+        if delta > 0:
+            self.zoom_in()
+        elif delta < 0:
+            self.zoom_out()
 
     def _draw_edge(self, painter: QPainter, a: int, b: int, color: QColor, width: float = 1.1) -> None:
         if a not in self.points or b not in self.points:
@@ -281,22 +369,25 @@ class LandmarkMeshCanvas(QWidget):
     def paintEvent(self, event):  # noqa: N802
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.fillRect(self.rect(), QColor("#F8FAFC"))
+        painter.fillRect(self.rect(), QColor("#07111F"))
         painter.setFont(QFont("Segoe UI", 10, QFont.Weight.Bold))
-        painter.setPen(QColor("#0B2740"))
+        painter.setPen(QColor("#F8FAFC"))
         painter.drawText(18, 24, "Real video frame + Google MediaPipe overlay")
         painter.setFont(QFont("Segoe UI", 8))
-        painter.setPen(QColor("#3E5B73"))
+        painter.setPen(QColor("#CBD5E1"))
         painter.drawText(18, 42, self.frame_label or "Load an extracted video/frame to inspect actual landmark placement.")
 
         left, top, w, h = self._image_rect()
-        painter.setPen(QPen(QColor("#CBD5E1"), 1))
-        painter.setBrush(QBrush(QColor("#FFFFFF")))
+        painter.setPen(QPen(QColor("#1E3A5F"), 1))
+        painter.setBrush(QBrush(QColor("#0F172A")))
         painter.drawRoundedRect(left, top, w, h, 8, 8)
         if self.frame_pixmap is not None and not self.frame_pixmap.isNull():
-            painter.drawPixmap(left, top, w, h, self.frame_pixmap)
+            vx0, vy0, vx1, vy1 = self._view_window()
+            src = QRectF(vx0 * self.frame_pixmap.width(), vy0 * self.frame_pixmap.height(), (vx1 - vx0) * self.frame_pixmap.width(), (vy1 - vy0) * self.frame_pixmap.height())
+            dst = QRectF(left, top, w, h)
+            painter.drawPixmap(dst, self.frame_pixmap, src)
         else:
-            painter.setPen(QColor("#64748B"))
+            painter.setPen(QColor("#CBD5E1"))
             painter.drawText(left + 24, top + 42, "No real video frame loaded. Run Landmarks, then click 'Load Real Frame + MediaPipe Overlay'.")
 
         if self.show_mesh_edges and self.points:
@@ -343,8 +434,8 @@ class LandmarkMeshCanvas(QWidget):
             painter.drawText(int(p.x() + 10), int(p.y() - 10), str(self.hover_idx))
 
         painter.setFont(QFont("Segoe UI", 8))
-        painter.setPen(QColor("#0F172A"))
-        footer = f"Source: {self.source_label} | visible landmarks: {len(self.points)} | selected: {len(self.selected)} | click point to toggle"
+        painter.setPen(QColor("#E2E8F0"))
+        footer = f"Source: {self.source_label} | visible landmarks: {len(self.points)} | selected: {len(self.selected)} | zoom: {self.zoom_factor:.1f}× | left-click point, drag to pan, wheel to zoom"
         painter.drawText(18, self.height() - 13, footer)
 
 
@@ -363,6 +454,10 @@ class KinematicsPipelineWindow(QMainWindow):
         self.landmark_indices: tuple[int, ...] = LANDMARK_PRESETS["ALS oral-motor core 15"]
         self._thread: QThread | None = None
         self._worker: Worker | None = None
+        self._landmark_overlay_loaded = False
+        self._landmark_frame_reload_timer = QTimer(self)
+        self._landmark_frame_reload_timer.setSingleShot(True)
+        self._landmark_frame_reload_timer.timeout.connect(self.load_real_frame_landmark_overlay)
 
         self.stage_records: dict[str, StageRecord] = {
             "project": StageRecord(),
@@ -562,13 +657,13 @@ class KinematicsPipelineWindow(QMainWindow):
 
     def _stage_status_text(self, status: str) -> str:
         if status in {"completed", "detected"}:
-            return f"● {status}"
+            return f"* {status}"
         if status == "completed_with_warnings":
-            return "● completed with warnings"
+            return "* completed with warnings"
         if status == "failed":
-            return "● failed"
+            return "* failed"
         if status == "running":
-            return "● running"
+            return "* running"
         return f"○ {status}"
 
     def _refresh_stage_cards(self) -> None:
@@ -766,10 +861,11 @@ class KinematicsPipelineWindow(QMainWindow):
         self.preset_combo = QComboBox(); self.preset_combo.addItems(list(LANDMARK_PRESETS.keys()))
         self.preset_combo.currentTextChanged.connect(self.apply_landmark_preset)
         self.landmark_video_combo = QComboBox()
+        self.landmark_video_combo.currentIndexChanged.connect(self._landmark_video_changed)
         self.landmark_frame_spin = QSpinBox(); self.landmark_frame_spin.setRange(0, 999999); self.landmark_frame_spin.setValue(0)
         self.landmark_frame_slider = QSlider(Qt.Horizontal); self.landmark_frame_slider.setRange(0, 0)
-        self.landmark_frame_slider.valueChanged.connect(lambda v: self.landmark_frame_spin.setValue(int(v)))
-        self.landmark_frame_spin.valueChanged.connect(lambda v: self.landmark_frame_slider.setValue(int(v)) if self.landmark_frame_slider.maximum() >= int(v) else None)
+        self.landmark_frame_slider.valueChanged.connect(self._landmark_slider_changed)
+        self.landmark_frame_spin.valueChanged.connect(self._landmark_spin_changed)
         self.landmark_text = QPlainTextEdit(); self.landmark_text.setMaximumHeight(74)
         self.landmark_text.setPlainText(", ".join(map(str, self.landmark_indices)))
         refresh_videos_btn = QPushButton("Refresh Extracted Videos")
@@ -804,6 +900,28 @@ class KinematicsPipelineWindow(QMainWindow):
             region_layout.addWidget(btn)
         layout.addWidget(region_group)
 
+        zoom_group = QGroupBox("Overlay view controls")
+        zoom_layout = QHBoxLayout(zoom_group)
+        self.auto_zoom_checkbox = QCheckBox("Auto-zoom to detected face")
+        self.auto_zoom_checkbox.setChecked(True)
+        self.auto_zoom_checkbox.toggled.connect(self._toggle_auto_zoom_landmark_canvas)
+        self.auto_reload_frame_checkbox = QCheckBox("Auto-reload frame while sliding")
+        self.auto_reload_frame_checkbox.setChecked(True)
+        zoom_in_btn = QPushButton("Zoom In")
+        zoom_in_btn.clicked.connect(lambda: self.landmark_canvas.zoom_in())
+        zoom_out_btn = QPushButton("Zoom Out")
+        zoom_out_btn.clicked.connect(lambda: self.landmark_canvas.zoom_out())
+        zoom_face_btn = QPushButton("Zoom to Face")
+        zoom_face_btn.clicked.connect(lambda: self.landmark_canvas.zoom_to_face())
+        reset_view_btn = QPushButton("Reset View")
+        reset_view_btn.clicked.connect(lambda: self.landmark_canvas.reset_view())
+        reload_btn = QPushButton("Reload Current Frame")
+        reload_btn.clicked.connect(self.load_real_frame_landmark_overlay)
+        for w in [self.auto_zoom_checkbox, self.auto_reload_frame_checkbox, zoom_in_btn, zoom_out_btn, zoom_face_btn, reset_view_btn, reload_btn]:
+            zoom_layout.addWidget(w)
+        zoom_layout.addStretch(1)
+        layout.addWidget(zoom_group)
+
         mesh_row = QHBoxLayout()
         self.landmark_canvas = LandmarkMeshCanvas()
         self.landmark_canvas.set_selected(self.landmark_indices)
@@ -820,6 +938,7 @@ class KinematicsPipelineWindow(QMainWindow):
             "This shows the actual patient/video frame with actual Google MediaPipe points overlaid.</p>"
             "<p><b>3.</b> Select a preset or use region quick-select. Click directly on points to add/remove landmarks.</p>"
             "<p><b>Feedback:</b> selected points appear green and labelled. Hovering shows landmark ID and approximate region/function.</p>"
+            "<p><b>Navigation:</b> use <b>Zoom to Face</b>, mouse wheel, and drag empty space to pan. If the face looks small, keep auto-zoom enabled or press Zoom to Face.</p>"
             "<p><b>Scientific note:</b> keep eye/canthus anchors for scaling, mouth/lip points for aperture/spread, and bilateral points for symmetry. Avoid points that appear unstable, occluded, or poorly detected on the real frame.</p>"
         )
         right_panel.addWidget(guide)
@@ -1168,7 +1287,67 @@ class KinematicsPipelineWindow(QMainWindow):
             n_frames = int(pd.to_numeric(pd.Series([first.get("n_frames")]), errors="coerce").fillna(0).iloc[0])
             self.landmark_frame_spin.setRange(0, max(0, n_frames - 1))
             self.landmark_frame_slider.setRange(0, max(0, n_frames - 1))
+            if self.landmark_video_combo.count() > 0:
+                self.landmark_video_combo.setCurrentIndex(0)
+                self._landmark_video_changed(0)
             self._log(f"Loaded {len(self._landmark_video_rows)} landmark video option(s) from {manifest}")
+
+    def _landmark_slider_changed(self, value: int) -> None:
+        """Synchronize the frame spinbox with the slider and optionally reload the overlay.
+
+        This method avoids signal recursion and makes frame navigation behave like a
+        video-review workstation: moving the slider updates the displayed real frame
+        when an overlay is already loaded.
+        """
+        if hasattr(self, "landmark_frame_spin") and self.landmark_frame_spin.value() != int(value):
+            self.landmark_frame_spin.blockSignals(True)
+            self.landmark_frame_spin.setValue(int(value))
+            self.landmark_frame_spin.blockSignals(False)
+        self._schedule_landmark_frame_reload()
+
+    def _landmark_spin_changed(self, value: int) -> None:
+        """Synchronize the frame slider with direct numeric frame edits."""
+        if hasattr(self, "landmark_frame_slider") and self.landmark_frame_slider.maximum() >= int(value) and self.landmark_frame_slider.value() != int(value):
+            self.landmark_frame_slider.blockSignals(True)
+            self.landmark_frame_slider.setValue(int(value))
+            self.landmark_frame_slider.blockSignals(False)
+        self._schedule_landmark_frame_reload()
+
+    def _schedule_landmark_frame_reload(self) -> None:
+        """Debounced reload for frame slider/spin changes."""
+        if not bool(getattr(self, "_landmark_overlay_loaded", False)):
+            return
+        if not (hasattr(self, "auto_reload_frame_checkbox") and self.auto_reload_frame_checkbox.isChecked()):
+            return
+        self._landmark_frame_reload_timer.start(180)
+
+    def _landmark_video_changed(self, idx: int) -> None:
+        rows = getattr(self, "_landmark_video_rows", [])
+        if idx < 0 or idx >= len(rows):
+            return
+        row = rows[idx]
+        n_frames = int(pd.to_numeric(pd.Series([row.get("n_frames")]), errors="coerce").fillna(0).iloc[0])
+        max_frame = max(0, n_frames - 1)
+        self.landmark_frame_spin.blockSignals(True)
+        self.landmark_frame_slider.blockSignals(True)
+        self.landmark_frame_spin.setRange(0, max_frame)
+        self.landmark_frame_slider.setRange(0, max_frame)
+        # Choose a representative middle frame first. If no face is detected there, loading will fallback to nearest detected frame.
+        default_frame = max_frame // 2 if max_frame > 0 else 0
+        self.landmark_frame_spin.setValue(default_frame)
+        self.landmark_frame_slider.setValue(default_frame)
+        self.landmark_frame_spin.blockSignals(False)
+        self.landmark_frame_slider.blockSignals(False)
+        if hasattr(self, "selection_feedback_label"):
+            self.selection_feedback_label.setText(f"Selected video changed. Frame range: 0–{max_frame}. Click 'Load Real Frame + MediaPipe Overlay' to refresh the display, or keep auto-reload enabled after the first load.")
+        if bool(getattr(self, "_landmark_overlay_loaded", False)) and hasattr(self, "auto_reload_frame_checkbox") and self.auto_reload_frame_checkbox.isChecked():
+            self._landmark_frame_reload_timer.start(80)
+
+    def _toggle_auto_zoom_landmark_canvas(self, checked: bool) -> None:
+        if hasattr(self, "landmark_canvas"):
+            self.landmark_canvas.auto_zoom_face = bool(checked)
+            if checked and self.landmark_canvas.points:
+                self.landmark_canvas.zoom_to_face()
 
     def _selected_landmark_video_row(self) -> dict | None:
         if not hasattr(self, "_landmark_video_rows") or not self._landmark_video_rows:
@@ -1273,7 +1452,17 @@ class KinematicsPipelineWindow(QMainWindow):
         except Exception:
             current = []
         self.landmark_canvas.set_selected(current)
-        self.landmark_frame_spin.setValue(frame_idx)
+        # The requested frame may fall back to the nearest detected-face frame.
+        # Update controls without triggering another reload loop.
+        if hasattr(self, "landmark_frame_spin"):
+            self.landmark_frame_spin.blockSignals(True)
+            self.landmark_frame_spin.setValue(frame_idx)
+            self.landmark_frame_spin.blockSignals(False)
+        if hasattr(self, "landmark_frame_slider") and self.landmark_frame_slider.maximum() >= frame_idx:
+            self.landmark_frame_slider.blockSignals(True)
+            self.landmark_frame_slider.setValue(frame_idx)
+            self.landmark_frame_slider.blockSignals(False)
+        self._landmark_overlay_loaded = True
         self._update_selected_landmark_feedback()
         self._log(f"Loaded real-frame MediaPipe overlay: video={video_id}, frame={frame_idx}, points={len(points)}, source={source_path}")
 
