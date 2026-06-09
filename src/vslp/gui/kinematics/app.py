@@ -70,11 +70,14 @@ from vslp.analysis.kinematics import (
     write_landmark_plan,
     write_normalization_config,
     run_normalization_from_selection,
+    run_video_qc,
+    FeatureComputationConfig,
+    run_feature_computation,
     write_scaffold_report,
 )
 from vslp.analysis.kinematics.schemas import DEFAULT_VIDEO_EXTENSIONS, parse_int_list
 
-APP_VERSION = "v0.65"
+APP_VERSION = "v0.66"
 BRAND_DIR = Path(__file__).resolve().parent / "assets" / "branding"
 LAB_LOGO = BRAND_DIR / "lab_logo.png"
 UOFT_LOGO = BRAND_DIR / "uoft_logo.png"
@@ -455,6 +458,8 @@ class KinematicsPipelineWindow(QMainWindow):
         self.landmark_indices: tuple[int, ...] = LANDMARK_PRESETS["ALS oral-motor core 15"]
         self._thread: QThread | None = None
         self._worker: Worker | None = None
+        self._worker_done_callback: Callable[[object], None] | None = None
+        self._busy_task_name: str | None = None
         self._landmark_overlay_loaded = False
         self._landmark_frame_reload_timer = QTimer(self)
         self._landmark_frame_reload_timer.setSingleShot(True)
@@ -655,6 +660,61 @@ class KinematicsPipelineWindow(QMainWindow):
 
     def _log(self, message: str) -> None:
         self.log_box.appendPlainText(message)
+        self.log_box.verticalScrollBar().setValue(self.log_box.verticalScrollBar().maximum())
+
+    def _set_progress_idle(self, value: int = 0) -> None:
+        if hasattr(self, "progress"):
+            self.progress.setRange(0, 100)
+            self.progress.setValue(max(0, min(100, int(value))))
+            self.progress.setFormat("Idle" if value == 0 else f"{int(value)}%")
+
+    def _set_progress_busy(self, label: str) -> None:
+        if hasattr(self, "progress"):
+            self.progress.setRange(0, 0)
+            self.progress.setFormat(label)
+
+    def _start_worker(self, name: str, func: Callable, kwargs: dict, done_callback: Callable[[object], None]) -> None:
+        if self._thread is not None:
+            QMessageBox.information(self, "Stage already running", "Wait for the current stage to finish before starting another stage.")
+            return
+        self._busy_task_name = name
+        self._worker_done_callback = done_callback
+        self._thread = QThread(self)
+        self._worker = Worker(name, func, kwargs)
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.started.connect(self._on_worker_started)
+        self._worker.message.connect(self._log)
+        self._worker.failed.connect(self._on_worker_failed)
+        self._worker.finished.connect(self._on_worker_finished)
+        self._worker.finished.connect(lambda *_: self._thread.quit())
+        self._worker.failed.connect(lambda *_: self._thread.quit())
+        self._thread.finished.connect(self._thread.deleteLater)
+        self._thread.finished.connect(self._clear_worker_state)
+        self._thread.start()
+
+    def _on_worker_started(self, name: str) -> None:
+        self._set_progress_busy(f"Running: {name}")
+        self._log(f"[RUNNING] {name}")
+
+    def _on_worker_failed(self, name: str, error: str) -> None:
+        self._set_progress_idle(0)
+        self._log(f"[FAILED] {name}: {error}")
+        QMessageBox.critical(self, f"{name} failed", error[:4000])
+
+    def _on_worker_finished(self, name: str, result: object) -> None:
+        self._set_progress_idle(100)
+        self._log(f"[DONE] {name}")
+        callback = self._worker_done_callback
+        if callback is not None:
+            callback(result)
+        QTimer.singleShot(900, lambda: self._set_progress_idle(0))
+
+    def _clear_worker_state(self) -> None:
+        self._thread = None
+        self._worker = None
+        self._worker_done_callback = None
+        self._busy_task_name = None
 
     def _stage_status_text(self, status: str) -> str:
         if status in {"completed", "detected"}:
@@ -1019,22 +1079,32 @@ class KinematicsPipelineWindow(QMainWindow):
         container = QWidget(); layout = QVBoxLayout(container)
         layout.addWidget(self._info_panel(
             "Info",
-            "Video QC will separate visual/acquisition problems from facial motor signal. For now this page defines the QC taxonomy that will be quantified after landmark extraction is connected.",
+            "Video QC now computes automated landmark-extraction risk summaries from the MediaPipe CSVs. It flags pass/review/fail for analyst review using face visibility, long no-face gaps, and landmark frame-to-frame stability. QC does not automatically exclude videos.",
         ))
         qc_rows = [
-            ("Decode / container QC", "Unreadable files, fps problems, duration/frame-count inconsistencies, codec/container warnings."),
-            ("Face visibility QC", "Face-detected fraction, long no-face gaps, partial face visibility, occlusion risk."),
-            ("Pose / head-motion QC", "Head rotation, large translations, off-axis views, pose instability."),
-            ("Illumination QC", "Low light, overexposure, flicker, contrast instability."),
-            ("Landmark stability QC", "Tracking jitter, coordinate jumps, interpolation burden, landmark dropout."),
-            ("Task / adherence QC", "Wrong task, failed repetition structure, mouth hidden, off-screen movement, non-target behavior."),
+            ("Face visibility QC", "Face-detected fraction and dropped-frame burden."),
+            ("Long gap QC", "Maximum consecutive no-face frames and gap fraction."),
+            ("Landmark stability QC", "Median and p95 frame-to-frame displacement for the selected landmark set."),
+            ("Review status", "Conservative pass/review/fail flag with written rationale; no automatic exclusion."),
         ]
-        table = QTableWidget(0, 2); table.setHorizontalHeaderLabels(["QC family", "What it will measure"])
-        self._fill_table(table, pd.DataFrame(qc_rows, columns=["QC family", "What it will measure"]), max_rows=20)
+        table = QTableWidget(0, 2); table.setHorizontalHeaderLabels(["QC family", "Current computation"])
+        self._fill_table(table, pd.DataFrame(qc_rows, columns=["QC family", "Current computation"]), max_rows=20)
         layout.addWidget(table)
-        btn = QPushButton("Write Video QC Placeholder")
-        btn.setObjectName("RunButton"); btn.clicked.connect(self.run_qc_placeholder)
-        layout.addWidget(btn)
+        btn_row = QHBoxLayout()
+        btn = QPushButton("Run Landmark / Video QC")
+        btn.setObjectName("RunButton"); btn.clicked.connect(self.run_video_qc_stage)
+        refresh = QPushButton("Refresh QC Table")
+        refresh.clicked.connect(self._load_video_qc_summary)
+        btn_row.addWidget(btn); btn_row.addWidget(refresh); btn_row.addStretch(1)
+        layout.addLayout(btn_row)
+        self.video_qc_label = QLabel("No video QC summary loaded yet.")
+        self.video_qc_label.setObjectName("SubtitleLabel")
+        self.video_qc_label.setWordWrap(True)
+        layout.addWidget(self.video_qc_label)
+        self.video_qc_table = QTableWidget(0, 0)
+        self.video_qc_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.video_qc_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        layout.addWidget(self.video_qc_table)
         layout.addStretch(1)
         return self._scrollable(container)
 
@@ -1042,22 +1112,51 @@ class KinematicsPipelineWindow(QMainWindow):
         container = QWidget(); layout = QVBoxLayout(container)
         layout.addWidget(self._info_panel(
             "Info",
-            "Feature computation will convert cleaned, normalized landmark trajectories into mouth/jaw/lip movement features. This stage will plug in the uploaded computation scripts in later patches.",
+            "Compute interpretable mouth, jaw, lip-spread, asymmetry, movement-range, speed and path-length features from the normalized MediaPipe landmark trajectories. This stage reads 004_normalization and writes 006_features.",
         ))
+
+        settings = QGroupBox("Feature computation settings")
+        grid = QGridLayout(settings)
+        self.feature_smoothing_cutoff = QDoubleSpinBox(); self.feature_smoothing_cutoff.setRange(0.5, 20.0); self.feature_smoothing_cutoff.setSingleStep(0.5); self.feature_smoothing_cutoff.setValue(6.0); self.feature_smoothing_cutoff.setSuffix(" Hz")
+        self.feature_sigma_extreme = QDoubleSpinBox(); self.feature_sigma_extreme.setRange(3.0, 10.0); self.feature_sigma_extreme.setSingleStep(0.5); self.feature_sigma_extreme.setValue(5.0)
+        self.feature_sigma_tight = QDoubleSpinBox(); self.feature_sigma_tight.setRange(1.5, 6.0); self.feature_sigma_tight.setSingleStep(0.25); self.feature_sigma_tight.setValue(3.0)
+        self.feature_onset_frac = QDoubleSpinBox(); self.feature_onset_frac.setRange(0.01, 0.40); self.feature_onset_frac.setSingleStep(0.01); self.feature_onset_frac.setValue(0.10)
+        self.feature_offset_frac = QDoubleSpinBox(); self.feature_offset_frac.setRange(0.50, 0.99); self.feature_offset_frac.setSingleStep(0.01); self.feature_offset_frac.setValue(0.90)
+        self.feature_use_smoothing = QCheckBox("Smooth cleaned trajectories before feature computation"); self.feature_use_smoothing.setChecked(True)
+        grid.addWidget(QLabel("Low-pass cutoff"), 0, 0); grid.addWidget(self.feature_smoothing_cutoff, 0, 1)
+        grid.addWidget(QLabel("Extreme outlier sigma"), 0, 2); grid.addWidget(self.feature_sigma_extreme, 0, 3)
+        grid.addWidget(QLabel("Tight outlier sigma"), 1, 0); grid.addWidget(self.feature_sigma_tight, 1, 1)
+        grid.addWidget(QLabel("Movement onset fraction"), 1, 2); grid.addWidget(self.feature_onset_frac, 1, 3)
+        grid.addWidget(QLabel("Movement offset fraction"), 2, 0); grid.addWidget(self.feature_offset_frac, 2, 1)
+        grid.addWidget(self.feature_use_smoothing, 2, 2, 1, 2)
+        layout.addWidget(settings)
+
         rows = [
-            ("Trajectory cleaning", "Interpolate missing frames, remove outliers, smooth trajectories."),
-            ("Geometry", "Mouth aperture, lip spread, jaw/lip distances, symmetry and lateralization."),
-            ("Kinematics", "Velocity, acceleration, path length, range of motion, timing of movement segments."),
-            ("Movement segmentation", "Open/close repetitions or task-specific movement windows."),
-            ("Audit outputs", "Per-video feature manifest, flags, configuration and computation policy."),
+            ("mouth_aperture", "Distance between upper and lower lip landmarks; primary oral opening signal."),
+            ("outer_lip_spread / inner_lip_spread", "Left-right commissure and inner-lip spread signals."),
+            ("lip_aspect_ratio", "Mouth aperture normalized by lip spread."),
+            ("jaw_to_nose", "Lower-face / chin displacement relative to midface."),
+            ("corner asymmetry", "Vertical and lateral mouth-corner asymmetry signals."),
+            ("speed/path/movement range", "Derived from cleaned trajectories and open/close movement windows."),
         ]
-        table = QTableWidget(0, 2); table.setHorizontalHeaderLabels(["Feature layer", "Planned computation"])
-        self._fill_table(table, pd.DataFrame(rows, columns=["Feature layer", "Planned computation"]), max_rows=20)
-        layout.addWidget(table)
-        btn = QPushButton("Write Feature Computation Placeholder")
-        btn.setObjectName("RunButton"); btn.clicked.connect(self.run_features_placeholder)
-        layout.addWidget(btn)
-        layout.addStretch(1)
+        feature_table = QTableWidget(0, 2); feature_table.setHorizontalHeaderLabels(["Feature family", "What it means"])
+        self._fill_table(feature_table, pd.DataFrame(rows, columns=["Feature family", "What it means"]), max_rows=20)
+        layout.addWidget(feature_table)
+
+        btn_row = QHBoxLayout()
+        run_btn = QPushButton("Run Kinematic Feature Computation")
+        run_btn.setObjectName("RunButton"); run_btn.clicked.connect(self.run_feature_computation_stage)
+        refresh_btn = QPushButton("Refresh Feature Outputs")
+        refresh_btn.clicked.connect(self._load_feature_results)
+        btn_row.addWidget(run_btn); btn_row.addWidget(refresh_btn); btn_row.addStretch(1)
+        layout.addLayout(btn_row)
+
+        self.feature_results_label = QLabel("No kinematic feature table loaded yet."); self.feature_results_label.setObjectName("SubtitleLabel")
+        layout.addWidget(self.feature_results_label)
+        self.feature_results_table = QTableWidget(0, 0)
+        self.feature_results_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.feature_results_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        layout.addWidget(self.feature_results_table)
         return self._scrollable(container)
 
     def _build_aggregation_tab(self) -> QWidget:
@@ -1738,11 +1837,97 @@ class KinematicsPipelineWindow(QMainWindow):
         self.stage_records[stage_key] = StageRecord(status="completed", manifest_path=str(path))
         self._refresh_stage_cards(); self._log(f"{message}: {path}")
 
-    def run_qc_placeholder(self) -> None:
-        self._write_placeholder("qc", "005_video_qc/tables/video_qc_plan.json", {"status": "placeholder", "families": ["decode", "face_visibility", "pose", "illumination", "landmark_stability", "task_adherence"]}, "Video QC plan written")
+    def run_video_qc_stage(self) -> None:
+        out = self._path_or_warn(self.output_edit, "an output project folder")
+        if out is None:
+            return
+        manifest = self._landmarks_manifest_path()
+        if manifest is None:
+            QMessageBox.warning(self, "Missing landmarks", "Run Landmarks -> Run MediaPipe Landmark Extraction before video QC.")
+            return
+        self.stage_records["qc"] = StageRecord(status="running")
+        self._refresh_stage_cards()
+        self._start_worker("Landmark / video QC", run_video_qc, {"output_root": out, "landmarks_manifest_csv": manifest}, self._finish_video_qc_stage)
+
+    def _finish_video_qc_stage(self, result: object) -> None:
+        res = dict(result)
+        summary_csv = Path(res["summary_csv"])
+        self.stage_records["qc"] = StageRecord(status="completed", manifest_path=str(summary_csv))
+        self._refresh_stage_cards()
+        self._log(f"Video QC completed: {res.get('n_videos', 0)} video(s); status counts={res.get('status_counts', {})}. Summary: {summary_csv}")
+        self._load_video_qc_summary(summary_csv)
+
+    def _load_video_qc_summary(self, path: Path | None = None) -> None:
+        out_text = self.output_edit.text().strip() if hasattr(self, "output_edit") else ""
+        if path is None and out_text:
+            path = Path(out_text).expanduser().resolve() / "kinematics" / "005_video_qc" / "tables" / "landmark_video_qc_summary.csv"
+        if path is None or not Path(path).exists():
+            if hasattr(self, "video_qc_label"):
+                self.video_qc_label.setText("No video QC summary found yet.")
+            return
+        df = pd.read_csv(path)
+        if hasattr(self, "video_qc_label"):
+            counts = df.get("qc_status", pd.Series(dtype=str)).value_counts(dropna=False).to_dict() if not df.empty else {}
+            self.video_qc_label.setText(f"Loaded QC summary: {path}. Status counts: {counts}")
+        cols = [c for c in ["video_id", "qc_status", "face_detected_fraction", "n_frames", "n_faces_detected", "max_no_face_gap_frames", "p95_frame_displacement", "qc_rationale"] if c in df.columns]
+        if hasattr(self, "video_qc_table"):
+            self._fill_table(self.video_qc_table, df[cols] if cols else df, max_rows=200)
+
+    def run_feature_computation_stage(self) -> None:
+        out = self._path_or_warn(self.output_edit, "an output project folder")
+        if out is None:
+            return
+        norm_manifest = out / "kinematics" / "004_normalization" / "tables" / "normalized_landmarks_manifest.csv"
+        if not norm_manifest.exists():
+            QMessageBox.warning(self, "Missing normalization", "Run Normalization -> Run Computational Normalization before feature computation.")
+            return
+        cfg = FeatureComputationConfig(
+            selected_landmarks=tuple(self.landmark_indices),
+            selected_preset=self.selection_preset_combo.currentText() if hasattr(self, "selection_preset_combo") else "custom",
+            smoothing_cutoff_hz=float(self.feature_smoothing_cutoff.value()),
+            outlier_sigma_extreme=float(self.feature_sigma_extreme.value()),
+            outlier_sigma_tight=float(self.feature_sigma_tight.value()),
+            onset_frac=float(self.feature_onset_frac.value()),
+            offset_frac=float(self.feature_offset_frac.value()),
+            use_smoothed_signals=bool(self.feature_use_smoothing.isChecked()),
+            overwrite=True,
+        )
+        self.stage_records["features"] = StageRecord(status="running")
+        self._refresh_stage_cards()
+        self._start_worker("Kinematic feature computation", run_feature_computation, {"output_root": out, "cfg": cfg}, self._finish_feature_computation_stage)
+
+    def _finish_feature_computation_stage(self, result: object) -> None:
+        res = dict(result)
+        features_csv = Path(res["features_csv"])
+        self.stage_records["features"] = StageRecord(status="completed", manifest_path=str(features_csv))
+        self._refresh_stage_cards()
+        self._log(f"Feature computation completed: {res.get('n_videos', 0)} video(s); ok={res.get('n_ok', 0)}, qc_flagged={res.get('n_qc_flagged', 0)}, error={res.get('n_error', 0)}. Features: {features_csv}")
+        self._load_feature_results(features_csv)
+
+    def _load_feature_results(self, path: Path | None = None) -> None:
+        out_text = self.output_edit.text().strip() if hasattr(self, "output_edit") else ""
+        if path is None and out_text:
+            path = Path(out_text).expanduser().resolve() / "kinematics" / "006_features" / "tables" / "kinematic_features.csv"
+        if path is None or not Path(path).exists():
+            if hasattr(self, "feature_results_label"):
+                self.feature_results_label.setText("No kinematic feature table loaded yet.")
+            return
+        df = pd.read_csv(path)
+        if hasattr(self, "feature_results_label"):
+            counts = df.get("status", pd.Series(dtype=str)).value_counts(dropna=False).to_dict() if not df.empty else {}
+            self.feature_results_label.setText(f"Loaded kinematic features: {path}. Status counts: {counts}")
+        preferred = [
+            "video_id", "status", "n_frames", "face_detected_fraction", "n_movements",
+            "mouth_aperture_median", "mouth_aperture_range_p05_p95",
+            "outer_lip_spread_median", "lip_aspect_ratio_median",
+            "jaw_to_nose_median", "corner_vertical_asymmetry_median", "feature_qc_flags",
+        ]
+        cols = [c for c in preferred if c in df.columns]
+        if hasattr(self, "feature_results_table"):
+            self._fill_table(self.feature_results_table, df[cols] if cols else df, max_rows=200)
 
     def run_features_placeholder(self) -> None:
-        self._write_placeholder("features", "006_features/tables/feature_computation_plan.json", {"status": "placeholder", "selected_landmarks": list(self.landmark_indices)}, "Feature computation plan written")
+        self.run_feature_computation_stage()
 
     def run_aggregation_placeholder(self) -> None:
         self._write_placeholder("aggregation", "007_aggregation/tables/aggregation_plan.json", {"profile": self.agg_combo.currentText(), "description": AGGREGATION_PROFILES.get(self.agg_combo.currentText(), "")}, "Aggregation plan written")
@@ -1799,7 +1984,7 @@ class KinematicsPipelineWindow(QMainWindow):
         self.run_landmark_plan_stage()
         self.run_selection_stage()
         self.run_normalization_stage()
-        self.run_qc_placeholder()
+        self.run_video_qc_stage()
         self.run_features_placeholder()
         self.run_aggregation_placeholder()
         self.run_report_stage()
