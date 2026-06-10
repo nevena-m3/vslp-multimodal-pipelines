@@ -80,7 +80,7 @@ from vslp.analysis.features.plots import (
     plot_ml_export_manifest_summary
 )
 
-APP_VERSION = "v0.58.0"
+APP_VERSION = "v0.59.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -503,6 +503,19 @@ class FilePicker(QWidget):
         return self.path_edit.text().strip()
 
 
+
+
+class NoWheelComboBox(QComboBox):
+    """Combo box that cannot change roles from accidental mouse-wheel scrolling.
+
+    Role changes should be deliberate clicks/keyboard edits, not incidental table
+    scrolling while the cursor is over the Role column.
+    """
+
+    def wheelEvent(self, event):  # noqa: N802 - Qt override
+        event.ignore()
+
+
 class FeatureAnalysisGUI(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -513,6 +526,11 @@ class FeatureAnalysisGUI(QMainWindow):
         self.meta_df: Optional[pd.DataFrame] = None
         self.registry_df: Optional[pd.DataFrame] = None
         self.mapping_df = pd.DataFrame()
+        self.proposed_mapping_df = pd.DataFrame()
+        self.analysis_df: Optional[pd.DataFrame] = None
+        self.metadata_join_strategy = "feature_table_only"
+        self.mapping_modified = False
+        self.mapping_accepted = False
         self.outputs: dict[str, pd.DataFrame] = {}
         self.output_dir: Optional[Path] = None
         self.page_keys = ["project", "mapping", "overview", "missing", "dist", "qc", "relationships", "screening", "reliability", "recommendations", "ml_export", "export"]
@@ -673,14 +691,23 @@ class FeatureAnalysisGUI(QMainWindow):
         layout.setContentsMargins(24, 24, 24, 24)
         card = Card("Column Mapping", "Review detected roles. Numeric primary-table columns are treated as features unless a stronger rule identifies them as identifiers, QC variables, audit/status fields, or exact clinical labels.")
         self.mapping_table = QTableWidget(0, 7)
-        self.mapping_table.setHorizontalHeaderLabels(["Column", "Role", "Confidence", "Reason", "dtype", "Missing", "Unique"])
+        self.mapping_table.setHorizontalHeaderLabels(["Column", "Role", "Confidence", "Reason / rationale", "dtype", "Missing", "Unique"])
         self.mapping_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.mapping_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
-        self.mapping_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.mapping_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.mapping_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.mapping_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
         self.mapping_table.setAlternatingRowColors(True)
+        self.mapping_table.setWordWrap(False)
+        self.mapping_table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.mapping_table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.mapping_table.verticalHeader().setDefaultSectionSize(30)
+        header = self.mapping_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.Interactive)
+        self.mapping_table.setColumnWidth(0, 285)
+        self.mapping_table.setColumnWidth(1, 150)
+        self.mapping_table.setColumnWidth(2, 85)
+        self.mapping_table.setColumnWidth(3, 520)
+        self.mapping_table.setColumnWidth(4, 115)
+        self.mapping_table.setColumnWidth(5, 85)
+        self.mapping_table.setColumnWidth(6, 85)
         card.layout.addWidget(self.mapping_table)
         self.mapping_summary_label = QLabel("Load a table to inspect proposed roles. You can accept the proposed mapping or manually change any row.")
         self.mapping_summary_label.setWordWrap(True)
@@ -766,7 +793,8 @@ class FeatureAnalysisGUI(QMainWindow):
         tabs.addTab(self.overview_design_table, "Design variables")
         tabs.addTab(self.overview_family_table, "Feature families")
         tabs.addTab(self.overview_quality_table, "Feature quality")
-        card.layout.addWidget(tabs)
+        # Tables are placed below plots for visual-first review.
+
 
         plot_panel = QFrame()
         plot_panel.setStyleSheet(f"QFrame {{ background:#F8FBFE; border:1px solid {LINE}; border-radius:12px; }}")
@@ -843,6 +871,11 @@ class FeatureAnalysisGUI(QMainWindow):
         preview_layout.addWidget(self.overview_plot_preview, 1)
         plot_panel_layout.addWidget(preview_box, 1)
         card.layout.addWidget(plot_panel)
+        tables_header = QLabel("Detailed tables")
+        tables_header.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; padding-top:8px;")
+        card.layout.addWidget(tables_header)
+        card.layout.addWidget(tabs)
+
 
         layout.addWidget(card)
         return self._wrap_scroll(body)
@@ -923,53 +956,170 @@ class FeatureAnalysisGUI(QMainWindow):
             d.mkdir(parents=True, exist_ok=True)
         return self.output_dir, tables_dir, reports_dir, plots_dir
 
+    def _normal_col_lookup(self, df: pd.DataFrame) -> dict[str, str]:
+        from vslp.analysis.features.column_mapping import normalize_name
+        return {normalize_name(c): str(c) for c in df.columns}
+
+    def _metadata_join_candidates(self) -> list[list[str]]:
+        return [
+            ["record_key"],
+            ["recording_id"],
+            ["file_name"],
+            ["source_file_path"],
+            ["subject_id", "session_id", "task"],
+            ["subject_id", "visit_id", "task"],
+            ["subject_id", "session_id"],
+            ["subject_id", "visit_id"],
+            ["subject_id", "task"],
+            ["subject_id"],
+        ]
+
+    def _metadata_extra_columns(self, feature_df: pd.DataFrame, meta_df: pd.DataFrame, keys: list[str] | None) -> list[str]:
+        keyset = set(keys or [])
+        extras = []
+        for col in meta_df.columns:
+            if str(col) in keyset:
+                continue
+            if str(col) not in feature_df.columns:
+                extras.append(str(col))
+            else:
+                # Keep conflicting metadata columns available but explicit.
+                extras.append(str(col))
+        return extras
+
+    def _merge_metadata_context(self, feature_df: pd.DataFrame, feature_mapping: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, str]:
+        """Return feature table enriched with safe metadata labels/covariates when available.
+
+        The Feature GUI is descriptive and must search both the feature table and
+        metadata table for labels, tasks, sessions and subject IDs. This method
+        merges metadata conservatively: exact safe keys first, row-order only when
+        row counts match, otherwise metadata remains loaded but unmerged.
+        """
+        if self.meta_df is None or self.meta_df.empty:
+            return feature_df.copy(), feature_mapping.copy(), "feature_table_only"
+        meta_df = self.meta_df.copy()
+        feature_lookup = self._normal_col_lookup(feature_df)
+        meta_lookup = self._normal_col_lookup(meta_df)
+        chosen_keys: list[str] = []
+        strategy = "metadata_loaded_not_merged"
+        merged = feature_df.copy()
+
+        for candidate in self._metadata_join_candidates():
+            if all(k in feature_lookup and k in meta_lookup for k in candidate):
+                left_keys = [feature_lookup[k] for k in candidate]
+                right_keys = [meta_lookup[k] for k in candidate]
+                right = meta_df.copy()
+                if left_keys != right_keys:
+                    right = right.rename(columns={rk: lk for lk, rk in zip(left_keys, right_keys)})
+                if right.duplicated(subset=left_keys).any():
+                    continue
+                extra_cols = [c for c in right.columns if c not in left_keys]
+                rename_map = {}
+                for c in extra_cols:
+                    if c in merged.columns:
+                        rename_map[c] = f"metadata__{c}"
+                right = right[left_keys + extra_cols].rename(columns=rename_map)
+                merged = merged.merge(right, on=left_keys, how="left", validate="m:1")
+                chosen_keys = left_keys
+                strategy = "metadata_key_join:" + "+".join(left_keys)
+                break
+
+        if not chosen_keys and len(meta_df) == len(feature_df):
+            add = meta_df.reset_index(drop=True).copy()
+            rename_map = {c: (str(c) if str(c) not in merged.columns else f"metadata__{c}") for c in add.columns}
+            add = add.rename(columns=rename_map)
+            # Do not duplicate columns that ended up identical to feature columns.
+            add = add[[c for c in add.columns if c not in merged.columns]]
+            merged = pd.concat([merged.reset_index(drop=True), add], axis=1)
+            strategy = "metadata_row_order_join:same_row_count"
+
+        if merged.shape[1] == feature_df.shape[1]:
+            return merged, feature_mapping.copy(), strategy
+
+        added_cols = [c for c in merged.columns if c not in feature_df.columns]
+        meta_mapping = classify_columns(merged[added_cols], table_kind="metadata", registry=None) if added_cols else pd.DataFrame()
+        if not meta_mapping.empty:
+            meta_mapping["reason"] = meta_mapping["reason"].astype(str) + f" Source: metadata table ({strategy})."
+        combined = pd.concat([feature_mapping, meta_mapping], ignore_index=True) if not meta_mapping.empty else feature_mapping.copy()
+        return merged, combined, strategy
+
+    def mark_mapping_modified(self, *_args) -> None:
+        self.mapping_modified = True
+        self.mapping_accepted = False
+        if hasattr(self, "mapping_summary_label"):
+            self.mapping_summary_label.setText((self.mapping_summary_label.text() or "Current mapping") + "  · unsaved edits")
+
+    def _accepted_mapping_path(self) -> Path | None:
+        out = self.output_edit.text().strip() if hasattr(self, "output_edit") else ""
+        if not out:
+            return None
+        tables_dir = Path(out) / "feature_analysis" / "tables"
+        tables_dir.mkdir(parents=True, exist_ok=True)
+        return tables_dir / "accepted_column_mapping.csv"
+
+    def save_accepted_mapping(self) -> Path | None:
+        path = self._accepted_mapping_path()
+        if path is None:
+            return None
+        self.mapping_df.to_csv(path, index=False)
+        return path
+
+    def _n_mapping_changes_from_proposal(self) -> int:
+        if self.proposed_mapping_df.empty or self.mapping_df.empty:
+            return 0
+        left = self.proposed_mapping_df[["column", "role"]].rename(columns={"role": "proposed_role"})
+        right = self.mapping_df[["column", "role"]].rename(columns={"role": "current_role"})
+        comp = left.merge(right, on="column", how="outer")
+        return int((comp["proposed_role"].astype(str) != comp["current_role"].astype(str)).sum())
+
     def _build_analysis_outputs(self) -> tuple[dict[str, pd.DataFrame], list[str]]:
         if self.feature_df is None:
             self.load_and_map()
         if self.feature_df is None:
             raise RuntimeError("Load a primary feature table first.")
         mapping = self.collect_mapping_from_table()
+        active_df = self.analysis_df if self.analysis_df is not None else self.feature_df
         roles = role_lists(mapping)
-        feature_cols = roles.get("Feature", [])
-        inventory = dataset_inventory(self.feature_df, self.qc_df, self.meta_df, mapping)
+        feature_cols = [c for c in roles.get("Feature", []) if c in active_df.columns]
+        inventory = dataset_inventory(active_df, self.qc_df, self.meta_df, mapping)
         role_sum = role_summary(mapping)
-        design = design_overview(self.feature_df, mapping)
-        family = feature_family_overview(self.feature_df, feature_cols, self.registry_df)
-        groups = group_counts(self.feature_df)
-        dist = feature_distribution_summary(self.feature_df, feature_cols)
-        outlier_flags = robust_outlier_flags(self.feature_df, feature_cols, self.registry_df)
-        range_flags = expected_range_flags(self.feature_df, feature_cols, self.registry_df)
+        design = design_overview(active_df, mapping)
+        family = feature_family_overview(active_df, feature_cols, self.registry_df)
+        groups = group_counts(active_df)
+        dist = feature_distribution_summary(active_df, feature_cols)
+        outlier_flags = robust_outlier_flags(active_df, feature_cols, self.registry_df)
+        range_flags = expected_range_flags(active_df, feature_cols, self.registry_df)
         dist_review = distribution_review_summary(dist, range_flags)
         shape_audit = distribution_shape_audit(dist, range_flags)
         row_outlier_burden = row_outlier_burden_summary(outlier_flags, len(feature_cols))
-        feature_missing = missingness_feature_summary(self.feature_df, feature_cols, self.registry_df)
-        row_missing = missingness_row_summary(self.feature_df, feature_cols)
-        group_missing = missingness_group_summary(self.feature_df, feature_cols)
+        feature_missing = missingness_feature_summary(active_df, feature_cols, self.registry_df)
+        row_missing = missingness_row_summary(active_df, feature_cols)
+        group_missing = missingness_group_summary(active_df, feature_cols)
         family_missing = missingness_family_summary(feature_missing)
-        comissing = missingness_comissing_pairs(self.feature_df, feature_cols)
+        comissing = missingness_comissing_pairs(active_df, feature_cols)
         quality_landscape = overview_feature_quality_landscape(dist, self.registry_df)
-        readiness = overview_readiness_summary(self.feature_df, self.qc_df, self.meta_df, mapping, dist, feature_missing, groups)
-        qc_corr = feature_qc_correlations(self.feature_df, self.qc_df, feature_cols)
+        readiness = overview_readiness_summary(active_df, self.qc_df, self.meta_df, mapping, dist, feature_missing, groups)
+        qc_corr = feature_qc_correlations(active_df, self.qc_df, feature_cols)
         qc_catalog = qc_metric_catalog(self.qc_df)
         qc_family = qc_family_burden_summary(self.qc_df)
         qc_row_burden = qc_row_burden_summary(self.qc_df)
         qc_family_assoc = feature_qc_family_association(qc_corr)
-        qc_missing_assoc = qc_missingness_associations(self.feature_df, self.qc_df, feature_cols)
+        qc_missing_assoc = qc_missingness_associations(active_df, self.qc_df, feature_cols)
         qc_outlier_assoc = qc_outlier_associations(outlier_flags, self.qc_df)
         qc_summary = qc_integration_summary(self.qc_df, qc_corr, qc_family, qc_missing_assoc, qc_outlier_assoc)
-        rel_summary = feature_relationship_summary(self.feature_df, feature_cols, self.registry_df)
-        rel_corr_long = feature_correlation_long_table(self.feature_df, feature_cols)
+        rel_summary = feature_relationship_summary(active_df, feature_cols, self.registry_df)
+        rel_corr_long = feature_correlation_long_table(active_df, feature_cols)
         rel_redundant = redundant_feature_pairs(rel_corr_long, self.registry_df)
         rel_modules = feature_relationship_modules(rel_corr_long, self.registry_df)
         rel_family_matrix = feature_family_correlation_matrix(rel_corr_long, self.registry_df)
-        rel_pca_summary = feature_pca_summary(self.feature_df, feature_cols)
-        rel_pca_loadings = feature_pca_loadings(self.feature_df, feature_cols, self.registry_df)
-        rel_pca_scores = feature_pca_scores(self.feature_df, feature_cols)
-        screening = build_group_outcome_screening(self.feature_df, feature_cols, mapping)
+        rel_pca_summary = feature_pca_summary(active_df, feature_cols)
+        rel_pca_loadings = feature_pca_loadings(active_df, feature_cols, self.registry_df)
+        rel_pca_scores = feature_pca_scores(active_df, feature_cols)
+        screening = build_group_outcome_screening(active_df, feature_cols, mapping)
         reliability = reliability_screen(dist, qc_corr)
-        reliability_design = reliability_design_summary(self.feature_df, feature_cols, mapping)
-        reliability_subjects = reliability_subject_record_counts(self.feature_df, mapping)
-        reliability_repeatability = feature_repeatability_summary(self.feature_df, feature_cols, mapping, self.registry_df)
+        reliability_design = reliability_design_summary(active_df, feature_cols, mapping)
+        reliability_subjects = reliability_subject_record_counts(active_df, mapping)
+        reliability_repeatability = feature_repeatability_summary(active_df, feature_cols, mapping, self.registry_df)
         reliability_family = reliability_family_summary(reliability_repeatability)
         recommendation_inputs = {
             "screening_continuous_outcome_associations": screening.get("screening_continuous_outcome_associations", pd.DataFrame()),
@@ -989,6 +1139,7 @@ class FeatureAnalysisGUI(QMainWindow):
             "dataset_inventory": inventory,
             "feature_role_summary": role_sum,
             "dataset_design_overview": design,
+            "metadata_context": pd.DataFrame([{"strategy": getattr(self, "metadata_join_strategy", "feature_table_only")}]),
             "feature_family_overview": family,
             "overview_readiness_summary": readiness,
             "overview_feature_quality_landscape": quality_landscape,
@@ -1045,21 +1196,22 @@ class FeatureAnalysisGUI(QMainWindow):
 
     def _generate_overview_plots(self, outputs: dict[str, pd.DataFrame], feature_cols: list[str], plots_dir: Path) -> dict[str, str]:
         paths = {}
+        active_df = self.analysis_df if self.analysis_df is not None else self.feature_df
         paths["overview_readiness_scorecard"] = str(plot_overview_readiness_scorecard(outputs.get("overview_readiness_summary", pd.DataFrame()), plots_dir / "overview_readiness_scorecard.png"))
         paths["overview_design_tiles"] = str(plot_dataset_design_tiles(outputs.get("dataset_design_overview", pd.DataFrame()), plots_dir / "overview_design_tiles.png"))
         paths["role_counts"] = str(plot_role_counts(outputs.get("feature_role_summary", pd.DataFrame()), plots_dir / "overview_role_counts.png"))
         paths["group_counts"] = str(plot_group_counts(outputs.get("group_counts", pd.DataFrame()), plots_dir / "overview_group_counts.png"))
-        paths["overview_subject_task_matrix"] = str(plot_subject_task_matrix(self.feature_df, plots_dir / "overview_subject_task_matrix.png"))
+        paths["overview_subject_task_matrix"] = str(plot_subject_task_matrix(active_df, plots_dir / "overview_subject_task_matrix.png"))
         paths["feature_family_counts"] = str(plot_feature_family_counts(outputs.get("feature_family_overview", pd.DataFrame()), plots_dir / "overview_feature_family_counts.png"))
         paths["overview_feature_family_quality"] = str(plot_feature_family_quality(outputs.get("feature_family_overview", pd.DataFrame()), plots_dir / "overview_feature_family_quality.png"))
         paths["overview_feature_quality_landscape"] = str(plot_feature_quality_landscape(outputs.get("overview_feature_quality_landscape", pd.DataFrame()), plots_dir / "overview_feature_quality_landscape.png"))
         paths["missingness_top_features"] = str(plot_missingness(outputs.get("feature_distribution_summary", pd.DataFrame()), plots_dir / "missingness_top_features.png"))
-        paths["feature_availability_heatmap"] = str(plot_feature_availability_heatmap(self.feature_df, feature_cols, plots_dir / "feature_availability_heatmap.png"))
+        paths["feature_availability_heatmap"] = str(plot_feature_availability_heatmap(active_df, feature_cols, plots_dir / "feature_availability_heatmap.png"))
         # Missingness-specific plots are generated at the same time so that the Missingness page is immediately usable.
         paths["missingness_row_distribution"] = str(plot_row_missingness_distribution(outputs.get("missingness_by_row", pd.DataFrame()), plots_dir / "missingness_row_distribution.png"))
         paths["missingness_by_group"] = str(plot_missingness_by_group(outputs.get("missingness_by_group", pd.DataFrame()), plots_dir / "missingness_by_group.png"))
         paths["missingness_by_family"] = str(plot_missingness_family_summary(outputs.get("missingness_by_family", pd.DataFrame()), plots_dir / "missingness_by_family.png"))
-        paths["missingness_comissing_heatmap"] = str(plot_comissing_heatmap(self.feature_df, feature_cols, plots_dir / "missingness_comissing_heatmap.png"))
+        paths["missingness_comissing_heatmap"] = str(plot_comissing_heatmap(active_df, feature_cols, plots_dir / "missingness_comissing_heatmap.png"))
         paths["distribution_review_status"] = str(plot_distribution_review_summary(outputs.get("distribution_review_summary", pd.DataFrame()), plots_dir / "distribution_review_status.png"))
         paths["distribution_shape_summary"] = str(plot_distribution_shape_summary(outputs.get("distribution_shape_audit", pd.DataFrame()), plots_dir / "distribution_shape_summary.png"))
         paths["distribution_shape_landscape"] = str(plot_distribution_shape_landscape(outputs.get("distribution_shape_audit", pd.DataFrame()), plots_dir / "distribution_shape_landscape.png"))
@@ -1070,12 +1222,12 @@ class FeatureAnalysisGUI(QMainWindow):
         focus_cols = list(feature_cols)
         shape_for_grid = outputs.get("distribution_shape_audit", pd.DataFrame())
         if shape_for_grid is not None and not shape_for_grid.empty and "feature" in shape_for_grid.columns:
-            focus_cols = [c for c in shape_for_grid["feature"].astype(str).tolist() if c in self.feature_df.columns] or focus_cols
-        paths["feature_distribution_grid"] = str(plot_distribution_grid(self.feature_df, focus_cols, plots_dir / "feature_distribution_grid.png"))
+            focus_cols = [c for c in shape_for_grid["feature"].astype(str).tolist() if c in active_df.columns] or focus_cols
+        paths["feature_distribution_grid"] = str(plot_distribution_grid(active_df, focus_cols, plots_dir / "feature_distribution_grid.png"))
         first_feature = feature_cols[0] if feature_cols else None
         if first_feature:
-            paths["selected_feature_distribution"] = str(plot_selected_feature_diagnostic(self.feature_df, first_feature, plots_dir / "selected_feature_distribution.png"))
-            paths["selected_feature_by_group"] = str(plot_group_feature_boxplot(self.feature_df, first_feature, plots_dir / "selected_feature_by_group.png"))
+            paths["selected_feature_distribution"] = str(plot_selected_feature_diagnostic(active_df, first_feature, plots_dir / "selected_feature_distribution.png"))
+            paths["selected_feature_by_group"] = str(plot_group_feature_boxplot(active_df, first_feature, plots_dir / "selected_feature_by_group.png"))
         paths["qc_artifact_model"] = str(plot_qc_artifact_model(plots_dir / "qc_artifact_model.png"))
         paths["qc_family_burden"] = str(plot_qc_family_burden(outputs.get("qc_family_burden_summary", pd.DataFrame()), plots_dir / "qc_family_burden.png"))
         paths["qc_metric_distributions"] = str(plot_qc_metric_distributions(self.qc_df, outputs.get("qc_metric_catalog", pd.DataFrame()), plots_dir / "qc_metric_distributions.png"))
@@ -1085,12 +1237,12 @@ class FeatureAnalysisGUI(QMainWindow):
         paths["qc_row_burden"] = str(plot_qc_row_burden(outputs.get("qc_row_burden_summary", pd.DataFrame()), plots_dir / "qc_row_burden.png"))
         qcols = outputs.get("qc_metric_catalog", pd.DataFrame()).get("qc_variable", pd.Series(dtype=str)).astype(str).tolist()
         if first_feature and qcols:
-            paths["selected_feature_qc_scatter"] = str(plot_selected_feature_qc_scatter(self.feature_df, self.qc_df, first_feature, qcols[0], plots_dir / "selected_feature_qc_scatter.png"))
+            paths["selected_feature_qc_scatter"] = str(plot_selected_feature_qc_scatter(active_df, self.qc_df, first_feature, qcols[0], plots_dir / "selected_feature_qc_scatter.png"))
         paths["relationship_correlation_heatmap"] = str(plot_relationship_correlation_heatmap(outputs.get("feature_correlation_long", pd.DataFrame()), plots_dir / "relationship_correlation_heatmap.png"))
         paths["relationship_redundant_pairs"] = str(plot_relationship_redundant_pairs(outputs.get("feature_redundant_pairs", pd.DataFrame()), plots_dir / "relationship_redundant_pairs.png"))
         paths["relationship_family_matrix"] = str(plot_relationship_family_matrix(outputs.get("feature_family_correlation_matrix", pd.DataFrame()), plots_dir / "relationship_family_matrix.png"))
         paths["relationship_pca_scree"] = str(plot_relationship_pca_scree(outputs.get("feature_pca_summary", pd.DataFrame()), plots_dir / "relationship_pca_scree.png"))
-        paths["relationship_pca_scores"] = str(plot_relationship_pca_scores(outputs.get("feature_pca_scores", pd.DataFrame()), self.feature_df, plots_dir / "relationship_pca_scores.png"))
+        paths["relationship_pca_scores"] = str(plot_relationship_pca_scores(outputs.get("feature_pca_scores", pd.DataFrame()), active_df, plots_dir / "relationship_pca_scores.png"))
         paths["relationship_pca_loadings"] = str(plot_relationship_pca_loadings(outputs.get("feature_pca_loadings", pd.DataFrame()), plots_dir / "relationship_pca_loadings.png"))
         if first_feature:
             paths["selected_feature_correlations"] = str(plot_selected_feature_correlations(outputs.get("feature_correlation_long", pd.DataFrame()), first_feature, plots_dir / "selected_feature_correlations.png"))
@@ -1102,14 +1254,14 @@ class FeatureAnalysisGUI(QMainWindow):
         screen_vars = outputs.get("screening_variable_catalog", pd.DataFrame())
         screen_var_list = screen_vars.get("variable", pd.Series(dtype=str)).astype(str).tolist() if screen_vars is not None and not screen_vars.empty else []
         if first_feature and screen_var_list:
-            paths["selected_feature_outcome"] = str(plot_selected_feature_outcome(self.feature_df, first_feature, screen_var_list[0], plots_dir / "selected_feature_outcome.png"))
+            paths["selected_feature_outcome"] = str(plot_selected_feature_outcome(active_df, first_feature, screen_var_list[0], plots_dir / "selected_feature_outcome.png"))
         paths["reliability_status_counts"] = str(plot_reliability_status_counts(outputs.get("feature_repeatability_summary", pd.DataFrame()), plots_dir / "reliability_status_counts.png"))
         paths["reliability_icc_ranking"] = str(plot_reliability_icc_ranking(outputs.get("feature_repeatability_summary", pd.DataFrame()), plots_dir / "reliability_icc_ranking.png"))
         paths["reliability_variance_landscape"] = str(plot_reliability_variance_landscape(outputs.get("feature_repeatability_summary", pd.DataFrame()), plots_dir / "reliability_variance_landscape.png"))
         paths["reliability_family_summary"] = str(plot_reliability_family_summary(outputs.get("reliability_family_summary", pd.DataFrame()), plots_dir / "reliability_family_summary.png"))
         paths["reliability_subject_counts"] = str(plot_reliability_subject_counts(outputs.get("reliability_subject_record_counts", pd.DataFrame()), plots_dir / "reliability_subject_counts.png"))
         if first_feature:
-            paths["selected_feature_reliability"] = str(plot_selected_feature_reliability(self.feature_df, first_feature, plots_dir / "selected_feature_reliability.png"))
+            paths["selected_feature_reliability"] = str(plot_selected_feature_reliability(active_df, first_feature, plots_dir / "selected_feature_reliability.png"))
         paths["recommendation_counts"] = str(plot_recommendation_counts(outputs.get("feature_recommendations", pd.DataFrame()), plots_dir / "recommendation_counts.png"))
         paths["recommendation_score_landscape"] = str(plot_recommendation_score_landscape(outputs.get("feature_recommendations", pd.DataFrame()), plots_dir / "recommendation_score_landscape.png"))
         paths["recommendation_reason_counts"] = str(plot_recommendation_reason_counts(outputs.get("feature_recommendation_reason_counts", pd.DataFrame()), plots_dir / "recommendation_reason_counts.png"))
@@ -1268,7 +1420,8 @@ class FeatureAnalysisGUI(QMainWindow):
         tabs.addTab(self.missing_group_table, "By group")
         tabs.addTab(self.missing_family_table, "By family")
         tabs.addTab(self.missing_comissing_table, "Co-missing pairs")
-        card.layout.addWidget(tabs)
+        # Tables are placed below plots for visual-first review.
+
 
         plot_panel = QFrame()
         plot_panel.setStyleSheet(f"QFrame {{ background:#F8FBFE; border:1px solid {LINE}; border-radius:12px; }}")
@@ -1332,6 +1485,11 @@ class FeatureAnalysisGUI(QMainWindow):
         right_layout.addWidget(self.missing_plot_caption)
         plot_panel_layout.addWidget(right_preview, 1)
         card.layout.addWidget(plot_panel)
+        tables_header = QLabel("Detailed tables")
+        tables_header.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; padding-top:8px;")
+        card.layout.addWidget(tables_header)
+        card.layout.addWidget(tabs)
+
 
         layout.addWidget(card)
         return self._wrap_scroll(body)
@@ -1473,7 +1631,8 @@ class FeatureAnalysisGUI(QMainWindow):
         tabs.addTab(self.dist_range_table, "Expected ranges")
         tabs.addTab(self.dist_shape_table, "Shape audit")
         tabs.addTab(self.dist_row_burden_table, "Row burden")
-        card.layout.addWidget(tabs)
+        # Tables are placed below plots for visual-first review.
+
 
         plot_panel = QFrame()
         plot_panel.setStyleSheet(f"QFrame {{ background:#F8FBFE; border:1px solid {LINE}; border-radius:12px; }}")
@@ -1535,6 +1694,11 @@ class FeatureAnalysisGUI(QMainWindow):
         self.dist_interpretation_label.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{INK}; padding:14px; font-size:12px; line-height:140%; }}")
         plot_panel_layout.addWidget(self.dist_interpretation_label)
         card.layout.addWidget(plot_panel)
+        tables_header = QLabel("Detailed tables")
+        tables_header.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; padding-top:8px;")
+        card.layout.addWidget(tables_header)
+        card.layout.addWidget(tabs)
+
 
         layout.addWidget(card)
         return self._wrap_scroll(body)
@@ -1591,13 +1755,14 @@ class FeatureAnalysisGUI(QMainWindow):
                     self.dist_feature_combo.setCurrentIndex(ix)
             self.dist_feature_combo.blockSignals(False)
         if hasattr(self, "dist_group_combo"):
+            active_df = self.analysis_df if self.analysis_df is not None else self.feature_df
             current = self.dist_group_combo.currentText()
             self.dist_group_combo.blockSignals(True)
             self.dist_group_combo.clear()
             self.dist_group_combo.addItem("Auto")
             if self.feature_df is not None:
                 for c in ["task", "diagnosis", "severity_bin", "modality", "sex", "gender", "session_id", "subject_id"]:
-                    if c in self.feature_df.columns:
+                    if c in active_df.columns:
                         self.dist_group_combo.addItem(c)
             if current:
                 ix = self.dist_group_combo.findText(current)
@@ -1638,9 +1803,10 @@ class FeatureAnalysisGUI(QMainWindow):
         if not feature:
             return
         try:
+            active_df = self.analysis_df if self.analysis_df is not None else self.feature_df
             self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
             low, high = self._selected_expected_bounds(feature)
-            path = plot_selected_feature_diagnostic(self.feature_df, feature, plots_dir / "selected_feature_distribution.png", low, high, self._selected_distribution_group())
+            path = plot_selected_feature_diagnostic(active_df, feature, plots_dir / "selected_feature_distribution.png", low, high, self._selected_distribution_group())
             if not hasattr(self, "plot_paths"):
                 self.plot_paths = {}
             self.plot_paths["selected_feature_distribution"] = str(path)
@@ -1654,8 +1820,9 @@ class FeatureAnalysisGUI(QMainWindow):
         if not feature:
             return
         try:
+            active_df = self.analysis_df if self.analysis_df is not None else self.feature_df
             self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
-            path = plot_group_feature_boxplot(self.feature_df, feature, plots_dir / "selected_feature_by_group.png", self._selected_distribution_group())
+            path = plot_group_feature_boxplot(active_df, feature, plots_dir / "selected_feature_by_group.png", self._selected_distribution_group())
             if not hasattr(self, "plot_paths"):
                 self.plot_paths = {}
             self.plot_paths["selected_feature_by_group"] = str(path)
@@ -1935,8 +2102,9 @@ class FeatureAnalysisGUI(QMainWindow):
         if not feature or not metric:
             return
         try:
+            active_df = self.analysis_df if self.analysis_df is not None else self.feature_df
             self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
-            path = plot_selected_feature_qc_scatter(self.feature_df, self.qc_df, feature, metric, plots_dir / "selected_feature_qc_scatter.png")
+            path = plot_selected_feature_qc_scatter(active_df, self.qc_df, feature, metric, plots_dir / "selected_feature_qc_scatter.png")
             if not hasattr(self, "plot_paths"):
                 self.plot_paths = {}
             self.plot_paths["selected_feature_qc_scatter"] = str(path)
@@ -2378,8 +2546,9 @@ class FeatureAnalysisGUI(QMainWindow):
         if not feature or not variable:
             return
         try:
+            active_df = self.analysis_df if self.analysis_df is not None else self.feature_df
             self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
-            path = plot_selected_feature_outcome(self.feature_df, feature, variable, plots_dir / "selected_feature_outcome.png")
+            path = plot_selected_feature_outcome(active_df, feature, variable, plots_dir / "selected_feature_outcome.png")
             if not hasattr(self, "plot_paths"):
                 self.plot_paths = {}
             self.plot_paths["selected_feature_outcome"] = str(path)
@@ -2588,8 +2757,9 @@ class FeatureAnalysisGUI(QMainWindow):
         if not feature:
             return
         try:
+            active_df = self.analysis_df if self.analysis_df is not None else self.feature_df
             self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
-            path = plot_selected_feature_reliability(self.feature_df, feature, plots_dir / "selected_feature_reliability.png")
+            path = plot_selected_feature_reliability(active_df, feature, plots_dir / "selected_feature_reliability.png")
             if not hasattr(self, "plot_paths"):
                 self.plot_paths = {}
             self.plot_paths["selected_feature_reliability"] = str(path)
@@ -3271,6 +3441,7 @@ class FeatureAnalysisGUI(QMainWindow):
             outputs, feature_cols = self._build_analysis_outputs()
             self.outputs = outputs
         outputs = self.outputs
+        active_df = self.analysis_df if self.analysis_df is not None else self.feature_df
         profile = self._export_profile_key()
         profile_slug = profile.replace("_", "-")
         base_dir = (self.output_dir if getattr(self, "output_dir", None) else Path(self.output_edit.text().strip()) / "feature_analysis")
@@ -3279,12 +3450,12 @@ class FeatureAnalysisGUI(QMainWindow):
         manifest, summary, profile_table = self._build_export_preview_tables(outputs)
         mapping = self.collect_mapping_from_table()
         roles = role_lists(mapping)
-        id_cols = [c for c in roles.get(ROLE_IDENTIFIER, []) if c in self.feature_df.columns]
-        target_cols = [c for c in roles.get(ROLE_TARGET, []) if c in self.feature_df.columns]
-        cov_cols = [c for c in roles.get(ROLE_COVARIATE, []) if c in self.feature_df.columns]
-        qc_cols = [c for c in roles.get(ROLE_QC, []) if c in self.feature_df.columns]
+        id_cols = [c for c in roles.get(ROLE_IDENTIFIER, []) if c in active_df.columns]
+        target_cols = [c for c in roles.get(ROLE_TARGET, []) if c in active_df.columns]
+        cov_cols = [c for c in roles.get(ROLE_COVARIATE, []) if c in active_df.columns]
+        qc_cols = [c for c in roles.get(ROLE_QC, []) if c in active_df.columns]
         include_features = manifest.loc[manifest.get("final_include", False).astype(bool), "feature"].astype(str).tolist() if not manifest.empty and "feature" in manifest.columns else []
-        include_features = [c for c in include_features if c in self.feature_df.columns]
+        include_features = [c for c in include_features if c in active_df.columns]
         paths: dict[str, Path] = {}
         def write_df(name: str, df: pd.DataFrame) -> None:
             out = export_dir / name
@@ -3295,10 +3466,10 @@ class FeatureAnalysisGUI(QMainWindow):
         write_df("export_profile_summary.csv", profile_table)
         write_df("feature_recommendation_legend.csv", self._export_decision_legend())
         matrix_cols = id_cols + include_features
-        write_df("ml_ready_feature_matrix.csv", self.feature_df[matrix_cols].copy() if matrix_cols else pd.DataFrame())
-        write_df("ml_target_table.csv", self.feature_df[id_cols + target_cols].copy() if target_cols else pd.DataFrame(columns=id_cols))
-        write_df("ml_covariate_table.csv", self.feature_df[id_cols + cov_cols].copy() if cov_cols else pd.DataFrame(columns=id_cols))
-        write_df("ml_qc_covariate_table_from_feature_table.csv", self.feature_df[id_cols + qc_cols].copy() if qc_cols else pd.DataFrame(columns=id_cols))
+        write_df("ml_ready_feature_matrix.csv", active_df[matrix_cols].copy() if matrix_cols else pd.DataFrame())
+        write_df("ml_target_table.csv", active_df[id_cols + target_cols].copy() if target_cols else pd.DataFrame(columns=id_cols))
+        write_df("ml_covariate_table.csv", active_df[id_cols + cov_cols].copy() if cov_cols else pd.DataFrame(columns=id_cols))
+        write_df("ml_qc_covariate_table_from_feature_table.csv", active_df[id_cols + qc_cols].copy() if qc_cols else pd.DataFrame(columns=id_cols))
         if self.qc_df is not None:
             write_df("linked_qc_table.csv", self.qc_df.copy())
         if self.meta_df is not None:
@@ -3409,7 +3580,11 @@ Decision colors:
             self.meta_df = read_table(self.meta_picker.path) if self.meta_picker.path else None
             self.registry_df = read_table(self.registry_picker.path) if self.registry_picker.path else None
             kind = infer_table_kind(self.feature_picker.path, explicit="feature")
-            self.mapping_df = classify_columns(self.feature_df, table_kind=kind, registry=self.registry_df)
+            feature_mapping = classify_columns(self.feature_df, table_kind=kind, registry=self.registry_df)
+            self.analysis_df, self.mapping_df, self.metadata_join_strategy = self._merge_metadata_context(self.feature_df, feature_mapping)
+            self.proposed_mapping_df = self.mapping_df.copy()
+            self.mapping_modified = False
+            self.mapping_accepted = False
             self.refresh_mapping_table()
             roles = summarize_roles(self.mapping_df)
             self.log(f"Loaded feature table: {self.feature_df.shape[0]} rows × {self.feature_df.shape[1]} columns")
@@ -3417,6 +3592,7 @@ Decision colors:
                 self.log(f"Loaded QC table: {self.qc_df.shape[0]} rows × {self.qc_df.shape[1]} columns")
             if self.meta_df is not None:
                 self.log(f"Loaded metadata table: {self.meta_df.shape[0]} rows × {self.meta_df.shape[1]} columns")
+                self.log(f"Metadata context strategy: {self.metadata_join_strategy}")
             if self.registry_df is not None:
                 self.log(f"Loaded registry/policy table: {self.registry_df.shape[0]} rows × {self.registry_df.shape[1]} columns")
             self.log("Proposed role counts:\n" + roles.to_string(index=False))
@@ -3434,16 +3610,25 @@ Decision colors:
         self.mapping_table.setColumnCount(7)
         for i, r in df.iterrows():
             self.mapping_table.setItem(i, 0, QTableWidgetItem(str(r["column"])))
-            combo = QComboBox()
+            combo = NoWheelComboBox()
+            combo.setStyleSheet("QComboBox { min-width: 128px; max-width: 145px; padding: 4px 6px; }")
             combo.addItems(ROLE_OPTIONS)
             combo.setCurrentText(str(r["role"]))
+            combo.currentTextChanged.connect(self.mark_mapping_modified)
             self.mapping_table.setCellWidget(i, 1, combo)
-            self.mapping_table.setItem(i, 2, QTableWidgetItem(f"{float(r['confidence']):.2f}"))
-            self.mapping_table.setItem(i, 3, QTableWidgetItem(str(r["reason"])))
-            self.mapping_table.setItem(i, 4, QTableWidgetItem(str(r["dtype"])))
-            self.mapping_table.setItem(i, 5, QTableWidgetItem(f"{float(r['missing_fraction']):.3f}"))
-            self.mapping_table.setItem(i, 6, QTableWidgetItem(str(r["unique_values"])))
+            for col_idx, value in [
+                (2, f"{float(r['confidence']):.2f}"),
+                (3, str(r["reason"])),
+                (4, str(r["dtype"])),
+                (5, f"{float(r['missing_fraction']):.3f}"),
+                (6, str(r["unique_values"])),
+            ]:
+                item = QTableWidgetItem(value)
+                item.setToolTip(value)
+                self.mapping_table.setItem(i, col_idx, item)
         self.mapping_table.resizeRowsToContents()
+        for row in range(self.mapping_table.rowCount()):
+            self.mapping_table.setRowHeight(row, min(max(self.mapping_table.rowHeight(row), 28), 38))
         self.update_mapping_summary()
 
     def collect_mapping_from_table(self) -> pd.DataFrame:
@@ -3475,8 +3660,13 @@ Decision colors:
         if self.feature_df is None:
             QMessageBox.information(self, "No table loaded", "Load a primary feature table first.")
             return
-        self.mapping_df = classify_columns(self.feature_df, table_kind="feature", registry=self.registry_df)
+        feature_mapping = classify_columns(self.feature_df, table_kind="feature", registry=self.registry_df)
+        self.analysis_df, self.mapping_df, self.metadata_join_strategy = self._merge_metadata_context(self.feature_df, feature_mapping)
+        self.proposed_mapping_df = self.mapping_df.copy()
+        self.mapping_modified = False
+        self.mapping_accepted = False
         self.refresh_mapping_table()
+        self.log(f"Proposed mapping refreshed. Metadata context strategy: {self.metadata_join_strategy}")
 
     def accept_mapping_and_continue(self) -> None:
         self.collect_mapping_from_table()
@@ -3486,6 +3676,27 @@ Decision colors:
         if n_features == 0:
             QMessageBox.warning(self, "No feature columns selected", "At least one column must be assigned the role 'Feature' before analysis.")
             return
+        if not self.output_edit.text().strip():
+            QMessageBox.warning(self, "Output folder required", "Please select an output folder before accepting mapping so the accepted mapping can be saved.")
+            self.show_page("project")
+            return
+        n_changed = self._n_mapping_changes_from_proposal()
+        if n_changed > 0:
+            reply = QMessageBox.question(
+                self,
+                "Confirm modified column mapping",
+                f"You changed {n_changed} column role(s) from the proposed mapping.\n\nSave this accepted mapping and continue to Overview?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                self.log("Column mapping confirmation cancelled; edits remain visible on the mapping page.")
+                return
+        path = self.save_accepted_mapping()
+        self.mapping_modified = False
+        self.mapping_accepted = True
+        if path:
+            self.log(f"Column mapping accepted and saved: {path}")
         self.log(f"Column mapping accepted: {n_features} feature columns selected.")
         self.show_page("overview")
 
