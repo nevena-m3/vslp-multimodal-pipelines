@@ -3,7 +3,7 @@ from pathlib import Path
 
 def test_feature_gui_v061_metadata_alias_and_file_join_source():
     text = Path('src/vslp/gui/features/app.py').read_text(encoding='utf-8')
-    assert 'APP_VERSION = "v0.61.0"' in text
+    assert 'APP_VERSION = "v0.62.0"' in text
     assert '_canonical_metadata_name' in text
     assert 'raw_media_file_name' in text
     assert 'subjectid' in text

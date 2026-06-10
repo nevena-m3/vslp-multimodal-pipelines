@@ -81,7 +81,7 @@ from vslp.analysis.features.plots import (
     plot_ml_export_manifest_summary
 )
 
-APP_VERSION = "v0.61.0"
+APP_VERSION = "v0.62.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -1489,6 +1489,81 @@ class FeatureAnalysisGUI(QMainWindow):
         self.open_file(path)
 
 
+
+    def _add_standard_plot_gallery(
+        self,
+        parent_layout: QVBoxLayout,
+        title: str,
+        caption: str,
+        combo_attr: str,
+        items: list[tuple[str, str]],
+        preview_attr: str,
+        interpretation_attr: str | None,
+        preview_callback,
+        open_callback,
+        placeholder: str,
+        min_height: int = 500,
+    ) -> None:
+        """Add the shared plot-first gallery used across Feature GUI review menus."""
+        plot_panel = QFrame()
+        plot_panel.setStyleSheet(f"QFrame {{ background:#F8FBFE; border:1px solid {LINE}; border-radius:12px; }}")
+        plot_layout = QVBoxLayout(plot_panel)
+        plot_layout.setContentsMargins(14, 14, 14, 14)
+        plot_layout.setSpacing(10)
+
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(10)
+        label = QLabel(title)
+        label.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
+        toolbar.addWidget(label)
+
+        combo = QComboBox()
+        combo.setMinimumWidth(360)
+        for text, key in items:
+            combo.addItem(text, key)
+        combo.setToolTip("Choose one focused plot for this menu. Detailed tables stay below the plot area.")
+        setattr(self, combo_attr, combo)
+        toolbar.addWidget(combo, 1)
+
+        show_btn = QPushButton("Show")
+        show_btn.setProperty("secondary", True)
+        show_btn.clicked.connect(lambda _=False, c=combo: preview_callback(c.currentData()))
+        toolbar.addWidget(show_btn)
+
+        regen = QPushButton("Regenerate")
+        regen.clicked.connect(self.regenerate_overview_plots)
+        toolbar.addWidget(regen)
+
+        toolbar.addStretch(1)
+        open_btn = QPushButton("Open current plot")
+        open_btn.setProperty("secondary", True)
+        open_btn.clicked.connect(open_callback)
+        toolbar.addWidget(open_btn)
+        plot_layout.addLayout(toolbar)
+
+        caption_label = QLabel(caption)
+        caption_label.setWordWrap(True)
+        caption_label.setStyleSheet(f"color:{MUTED}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:9px;")
+        plot_layout.addWidget(caption_label)
+
+        preview = QLabel(placeholder)
+        preview.setAlignment(Qt.AlignCenter)
+        preview.setMinimumHeight(min_height)
+        preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
+        setattr(self, preview_attr, preview)
+        plot_layout.addWidget(preview, 1)
+
+        if interpretation_attr:
+            interp = QLabel("Select a plot to see structured interpretation guidance.")
+            interp.setWordWrap(True)
+            interp.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+            interp.setStyleSheet(f"QLabel {{ background:#FFFFFF; color:{INK}; border:1px solid {LINE}; border-radius:10px; padding:12px; font-size:12px; line-height:140%; }}")
+            setattr(self, interpretation_attr, interp)
+            plot_layout.addWidget(interp)
+
+        parent_layout.addWidget(plot_panel, 1)
+
     def _missingness_page(self) -> QWidget:
         body = QWidget()
         layout = QVBoxLayout(body)
@@ -1533,68 +1608,26 @@ class FeatureAnalysisGUI(QMainWindow):
         # Tables are placed below plots for visual-first review.
 
 
-        plot_panel = QFrame()
-        plot_panel.setStyleSheet(f"QFrame {{ background:#F8FBFE; border:1px solid {LINE}; border-radius:12px; }}")
-        plot_panel_layout = QHBoxLayout(plot_panel)
-        plot_panel_layout.setContentsMargins(14, 14, 14, 14)
-        plot_panel_layout.setSpacing(14)
-
-        controls = QFrame()
-        controls.setStyleSheet("QFrame { border:none; background:transparent; }")
-        controls_layout = QVBoxLayout(controls)
-        controls_layout.setContentsMargins(0, 0, 0, 0)
-        controls_layout.setSpacing(8)
-        title = QLabel("Missingness plots")
-        title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
-        controls_layout.addWidget(title)
-        note = QLabel("These plots identify whether feature failure is global, feature-specific, subject/task-specific, or family-specific. They are descriptive screening tools, not exclusion rules.")
-        note.setWordWrap(True)
-        note.setStyleSheet(f"color:{MUTED}; border:none; background:transparent;")
-        controls_layout.addWidget(note)
-        guide = QLabel("Interpretation guide:<br>- &lt;20%: usually low concern<br>- 20-50%: monitor mechanism<br>- >=50%: review before ML<br>- blocks/clusters: possible task, QC, or computation support problem")
-        guide.setWordWrap(True)
-        guide.setStyleSheet(f"color:{INK}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:9px; font-size:12px;")
-        controls_layout.addWidget(guide)
-        for label, key in [
-            ("Top missing features", "missingness_top_features"),
-            ("Row-level missingness", "missingness_row_distribution"),
-            ("Missingness by group", "missingness_by_group"),
-            ("Missingness by family", "missingness_by_family"),
-            ("Feature availability", "feature_availability_heatmap"),
-            ("Co-missing heatmap", "missingness_comissing_heatmap"),
-        ]:
-            b = QPushButton(label)
-            b.setProperty("secondary", True)
-            b.clicked.connect(lambda _=False, k=key: self.preview_missingness_plot(k))
-            controls_layout.addWidget(b)
-        regen = QPushButton("Regenerate missingness plots")
-        regen.clicked.connect(self.regenerate_overview_plots)
-        controls_layout.addWidget(regen)
-        open_current = QPushButton("Open current plot file")
-        open_current.setProperty("secondary", True)
-        open_current.clicked.connect(self.open_current_missingness_plot)
-        controls_layout.addWidget(open_current)
-        controls_layout.addStretch(1)
-        controls.setFixedWidth(260)
-        plot_panel_layout.addWidget(controls)
-
-        self.missing_plot_preview = QLabel("Run Feature Analysis, then select a missingness plot on the left.")
-        self.missing_plot_preview.setAlignment(Qt.AlignCenter)
-        self.missing_plot_preview.setMinimumHeight(430)
-        self.missing_plot_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.missing_plot_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
-        right_preview = QFrame()
-        right_preview.setStyleSheet("QFrame { border:none; background:transparent; }")
-        right_layout = QVBoxLayout(right_preview)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(10)
-        right_layout.addWidget(self.missing_plot_preview, 1)
-        self.missing_plot_caption = QLabel("Select a missingness plot. A short interpretation guide will appear here so the plot can be read without guessing.")
-        self.missing_plot_caption.setWordWrap(True)
-        self.missing_plot_caption.setStyleSheet(f"color:{INK}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:10px;")
-        right_layout.addWidget(self.missing_plot_caption)
-        plot_panel_layout.addWidget(right_preview, 1)
-        card.layout.addWidget(plot_panel)
+        self._add_standard_plot_gallery(
+            card.layout,
+            "Missingness plot",
+            "Missingness uses focused availability plots only: feature burden, row burden, group/family structure, availability heatmap, and co-missingness. Distribution and QC-specific plots stay in their own menus.",
+            "missing_plot_combo",
+            [
+                ("Top missing features", "missingness_top_features"),
+                ("Row-level missingness", "missingness_row_distribution"),
+                ("Missingness by group", "missingness_by_group"),
+                ("Missingness by family", "missingness_by_family"),
+                ("Feature availability heatmap", "feature_availability_heatmap"),
+                ("Co-missing heatmap", "missingness_comissing_heatmap"),
+            ],
+            "missing_plot_preview",
+            "missing_plot_caption",
+            self.preview_missingness_plot,
+            self.open_current_missingness_plot,
+            "Run Feature Analysis, then choose one missingness plot.",
+            500,
+        )
         tables_header = QLabel("Detailed tables")
         tables_header.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; padding-top:8px;")
         card.layout.addWidget(tables_header)
@@ -1744,66 +1777,29 @@ class FeatureAnalysisGUI(QMainWindow):
         # Tables are placed below plots for visual-first review.
 
 
-        plot_panel = QFrame()
-        plot_panel.setStyleSheet(f"QFrame {{ background:#F8FBFE; border:1px solid {LINE}; border-radius:12px; }}")
-        plot_panel_layout = QHBoxLayout(plot_panel)
-        plot_panel_layout.setContentsMargins(14, 14, 14, 14)
-        plot_panel_layout.setSpacing(14)
-
-        controls = QFrame()
-        controls.setStyleSheet("QFrame { border:none; background:transparent; }")
-        controls_layout = QVBoxLayout(controls)
-        controls_layout.setContentsMargins(0, 0, 0, 0)
-        controls_layout.setSpacing(8)
-        title = QLabel("Distribution plots")
-        title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
-        controls_layout.addWidget(title)
-        note = QLabel("Use the feature-specific plots for clinical review. A statistical outlier is not automatically wrong; it may be true physiology, task effect, device/QC artifact, or computation failure.")
-        note.setWordWrap(True)
-        note.setStyleSheet(f"color:{MUTED}; border:none; background:transparent;")
-        controls_layout.addWidget(note)
-        for label, key in [
-            ("Review status", "distribution_review_status"),
-            ("Shape priority", "distribution_shape_summary"),
-            ("Shape landscape", "distribution_shape_landscape"),
-            ("Expected-range flags", "expected_range_flags"),
-            ("Outlier counts", "outlier_counts"),
-            ("Row outlier burden", "row_outlier_burden"),
-            ("Variance screen", "variance_screen"),
-            ("Feature diagnostic", "selected_feature_distribution"),
-            ("Selected feature by group", "selected_feature_by_group"),
-            ("Top feature grid", "feature_distribution_grid"),
-        ]:
-            b = QPushButton(label)
-            b.setProperty("secondary", True)
-            b.clicked.connect(lambda _=False, k=key: self.preview_distribution_plot(k))
-            controls_layout.addWidget(b)
-        regen = QPushButton("Regenerate distribution plots")
-        regen.clicked.connect(self.regenerate_overview_plots)
-        controls_layout.addWidget(regen)
-        open_current = QPushButton("Open current plot file")
-        open_current.setProperty("secondary", True)
-        open_current.clicked.connect(self.open_current_distribution_plot)
-        controls_layout.addWidget(open_current)
-        controls_layout.addStretch(1)
-        controls.setFixedWidth(270)
-        plot_panel_layout.addWidget(controls)
-
-        self.dist_plot_preview = QLabel("Run Feature Analysis, then select a distribution plot on the left.")
-        self.dist_plot_preview.setAlignment(Qt.AlignCenter)
-        self.dist_plot_preview.setMinimumHeight(520)
-        self.dist_plot_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.dist_plot_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
-        plot_panel_layout.addWidget(self.dist_plot_preview, 1)
-
-        self.dist_interpretation_label = QLabel("Select a plot to see: what it shows, what is concerning, what not to conclude, and what to check next.")
-        self.dist_interpretation_label.setWordWrap(True)
-        self.dist_interpretation_label.setMinimumWidth(300)
-        self.dist_interpretation_label.setMaximumWidth(390)
-        self.dist_interpretation_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        self.dist_interpretation_label.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{INK}; padding:14px; font-size:12px; line-height:140%; }}")
-        plot_panel_layout.addWidget(self.dist_interpretation_label)
-        card.layout.addWidget(plot_panel)
+        self._add_standard_plot_gallery(
+            card.layout,
+            "Distribution plot",
+            "Distribution review focuses on shape, outlier burden, expected ranges, variance, and one selected-feature diagnostic. Missingness and QC-specific explanations stay in their own menus.",
+            "dist_plot_combo",
+            [
+                ("Review status", "distribution_review_status"),
+                ("Shape priority", "distribution_shape_summary"),
+                ("Shape landscape", "distribution_shape_landscape"),
+                ("Expected-range flags", "expected_range_flags"),
+                ("Outlier counts", "outlier_counts"),
+                ("Row outlier burden", "row_outlier_burden"),
+                ("Variance screen", "variance_screen"),
+                ("Selected feature diagnostic", "selected_feature_distribution"),
+                ("Selected feature by group", "selected_feature_by_group"),
+            ],
+            "dist_plot_preview",
+            "dist_interpretation_label",
+            self.preview_distribution_plot,
+            self.open_current_distribution_plot,
+            "Run Feature Analysis, then choose one distribution plot.",
+            520,
+        )
         tables_header = QLabel("Detailed tables")
         tables_header.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; padding-top:8px;")
         card.layout.addWidget(tables_header)
@@ -2092,7 +2088,6 @@ class FeatureAnalysisGUI(QMainWindow):
         tabs.addTab(self.qc_outlier_table, "Outliers x QC")
         tabs.addTab(self.qc_row_table, "Row QC burden")
         card.layout.addWidget(tabs)
-        layout.addWidget(card)
 
         plot_card = Card(
             "QC plot board",
@@ -2109,45 +2104,30 @@ class FeatureAnalysisGUI(QMainWindow):
         controls.addStretch(1)
         plot_card.layout.addLayout(controls)
 
-        buttons = QHBoxLayout()
-        for label, key in [
-            ("QC framework", "qc_artifact_model"),
-            ("Family burden", "qc_family_burden"),
-            ("QC metric distributions", "qc_metric_distributions"),
-            ("Feature x QC-family heatmap", "qc_feature_association_heatmap"),
-            ("Top feature-QC associations", "qc_top_feature_associations"),
-            ("Missingness linked to QC", "qc_missingness_associations"),
-            ("Row QC burden", "qc_row_burden"),
-            ("Selected feature x selected QC", "selected_feature_qc_scatter"),
-        ]:
-            b = QPushButton(label)
-            b.setProperty("secondary", True)
-            b.clicked.connect(lambda _=False, k=key: self.preview_qc_plot(k))
-            buttons.addWidget(b)
-        buttons.addStretch(1)
-        plot_card.layout.addLayout(buttons)
-
-        splitter = QSplitter(Qt.Horizontal)
-        self.qc_plot_preview = QLabel("Run Feature Analysis, then select a QC plot.")
-        self.qc_plot_preview.setAlignment(Qt.AlignCenter)
-        self.qc_plot_preview.setMinimumHeight(520)
-        self.qc_plot_preview.setStyleSheet(f"background:#FFFFFF; color:{MUTED}; border:1px solid {LINE}; border-radius:10px;")
-        self.qc_plot_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.qc_interpretation_label = QLabel("Select a QC plot to see structured interpretation guidance.")
-        self.qc_interpretation_label.setWordWrap(True)
-        self.qc_interpretation_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        self.qc_interpretation_label.setMinimumWidth(340)
-        self.qc_interpretation_label.setStyleSheet(f"background:#F7FAFD; color:{INK}; border:1px solid {LINE}; border-radius:10px; padding:14px; line-height:145%;")
-        splitter.addWidget(self.qc_plot_preview)
-        splitter.addWidget(self.qc_interpretation_label)
-        splitter.setSizes([860, 360])
-        plot_card.layout.addWidget(splitter)
-
-        open_btn = QPushButton("Open current plot full size")
-        open_btn.setProperty("secondary", True)
-        open_btn.clicked.connect(self.open_current_qc_plot)
-        plot_card.layout.addWidget(open_btn)
+        self._add_standard_plot_gallery(
+            plot_card.layout,
+            "QC plot",
+            "QC Integration keeps only acquisition-sensitivity plots: artifact framework, QC burden, feature-QC associations, missingness-QC links, row burden, and one selected feature x QC metric scatter.",
+            "qc_plot_combo",
+            [
+                ("QC framework", "qc_artifact_model"),
+                ("Family burden", "qc_family_burden"),
+                ("QC metric distributions", "qc_metric_distributions"),
+                ("Feature x QC-family heatmap", "qc_feature_association_heatmap"),
+                ("Top feature-QC associations", "qc_top_feature_associations"),
+                ("Missingness linked to QC", "qc_missingness_associations"),
+                ("Row QC burden", "qc_row_burden"),
+                ("Selected feature x selected QC", "selected_feature_qc_scatter"),
+            ],
+            "qc_plot_preview",
+            "qc_interpretation_label",
+            self.preview_qc_plot,
+            self.open_current_qc_plot,
+            "Run Feature Analysis, then choose one QC plot.",
+            520,
+        )
         layout.addWidget(plot_card)
+        layout.addWidget(card)
         return self._wrap_scroll(body)
 
     def update_qc_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
@@ -2351,36 +2331,29 @@ class FeatureAnalysisGUI(QMainWindow):
         card.layout.addWidget(tabs, 1)
 
         plot_card = Card("Relationship plots", "Each plot includes interpretation guidance. Use these to distinguish useful feature blocks from avoidable redundancy.")
-        split = QSplitter(Qt.Horizontal)
-        left = QWidget(); left_l = QVBoxLayout(left); left_l.setContentsMargins(0,0,0,0); left_l.setSpacing(8)
-        for label, key in [
-            ("Correlation heatmap", "relationship_correlation_heatmap"),
-            ("Top redundant pairs", "relationship_redundant_pairs"),
-            ("Family/block matrix", "relationship_family_matrix"),
-            ("PCA scree", "relationship_pca_scree"),
-            ("PCA recording map", "relationship_pca_scores"),
-            ("PCA top loadings", "relationship_pca_loadings"),
-            ("Selected feature links", "selected_feature_correlations"),
-        ]:
-            b = QPushButton(label)
-            b.setProperty("secondary", True)
-            b.clicked.connect(lambda _=False, k=key: self.preview_relationship_plot(k))
-            left_l.addWidget(b)
-        left_l.addStretch(1)
-        right = QWidget(); right_l = QVBoxLayout(right); right_l.setContentsMargins(0,0,0,0); right_l.setSpacing(10)
-        self.relationship_plot_preview = QLabel("Run Feature Analysis, then select a relationship plot.")
-        self.relationship_plot_preview.setAlignment(Qt.AlignCenter)
-        self.relationship_plot_preview.setMinimumHeight(520)
-        self.relationship_plot_preview.setStyleSheet(f"background:#FFFFFF; border:1px solid {LINE}; border-radius:12px; color:{MUTED};")
-        self.relationship_interpretation_label = QLabel("Select a plot to see structured interpretation guidance.")
-        self.relationship_interpretation_label.setWordWrap(True)
-        self.relationship_interpretation_label.setStyleSheet(f"background:#FFFFFF; color:{INK}; border:1px solid {LINE}; border-radius:10px; padding:12px;")
-        right_l.addWidget(self.relationship_plot_preview, 1)
-        right_l.addWidget(self.relationship_interpretation_label)
-        split.addWidget(left); split.addWidget(right); split.setStretchFactor(1, 1)
-        plot_card.layout.addWidget(split)
-        layout.addWidget(card)
+        self._add_standard_plot_gallery(
+            plot_card.layout,
+            "Relationship plot",
+            "Feature Relationships keeps redundancy, family/block structure, PCA summaries, and one selected-feature link plot. Outcome screening and QC sensitivity are handled in separate menus.",
+            "relationship_plot_combo",
+            [
+                ("Correlation heatmap", "relationship_correlation_heatmap"),
+                ("Top redundant pairs", "relationship_redundant_pairs"),
+                ("Family/block matrix", "relationship_family_matrix"),
+                ("PCA scree", "relationship_pca_scree"),
+                ("PCA recording map", "relationship_pca_scores"),
+                ("PCA top loadings", "relationship_pca_loadings"),
+                ("Selected feature links", "selected_feature_correlations"),
+            ],
+            "relationship_plot_preview",
+            "relationship_interpretation_label",
+            self.preview_relationship_plot,
+            self.open_current_relationship_plot,
+            "Run Feature Analysis, then choose one relationship plot.",
+            520,
+        )
         layout.addWidget(plot_card, 1)
+        layout.addWidget(card)
         return self._wrap_scroll(body)
 
     def update_relationships_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
@@ -2555,39 +2528,28 @@ class FeatureAnalysisGUI(QMainWindow):
         controls.addWidget(QLabel("Feature:")); controls.addWidget(self.screening_feature_combo)
         controls.addWidget(QLabel("Outcome / group:")); controls.addWidget(self.screening_variable_combo)
         plot_card.layout.addLayout(controls)
-        split = QSplitter(Qt.Horizontal)
-        left = QWidget(); left_l = QVBoxLayout(left); left_l.setContentsMargins(0,0,0,0)
-        for label, key in [
-            ("Group balance", "screening_group_balance"),
-            ("Top screening effects", "screening_effect_ranking"),
-            ("Feature x continuous outcome heatmap", "screening_continuous_heatmap"),
-            ("Feature x categorical group heatmap", "screening_group_heatmap"),
-            ("Effect-size landscape", "screening_effect_landscape"),
-            ("Selected feature vs selected outcome/group", "selected_feature_outcome"),
-        ]:
-            b = QPushButton(label)
-            b.setProperty("secondary", True)
-            b.clicked.connect(lambda _=False, k=key: self.preview_screening_plot(k))
-            left_l.addWidget(b)
-        open_btn = QPushButton("Open current plot file")
-        open_btn.setProperty("primary", True)
-        open_btn.clicked.connect(self.open_current_screening_plot)
-        left_l.addWidget(open_btn)
-        left_l.addStretch(1)
-        right = QWidget(); right_l = QVBoxLayout(right); right_l.setContentsMargins(0,0,0,0)
-        self.screening_plot_preview = QLabel("Run Feature Analysis, then choose a screening plot.")
-        self.screening_plot_preview.setAlignment(Qt.AlignCenter)
-        self.screening_plot_preview.setMinimumHeight(430)
-        self.screening_plot_preview.setStyleSheet(f"background:#FFFFFF; border:1px solid {LINE}; border-radius:12px; color:{MUTED};")
-        self.screening_interpretation_label = QLabel("Select a plot to see structured interpretation guidance.")
-        self.screening_interpretation_label.setWordWrap(True)
-        self.screening_interpretation_label.setStyleSheet(f"background:#FFFFFF; color:{INK}; border:1px solid {LINE}; border-radius:10px; padding:12px;")
-        right_l.addWidget(self.screening_plot_preview, 1)
-        right_l.addWidget(self.screening_interpretation_label)
-        split.addWidget(left); split.addWidget(right); split.setStretchFactor(1, 1)
-        plot_card.layout.addWidget(split)
-        layout.addWidget(card)
+        self._add_standard_plot_gallery(
+            plot_card.layout,
+            "Screening plot",
+            "Group/Outcome Screening keeps balance, effect ranking, group/continuous heatmaps, effect-size landscape, and one selected feature x outcome view. These are descriptive screens only.",
+            "screening_plot_combo",
+            [
+                ("Group balance", "screening_group_balance"),
+                ("Top screening effects", "screening_effect_ranking"),
+                ("Feature x continuous outcome heatmap", "screening_continuous_heatmap"),
+                ("Feature x categorical group heatmap", "screening_group_heatmap"),
+                ("Effect-size landscape", "screening_effect_landscape"),
+                ("Selected feature vs selected outcome/group", "selected_feature_outcome"),
+            ],
+            "screening_plot_preview",
+            "screening_interpretation_label",
+            self.preview_screening_plot,
+            self.open_current_screening_plot,
+            "Run Feature Analysis, then choose one screening plot.",
+            500,
+        )
         layout.addWidget(plot_card, 1)
+        layout.addWidget(card)
         return self._wrap_scroll(body)
 
     def update_screening_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
@@ -2783,35 +2745,28 @@ class FeatureAnalysisGUI(QMainWindow):
             "Reliability plots",
             "Use these plots to distinguish stable participant/setup traits from session-level variability. Interpretation depends on repeated-record design support."
         )
-        split = QSplitter(Qt.Horizontal)
-        left = QWidget(); left_l = QVBoxLayout(left); left_l.setContentsMargins(0,0,0,0); left_l.setSpacing(8)
-        for label, key in [
-            ("Reliability status counts", "reliability_status_counts"),
-            ("ICC ranking", "reliability_icc_ranking"),
-            ("Within vs between variance", "reliability_variance_landscape"),
-            ("Reliability by family", "reliability_family_summary"),
-            ("Subject record counts", "reliability_subject_counts"),
-            ("Selected feature spaghetti", "selected_feature_reliability"),
-        ]:
-            b = QPushButton(label)
-            b.setProperty("secondary", True)
-            b.clicked.connect(lambda _=False, k=key: self.preview_reliability_plot(k))
-            left_l.addWidget(b)
-        left_l.addStretch(1)
-        right = QWidget(); right_l = QVBoxLayout(right); right_l.setContentsMargins(0,0,0,0); right_l.setSpacing(10)
-        self.reliability_plot_preview = QLabel("Run Feature Analysis, then choose a reliability plot.")
-        self.reliability_plot_preview.setAlignment(Qt.AlignCenter)
-        self.reliability_plot_preview.setMinimumHeight(500)
-        self.reliability_plot_preview.setStyleSheet(f"background:#FFFFFF; border:1px solid {LINE}; border-radius:12px; color:{MUTED};")
-        self.reliability_interpretation_label = QLabel("Select a plot to see structured interpretation guidance.")
-        self.reliability_interpretation_label.setWordWrap(True)
-        self.reliability_interpretation_label.setStyleSheet(f"background:#FFFFFF; color:{INK}; border:1px solid {LINE}; border-radius:10px; padding:12px;")
-        right_l.addWidget(self.reliability_plot_preview, 1)
-        right_l.addWidget(self.reliability_interpretation_label)
-        split.addWidget(left); split.addWidget(right); split.setStretchFactor(1, 1)
-        plot_card.layout.addWidget(split)
-        layout.addWidget(card)
+        self._add_standard_plot_gallery(
+            plot_card.layout,
+            "Reliability plot",
+            "Reliability keeps repeated-measure support, ICC-style ranking, within/between variance, family summary, subject record counts, and one selected-feature trajectory.",
+            "reliability_plot_combo",
+            [
+                ("Reliability status counts", "reliability_status_counts"),
+                ("ICC ranking", "reliability_icc_ranking"),
+                ("Within vs between variance", "reliability_variance_landscape"),
+                ("Reliability by family", "reliability_family_summary"),
+                ("Subject record counts", "reliability_subject_counts"),
+                ("Selected feature trajectory", "selected_feature_reliability"),
+            ],
+            "reliability_plot_preview",
+            "reliability_interpretation_label",
+            self.preview_reliability_plot,
+            self.open_current_reliability_plot,
+            "Run Feature Analysis, then choose one reliability plot.",
+            500,
+        )
         layout.addWidget(plot_card, 1)
+        layout.addWidget(card)
         return self._wrap_scroll(body)
 
     def update_reliability_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
@@ -2994,44 +2949,31 @@ class FeatureAnalysisGUI(QMainWindow):
         ]:
             tabs.addTab(tbl, title)
         card.layout.addWidget(tabs, 1)
-        layout.addWidget(card)
-
         plot_card = Card(
             "Recommendation plot board",
             "These plots explain the integrated readiness decision. Use them to document why features are exported, held for review, or excluded by default."
         )
-        split = QSplitter(Qt.Horizontal)
-        left = QWidget(); left_l = QVBoxLayout(left); left_l.setContentsMargins(0,0,0,0); left_l.setSpacing(8)
-        for label, key in [
-            ("Readiness category counts", "recommendation_counts"),
-            ("Readiness landscape", "recommendation_score_landscape"),
-            ("Review reason counts", "recommendation_reason_counts"),
-            ("Readiness by family", "recommendation_family_summary"),
-            ("ML export manifest", "ml_export_manifest_summary"),
-        ]:
-            b = QPushButton(label)
-            b.setProperty("secondary", True)
-            b.clicked.connect(lambda _=False, k=key: self.preview_recommendation_plot(k))
-            left_l.addWidget(b)
-        left_l.addStretch(1)
-        open_btn = QPushButton("Open current plot file")
-        open_btn.setProperty("primary", True)
-        open_btn.clicked.connect(self.open_current_recommendation_plot)
-        left_l.addWidget(open_btn)
-
-        right = QWidget(); right_l = QVBoxLayout(right); right_l.setContentsMargins(0,0,0,0); right_l.setSpacing(10)
-        self.recommendation_plot_preview = QLabel("Run Feature Analysis, then choose a recommendation plot.")
-        self.recommendation_plot_preview.setAlignment(Qt.AlignCenter)
-        self.recommendation_plot_preview.setMinimumHeight(500)
-        self.recommendation_plot_preview.setStyleSheet(f"background:#FFFFFF; border:1px solid {LINE}; border-radius:12px; color:{MUTED};")
-        self.recommendation_interpretation_label = QLabel("Select a plot to see structured interpretation guidance.")
-        self.recommendation_interpretation_label.setWordWrap(True)
-        self.recommendation_interpretation_label.setStyleSheet(f"background:#FFFFFF; color:{INK}; border:1px solid {LINE}; border-radius:10px; padding:12px;")
-        right_l.addWidget(self.recommendation_plot_preview, 1)
-        right_l.addWidget(self.recommendation_interpretation_label)
-        split.addWidget(left); split.addWidget(right); split.setStretchFactor(1, 1)
-        plot_card.layout.addWidget(split)
+        self._add_standard_plot_gallery(
+            plot_card.layout,
+            "Recommendation plot",
+            "Feature Recommendation keeps only integrated readiness plots: category counts, readiness landscape, reason counts, family summary, and ML export manifest summary.",
+            "recommendation_plot_combo",
+            [
+                ("Readiness category counts", "recommendation_counts"),
+                ("Readiness landscape", "recommendation_score_landscape"),
+                ("Review reason counts", "recommendation_reason_counts"),
+                ("Readiness by family", "recommendation_family_summary"),
+                ("ML export manifest", "ml_export_manifest_summary"),
+            ],
+            "recommendation_plot_preview",
+            "recommendation_interpretation_label",
+            self.preview_recommendation_plot,
+            self.open_current_recommendation_plot,
+            "Run Feature Analysis, then choose one recommendation plot.",
+            500,
+        )
         layout.addWidget(plot_card, 1)
+        layout.addWidget(card)
         return self._wrap_scroll(body)
 
     def update_recommendations_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
