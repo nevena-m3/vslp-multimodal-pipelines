@@ -1,4 +1,4 @@
-"""VSLP Kinematics Pipeline GUI v0.76.
+"""VSLP Kinematics Pipeline GUI v0.77.
 
 This GUI intentionally mirrors the acoustic pipeline layout: left stage sidebar,
 institutional branding strip, top tabs, run log, and compact scientific workflow
@@ -60,6 +60,7 @@ from vslp.analysis.kinematics import (
     AGGREGATION_PROFILES,
     LANDMARK_PRESETS,
     NORMALIZATION_METHODS,
+    NORMALIZATION_METHOD_DETAILS,
     LandmarkRunConfig,
     VideoIngestConfig,
     bootstrap_mediapipe_runtime,
@@ -91,7 +92,7 @@ from vslp.analysis.kinematics import (
 )
 from vslp.analysis.kinematics.schemas import DEFAULT_VIDEO_EXTENSIONS, parse_int_list
 
-APP_VERSION = "v0.76"
+APP_VERSION = "v0.77"
 BRAND_DIR = Path(__file__).resolve().parent / "assets" / "branding"
 LAB_LOGO = BRAND_DIR / "lab_logo.png"
 UOFT_LOGO = BRAND_DIR / "uoft_logo.png"
@@ -527,6 +528,116 @@ class LandmarkMeshCanvas(QWidget):
         footer = f"Source: {self.source_label} | visible landmarks: {len(self.points)} | selected: {len(self.selected)} | zoom: {self.zoom_factor:.1f}x | left-click point, right/left-drag empty space to pan, wheel to zoom"
         painter.drawText(18, self.height() - 13, footer)
 
+
+
+class NormalizationMethodVisual(QWidget):
+    """Compact schematic explaining what normalization changes.
+
+    The widget is intentionally illustrative rather than data-derived: it shows
+    that raw coordinates are centered and divided by a stable anatomical scale.
+    It avoids pretending that MediaPipe monocular landmarks become true physical
+    millimeters without calibration.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.method = "intercanthal_distance"
+        self.setMinimumSize(360, 150)
+
+    def set_method(self, method: str) -> None:
+        self.method = method or "intercanthal_distance"
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        rect = self.rect().adjusted(12, 10, -12, -10)
+        painter.fillRect(rect, QColor("#101A2A"))
+        painter.setPen(QPen(QColor("#28445F"), 1))
+        painter.drawRoundedRect(rect, 12, 12)
+
+        details = NORMALIZATION_METHOD_DETAILS.get(self.method, {})
+        display_name = str(details.get("display_name", self.method.replace("_", " ")))
+        anchor_landmarks = tuple(details.get("anchor_landmarks", ()) or ())
+        fallback_landmarks = tuple(details.get("fallback_landmarks", ()) or ())
+
+        painter.setPen(QPen(QColor("#D8E8F8"), 1))
+        title_font = QFont("Arial", 9)
+        title_font.setBold(True)
+        painter.setFont(title_font)
+        painter.drawText(rect.adjusted(12, 4, -12, -4), Qt.AlignTop | Qt.AlignLeft, display_name)
+
+        left = QRectF(rect.left() + 18, rect.top() + 42, rect.width() * 0.40, rect.height() - 58)
+        right = QRectF(rect.left() + rect.width() * 0.57, rect.top() + 42, rect.width() * 0.34, rect.height() - 58)
+        self._draw_face(painter, left, raw=True, anchor_landmarks=anchor_landmarks, fallback_landmarks=fallback_landmarks)
+        self._draw_arrow(painter, QRectF(left.right() + 8, left.center().y() - 8, right.left() - left.right() - 16, 16))
+        self._draw_face(painter, right, raw=False, anchor_landmarks=anchor_landmarks, fallback_landmarks=fallback_landmarks)
+
+        painter.setFont(QFont("Arial", 7))
+        painter.setPen(QPen(QColor("#AFC8DE"), 1))
+        painter.drawText(left.adjusted(0, left.height() - 15, 0, 12), Qt.AlignCenter, "raw frame units")
+        painter.drawText(right.adjusted(0, right.height() - 15, 0, 12), Qt.AlignCenter, "centered + scaled")
+        painter.end()
+
+    def _draw_arrow(self, painter: QPainter, rect: QRectF) -> None:
+        if rect.width() <= 10:
+            return
+        y = rect.center().y()
+        x1 = rect.left()
+        x2 = rect.right()
+        painter.setPen(QPen(QColor("#7DD3FC"), 2))
+        painter.drawLine(QPointF(x1, y), QPointF(x2, y))
+        painter.drawLine(QPointF(x2, y), QPointF(x2 - 6, y - 5))
+        painter.drawLine(QPointF(x2, y), QPointF(x2 - 6, y + 5))
+
+    def _draw_face(self, painter: QPainter, rect: QRectF, *, raw: bool, anchor_landmarks: tuple, fallback_landmarks: tuple) -> None:
+        cx = rect.center().x()
+        cy = rect.center().y() - 4
+        rx = rect.width() * (0.30 if raw else 0.25)
+        ry = rect.height() * (0.36 if raw else 0.30)
+        face_rect = QRectF(cx - rx, cy - ry, 2 * rx, 2 * ry)
+        painter.setBrush(QBrush(QColor("#17263A")))
+        painter.setPen(QPen(QColor("#64748B"), 1.2))
+        painter.drawEllipse(face_rect)
+
+        # Stable anchors. Different methods emphasize different denominators.
+        if self.method == "face_bbox_width":
+            painter.setPen(QPen(QColor("#FBBF24"), 2))
+            painter.drawLine(QPointF(face_rect.left(), cy), QPointF(face_rect.right(), cy))
+            label = "face width"
+        elif self.method == "face_height_nose_chin":
+            painter.setPen(QPen(QColor("#FBBF24"), 2))
+            painter.drawLine(QPointF(cx, face_rect.top() + 6), QPointF(cx, face_rect.bottom() - 4))
+            label = "10/152"
+        elif self.method == "raw_normalized_coordinates":
+            painter.setPen(QPen(QColor("#94A3B8"), 1))
+            label = "no scale"
+        elif self.method == "procrustes_head_stabilized":
+            painter.setPen(QPen(QColor("#C084FC"), 2))
+            painter.drawLine(QPointF(cx - rx * 0.55, cy - ry * 0.16), QPointF(cx + rx * 0.55, cy - ry * 0.16))
+            painter.drawLine(QPointF(cx - rx * 0.40, cy + ry * 0.26), QPointF(cx + rx * 0.40, cy + ry * 0.26))
+            label = "future rigid fit"
+        else:
+            painter.setPen(QPen(QColor("#FBBF24"), 2))
+            painter.drawLine(QPointF(cx - rx * 0.52, cy - ry * 0.18), QPointF(cx + rx * 0.52, cy - ry * 0.18))
+            label = "/".join(map(str, anchor_landmarks or fallback_landmarks or ())) or "anchors"
+
+        # Eyes/mouth/chin reference points.
+        point_pen = QPen(QColor("#0B1220"), 1)
+        painter.setPen(point_pen)
+        for x, y, color in [
+            (cx - rx * 0.52, cy - ry * 0.18, "#FBBF24"),
+            (cx + rx * 0.52, cy - ry * 0.18, "#FBBF24"),
+            (cx - rx * 0.30, cy + ry * 0.22, "#38BDF8"),
+            (cx + rx * 0.30, cy + ry * 0.22, "#38BDF8"),
+            (cx, cy + ry * 0.55, "#AFC8DE"),
+        ]:
+            painter.setBrush(QBrush(QColor(color)))
+            painter.drawEllipse(QPointF(x, y), 3.2, 3.2)
+        painter.setPen(QPen(QColor("#AFC8DE"), 1))
+        painter.setFont(QFont("Arial", 7))
+        painter.drawText(rect.adjusted(0, 0, 0, -2), Qt.AlignBottom | Qt.AlignCenter, label)
 
 class KinematicsPipelineWindow(QMainWindow):
     def __init__(self) -> None:
@@ -1347,42 +1458,93 @@ class KinematicsPipelineWindow(QMainWindow):
     def _build_normalization_tab(self) -> QWidget:
         container = QWidget()
         layout = QVBoxLayout(container)
+        layout.setSpacing(12)
         layout.addWidget(self._info_panel(
-            "Info",
-            "Normalization defines how coordinates and distances are scaled. Intercanthal distance is the default starting point for oral/jaw kinematics because it reduces camera-distance effects while staying anatomically interpretable.",
+            "Normalization dashboard",
+            "Normalization converts raw MediaPipe image/model coordinates into centered, face-scale units. It reduces camera-distance and face-size effects before ALS/PD kinematic features are computed. It does not create true millimeter biomechanics and it does not fix poor tracking, head rotation, or missing landmarks; those are handled by QC.",
         ))
-        group = QGroupBox("Normalization policy")
-        grid = QGridLayout(group)
+
+        self.norm_metric_labels: dict[str, QLabel] = {}
+        metric_group = QGroupBox("Normalization readiness")
+        metric_grid = QGridLayout(metric_group)
+        metric_specs = [
+            ("method", "Method"),
+            ("anchors", "Anchors"),
+            ("scale_valid", "Scale valid"),
+            ("qc", "QC status"),
+            ("videos", "Videos"),
+            ("next_step", "Next"),
+        ]
+        for i, (key, title) in enumerate(metric_specs):
+            card = QFrame(); card.setObjectName("MetricCard")
+            card_layout = QVBoxLayout(card); card_layout.setContentsMargins(10, 7, 10, 7)
+            title_label = QLabel(title); title_label.setObjectName("MetricTitle")
+            value = QLabel("-"); value.setObjectName("MetricValue"); value.setWordWrap(True)
+            card_layout.addWidget(title_label); card_layout.addWidget(value)
+            self.norm_metric_labels[key] = value
+            metric_grid.addWidget(card, 0, i)
+        layout.addWidget(metric_group)
+
+        main_row = QHBoxLayout()
+        left_group = QGroupBox("1. Policy and controls")
+        left = QVBoxLayout(left_group)
+        form = QGridLayout()
         self.norm_combo = QComboBox(); self.norm_combo.addItems(list(NORMALIZATION_METHODS.keys()))
         self.norm_combo.setCurrentText("intercanthal_distance")
-        self.norm_desc = QLabel(NORMALIZATION_METHODS["intercanthal_distance"]); self.norm_desc.setWordWrap(True); self.norm_desc.setObjectName("SubtitleLabel")
-        self.norm_combo.currentTextChanged.connect(lambda name: self.norm_desc.setText(NORMALIZATION_METHODS.get(name, "")))
+        self.norm_combo.currentTextChanged.connect(self._update_normalization_method_panel)
         self.center_landmark_spin = QSpinBox(); self.center_landmark_spin.setRange(0, 477); self.center_landmark_spin.setValue(1)
         self.norm_overwrite_check = QCheckBox("Overwrite existing normalized landmark files")
         self.norm_overwrite_check.setChecked(True)
-        config_btn = QPushButton("Write Normalization Config Only")
+        form.addWidget(QLabel("Method"), 0, 0); form.addWidget(self.norm_combo, 0, 1)
+        form.addWidget(QLabel("Center landmark"), 1, 0); form.addWidget(self.center_landmark_spin, 1, 1)
+        form.addWidget(QLabel("Output policy"), 2, 0); form.addWidget(self.norm_overwrite_check, 2, 1)
+        left.addLayout(form)
+
+        self.norm_visual = NormalizationMethodVisual()
+        left.addWidget(self.norm_visual)
+        self.norm_desc = QLabel(""); self.norm_desc.setWordWrap(True); self.norm_desc.setObjectName("SubtitleLabel")
+        left.addWidget(self.norm_desc)
+        self.norm_science_note = QTextBrowser()
+        self.norm_science_note.setMaximumHeight(150)
+        self.norm_science_note.setOpenExternalLinks(False)
+        left.addWidget(self.norm_science_note)
+        btn_row = QHBoxLayout()
+        config_btn = QPushButton("Write Config")
         config_btn.clicked.connect(self.write_normalization_config_only)
-        btn = QPushButton("Run Computational Normalization")
+        btn = QPushButton("Run Normalization")
         btn.setObjectName("RunButton"); btn.clicked.connect(self.run_normalization_stage)
-        grid.addWidget(QLabel("Method"), 0, 0); grid.addWidget(self.norm_combo, 0, 1); grid.addWidget(config_btn, 0, 2); grid.addWidget(btn, 0, 3)
-        grid.addWidget(QLabel("Interpretation"), 1, 0); grid.addWidget(self.norm_desc, 1, 1, 1, 3)
-        grid.addWidget(QLabel("Center landmark"), 2, 0); grid.addWidget(self.center_landmark_spin, 2, 1)
-        grid.addWidget(QLabel("Output policy"), 2, 2); grid.addWidget(self.norm_overwrite_check, 2, 3)
-        layout.addWidget(group)
-        qc = self._info_panel(
-            "Computation and QC",
-            "The stage reads full MediaPipe landmark CSVs, uses the visual landmark selection as the working subset, centers coordinates on the selected center landmark, scales by the selected anatomical scale, and writes one normalized CSV per video. QC fields report detected-face fraction, valid-scale fraction, selected-landmark availability, missing selected landmarks, and whether each video is OK or QC-flagged."
-        )
-        layout.addWidget(qc)
-        self.norm_results_table = QTableWidget(0, 8)
-        self.norm_results_table.setHorizontalHeaderLabels(["Video", "Status", "Frames", "Face %", "Scale", "Scale valid %", "Selected complete %", "Output"])
+        refresh = QPushButton("Refresh Results")
+        refresh.clicked.connect(self._load_normalization_results)
+        btn_row.addWidget(config_btn); btn_row.addWidget(btn); btn_row.addWidget(refresh)
+        left.addLayout(btn_row)
+        main_row.addWidget(left_group, 1)
+
+        right_group = QGroupBox("2. Method audit")
+        right = QVBoxLayout(right_group)
+        self.norm_anchor_table = QTableWidget(0, 2)
+        self.norm_anchor_table.setHorizontalHeaderLabels(["Audit item", "Meaning"])
+        self.norm_anchor_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        right.addWidget(self.norm_anchor_table)
+        self.norm_method_table = QTableWidget(0, 5)
+        self.norm_method_table.setHorizontalHeaderLabels(["Method", "Anchors", "Best use", "Caution", "Evidence"])
+        self.norm_method_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        right.addWidget(self.norm_method_table)
+        main_row.addWidget(right_group, 1)
+        layout.addLayout(main_row)
+
+        results_group = QGroupBox("3. Outputs and diagnostics")
+        results_layout = QVBoxLayout(results_group)
+        self.norm_results_label = QLabel("No normalized landmark manifest loaded yet.")
+        self.norm_results_label.setObjectName("SubtitleLabel"); self.norm_results_label.setWordWrap(True)
+        results_layout.addWidget(self.norm_results_label)
+        self.norm_results_table = QTableWidget(0, 10)
+        self.norm_results_table.setHorizontalHeaderLabels(["Video", "Status", "Frames", "Face %", "Scale source", "Scale valid %", "Scale CV", "Max jump %", "Selected complete %", "QC flags"])
         self.norm_results_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        layout.addWidget(self.norm_results_table)
-        self.norm_table = QTableWidget(0, 2)
-        self.norm_table.setHorizontalHeaderLabels(["Method", "Use / caution"])
-        self._fill_table(self.norm_table, pd.DataFrame([{"Method": k, "Use / caution": v} for k, v in NORMALIZATION_METHODS.items()]), max_rows=30)
-        layout.addWidget(self.norm_table)
+        results_layout.addWidget(self.norm_results_table)
+        layout.addWidget(results_group)
         layout.addStretch(1)
+        self._update_normalization_method_panel(self.norm_combo.currentText())
+        self._load_normalization_results()
         return self._scrollable(container)
 
     def _build_qc_tab(self) -> QWidget:
@@ -2566,6 +2728,64 @@ class KinematicsPipelineWindow(QMainWindow):
             self._update_selected_landmark_feedback()
             self._log(f"Selected {len(self.landmark_indices)} landmarks: {outputs['selected_json']} | status={diagnostics.status}")
 
+    def _set_normalization_dashboard_value(self, key: str, value: object) -> None:
+        if hasattr(self, "norm_metric_labels") and key in self.norm_metric_labels:
+            self.norm_metric_labels[key].setText("-" if value is None else str(value))
+
+    def _format_landmark_tuple(self, values: object) -> str:
+        vals = tuple(values or ()) if not isinstance(values, str) else ()
+        return ", ".join(map(str, vals)) if vals else "None"
+
+    def _update_normalization_method_panel(self, method: str | None = None) -> None:
+        method = method or (self.norm_combo.currentText() if hasattr(self, "norm_combo") else "intercanthal_distance")
+        details = NORMALIZATION_METHOD_DETAILS.get(method, {})
+        if hasattr(self, "norm_visual"):
+            self.norm_visual.set_method(method)
+        display = str(details.get("display_name", method.replace("_", " ")))
+        anchors = tuple(details.get("anchor_landmarks", ()) or ())
+        fallback = tuple(details.get("fallback_landmarks", ()) or ())
+        anchor_text = self._format_landmark_tuple(anchors)
+        if fallback:
+            anchor_text = f"{anchor_text}; fallback {self._format_landmark_tuple(fallback)}"
+        self._set_normalization_dashboard_value("method", display)
+        self._set_normalization_dashboard_value("anchors", anchor_text)
+        self._set_normalization_dashboard_value("next_step", "Run QC after normalization")
+        if hasattr(self, "norm_desc"):
+            self.norm_desc.setText(str(NORMALIZATION_METHODS.get(method, "")))
+        if hasattr(self, "norm_science_note"):
+            self.norm_science_note.setHtml(
+                "<div style='color:#D8E8F8;'>"
+                f"<b>What changes:</b> {details.get('what_changes', '')}<br>"
+                f"<b>Best use:</b> {details.get('best_for', '')}<br>"
+                f"<b>Caution:</b> {details.get('caution', '')}<br>"
+                f"<b>Evidence:</b> {details.get('evidence_level', '')}"
+                "</div>"
+            )
+        if hasattr(self, "norm_anchor_table"):
+            rows = [
+                {"Audit item": "Primary denominator", "Meaning": anchor_text},
+                {"Audit item": "Centering", "Meaning": f"Subtract landmark {self.center_landmark_spin.value() if hasattr(self, 'center_landmark_spin') else 1} before scaling."},
+                {"Audit item": "What it controls", "Meaning": "Camera distance / face-size differences, approximately."},
+                {"Audit item": "What it does not control", "Meaning": "Head rotation, depth motion, poor tracking, occlusion, or true millimeter scale."},
+                {"Audit item": "Custom selections", "Meaning": "Scale anchors are read from the full MediaPipe CSV; include them in selected landmarks when you want visual audit/provenance."},
+            ]
+            self._fill_table(self.norm_anchor_table, pd.DataFrame(rows), max_rows=10)
+        if hasattr(self, "norm_method_table"):
+            method_rows = []
+            for key, item in NORMALIZATION_METHOD_DETAILS.items():
+                a = self._format_landmark_tuple(item.get("anchor_landmarks", ()))
+                fb = self._format_landmark_tuple(item.get("fallback_landmarks", ()))
+                if fb != "None":
+                    a = f"{a}; fallback {fb}"
+                method_rows.append({
+                    "Method": key,
+                    "Anchors": a,
+                    "Best use": item.get("best_for", ""),
+                    "Caution": item.get("caution", ""),
+                    "Evidence": item.get("evidence_level", ""),
+                })
+            self._fill_table(self.norm_method_table, pd.DataFrame(method_rows), max_rows=20)
+
     def write_normalization_config_only(self) -> None:
         out = self._path_or_warn(self.output_edit, "an output project folder")
         if out is None:
@@ -2593,7 +2813,11 @@ class KinematicsPipelineWindow(QMainWindow):
             self.progress.setValue(85)
             self._load_normalization_results(result.get("manifest_csv"))
             manifest = result.get("manifest_csv")
-            self.stage_records["normalization"] = StageRecord(status="completed", manifest_path=str(manifest))
+            if int(result.get("n_error", 0) or 0) > 0 or int(result.get("n_qc_flagged", 0) or 0) > 0:
+                norm_stage_status = "completed_with_warnings"
+            else:
+                norm_stage_status = "completed"
+            self.stage_records["normalization"] = StageRecord(status=norm_stage_status, manifest_path=str(manifest))
             self._refresh_stage_cards()
             self.progress.setValue(100)
             self._log(
@@ -2605,11 +2829,18 @@ class KinematicsPipelineWindow(QMainWindow):
             self._log(f"Normalization failed: {exc}")
             QMessageBox.critical(self, "Normalization failed", str(exc))
 
-    def _load_normalization_results(self, manifest_csv) -> None:
-        if not manifest_csv:
-            return
-        path = Path(str(manifest_csv))
-        if not path.exists():
+    def _load_normalization_results(self, manifest_csv=None) -> None:
+        path = Path(str(manifest_csv)) if manifest_csv else None
+        if path is None:
+            out_text = self.output_edit.text().strip() if hasattr(self, "output_edit") else ""
+            if out_text:
+                path = Path(out_text).expanduser().resolve() / "kinematics" / "004_normalization" / "tables" / "normalized_landmarks_manifest.csv"
+        if path is None or not path.exists():
+            if hasattr(self, "norm_results_label"):
+                self.norm_results_label.setText("No normalized landmark manifest loaded yet. Choose a method, write config if needed, then run normalization.")
+            self._set_normalization_dashboard_value("videos", "0")
+            self._set_normalization_dashboard_value("scale_valid", "-")
+            self._set_normalization_dashboard_value("qc", "Not run")
             return
         df = pd.read_csv(path)
         rows = []
@@ -2617,17 +2848,43 @@ class KinematicsPipelineWindow(QMainWindow):
             face_pct = pd.to_numeric(pd.Series([rec.get("face_detected_fraction")]), errors="coerce").iloc[0]
             scale_pct = pd.to_numeric(pd.Series([rec.get("scale_valid_fraction")]), errors="coerce").iloc[0]
             sel_pct = pd.to_numeric(pd.Series([rec.get("selected_complete_frame_fraction")]), errors="coerce").iloc[0]
+            scale_cv = pd.to_numeric(pd.Series([rec.get("scale_value_cv")]), errors="coerce").iloc[0]
+            max_jump = pd.to_numeric(pd.Series([rec.get("scale_frame_to_frame_max_jump_fraction")]), errors="coerce").iloc[0]
             rows.append({
                 "Video": rec.get("video_id", ""),
                 "Status": rec.get("status", ""),
                 "Frames": rec.get("n_frames", ""),
                 "Face %": "" if pd.isna(face_pct) else f"{face_pct * 100:.1f}",
-                "Scale": rec.get("scale_source", ""),
+                "Scale source": rec.get("scale_source", ""),
                 "Scale valid %": "" if pd.isna(scale_pct) else f"{scale_pct * 100:.1f}",
+                "Scale CV": "" if pd.isna(scale_cv) else f"{scale_cv:.3f}",
+                "Max jump %": "" if pd.isna(max_jump) else f"{max_jump * 100:.1f}",
                 "Selected complete %": "" if pd.isna(sel_pct) else f"{sel_pct * 100:.1f}",
-                "Output": Path(str(rec.get("output_csv", ""))).name,
+                "QC flags": rec.get("qc_flags", ""),
             })
         self._fill_table(self.norm_results_table, pd.DataFrame(rows), max_rows=200)
+        n_videos = len(df)
+        n_ok = int((df.get("status", pd.Series(dtype=str)).astype(str).str.lower() == "ok").sum()) if not df.empty else 0
+        n_qc = int((df.get("status", pd.Series(dtype=str)).astype(str).str.lower() == "qc_flagged").sum()) if not df.empty else 0
+        n_error = int((df.get("status", pd.Series(dtype=str)).astype(str).str.lower() == "error").sum()) if not df.empty else 0
+        mean_scale = pd.to_numeric(df.get("scale_valid_fraction"), errors="coerce").mean() if not df.empty else float("nan")
+        if n_error > 0:
+            qc_status = "Review / errors"
+        elif n_qc > 0:
+            qc_status = "Review"
+        elif n_ok > 0:
+            qc_status = "Complete"
+        else:
+            qc_status = "Not run"
+        self._set_normalization_dashboard_value("videos", n_videos)
+        self._set_normalization_dashboard_value("scale_valid", "-" if pd.isna(mean_scale) else f"{mean_scale * 100:.1f}%")
+        self._set_normalization_dashboard_value("qc", qc_status)
+        self._set_normalization_dashboard_value("next_step", "Video QC" if qc_status == "Complete" else "Review diagnostics")
+        if hasattr(self, "norm_results_label"):
+            self.norm_results_label.setText(
+                f"Loaded normalized manifest: {n_videos} video(s), ok={n_ok}, qc_flagged={n_qc}, errors={n_error}. "
+                "Scale CV and frame-to-frame jump should be reviewed before trusting velocity or amplitude features."
+            )
 
     def _write_placeholder(self, stage_key: str, rel: str, payload: dict, message: str) -> None:
         out = self._path_or_warn(self.output_edit, "an output project folder")
