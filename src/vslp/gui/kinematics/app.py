@@ -1,4 +1,4 @@
-"""VSLP Kinematics Pipeline GUI v0.79.
+"""VSLP Kinematics Pipeline GUI v0.80.
 
 This GUI intentionally mirrors the acoustic pipeline layout: left stage sidebar,
 institutional branding strip, top tabs, run log, and compact scientific workflow
@@ -81,6 +81,8 @@ from vslp.analysis.kinematics import (
     write_normalization_config,
     run_normalization_from_selection,
     run_video_qc,
+    write_video_qc_framework_placeholder,
+    VIDEO_QC_FRAMEWORK_PLACEHOLDER,
     DEFAULT_KINEMATIC_FEATURE_IDS,
     KINEMATIC_FEATURE_GROUPS,
     KINEMATIC_FEATURE_SPECS,
@@ -93,7 +95,7 @@ from vslp.analysis.kinematics import (
 )
 from vslp.analysis.kinematics.schemas import DEFAULT_VIDEO_EXTENSIONS, parse_int_list
 
-APP_VERSION = "v0.79"
+APP_VERSION = "v0.80"
 BRAND_DIR = Path(__file__).resolve().parent / "assets" / "branding"
 LAB_LOGO = BRAND_DIR / "lab_logo.png"
 UOFT_LOGO = BRAND_DIR / "uoft_logo.png"
@@ -1618,36 +1620,160 @@ class KinematicsPipelineWindow(QMainWindow):
         return self._scrollable(container)
 
     def _build_qc_tab(self) -> QWidget:
-        container = QWidget(); layout = QVBoxLayout(container)
+        """Build the kinematics video/landmark QC tab.
+
+        This tab intentionally separates the automated QC that exists today from
+        the future acoustic-style QC framework, which remains a clearly labeled
+        placeholder until it is implemented and validated.
+        """
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setSpacing(12)
         layout.addWidget(self._info_panel(
-            "Info",
-            "Video QC now computes automated landmark-extraction risk summaries from the MediaPipe CSVs. It flags pass/review/fail for analyst review using face visibility, long no-face gaps, and landmark frame-to-frame stability. QC does not automatically exclude videos.",
+            "Video / Landmark QC",
+            "QC is the trust gate before kinematic features. The current implementation summarizes face visibility, missing-face gaps, and selected-landmark tracking stability. The full acoustic-style kinematics QC framework is shown below as a deliberate placeholder, not as a completed validated protocol.",
         ))
-        qc_rows = [
-            ("Face visibility QC", "Face-detected fraction and dropped-frame burden."),
-            ("Long gap QC", "Maximum consecutive no-face frames and gap fraction."),
-            ("Landmark stability QC", "Median and p95 frame-to-frame displacement for the selected landmark set."),
-            ("Review status", "Conservative pass/review/fail flag with written rationale; no automatic exclusion."),
+
+        card_grid = QGridLayout()
+        self.video_qc_metric_values: dict[str, QLabel] = {}
+        qc_cards = [
+            ("QC status", "status"),
+            ("Videos", "videos"),
+            ("PASS", "pass"),
+            ("REVIEW", "review"),
+            ("FAIL", "fail"),
+            ("Mean detection", "mean_detection"),
+            ("Framework", "framework"),
+            ("Next", "next_step"),
         ]
-        table = QTableWidget(0, 2); table.setHorizontalHeaderLabels(["QC family", "Current computation"])
-        self._fill_table(table, pd.DataFrame(qc_rows, columns=["QC family", "Current computation"]), max_rows=20)
-        layout.addWidget(table)
+        for idx, (title, key) in enumerate(qc_cards):
+            card = QFrame()
+            card.setObjectName("MetricCard")
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(10, 7, 10, 7)
+            card_title = QLabel(title)
+            card_title.setObjectName("SubtitleLabel")
+            value = QLabel("-")
+            value.setObjectName("InfoTitle")
+            value.setWordWrap(True)
+            card_layout.addWidget(card_title)
+            card_layout.addWidget(value)
+            self.video_qc_metric_values[key] = value
+            card_grid.addWidget(card, idx // 4, idx % 4)
+        layout.addLayout(card_grid)
+
+        control_group = QGroupBox("1. Run current automated QC")
+        control_layout = QVBoxLayout(control_group)
+        control_layout.addWidget(QLabel(
+            "Current automated QC gives a conservative pass/review/fail recommendation. It does not delete, exclude, or diagnose videos. Thresholds are engineering defaults for triage and should later be calibrated on your own dataset."
+        ))
         btn_row = QHBoxLayout()
         btn = QPushButton("Run Landmark / Video QC")
-        btn.setObjectName("RunButton"); btn.clicked.connect(self.run_video_qc_stage)
+        btn.setObjectName("RunButton")
+        btn.clicked.connect(self.run_video_qc_stage)
         refresh = QPushButton("Refresh QC Table")
         refresh.clicked.connect(self._load_video_qc_summary)
-        btn_row.addWidget(btn); btn_row.addWidget(refresh); btn_row.addStretch(1)
-        layout.addLayout(btn_row)
+        placeholder_btn = QPushButton("Write QC Framework Placeholder")
+        placeholder_btn.clicked.connect(self.write_video_qc_framework_placeholder_stage)
+        btn_row.addWidget(btn)
+        btn_row.addWidget(refresh)
+        btn_row.addWidget(placeholder_btn)
+        btn_row.addStretch(1)
+        control_layout.addLayout(btn_row)
+        layout.addWidget(control_group)
+
+        tabs = QTabWidget()
+
+        current_tab = QWidget()
+        current_layout = QVBoxLayout(current_tab)
+        source_rows = [
+            {
+                "QC family": "Face visibility",
+                "Current metric": "face_detected_fraction, n_faces_detected, n_frames",
+                "Where it comes from": "MediaPipe extraction manifest and per-frame face_detected column",
+                "Interpretation": "Low detection means downstream trajectories may be dominated by missing or unreliable frames.",
+                "Status": "implemented",
+            },
+            {
+                "QC family": "No-face gap structure",
+                "Current metric": "n_no_face_runs, max_no_face_gap_frames, max_no_face_gap_fraction",
+                "Where it comes from": "Runs of face_detected=False in the landmark CSV",
+                "Interpretation": "Long gaps distort temporal features and velocity estimates more than isolated missing frames.",
+                "Status": "implemented",
+            },
+            {
+                "QC family": "Tracking stability",
+                "Current metric": "median and p95 frame-to-frame displacement for selected landmarks",
+                "Where it comes from": "Engineering summary of consecutive x/y landmark displacement",
+                "Interpretation": "Large jumps often indicate tracking failure, not biology.",
+                "Status": "implemented, needs dataset calibration",
+            },
+            {
+                "QC family": "Automated status",
+                "Current metric": "pass / review / fail with rationale",
+                "Where it comes from": "Conservative engineering thresholds, not ALS/PD clinical cutoffs",
+                "Interpretation": "A triage recommendation for review before feature computation.",
+                "Status": "implemented",
+            },
+        ]
+        self.video_qc_source_table = QTableWidget(0, 0)
+        self.video_qc_source_table.setMinimumHeight(190)
+        self._fill_table(self.video_qc_source_table, pd.DataFrame(source_rows), max_rows=20)
+        current_layout.addWidget(self.video_qc_source_table)
         self.video_qc_label = QLabel("No video QC summary loaded yet.")
         self.video_qc_label.setObjectName("SubtitleLabel")
         self.video_qc_label.setWordWrap(True)
-        layout.addWidget(self.video_qc_label)
+        current_layout.addWidget(self.video_qc_label)
         self.video_qc_table = QTableWidget(0, 0)
         self.video_qc_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.video_qc_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        layout.addWidget(self.video_qc_table)
+        self.video_qc_table.setMinimumHeight(260)
+        current_layout.addWidget(self.video_qc_table)
+        tabs.addTab(current_tab, "Current automated QC")
+
+        framework_tab = QWidget()
+        framework_layout = QVBoxLayout(framework_tab)
+        placeholder_note = QLabel(
+            "QC TO BE BUILT IN: this is a placeholder for the future acoustic-style kinematics QC framework. It is intentionally visible so reports and users do not confuse the current automated extraction checks with a completed clinical/research QC framework."
+        )
+        placeholder_note.setWordWrap(True)
+        placeholder_note.setObjectName("InfoBody")
+        framework_layout.addWidget(placeholder_note)
+        self.video_qc_framework_table = QTableWidget(0, 0)
+        self.video_qc_framework_table.setMinimumHeight(320)
+        self._fill_table(self.video_qc_framework_table, pd.DataFrame(VIDEO_QC_FRAMEWORK_PLACEHOLDER), max_rows=20)
+        framework_layout.addWidget(self.video_qc_framework_table)
+        tabs.addTab(framework_tab, "QC framework placeholder")
+
+        thresholds_tab = QWidget()
+        thresholds_layout = QVBoxLayout(thresholds_tab)
+        threshold_rows = [
+            {"Parameter": "pass_face_fraction", "Default": "0.90", "Source": "engineering default", "Meaning": ">=90% detected frames is treated as clean enough for PASS if other checks are clean"},
+            {"Parameter": "review_face_fraction", "Default": "0.75", "Source": "engineering default", "Meaning": "below this level, automated QC fails the video"},
+            {"Parameter": "max_gap_review_fraction", "Default": "0.10", "Source": "engineering default", "Meaning": "longest no-face gap >=10% of video triggers REVIEW"},
+            {"Parameter": "max_gap_fail_fraction", "Default": "0.25", "Source": "engineering default", "Meaning": "longest no-face gap >=25% of video triggers FAIL"},
+            {"Parameter": "jitter_review_p95", "Default": "0.080", "Source": "engineering default", "Meaning": "p95 frame-to-frame displacement above this triggers REVIEW"},
+            {"Parameter": "jitter_fail_p95", "Default": "0.140", "Source": "engineering default", "Meaning": "p95 frame-to-frame displacement above this triggers FAIL"},
+        ]
+        self.video_qc_threshold_table = QTableWidget(0, 0)
+        self.video_qc_threshold_table.setMinimumHeight(260)
+        self._fill_table(self.video_qc_threshold_table, pd.DataFrame(threshold_rows), max_rows=20)
+        thresholds_layout.addWidget(self.video_qc_threshold_table)
+        caveat = QTextBrowser()
+        caveat.setMinimumHeight(120)
+        caveat.setHtml(
+            "<p><b>Interpretation:</b> these numbers are not disease-specific ALS/Parkinson's cutoffs. "
+            "They are conservative automated triage defaults. The correct long-term workflow is to run QC on a representative dataset, visually inspect PASS/REVIEW/FAIL cases, calibrate thresholds, then freeze a versioned QC policy.</p>"
+        )
+        thresholds_layout.addWidget(caveat)
+        tabs.addTab(thresholds_tab, "Threshold provenance")
+
+        layout.addWidget(tabs)
         layout.addStretch(1)
+        self._set_video_qc_card("status", "Not run")
+        self._set_video_qc_card("framework", "Placeholder")
+        self._set_video_qc_card("next_step", "Run QC")
+        self._load_video_qc_summary()
         return self._scrollable(container)
 
     def _build_features_tab(self) -> QWidget:
@@ -2966,6 +3092,25 @@ class KinematicsPipelineWindow(QMainWindow):
         self.stage_records[stage_key] = StageRecord(status="completed", manifest_path=str(path))
         self._refresh_stage_cards(); self._log(f"{message}: {path}")
 
+
+    def _set_video_qc_card(self, key: str, value: object) -> None:
+        if hasattr(self, "video_qc_metric_values") and key in self.video_qc_metric_values:
+            self.video_qc_metric_values[key].setText(str(value))
+
+    def write_video_qc_framework_placeholder_stage(self) -> None:
+        """Write the explicit future-QC-framework placeholder without running QC."""
+        out = self._path_or_warn(self.output_edit, "an output project folder")
+        if out is None:
+            return
+        paths = write_video_qc_framework_placeholder(out)
+        self._set_video_qc_card("framework", "Placeholder written")
+        self._log(f"QC framework placeholder written: {paths['placeholder_json']}")
+        QMessageBox.information(
+            self,
+            "QC framework placeholder written",
+            "A clearly labeled placeholder for the future acoustic-style kinematics QC framework was written. It is not a completed or validated QC protocol.",
+        )
+
     def run_video_qc_stage(self) -> None:
         out = self._path_or_warn(self.output_edit, "an output project folder")
         if out is None:
@@ -2981,9 +3126,15 @@ class KinematicsPipelineWindow(QMainWindow):
     def _finish_video_qc_stage(self, result: object) -> None:
         res = dict(result)
         summary_csv = Path(res["summary_csv"])
-        self.stage_records["qc"] = StageRecord(status="completed", manifest_path=str(summary_csv))
+        counts = res.get("status_counts", {}) or {}
+        stage_status = "completed"
+        if int(counts.get("review", 0) or 0) > 0 or int(counts.get("fail", 0) or 0) > 0:
+            stage_status = "completed_with_warnings"
+        self.stage_records["qc"] = StageRecord(status=stage_status, manifest_path=str(summary_csv))
         self._refresh_stage_cards()
-        self._log(f"Video QC completed: {res.get('n_videos', 0)} video(s); status counts={res.get('status_counts', {})}. Summary: {summary_csv}")
+        self._log(f"Video QC completed: {res.get('n_videos', 0)} video(s); status counts={counts}. Summary: {summary_csv}")
+        if res.get("framework_placeholder_json"):
+            self._log(f"QC framework placeholder: {res.get('framework_placeholder_json')}")
         self._load_video_qc_summary(summary_csv)
 
     def _load_video_qc_summary(self, path: Path | None = None) -> None:
@@ -2993,12 +3144,53 @@ class KinematicsPipelineWindow(QMainWindow):
         if path is None or not Path(path).exists():
             if hasattr(self, "video_qc_label"):
                 self.video_qc_label.setText("No video QC summary found yet.")
+            self._set_video_qc_card("status", "Not run")
+            self._set_video_qc_card("videos", "-")
+            self._set_video_qc_card("pass", "-")
+            self._set_video_qc_card("review", "-")
+            self._set_video_qc_card("fail", "-")
+            self._set_video_qc_card("mean_detection", "-")
+            self._set_video_qc_card("framework", "Placeholder")
+            self._set_video_qc_card("next_step", "Run QC")
             return
         df = pd.read_csv(path)
+        counts = df.get("qc_status", pd.Series(dtype=str)).astype(str).str.lower().value_counts(dropna=False).to_dict() if not df.empty else {}
+        n_videos = int(len(df))
+        n_pass = int(counts.get("pass", 0) or 0)
+        n_review = int(counts.get("review", 0) or 0)
+        n_fail = int(counts.get("fail", 0) or 0)
+        mean_detection = pd.to_numeric(df.get("face_detected_fraction"), errors="coerce").mean() if not df.empty else float("nan")
+        if n_fail > 0:
+            status = "Review / fail"
+            next_step = "Inspect failed videos"
+        elif n_review > 0:
+            status = "Review"
+            next_step = "Inspect review videos"
+        elif n_pass > 0:
+            status = "Complete"
+            next_step = "Features"
+        else:
+            status = "No usable rows"
+            next_step = "Check landmark manifest"
+        self._set_video_qc_card("status", status)
+        self._set_video_qc_card("videos", n_videos)
+        self._set_video_qc_card("pass", n_pass)
+        self._set_video_qc_card("review", n_review)
+        self._set_video_qc_card("fail", n_fail)
+        self._set_video_qc_card("mean_detection", "-" if pd.isna(mean_detection) else f"{mean_detection * 100:.1f}%")
+        self._set_video_qc_card("framework", "Placeholder")
+        self._set_video_qc_card("next_step", next_step)
         if hasattr(self, "video_qc_label"):
-            counts = df.get("qc_status", pd.Series(dtype=str)).value_counts(dropna=False).to_dict() if not df.empty else {}
-            self.video_qc_label.setText(f"Loaded QC summary: {path}. Status counts: {counts}")
-        cols = [c for c in ["video_id", "qc_status", "face_detected_fraction", "n_frames", "n_faces_detected", "max_no_face_gap_frames", "p95_frame_displacement", "qc_rationale"] if c in df.columns]
+            self.video_qc_label.setText(
+                f"Loaded QC summary: {path}. Current automated QC is implemented; the full acoustic-style QC framework remains explicitly marked as a placeholder."
+            )
+        cols = [
+            c for c in [
+                "video_id", "qc_status", "face_detected_fraction", "n_frames", "n_faces_detected",
+                "n_no_face_runs", "max_no_face_gap_frames", "max_no_face_gap_fraction",
+                "p95_frame_displacement", "large_jump_fraction", "qc_rationale",
+            ] if c in df.columns
+        ]
         if hasattr(self, "video_qc_table"):
             self._fill_table(self.video_qc_table, df[cols] if cols else df, max_rows=200)
 
