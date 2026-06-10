@@ -87,6 +87,9 @@ from vslp.analysis.kinematics import (
     KINEMATIC_FEATURE_GROUPS,
     KINEMATIC_FEATURE_SPECS,
     QC_FEATURE_REQUIREMENTS,
+    feature_framework_dataframe,
+    feature_implementation_audit_dataframe,
+    write_feature_framework_catalog,
     FeatureComputationConfig,
     run_feature_computation,
     TemporalAggregationConfig,
@@ -1631,7 +1634,7 @@ class KinematicsPipelineWindow(QMainWindow):
         layout.setSpacing(12)
         layout.addWidget(self._info_panel(
             "Video / Landmark QC",
-            "QC is the trust gate before kinematic features. The current implementation summarizes face visibility, missing-face gaps, and selected-landmark tracking stability. The full acoustic-style kinematics QC framework is shown below as a deliberate placeholder, not as a completed validated protocol.",
+            "QC is the trust gate before kinematic features. The current implementation summarizes face visibility, missing-face gaps, and selected-landmark tracking stability. The current automated QC remains separate from the future visual-degradation QC framework. The placeholder below is intentionally empty at the threshold/check level and lists only degradation families to be built in.",
         ))
 
         card_grid = QGridLayout()
@@ -1734,7 +1737,7 @@ class KinematicsPipelineWindow(QMainWindow):
         framework_tab = QWidget()
         framework_layout = QVBoxLayout(framework_tab)
         placeholder_note = QLabel(
-            "QC TO BE BUILT IN: this is a placeholder for the future acoustic-style kinematics QC framework. It is intentionally visible so reports and users do not confuse the current automated extraction checks with a completed clinical/research QC framework."
+            "QC TO BE BUILT IN: this is only a degradation-family scaffold for the future video QC framework. Detailed checks, thresholds, plots, reviewer decisions, and acoustic-style QC reporting are intentionally not implemented here yet."
         )
         placeholder_note.setWordWrap(True)
         placeholder_note.setObjectName("InfoBody")
@@ -1743,7 +1746,7 @@ class KinematicsPipelineWindow(QMainWindow):
         self.video_qc_framework_table.setMinimumHeight(320)
         self._fill_table(self.video_qc_framework_table, pd.DataFrame(VIDEO_QC_FRAMEWORK_PLACEHOLDER), max_rows=20)
         framework_layout.addWidget(self.video_qc_framework_table)
-        tabs.addTab(framework_tab, "QC framework placeholder")
+        tabs.addTab(framework_tab, "Future degradation families")
 
         thresholds_tab = QWidget()
         thresholds_layout = QVBoxLayout(thresholds_tab)
@@ -1781,9 +1784,58 @@ class KinematicsPipelineWindow(QMainWindow):
         layout = QVBoxLayout(container)
         layout.setSpacing(10)
         layout.addWidget(self._info_panel(
-            "Info",
-            "Compute kinematic features from normalized MediaPipe landmark trajectories. This tab now mirrors the acoustic Features stage: choose feature families, inspect landmark dependencies and QC gates, configure computation policy, run the stage, then review the feature table.",
+            "Features",
+            "Compute research-grade kinematic features only after normalization and QC. This stage separates the current implemented oral-motor feature kernel from the broader ALS/video feature framework roadmap derived from the uploaded field maps. It does not provide ALS/PD diagnostic cutoffs.",
         ))
+
+        feature_card_grid = QGridLayout()
+        self.feature_metric_values: dict[str, QLabel] = {}
+        feature_cards = [
+            ("Mode", "mode", "Implemented kernel"),
+            ("Selected", "selected", "0"),
+            ("Framework", "framework", "Roadmap + audit"),
+            ("QC dependency", "qc", "Required before trust"),
+            ("Next", "next", "Run features, then aggregate"),
+        ]
+        for idx, (title, key, default) in enumerate(feature_cards):
+            card = QFrame()
+            card.setObjectName("MetricCard")
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(10, 7, 10, 7)
+            card_title = QLabel(title)
+            card_title.setObjectName("SubtitleLabel")
+            value = QLabel(default)
+            value.setObjectName("InfoTitle")
+            value.setWordWrap(True)
+            card_layout.addWidget(card_title)
+            card_layout.addWidget(value)
+            self.feature_metric_values[key] = value
+            feature_card_grid.addWidget(card, 0, idx)
+        layout.addLayout(feature_card_grid)
+
+        framework_group = QGroupBox("Feature framework and provenance")
+        framework_layout = QVBoxLayout(framework_group)
+        framework_note = QLabel(
+            "The uploaded maps are used here as a feature-family roadmap. The current backend computes an implemented oral-motor kernel from normalized landmarks; exact full field-map parity should be built incrementally with tests and locked landmark/normalization conventions."
+        )
+        framework_note.setWordWrap(True)
+        framework_note.setObjectName("SubtitleLabel")
+        framework_layout.addWidget(framework_note)
+        framework_tabs = QTabWidget()
+        family_tab = QWidget(); family_layout = QVBoxLayout(family_tab)
+        self.feature_family_table = QTableWidget(0, 0)
+        self.feature_family_table.setMinimumHeight(220)
+        self._fill_table(self.feature_family_table, feature_framework_dataframe(), max_rows=20)
+        family_layout.addWidget(self.feature_family_table)
+        framework_tabs.addTab(family_tab, "Feature families")
+        audit_tab = QWidget(); audit_layout = QVBoxLayout(audit_tab)
+        self.feature_audit_table = QTableWidget(0, 0)
+        self.feature_audit_table.setMinimumHeight(180)
+        self._fill_table(self.feature_audit_table, feature_implementation_audit_dataframe(), max_rows=20)
+        audit_layout.addWidget(self.feature_audit_table)
+        framework_tabs.addTab(audit_tab, "Implementation audit")
+        framework_layout.addWidget(framework_tabs)
+        layout.addWidget(framework_group)
 
         body = QHBoxLayout()
         left = QGroupBox("Feature selector")
@@ -1856,12 +1908,14 @@ class KinematicsPipelineWindow(QMainWindow):
         run_row = QHBoxLayout()
         plan_btn = QPushButton("Write Feature Computation Plan")
         plan_btn.clicked.connect(self.write_feature_computation_plan)
+        framework_btn = QPushButton("Write Feature Framework Catalog")
+        framework_btn.clicked.connect(self.write_feature_framework_catalog_stage)
         run_btn = QPushButton("Run Kinematic Feature Computation")
         run_btn.setObjectName("RunButton")
         run_btn.clicked.connect(self.run_feature_computation_stage)
         refresh_btn = QPushButton("Refresh Feature Outputs")
         refresh_btn.clicked.connect(self._load_feature_results)
-        run_row.addWidget(plan_btn); run_row.addWidget(run_btn); run_row.addWidget(refresh_btn); run_row.addStretch(1)
+        run_row.addWidget(plan_btn); run_row.addWidget(framework_btn); run_row.addWidget(run_btn); run_row.addWidget(refresh_btn); run_row.addStretch(1)
         right.addLayout(run_row)
 
         body.addWidget(left, stretch=3)
@@ -1959,6 +2013,10 @@ class KinematicsPipelineWindow(QMainWindow):
         for spec in specs:
             group_counts[spec.group] = group_counts.get(spec.group, 0) + 1
         self.feature_selected_label.setText(f"Selected: {len(specs)} | groups: {len(group_counts)}")
+        if hasattr(self, "feature_metric_values"):
+            self.feature_metric_values.get("selected", QLabel("0")).setText(str(len(specs)))
+            self.feature_metric_values.get("qc", QLabel("")).setText("QC required before trust")
+            self.feature_metric_values.get("next", QLabel("")).setText("Run computation")
         lines = []
         for group, count in group_counts.items():
             lines.append(f"{group}: {count}")
@@ -3242,9 +3300,26 @@ class KinematicsPipelineWindow(QMainWindow):
             "qc_requirements": list(QC_FEATURE_REQUIREMENTS),
             "note": "Plan only. It does not compute features or modify landmark/normalization outputs.",
         }
+        framework_paths = write_feature_framework_catalog(out)
+        payload["feature_framework_json"] = str(framework_paths["framework_json"])
+        payload["feature_framework_csv"] = str(framework_paths["framework_csv"])
+        payload["feature_implementation_audit_csv"] = str(framework_paths["audit_csv"])
         plan_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         self._log(f"Feature computation plan written: {plan_json}")
         QMessageBox.information(self, "Feature plan written", f"Feature computation plan written:\n{plan_json}")
+
+    def write_feature_framework_catalog_stage(self) -> None:
+        """Write feature-family roadmap and implementation-audit tables."""
+        out = self._path_or_warn(self.output_edit, "an output project folder")
+        if out is None:
+            return
+        paths = write_feature_framework_catalog(out)
+        self._log(f"Feature framework catalog written: {paths['framework_json']}")
+        QMessageBox.information(
+            self,
+            "Feature framework catalog written",
+            "Feature framework and implementation-audit tables were written. These describe feature-family coverage and roadmap status; they are not diagnostic outputs.",
+        )
 
     def run_feature_computation_stage(self) -> None:
         out = self._path_or_warn(self.output_edit, "an output project folder")

@@ -162,6 +162,137 @@ QC_FEATURE_REQUIREMENTS: tuple[dict[str, str], ...] = (
 )
 
 
+
+# GUI-facing feature framework derived from the uploaded feature/field maps.
+# These rows are deliberately family-level: they organize what should be built
+# without pretending that every field-map scalar has already been validated in
+# the current computational kernel.
+KINEMATIC_FEATURE_FRAMEWORK: tuple[dict[str, str], ...] = (
+    {
+        "Feature family": "Vertical lip/jaw opening",
+        "Primary constructs": "aperture, range of motion, cumulative path, speed, acceleration",
+        "Current implementation": "implemented kernel: mouth_aperture + velocity/path/range summaries",
+        "Best tasks": "open-close, DDK, Buy Bobby a Puppy, sentence/passage",
+        "ALS/PD relevance": "ALS bulbar slowing and reduced/compensatory range; PD speech/facial bradykinesia exploratory",
+        "Evidence status": "literature-informed research feature family",
+    },
+    {
+        "Feature family": "Horizontal lip spreading/retraction",
+        "Primary constructs": "outer/inner lip spread, horizontal ROM, speed, acceleration",
+        "Current implementation": "implemented kernel: outer_lip_spread, inner_lip_spread + summary derivatives",
+        "Best tasks": "smile/spread, /i/-loaded sentence, connected speech",
+        "ALS/PD relevance": "ALS lower-face weakness and PD hypomimia/masked facial movement",
+        "Evidence status": "literature-informed; task-specific validation needed",
+    },
+    {
+        "Feature family": "Mouth shape / aspect",
+        "Primary constructs": "aperture-to-spread ratio and robust shape summaries",
+        "Current implementation": "implemented kernel: lip_aspect_ratio",
+        "Best tasks": "open-close, speech tasks with alternating vowels/consonants",
+        "ALS/PD relevance": "configuration change, reduced oral shaping, compensatory jaw/lip strategy",
+        "Evidence status": "translational feature derived from geometric oral-motor constructs",
+    },
+    {
+        "Feature family": "Jaw/lower-face displacement",
+        "Primary constructs": "chin/nose distance, lower-lip-to-chin distance, lower-face motion",
+        "Current implementation": "implemented kernel: jaw_to_nose, lower_lip_to_chin",
+        "Best tasks": "max open, speech with large jaw excursion",
+        "ALS/PD relevance": "jaw compensation, slowing, reduced or excessive excursion",
+        "Evidence status": "literature-informed, but MediaPipe chin points are anatomical proxies",
+    },
+    {
+        "Feature family": "Symmetry and lateralization",
+        "Primary constructs": "left-right corner asymmetry, jaw/lip lateral balance",
+        "Current implementation": "implemented kernel: corner_vertical_asymmetry, corner_lateral_asymmetry",
+        "Best tasks": "smile/spread, pucker, speech, non-speech facial tasks",
+        "ALS/PD relevance": "unilateral lower-face weakness, asymmetric recruitment, exploratory PD asymmetry",
+        "Evidence status": "moderate; requires visual QC and task-specific interpretation",
+    },
+    {
+        "Feature family": "Coordination and timing",
+        "Primary constructs": "bilateral correlation, movement segmentation, repetition consistency",
+        "Current implementation": "partial: movement windows and repetition range summaries; full correlation library to be built",
+        "Best tasks": "DDK/AMR/SMR, repeated open-close, connected speech",
+        "ALS/PD relevance": "incoordination, irregularity, bradykinesia, reduced movement synchrony",
+        "Evidence status": "planned expansion; needs dataset calibration",
+    },
+)
+
+
+KINEMATIC_FEATURE_IMPLEMENTATION_AUDIT: tuple[dict[str, str], ...] = (
+    {
+        "Audit item": "Uploaded feature maps",
+        "Decision": "Use as feature-family roadmap, not as a blindly copied code contract",
+        "Rationale": "The maps organize ALS/video kinematic constructs and a 65-feature script lineage, but the GUI must expose what is currently implemented versus planned.",
+    },
+    {
+        "Audit item": "Landmark convention",
+        "Decision": "Keep current GUI normalization convention explicit",
+        "Rationale": "The uploaded feature map uses an ICD convention based on landmarks 243/463; the current GUI normalization uses 133/362 with 33/263 fallback. Exact legacy compatibility should be a later locked decision, not hidden.",
+    },
+    {
+        "Audit item": "Disease specificity",
+        "Decision": "Do not label any feature as diagnostic",
+        "Rationale": "ALS/PD relevance comes from feature families and task design; cutoffs require labeled validation data.",
+    },
+    {
+        "Audit item": "Current computation",
+        "Decision": "Compute the implemented oral-motor kernel after normalization and QC",
+        "Rationale": "The current backend emits frame-level signals and robust per-video summaries from normalized trajectories; field-map expansion should be implemented incrementally with tests.",
+    },
+)
+
+
+def feature_framework_dataframe() -> pd.DataFrame:
+    """Return the family-level kinematic feature framework table for the GUI."""
+    return pd.DataFrame(KINEMATIC_FEATURE_FRAMEWORK)
+
+
+def feature_implementation_audit_dataframe() -> pd.DataFrame:
+    """Return an audit table separating implemented features from roadmap items."""
+    return pd.DataFrame(KINEMATIC_FEATURE_IMPLEMENTATION_AUDIT)
+
+
+def write_feature_framework_catalog(output_root: Path | str) -> dict[str, Path]:
+    """Write feature framework and implementation-audit tables for provenance.
+
+    This is not a replacement for computed feature outputs. It documents which
+    feature families are currently implemented, partially implemented, or planned
+    so the GUI stays scientifically honest while the feature library expands.
+    """
+    root = Path(output_root).expanduser().resolve()
+    tables = root / "kinematics" / "006_features" / "tables"
+    tables.mkdir(parents=True, exist_ok=True)
+    framework_csv = tables / "kinematic_feature_framework.csv"
+    audit_csv = tables / "kinematic_feature_implementation_audit.csv"
+    framework_json = tables / "kinematic_feature_framework.json"
+    feature_framework_dataframe().to_csv(framework_csv, index=False)
+    feature_implementation_audit_dataframe().to_csv(audit_csv, index=False)
+    payload = {
+        "status": "FEATURE_FRAMEWORK_ROADMAP_WITH_IMPLEMENTED_KERNEL",
+        "purpose": "Document kinematic feature families, current implementation coverage, and scientific cautions.",
+        "implemented_now": [
+            "mouth aperture and robust summaries",
+            "lip spread and robust summaries",
+            "mouth aspect ratio",
+            "jaw/lower-face proxy distances",
+            "mouth-corner asymmetry",
+            "movement-window summaries",
+        ],
+        "planned_expansion": [
+            "full 65-feature field-map parity",
+            "task-specific feature presets",
+            "complete coordination/correlation library",
+            "jerk, stiffness, duration and repetition timing features",
+            "dataset-calibrated validity and interpretability ranges",
+        ],
+        "framework_rows": list(KINEMATIC_FEATURE_FRAMEWORK),
+        "implementation_audit": list(KINEMATIC_FEATURE_IMPLEMENTATION_AUDIT),
+        "warning": "This catalog documents feature families and implementation status; it is not an ALS/PD diagnostic model.",
+    }
+    framework_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return {"framework_csv": framework_csv, "audit_csv": audit_csv, "framework_json": framework_json}
+
 def feature_registry_dataframe():
     """Return the kinematic feature registry as a pandas DataFrame."""
     rows = []
@@ -616,6 +747,7 @@ def run_feature_computation(
     ])
     registry_csv = out_root / "tables" / "kinematic_feature_registry.csv"
     registry.to_csv(registry_csv, index=False)
+    framework_paths = write_feature_framework_catalog(root)
     manifest_json = out_root / "tables" / "feature_computation_manifest.json"
     status_counts = features_df.get("status", pd.Series(dtype=str)).value_counts(dropna=False).to_dict() if not features_df.empty else {}
     payload = {
@@ -623,6 +755,9 @@ def run_feature_computation(
         "input_normalized_manifest": str(manifest_path),
         "features_csv": str(features_csv),
         "feature_registry_csv": str(registry_csv),
+        "feature_framework_csv": str(framework_paths["framework_csv"]),
+        "feature_implementation_audit_csv": str(framework_paths["audit_csv"]),
+        "feature_framework_json": str(framework_paths["framework_json"]),
         "n_videos": int(len(features_df)),
         "n_ok": int((features_df.get("status") == "ok").sum()) if not features_df.empty else 0,
         "n_qc_flagged": int((features_df.get("status") == "qc_flagged").sum()) if not features_df.empty else 0,
@@ -639,5 +774,8 @@ __all__ = [
     "load_feature_selection",
     "compute_feature_timeseries",
     "compute_features_for_normalized_file",
+    "feature_framework_dataframe",
+    "feature_implementation_audit_dataframe",
+    "write_feature_framework_catalog",
     "run_feature_computation",
 ]

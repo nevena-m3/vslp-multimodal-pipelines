@@ -22,6 +22,9 @@ from .features import (
     QC_FEATURE_REQUIREMENTS,
     FeatureComputationConfig,
     feature_registry_dataframe,
+    feature_framework_dataframe,
+    feature_implementation_audit_dataframe,
+    write_feature_framework_catalog,
     run_feature_computation,
 )
 from .aggregation import TemporalAggregationConfig, run_temporal_aggregation
@@ -34,5 +37,5 @@ __all__ = [
     "write_landmark_plan", "run_mediapipe_landmarks", "download_default_model",
     "mediapipe_capability_note", "mediapipe_environment_status", "FACE_LANDMARKER_MODEL_URL",
     "NormalizationConfig", "write_normalization_config", "run_normalization", "run_normalization_from_selection",
-    "VideoQCConfig", "VIDEO_QC_FRAMEWORK_PLACEHOLDER", "run_video_qc", "write_video_qc_framework_placeholder", "FeatureComputationConfig", "run_feature_computation", "TemporalAggregationConfig", "run_temporal_aggregation", "write_scaffold_report",
+    "VideoQCConfig", "VIDEO_QC_FRAMEWORK_PLACEHOLDER", "run_video_qc", "write_video_qc_framework_placeholder", "FeatureComputationConfig", "feature_registry_dataframe", "feature_framework_dataframe", "feature_implementation_audit_dataframe", "write_feature_framework_catalog", "run_feature_computation", "TemporalAggregationConfig", "run_temporal_aggregation", "write_scaffold_report",
 ]
