@@ -572,6 +572,203 @@ def selected_specs(feature_ids: Iterable[str]) -> tuple[KinematicFeatureSpec, ..
     return tuple(spec for spec in KINEMATIC_FEATURE_SPECS if spec.feature_id in wanted)
 
 
+CANONICAL_FEATURE_IDS: tuple[str, ...] = tuple(spec.feature_id for spec in KINEMATIC_FEATURE_SPECS)
+FEATURE_EXPORT_ID_COLUMNS: tuple[str, ...] = ("video_id", "task_guess")
+FEATURE_EXPORT_QC_COLUMNS: tuple[str, ...] = (
+    "status",
+    "normalization_status",
+    "feature_qc_flags",
+    "face_detected_fraction",
+    "n_frames",
+    "n_movements",
+    "n_legacy65_features_computed",
+    "n_legacy65_features_expected",
+)
+
+
+def _feature_summary_stat(feature_name: str) -> str:
+    """Infer the scalar summary statistic encoded by a canonical feature name."""
+    suffixes = (
+        ("_prc_5_95_iqr", "inter-repetition IQR of p95-p05 range"),
+        ("_prc_95_iqr", "inter-repetition IQR of p95"),
+        ("_prc_5_iqr", "inter-repetition IQR of p05"),
+        ("_med_iqr", "inter-repetition IQR of median"),
+        ("_prc_5_95", "within-window p95-p05 range"),
+        ("_prc_95", "95th percentile"),
+        ("_prc_5", "5th percentile"),
+        ("_iqr", "interquartile range"),
+        ("_med", "median"),
+    )
+    if feature_name == "lat_xcorr":
+        return "whole-signal maximum normalized cross-correlation"
+    for suffix, label in suffixes:
+        if feature_name.endswith(suffix):
+            return label
+    return "scalar"
+
+
+def feature_manifest_dataframe(columns: Iterable[str] | None = None) -> pd.DataFrame:
+    """Return a column-level manifest for kinematic feature exports.
+
+    The manifest intentionally separates canonical biomarker features from
+    metadata, QC/provenance fields, support signals and dense engineering
+    summaries. This keeps the 339-column research export useful while giving the
+    GUI and ML stages a safe 65-feature layer to consume by default.
+    """
+    spec_by_id = {spec.feature_id: spec for spec in KINEMATIC_FEATURE_SPECS}
+    column_list = list(columns) if columns is not None else list(CANONICAL_FEATURE_IDS)
+    rows: list[dict[str, object]] = []
+    metadata_cols = {"video_id", "source_path", "task_guess", "input_normalized_csv", "output_timeseries_csv", "error"}
+    qc_cols = set(FEATURE_EXPORT_QC_COLUMNS) | {
+        "fps_estimated", "n_detected_frames", "n_open_movements", "n_close_movements", "n_whole_movements",
+        "missing_feature_inputs", "n_missing_interpolated_total", "n_outliers_extreme_total", "n_outliers_tight_total",
+    }
+    for col in column_list:
+        if col in spec_by_id:
+            spec = spec_by_id[col]
+            role = "canonical_feature"
+            family = spec.group
+            subsystem = spec.group
+            primitive = spec.source_function.replace("legacy_65_", "")
+            unit = spec.unit
+            model_role = "candidate_predictor"
+            include_gui = True
+            include_ml = True
+            interpretation = spec.interpretation
+            caution = "Use only after normalization and QC; disease-specific cutoffs are not implemented."
+            summary_stat = _feature_summary_stat(col)
+        elif col in metadata_cols:
+            role = "metadata"
+            family = "metadata"
+            subsystem = "project/video identity"
+            primitive = "identifier"
+            unit = "n/a"
+            model_role = "join_key_or_provenance"
+            include_gui = False
+            include_ml = False
+            interpretation = "Identifier/provenance field; do not use as a model predictor."
+            caution = "May leak dataset/source identity if used directly in ML."
+            summary_stat = "n/a"
+        elif col in qc_cols or col.endswith("_qc_flags") or "qc" in col.lower() or "status" in col.lower():
+            role = "qc_metric"
+            family = "quality_control"
+            subsystem = "feature readiness"
+            primitive = "qc/provenance"
+            unit = "varies"
+            model_role = "filter_or_stratify"
+            include_gui = True
+            include_ml = False
+            interpretation = "Quality-control or processing-readiness metric."
+            caution = "Use to filter/stratify data; do not treat as a disease biomarker."
+            summary_stat = "n/a"
+        elif col.endswith("_raw") or col.endswith("_velocity") or col in _FEATURE_DEFINITIONS:
+            role = "support_signal"
+            family = _FEATURE_DEFINITIONS.get(col.replace("_raw", "").replace("_velocity", ""), {}).get("family", "support_signal")
+            subsystem = str(family)
+            primitive = "frame_level_support"
+            unit = "normalized units or normalized units/s"
+            model_role = "audit_or_optional_predictor"
+            include_gui = True
+            include_ml = False
+            interpretation = "Intermediate support signal used to derive scalar features."
+            caution = "Usually redundant with canonical features; include in ML only intentionally."
+            summary_stat = "frame-level or derived time-series"
+        elif any(col.endswith(suffix) for suffix in ("_mean", "_sd", "_median", "_iqr", "_p05", "_p95", "_range_p05_p95", "_min", "_max", "_path_length", "_movement_range_median", "_movement_range_iqr")):
+            role = "dense_engineering_summary"
+            family = "expanded_research_export"
+            subsystem = "engineered_summary"
+            primitive = "summary_statistic"
+            unit = "varies"
+            model_role = "optional_predictor"
+            include_gui = True
+            include_ml = False
+            interpretation = "Expanded signal summary retained in the full research export."
+            caution = "Can inflate dimensionality and redundancy; not part of the default 65-feature ML set."
+            summary_stat = _feature_summary_stat(col)
+        else:
+            role = "other"
+            family = "uncategorized"
+            subsystem = "unknown"
+            primitive = "unknown"
+            unit = "varies"
+            model_role = "review_before_modeling"
+            include_gui = False
+            include_ml = False
+            interpretation = "Uncategorized output column."
+            caution = "Review manually before using in analysis or ML."
+            summary_stat = "unknown"
+        rows.append({
+            "column_name": col,
+            "column_role": role,
+            "family": family,
+            "subsystem": subsystem,
+            "primitive": primitive,
+            "summary_statistic": summary_stat,
+            "unit": unit,
+            "model_role": model_role,
+            "include_in_feature_gui_default": bool(include_gui),
+            "include_in_ml_default": bool(include_ml),
+            "interpretation": interpretation,
+            "caution": caution,
+        })
+    return pd.DataFrame(rows)
+
+
+def write_features_only_exports(features_df: pd.DataFrame, output_root: Path | str) -> dict[str, Path | int]:
+    """Write clean feature-only and ML-safe exports from the wide feature table.
+
+    Existing ``kinematic_features.csv`` remains the full research export. These
+    derivative tables provide the safe, human-readable layer requested for the
+    Feature GUI and future ML GUI.
+    """
+    root = Path(output_root).expanduser().resolve()
+    tables = root / "kinematics" / "006_features" / "tables"
+    tables.mkdir(parents=True, exist_ok=True)
+    canonical_cols = [fid for fid in CANONICAL_FEATURE_IDS if fid in features_df.columns]
+    id_cols = [c for c in FEATURE_EXPORT_ID_COLUMNS if c in features_df.columns]
+    qc_cols = [c for c in FEATURE_EXPORT_QC_COLUMNS if c in features_df.columns]
+
+    canonical_with_context = features_df[id_cols + qc_cols + canonical_cols].copy() if canonical_cols else pd.DataFrame(columns=id_cols + qc_cols)
+    canonical_values = features_df[canonical_cols].copy() if canonical_cols else pd.DataFrame()
+    ml_ready = features_df[id_cols + canonical_cols].copy() if canonical_cols else pd.DataFrame(columns=id_cols)
+    manifest_df = feature_manifest_dataframe(features_df.columns)
+
+    canonical_csv = tables / "kinematic_features_canonical65.csv"
+    feature_only_csv = tables / "kinematic_features_only.csv"
+    ml_ready_csv = tables / "kinematic_features_ml_ready.csv"
+    manifest_csv = tables / "kinematic_feature_manifest.csv"
+    manifest_json = tables / "kinematic_feature_manifest.json"
+
+    canonical_with_context.to_csv(canonical_csv, index=False)
+    canonical_values.to_csv(feature_only_csv, index=False)
+    ml_ready.to_csv(ml_ready_csv, index=False)
+    manifest_df.to_csv(manifest_csv, index=False)
+    payload = {
+        "status": "FEATURE_EXPORT_MANIFEST",
+        "full_wide_export": str(tables / "kinematic_features.csv"),
+        "canonical65_with_context_csv": str(canonical_csv),
+        "features_only_csv": str(feature_only_csv),
+        "ml_ready_csv": str(ml_ready_csv),
+        "feature_manifest_csv": str(manifest_csv),
+        "n_rows": int(len(features_df)),
+        "n_full_columns": int(len(features_df.columns)),
+        "n_canonical_features_present": int(len(canonical_cols)),
+        "n_canonical_features_expected": int(len(CANONICAL_FEATURE_IDS)),
+        "canonical_feature_ids": list(CANONICAL_FEATURE_IDS),
+        "note": "kinematic_features.csv is the full research export. kinematic_features_only.csv contains only canonical numeric feature columns. kinematic_features_ml_ready.csv keeps row IDs plus canonical predictors.",
+    }
+    manifest_json.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    return {
+        "canonical65_csv": canonical_csv,
+        "features_only_csv": feature_only_csv,
+        "ml_ready_csv": ml_ready_csv,
+        "feature_manifest_csv": manifest_csv,
+        "feature_manifest_json": manifest_json,
+        "n_canonical_features_present": len(canonical_cols),
+        "n_canonical_features_expected": len(CANONICAL_FEATURE_IDS),
+    }
+
+
 @dataclass(frozen=True)
 class FeatureComputationConfig:
     selected_landmarks: tuple[int, ...] = LANDMARK_PRESETS["ALS oral-motor core 15"]
@@ -1179,6 +1376,7 @@ def run_feature_computation(
     features_df = pd.DataFrame(rows)
     features_csv = out_root / "tables" / "kinematic_features.csv"
     features_df.to_csv(features_csv, index=False)
+    clean_exports = write_features_only_exports(features_df, root)
     registry = pd.DataFrame([
         {"feature": name, "family": d.get("family"), "definition": d.get("description"), "required_inputs": ",".join(map(str, d.get("points", ())))}
         for name, d in _FEATURE_DEFINITIONS.items()
@@ -1196,6 +1394,13 @@ def run_feature_computation(
         "feature_framework_csv": str(framework_paths["framework_csv"]),
         "feature_implementation_audit_csv": str(framework_paths["audit_csv"]),
         "feature_framework_json": str(framework_paths["framework_json"]),
+        "canonical65_csv": str(clean_exports["canonical65_csv"]),
+        "features_only_csv": str(clean_exports["features_only_csv"]),
+        "ml_ready_csv": str(clean_exports["ml_ready_csv"]),
+        "feature_manifest_csv": str(clean_exports["feature_manifest_csv"]),
+        "feature_manifest_json": str(clean_exports["feature_manifest_json"]),
+        "n_canonical_features_present": int(clean_exports["n_canonical_features_present"]),
+        "n_canonical_features_expected": int(clean_exports["n_canonical_features_expected"]),
         "n_videos": int(len(features_df)),
         "n_ok": int((features_df.get("status") == "ok").sum()) if not features_df.empty else 0,
         "n_qc_flagged": int((features_df.get("status") == "qc_flagged").sum()) if not features_df.empty else 0,
@@ -1204,7 +1409,13 @@ def run_feature_computation(
         "note": "Feature rows are computed from normalized landmark trajectories. QC flags are retained, not automatically excluded.",
     }
     manifest_json.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
-    return {"features_csv": features_csv, "feature_registry_csv": registry_csv, "manifest_json": manifest_json, **{k: payload[k] for k in ["n_videos", "n_ok", "n_qc_flagged", "n_error", "status_counts"]}}
+    return {
+        "features_csv": features_csv,
+        "feature_registry_csv": registry_csv,
+        "manifest_json": manifest_json,
+        **clean_exports,
+        **{k: payload[k] for k in ["n_videos", "n_ok", "n_qc_flagged", "n_error", "status_counts"]},
+    }
 
 
 __all__ = [
@@ -1212,8 +1423,11 @@ __all__ = [
     "load_feature_selection",
     "compute_feature_timeseries",
     "compute_features_for_normalized_file",
+    "CANONICAL_FEATURE_IDS",
     "feature_framework_dataframe",
     "feature_implementation_audit_dataframe",
+    "feature_manifest_dataframe",
     "write_feature_framework_catalog",
+    "write_features_only_exports",
     "run_feature_computation",
 ]

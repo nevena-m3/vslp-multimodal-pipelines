@@ -3,7 +3,7 @@ from pathlib import Path
 
 def test_kinematics_gui_version_is_current():
     app_py = Path("src/vslp/gui/kinematics/app.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "v0.86"' in app_py
+    assert 'APP_VERSION = "v0.87"' in app_py
     assert "Heavy MediaPipe extraction and final feature computation are connected" not in app_py
 
 
