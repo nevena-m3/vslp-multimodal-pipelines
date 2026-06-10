@@ -51,6 +51,7 @@ from vslp.analysis.features.audit import (
     feature_recommendation_table, feature_recommendation_summary,
     feature_recommendation_reason_counts, feature_recommendation_family_summary
 )
+from vslp.analysis.features.ml_export_builder import build_ml_export_package
 from vslp.analysis.features.plots import (
     plot_role_counts, plot_group_counts, plot_feature_family_counts,
     plot_missingness, plot_feature_availability_heatmap,
@@ -79,7 +80,7 @@ from vslp.analysis.features.plots import (
     plot_ml_export_manifest_summary
 )
 
-APP_VERSION = "v0.55.1"
+APP_VERSION = "v0.56.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -414,6 +415,7 @@ class Sidebar(QFrame):
             ("screening", "○  Group / Outcome Screening"),
             ("reliability", "○  Reliability"),
             ("recommendations", "○  Recommendations"),
+            ("ml_export", "○  ML Export Builder"),
             ("export", "○  Export / Report"),
         ]:
             b = QPushButton(text)
@@ -489,7 +491,7 @@ class FeatureAnalysisGUI(QMainWindow):
         self.mapping_df = pd.DataFrame()
         self.outputs: dict[str, pd.DataFrame] = {}
         self.output_dir: Optional[Path] = None
-        self.page_keys = ["project", "mapping", "overview", "missing", "dist", "qc", "relationships", "screening", "reliability", "recommendations", "export"]
+        self.page_keys = ["project", "mapping", "overview", "missing", "dist", "qc", "relationships", "screening", "reliability", "recommendations", "ml_export", "export"]
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -519,6 +521,7 @@ class FeatureAnalysisGUI(QMainWindow):
             "screening": self._screening_page(),
             "reliability": self._reliability_page(),
             "recommendations": self._recommendations_page(),
+            "ml_export": self._ml_export_builder_page(),
             "export": self._export_page(),
         }
         for key in self.page_keys:
@@ -2774,6 +2777,165 @@ class FeatureAnalysisGUI(QMainWindow):
         path = getattr(self, "current_recommendation_plot", None)
         if not path:
             QMessageBox.information(self, "No current plot", "Preview a recommendation plot first, then open the full-resolution file.")
+            return
+        self.open_file(Path(path))
+
+
+
+    def _ml_export_builder_page(self) -> QWidget:
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
+
+        card = Card(
+            "ML Export Builder",
+            "Curate acoustic and kinematic feature outputs into clean acoustic-only, kinematic-only, and early-fusion ML-ready tables. This stage does not train models."
+        )
+
+        note = QLabel(
+            "Use this page as the bridge between the Acoustic/Kinematics GUIs and the future ML GUI. "
+            "Load completed feature outputs and registries, optionally add metadata/labels, then write standardized ML-ready tables and a unified feature manifest. "
+            "The ML GUI should consume these exports rather than raw acoustic/kinematic engineering tables."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{INK}; background:#F7FAFD; border:1px solid {LINE}; border-radius:10px; padding:10px;")
+        card.layout.addWidget(note)
+
+        grid = QGridLayout()
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(10)
+        self.ml_acoustic_features_picker = FilePicker("Acoustic features per file", optional=True)
+        self.ml_acoustic_registry_picker = FilePicker("Selected acoustic feature registry", optional=True)
+        self.ml_acoustic_scale_picker = FilePicker("Acoustic measurement-scale registry", optional=True)
+        self.ml_kinematic_features_picker = FilePicker("Kinematic aggregated features", optional=True)
+        self.ml_kinematic_manifest_picker = FilePicker("Kinematic feature manifest", optional=True)
+        self.ml_metadata_picker = FilePicker("Metadata / labels", optional=True)
+        grid.addWidget(self.ml_acoustic_features_picker, 0, 0)
+        grid.addWidget(self.ml_acoustic_registry_picker, 0, 1)
+        grid.addWidget(self.ml_acoustic_scale_picker, 1, 0)
+        grid.addWidget(self.ml_kinematic_features_picker, 1, 1)
+        grid.addWidget(self.ml_kinematic_manifest_picker, 2, 0)
+        grid.addWidget(self.ml_metadata_picker, 2, 1)
+        card.layout.addLayout(grid)
+
+        out_row = QHBoxLayout()
+        out_row.addWidget(QLabel("Output folder:"))
+        self.ml_export_output_edit = QLineEdit()
+        self.ml_export_output_edit.setPlaceholderText("Required output folder for Feature-GUI ML export package")
+        out_row.addWidget(self.ml_export_output_edit, 1)
+        browse = QPushButton("Browse")
+        browse.setProperty("secondary", True)
+        browse.clicked.connect(self.pick_ml_export_output_folder)
+        out_row.addWidget(browse)
+        card.layout.addLayout(out_row)
+
+        action_row = QHBoxLayout()
+        build = QPushButton("Build ML Export Package")
+        build.setProperty("primary", True)
+        build.clicked.connect(self.build_feature_ml_export_package)
+        action_row.addWidget(build)
+        open_btn = QPushButton("Open ML Export Folder")
+        open_btn.setProperty("secondary", True)
+        open_btn.clicked.connect(self.open_ml_export_folder)
+        action_row.addWidget(open_btn)
+        action_row.addStretch(1)
+        card.layout.addLayout(action_row)
+
+        self.ml_export_status = QTextEdit()
+        self.ml_export_status.setReadOnly(True)
+        self.ml_export_status.setMinimumHeight(150)
+        self.ml_export_status.setPlaceholderText("ML export builder status messages will appear here.")
+        card.layout.addWidget(self.ml_export_status)
+
+        tabs = QTabWidget()
+        self.ml_export_summary_table = self._simple_table()
+        self.ml_export_overlap_table = self._simple_table()
+        self.ml_export_manifest_table = self._simple_table()
+        self.ml_export_acoustic_table = self._simple_table()
+        self.ml_export_kinematic_table = self._simple_table()
+        self.ml_export_fusion_table = self._simple_table()
+        self.ml_export_exclusions_table = self._simple_table()
+        tabs.addTab(self.ml_export_summary_table, "Export summary")
+        tabs.addTab(self.ml_export_overlap_table, "Row alignment")
+        tabs.addTab(self.ml_export_manifest_table, "Unified manifest")
+        tabs.addTab(self.ml_export_acoustic_table, "Acoustic ML-ready")
+        tabs.addTab(self.ml_export_kinematic_table, "Kinematic ML-ready")
+        tabs.addTab(self.ml_export_fusion_table, "Early fusion")
+        tabs.addTab(self.ml_export_exclusions_table, "Exclusions / notes")
+        card.layout.addWidget(tabs)
+
+        guide = Card(
+            "Design boundary",
+            "This stage prepares model-facing tables but deliberately does not impute, scale, select features inside folds, split subjects, or train models. Those steps belong in the ML GUI to avoid leakage."
+        )
+        guide_text = QLabel(
+            "Outputs written under feature_analysis/ml_export_builder/tables:\n"
+            "• acoustic_ml_ready.csv and acoustic_features_only.csv\n"
+            "• kinematic_ml_ready.csv and kinematic_features_only.csv\n"
+            "• multimodal_early_fusion_ml_ready.csv when a safe shared key exists\n"
+            "• feature_manifest_unified.csv\n"
+            "• row_alignment_report.csv, row_exclusions.csv, ml_export_manifest.json"
+        )
+        guide_text.setWordWrap(True)
+        guide_text.setStyleSheet(f"color:{MUTED}; background:#FFFFFF; border:none; padding:4px;")
+        guide.layout.addWidget(guide_text)
+
+        layout.addWidget(card)
+        layout.addWidget(guide)
+        return self._wrap_scroll(body)
+
+    def pick_ml_export_output_folder(self) -> None:
+        p = QFileDialog.getExistingDirectory(self, "Select Feature-GUI ML export output folder")
+        if p:
+            self.ml_export_output_edit.setText(p)
+
+    def build_feature_ml_export_package(self) -> None:
+        try:
+            out = self.ml_export_output_edit.text().strip() or self.output_edit.text().strip()
+            if not out:
+                QMessageBox.warning(self, "Missing output folder", "Select an output folder for the ML export package.")
+                return
+            result = build_ml_export_package(
+                output_root=out,
+                acoustic_features=self.ml_acoustic_features_picker.path or None,
+                acoustic_registry=self.ml_acoustic_registry_picker.path or None,
+                acoustic_scale_registry=self.ml_acoustic_scale_picker.path or None,
+                kinematic_features=self.ml_kinematic_features_picker.path or None,
+                kinematic_manifest=self.ml_kinematic_manifest_picker.path or None,
+                metadata=self.ml_metadata_picker.path or None,
+            )
+            self.latest_ml_export_dir = result.output_dir
+            summary_rows = [
+                {"metric": k, "value": json.dumps(v) if isinstance(v, (list, dict)) else v}
+                for k, v in result.summary.items()
+                if k not in {"outputs", "notes"}
+            ]
+            for idx, note in enumerate(result.summary.get("notes", []), start=1):
+                summary_rows.append({"metric": f"note_{idx}", "value": note})
+            self._fill_table(self.ml_export_summary_table, pd.DataFrame(summary_rows))
+            self._fill_table(self.ml_export_overlap_table, result.tables.get("row_alignment_report", pd.DataFrame()))
+            self._fill_table(self.ml_export_manifest_table, result.tables.get("feature_manifest_unified", pd.DataFrame()), max_rows=1000)
+            self._fill_table(self.ml_export_acoustic_table, result.tables.get("acoustic_ml_ready", pd.DataFrame()), max_rows=200)
+            self._fill_table(self.ml_export_kinematic_table, result.tables.get("kinematic_ml_ready", pd.DataFrame()), max_rows=200)
+            self._fill_table(self.ml_export_fusion_table, result.tables.get("multimodal_early_fusion_ml_ready", pd.DataFrame()), max_rows=200)
+            self._fill_table(self.ml_export_exclusions_table, result.tables.get("row_exclusions", pd.DataFrame()))
+            self.ml_export_status.append(f"ML export package created: {result.output_dir}")
+            for name, path in result.paths.items():
+                self.ml_export_status.append(f"{name}: {path}")
+            QMessageBox.information(self, "ML export complete", f"ML export package created:\n{result.output_dir}")
+        except Exception as exc:
+            QMessageBox.critical(self, "ML export failed", str(exc))
+
+    def open_ml_export_folder(self) -> None:
+        path = getattr(self, "latest_ml_export_dir", None)
+        if not path:
+            p = self.ml_export_output_edit.text().strip() if hasattr(self, "ml_export_output_edit") else ""
+            if p:
+                candidate = Path(p) / "feature_analysis" / "ml_export_builder"
+                path = candidate if candidate.exists() else Path(p)
+        if not path:
+            QMessageBox.information(self, "No ML export yet", "Build the ML export package first.")
             return
         self.open_file(Path(path))
 
