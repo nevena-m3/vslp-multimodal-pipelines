@@ -14,7 +14,7 @@ from .landmarks import (
 )
 from .mediapipe_runtime import mediapipe_environment_status, FACE_LANDMARKER_MODEL_URL
 from .normalization import NormalizationConfig, write_normalization_config, run_normalization, run_normalization_from_selection
-from .video_qc import VideoQCConfig, run_video_qc
+from .video_qc import VideoQCConfig, VIDEO_QC_FRAMEWORK_PLACEHOLDER, run_video_qc, write_video_qc_framework_placeholder
 from .features import (
     DEFAULT_KINEMATIC_FEATURE_IDS,
     KINEMATIC_FEATURE_GROUPS,
@@ -34,5 +34,5 @@ __all__ = [
     "write_landmark_plan", "run_mediapipe_landmarks", "download_default_model",
     "mediapipe_capability_note", "mediapipe_environment_status", "FACE_LANDMARKER_MODEL_URL",
     "NormalizationConfig", "write_normalization_config", "run_normalization", "run_normalization_from_selection",
-    "VideoQCConfig", "run_video_qc", "FeatureComputationConfig", "run_feature_computation", "TemporalAggregationConfig", "run_temporal_aggregation", "write_scaffold_report",
+    "VideoQCConfig", "VIDEO_QC_FRAMEWORK_PLACEHOLDER", "run_video_qc", "write_video_qc_framework_placeholder", "FeatureComputationConfig", "run_feature_computation", "TemporalAggregationConfig", "run_temporal_aggregation", "write_scaffold_report",
 ]
