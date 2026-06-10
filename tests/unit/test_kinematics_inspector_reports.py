@@ -58,3 +58,26 @@ def test_pipeline_summary_report_uses_inspector_tables(tmp_path: Path):
     assert "VSLP Kinematics Pipeline Summary" in text
     assert "kinematic_aggregated_features" in text
     assert json.loads(manifest.read_text(encoding="utf-8"))["schema"] == "vslp_kinematics_report_manifest_v1"
+
+
+def test_readiness_checklist_written_and_marks_visual_qc_as_known_gap(tmp_path: Path):
+    from vslp.analysis.kinematics import readiness_checklist_dataframe
+
+    qc_tables = tmp_path / "kinematics" / "005_video_qc" / "tables"
+    qc_tables.mkdir(parents=True)
+    (qc_tables / "video_qc_framework_placeholder.csv").write_text("family,status\nlighting,placeholder_to_be_built_in\n", encoding="utf-8")
+
+    paths = write_inspector_inventory(tmp_path)
+
+    readiness_csv = Path(paths["readiness_checklist_csv"])
+    readiness_json = Path(paths["readiness_checklist_json"])
+    assert readiness_csv.exists()
+    assert readiness_json.exists()
+
+    df = pd.read_csv(readiness_csv)
+    assert "known_deferred_work" in set(df["category"])
+    assert "known_gap" in set(df["status"])
+
+    direct = readiness_checklist_dataframe(tmp_path)
+    assert not direct.empty
+    assert {"category", "check", "status", "recommended_action"}.issubset(direct.columns)

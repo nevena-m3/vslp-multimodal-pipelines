@@ -46,7 +46,7 @@ This makes normalization practical without hiding scientific uncertainty.
 Validated in the sandbox with:
 
 ```bash
-PYTHONPATH=src python -m pytest tests/unit/test_kinematics_*.py -q
+python -m pytest tests/unit -k kinematics -q
 PYTHONPATH=src python -m pytest tests/integration/test_acoustic_preprocess_stage.py -q
 python -m compileall -q src/vslp/gui/kinematics/app.py src/vslp/analysis/kinematics/normalization.py src/vslp/analysis/kinematics/schemas.py src/vslp/analysis/kinematics/selection.py
 ```

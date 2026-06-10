@@ -34,7 +34,7 @@ The guide is also written automatically when temporal aggregation is run.
 Validated with:
 
 ```powershell
-PYTHONPATH=src python -m pytest tests/unit/test_kinematics_*.py -q
+python -m pytest tests/unit -k kinematics -q
 PYTHONPATH=src python -m pytest tests/integration/test_acoustic_preprocess_stage.py -q
 python -m compileall -q src/vslp/analysis/kinematics/aggregation.py src/vslp/gui/kinematics/app.py
 ```

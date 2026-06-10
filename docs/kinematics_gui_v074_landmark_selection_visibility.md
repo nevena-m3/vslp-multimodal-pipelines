@@ -45,7 +45,7 @@ Validated with:
 
 ```powershell
 PYTHONPATH=src python -m pytest tests/unit/test_kinematics_landmark_selection_visibility.py tests/unit/test_kinematics_landmark_workstation_controls.py tests/unit/test_kinematics_real_frame_selector.py -q
-PYTHONPATH=src python -m pytest tests/unit/test_kinematics_*.py -q
+python -m pytest tests/unit -k kinematics -q
 ```
 
 Expected result in this patch environment:

@@ -6,7 +6,7 @@ APP_SOURCE = Path("src/vslp/gui/kinematics/app.py")
 
 def test_v079_selection_uses_spacious_splitter_and_tabbed_outputs():
     source = APP_SOURCE.read_text(encoding="utf-8")
-    assert "APP_VERSION = \"v0.84\"" in source
+    assert "APP_VERSION = \"v0.86\"" in source
     assert "QSplitter(Qt.Horizontal)" in source
     assert "selection_tabs.addTab(selected_tab, \"Selected landmarks\")" in source
     assert "selection_tabs.addTab(requirements_tab, \"Requirement checks\")" in source

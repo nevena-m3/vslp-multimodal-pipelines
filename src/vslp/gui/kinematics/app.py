@@ -1,9 +1,10 @@
-"""VSLP Kinematics Pipeline GUI v0.84.
+"""VSLP Kinematics Pipeline GUI v0.86.
 
-This GUI intentionally mirrors the acoustic pipeline layout: left stage sidebar,
-institutional branding strip, top tabs, run log, and compact scientific workflow
-panels. Heavy MediaPipe extraction and final feature computation are connected in
-later patches; this pass establishes the production-quality outline and user flow.
+This GUI mirrors the acoustic pipeline layout: left stage sidebar, institutional
+branding strip, top workflow tabs, run log, and scientific stage dashboards. The
+interface is designed for auditable video-kinematics workflow execution: ingest,
+landmark extraction, selection, normalization, QC, feature computation,
+aggregation, inspection, and reporting.
 """
 
 from __future__ import annotations
@@ -99,12 +100,13 @@ from vslp.analysis.kinematics import (
     write_scaffold_report,
     write_pipeline_summary_report,
     artifact_inventory_dataframe,
+    readiness_checklist_dataframe,
     stage_status_dataframe,
     write_inspector_inventory,
 )
 from vslp.analysis.kinematics.schemas import DEFAULT_VIDEO_EXTENSIONS, parse_int_list
 
-APP_VERSION = "v0.84"
+APP_VERSION = "v0.86"
 BRAND_DIR = Path(__file__).resolve().parent / "assets" / "branding"
 LAB_LOGO = BRAND_DIR / "lab_logo.png"
 UOFT_LOGO = BRAND_DIR / "uoft_logo.png"
@@ -2276,6 +2278,9 @@ class KinematicsPipelineWindow(QMainWindow):
         self.inspector_artifact_table = QTableWidget(0, 0)
         self.inspector_artifact_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.inspector_artifact_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.inspector_readiness_table = QTableWidget(0, 0)
+        self.inspector_readiness_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.inspector_readiness_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.inspector_table = QTableWidget(0, 0)
         self.inspector_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.inspector_table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -2291,6 +2296,7 @@ class KinematicsPipelineWindow(QMainWindow):
             "</ul>"
         )
         tabs.addTab(self.inspector_stage_table, "Stage status")
+        tabs.addTab(self.inspector_readiness_table, "Readiness checklist")
         tabs.addTab(self.inspector_artifact_table, "Artifact inventory")
         tabs.addTab(self.inspector_table, "Latest table preview")
         tabs.addTab(notes, "Inspector notes")
@@ -3596,9 +3602,6 @@ class KinematicsPipelineWindow(QMainWindow):
         if hasattr(self, "feature_results_table"):
             self._fill_table(self.feature_results_table, df[cols] if cols else df, max_rows=200)
 
-    def run_features_placeholder(self) -> None:
-        self.run_feature_computation_stage()
-
     def run_temporal_aggregation_stage(self) -> None:
         out = self._path_or_warn(self.output_edit, "an output project folder")
         if out is None:
@@ -3663,9 +3666,6 @@ class KinematicsPipelineWindow(QMainWindow):
         if hasattr(self, "aggregation_results_table"):
             self._fill_table(self.aggregation_results_table, df[cols] if cols else df, max_rows=200)
 
-    def run_aggregation_placeholder(self) -> None:
-        self.run_temporal_aggregation_stage()
-
     def refresh_inspector(self) -> None:
         out_text = self.output_edit.text().strip()
         if not out_text:
@@ -3676,6 +3676,7 @@ class KinematicsPipelineWindow(QMainWindow):
             paths = write_inspector_inventory(out)
             stage_df = pd.read_csv(paths["stage_status_csv"])
             artifact_df = pd.read_csv(paths["artifact_inventory_csv"])
+            readiness_df = pd.read_csv(paths["readiness_checklist_csv"])
         except Exception as exc:  # noqa: BLE001
             QMessageBox.critical(self, "Inspector refresh failed", str(exc))
             return
@@ -3687,6 +3688,10 @@ class KinematicsPipelineWindow(QMainWindow):
             ]
             cols = [c for c in preferred if c in stage_df.columns]
             self._fill_table(self.inspector_stage_table, stage_df[cols] if cols else stage_df, max_rows=50)
+        if hasattr(self, "inspector_readiness_table"):
+            preferred = ["category", "check", "status", "rationale", "recommended_action"]
+            cols = [c for c in preferred if c in readiness_df.columns]
+            self._fill_table(self.inspector_readiness_table, readiness_df[cols] if cols else readiness_df, max_rows=50)
         if hasattr(self, "inspector_artifact_table"):
             preferred = [
                 "stage", "artifact_type", "filename", "relative_path", "size_kb",
@@ -3714,13 +3719,21 @@ class KinematicsPipelineWindow(QMainWindow):
 
         complete_count = int((stage_df.get("status", pd.Series(dtype=str)) == "complete").sum()) if not stage_df.empty else 0
         latest_name = latest_csv.name if latest_csv is not None else "-"
+        blocking_count = 0
+        if not readiness_df.empty and "status" in readiness_df.columns:
+            blocking_count = int(readiness_df[readiness_df["status"].isin(["review", "fail"])].shape[0])
         if hasattr(self, "inspector_status_cards"):
             self.inspector_status_cards.get("Stages", QLabel()).setText(str(len(stage_df)))
             self.inspector_status_cards.get("Complete", QLabel()).setText(str(complete_count))
             self.inspector_status_cards.get("Artifacts", QLabel()).setText(str(len(artifact_df)))
             self.inspector_status_cards.get("Latest", QLabel()).setText(latest_name)
+        readiness_msg = (
+            f"Readiness checklist has {blocking_count} item(s) requiring review before ML handoff."
+            if blocking_count else
+            "Readiness checklist has no blocking review items for interface handoff."
+        )
         self.inspector_label.setText(
-            f"Inventory written to {paths['artifact_inventory_csv']} and {paths['stage_status_csv']}. {preview_text}"
+            f"Inventory written to {paths['artifact_inventory_csv']}, {paths['stage_status_csv']}, and {paths['readiness_checklist_csv']}. {readiness_msg} {preview_text}"
         )
         self.stage_records["inspector"] = StageRecord(status="completed", manifest_path=paths.get("inspector_manifest_json"), summary_path=paths.get("artifact_inventory_csv"))
         self._refresh_stage_cards()
@@ -3815,8 +3828,8 @@ class KinematicsPipelineWindow(QMainWindow):
         self.run_selection_stage()
         self.run_normalization_stage()
         self.run_video_qc_stage()
-        self.run_features_placeholder()
-        self.run_aggregation_placeholder()
+        self.run_feature_computation_stage()
+        self.run_temporal_aggregation_stage()
         self.run_report_stage()
 
 
