@@ -22,7 +22,7 @@ try:
         QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox,
         QPushButton, QSizePolicy, QStackedWidget, QTableWidget, QTableWidgetItem,
         QTextEdit, QVBoxLayout, QWidget, QSplitter, QScrollArea, QAbstractItemView,
-        QTabWidget
+        QTabWidget, QProgressBar
     )
 except Exception as exc:  # pragma: no cover
     raise RuntimeError("Feature Analysis GUI requires PySide6. Install with pip install -e '.[gui]'.") from exc
@@ -80,7 +80,7 @@ from vslp.analysis.features.plots import (
     plot_ml_export_manifest_summary
 )
 
-APP_VERSION = "v0.56.0"
+APP_VERSION = "v0.58.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -310,6 +310,30 @@ def set_app_style(app: QApplication) -> None:
         color: {NAVY};
     }}
     QScrollArea {{ border: none; background: transparent; }}
+    QScrollBar:vertical {{
+        background: #EEF4FA;
+        width: 14px;
+        margin: 2px;
+        border-radius: 7px;
+    }}
+    QScrollBar::handle:vertical {{
+        background: #B8C9DC;
+        min-height: 36px;
+        border-radius: 7px;
+    }}
+    QScrollBar::handle:vertical:hover {{ background: #8EA7C2; }}
+    QScrollBar:horizontal {{
+        background: #EEF4FA;
+        height: 14px;
+        margin: 2px;
+        border-radius: 7px;
+    }}
+    QScrollBar::handle:horizontal {{
+        background: #B8C9DC;
+        min-width: 36px;
+        border-radius: 7px;
+    }}
+    QScrollBar::handle:horizontal:hover {{ background: #8EA7C2; }}
     """)
 
 
@@ -500,15 +524,26 @@ class FeatureAnalysisGUI(QMainWindow):
         outer.setSpacing(0)
         outer.addWidget(LogoBar())
 
-        content = QHBoxLayout()
+        main_splitter = QSplitter(Qt.Vertical)
+        main_splitter.setChildrenCollapsible(False)
+        outer.addWidget(main_splitter, 1)
+
+        content_widget = QWidget()
+        content = QHBoxLayout(content_widget)
         content.setContentsMargins(0, 0, 0, 0)
         content.setSpacing(0)
-        outer.addLayout(content, 1)
 
         self.sidebar = Sidebar(self.show_page)
         content.addWidget(self.sidebar)
         self.stack = QStackedWidget()
         content.addWidget(self.stack, 1)
+        main_splitter.addWidget(content_widget)
+
+        self.run_log_panel = self._build_run_log_panel()
+        main_splitter.addWidget(self.run_log_panel)
+        main_splitter.setStretchFactor(0, 8)
+        main_splitter.setStretchFactor(1, 2)
+        main_splitter.setSizes([700, 170])
 
         self.pages = {
             "project": self._project_page(),
@@ -532,10 +567,45 @@ class FeatureAnalysisGUI(QMainWindow):
         self.stack.setCurrentIndex(self.page_keys.index(key))
         self.sidebar.set_active(key)
 
+    def _build_run_log_panel(self) -> QFrame:
+        panel = QFrame()
+        panel.setStyleSheet(f"""
+        QFrame {{ background: #FFFFFF; border-top: 1px solid {LINE}; }}
+        QLabel#RunLogTitle {{ color: {NAVY}; font-size: 13px; font-weight: 800; border: none; }}
+        QLabel#RunLogHint {{ color: {MUTED}; font-size: 11px; border: none; }}
+        """)
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(14, 8, 14, 10)
+        layout.setSpacing(6)
+        header = QHBoxLayout()
+        title = QLabel(f"Run Log · Feature Analysis GUI {APP_VERSION}")
+        title.setObjectName("RunLogTitle")
+        hint = QLabel("Persistent messages for loading, mapping, analysis, export, and errors")
+        hint.setObjectName("RunLogHint")
+        header.addWidget(title)
+        header.addStretch(1)
+        header.addWidget(hint)
+        layout.addLayout(header)
+        self.run_log = QTextEdit()
+        self.run_log.setReadOnly(True)
+        self.run_log.setMinimumHeight(96)
+        self.run_log.setPlaceholderText("Run messages will appear here.")
+        layout.addWidget(self.run_log)
+        self.run_progress = QProgressBar()
+        self.run_progress.setRange(0, 100)
+        self.run_progress.setValue(0)
+        self.run_progress.setTextVisible(True)
+        layout.addWidget(self.run_progress)
+        return panel
+
     def _wrap_scroll(self, widget: QWidget) -> QScrollArea:
         sc = QScrollArea()
         sc.setWidgetResizable(True)
         sc.setWidget(widget)
+        sc.setFrameShape(QFrame.NoFrame)
+        sc.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        sc.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        widget.setMinimumWidth(980)
         return sc
 
     def _project_page(self) -> QWidget:
@@ -3311,8 +3381,23 @@ Decision colors:
             self.output_edit.setText(p)
 
     def log(self, text: str) -> None:
-        self.project_status.append(text)
-        self.export_status.append(text)
+        stamp = datetime.now().strftime("%H:%M:%S")
+        msg = f"[{stamp}] {text}"
+        for name in ("run_log", "project_status", "export_status"):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.append(msg)
+        if hasattr(self, "run_progress"):
+            low = text.lower()
+            if "loaded feature table" in low:
+                self.run_progress.setValue(20)
+            elif "column mapping accepted" in low:
+                self.run_progress.setValue(40)
+            elif "analysis complete" in low or "export package created" in low or "ml export package created" in low:
+                self.run_progress.setValue(100)
+
+    def log_error(self, context: str, exc: Exception) -> None:
+        self.log(f"ERROR · {context}: {exc}")
 
     def load_and_map(self) -> None:
         try:
@@ -3338,6 +3423,7 @@ Decision colors:
             self.log("Review Column Mapping, then click Accept Mapping and Continue or manually revise roles.")
             self.show_page("mapping")
         except Exception as exc:
+            self.log_error("Load failed", exc)
             QMessageBox.critical(self, "Load failed", str(exc))
 
     def refresh_mapping_table(self) -> None:
@@ -3446,6 +3532,7 @@ Decision colors:
             self.log(f"Analysis complete. Outputs written to: {self.output_dir}")
             self.show_page("overview")
         except Exception as exc:
+            self.log_error("Analysis failed", exc)
             QMessageBox.critical(self, "Analysis failed", str(exc))
 
     def populate_output_tables(self, outputs: dict[str, pd.DataFrame]) -> None:
@@ -3472,7 +3559,15 @@ Decision colors:
         for i in range(len(show)):
             for j, c in enumerate(show.columns):
                 table.setItem(i, j, QTableWidgetItem(str(show.iloc[i, j])))
+        table.setAlternatingRowColors(True)
+        table.setWordWrap(False)
+        table.setSortingEnabled(True)
+        table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        table.horizontalHeader().setStretchLastSection(False)
         table.resizeRowsToContents()
+        table.resizeColumnsToContents()
 
     def resizeEvent(self, event):  # noqa: N802 - Qt override
         super().resizeEvent(event)
