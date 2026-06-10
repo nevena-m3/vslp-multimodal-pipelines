@@ -1,4 +1,4 @@
-"""VSLP Kinematics Pipeline GUI v0.77.
+"""VSLP Kinematics Pipeline GUI v0.79.
 
 This GUI intentionally mirrors the acoustic pipeline layout: left stage sidebar,
 institutional branding strip, top tabs, run log, and compact scientific workflow
@@ -45,6 +45,7 @@ try:
         QTableWidget,
         QTableWidgetItem,
         QTabWidget,
+        QSplitter,
         QTreeWidget,
         QTreeWidgetItem,
         QTextBrowser,
@@ -92,7 +93,7 @@ from vslp.analysis.kinematics import (
 )
 from vslp.analysis.kinematics.schemas import DEFAULT_VIDEO_EXTENSIONS, parse_int_list
 
-APP_VERSION = "v0.77"
+APP_VERSION = "v0.79"
 BRAND_DIR = Path(__file__).resolve().parent / "assets" / "branding"
 LAB_LOGO = BRAND_DIR / "lab_logo.png"
 UOFT_LOGO = BRAND_DIR / "uoft_logo.png"
@@ -195,7 +196,7 @@ class LandmarkMeshCanvas(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setMinimumSize(760, 560)
+        self.setMinimumSize(900, 660)
         self.setMouseTracking(True)
         self.points: dict[int, tuple[float, float]] = {}
         self.selected: set[int] = set()
@@ -217,6 +218,7 @@ class LandmarkMeshCanvas(QWidget):
         self._dragging = False
         self._drag_start = None
         self._drag_center = self.view_center
+        self.show_zoom_minimap = True
 
     @classmethod
     def region_for(cls, idx: int) -> str:
@@ -276,6 +278,34 @@ class LandmarkMeshCanvas(QWidget):
 
     def selected_text(self) -> str:
         return ", ".join(map(str, sorted(self.selected)))
+
+
+    def _point_in_view(self, x: float, y: float, pad: float = 0.01) -> bool:
+        vx0, vy0, vx1, vy1 = self._view_window()
+        return (vx0 - pad) <= x <= (vx1 + pad) and (vy0 - pad) <= y <= (vy1 + pad)
+
+    def _draw_zoom_minimap(self, painter: QPainter, image_left: int, image_top: int, image_w: int, image_h: int) -> None:
+        if not self.show_zoom_minimap or self.frame_pixmap is None or self.frame_pixmap.isNull() or self.zoom_factor <= 1.05:
+            return
+        mini_w = 148
+        mini_h = max(78, int(mini_w * self.frame_pixmap.height() / max(1, self.frame_pixmap.width())))
+        pad = 12
+        mx = image_left + image_w - mini_w - pad
+        my = image_top + pad
+        rect = QRectF(mx, my, mini_w, mini_h)
+        painter.save()
+        painter.setOpacity(0.86)
+        painter.setPen(QPen(QColor(15, 23, 42, 220), 2))
+        painter.setBrush(QBrush(QColor(2, 6, 23, 205)))
+        painter.drawRoundedRect(rect.adjusted(-4, -4, 4, 4), 6, 6)
+        painter.drawPixmap(rect, self.frame_pixmap, QRectF(0, 0, self.frame_pixmap.width(), self.frame_pixmap.height()))
+        vx0, vy0, vx1, vy1 = self._view_window()
+        view_rect = QRectF(mx + vx0 * mini_w, my + vy0 * mini_h, (vx1 - vx0) * mini_w, (vy1 - vy0) * mini_h)
+        painter.setOpacity(1.0)
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(QColor(250, 204, 21, 230), 2))
+        painter.drawRect(view_rect)
+        painter.restore()
 
     def _view_window(self) -> tuple[float, float, float, float]:
         z = max(1.0, float(self.zoom_factor))
@@ -350,6 +380,8 @@ class LandmarkMeshCanvas(QWidget):
         best_idx = None
         best_d = 1e9
         for idx, (x, y) in self.points.items():
+            if not self._point_in_view(x, y, pad=0.02):
+                continue
             p = self._to_screen(x, y)
             d = ((p.x() - pos.x()) ** 2 + (p.y() - pos.y()) ** 2) ** 0.5
             if d < best_d:
@@ -431,6 +463,8 @@ class LandmarkMeshCanvas(QWidget):
         painter.setPen(QPen(QColor("#1E3A5F"), 1))
         painter.setBrush(QBrush(QColor("#0F172A")))
         painter.drawRoundedRect(left, top, w, h, 8, 8)
+        painter.save()
+        painter.setClipRect(QRectF(left, top, w, h))
         if self.frame_pixmap is not None and not self.frame_pixmap.isNull():
             vx0, vy0, vx1, vy1 = self._view_window()
             src = QRectF(vx0 * self.frame_pixmap.width(), vy0 * self.frame_pixmap.height(), (vx1 - vx0) * self.frame_pixmap.width(), (vy1 - vy0) * self.frame_pixmap.height())
@@ -523,9 +557,12 @@ class LandmarkMeshCanvas(QWidget):
             painter.setPen(QColor("#FACC15"))
             painter.drawText(label_bg, Qt.AlignCenter, str(self.hover_idx))
 
+        painter.restore()
+        self._draw_zoom_minimap(painter, left, top, w, h)
+
         painter.setFont(QFont("Segoe UI", 8))
         painter.setPen(QColor("#E2E8F0"))
-        footer = f"Source: {self.source_label} | visible landmarks: {len(self.points)} | selected: {len(self.selected)} | zoom: {self.zoom_factor:.1f}x | left-click point, right/left-drag empty space to pan, wheel to zoom"
+        footer = f"Source: {self.source_label} | visible landmarks: {len(self.points)} | selected: {len(self.selected)} | zoom: {self.zoom_factor:.1f}x | wheel/Zoom Face to inspect; yellow inset shows current zoom window"
         painter.drawText(18, self.height() - 13, footer)
 
 
@@ -1228,7 +1265,9 @@ class KinematicsPipelineWindow(QMainWindow):
 
     def _build_selection_tab(self) -> QWidget:
         container = QWidget()
+        container.setMinimumWidth(1180)
         layout = QVBoxLayout(container)
+        layout.setSpacing(14)
         layout.addWidget(self._info_panel(
             "Info",
             "Select the landmark subset that will drive kinematic normalization and feature computation. This workstation uses the real video frame plus the actual MediaPipe landmark row for that frame. Frame review is intentionally explicit rather than playback-based, so landmark placement can be audited precisely.",
@@ -1268,13 +1307,15 @@ class KinematicsPipelineWindow(QMainWindow):
         layout.addWidget(selection_dashboard)
 
         workstation = QGroupBox("2. Landmark selection workstation")
+        workstation.setMinimumHeight(760)
         workstation_layout = QVBoxLayout(workstation)
-        main_row = QHBoxLayout()
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.setChildrenCollapsible(False)
 
         controls = QFrame()
         controls.setObjectName("InfoPanel")
         controls.setMinimumWidth(390)
-        controls.setMaximumWidth(470)
+        controls.setMaximumWidth(500)
         controls_layout = QVBoxLayout(controls)
         controls_layout.setContentsMargins(12, 12, 12, 12)
 
@@ -1401,45 +1442,44 @@ class KinematicsPipelineWindow(QMainWindow):
         self.landmark_canvas.set_mesh_edges_visible(False)
         self.landmark_canvas.set_selected(self.landmark_indices)
         self.landmark_canvas.selection_changed.connect(self._canvas_selection_changed)
-        main_row.addWidget(controls, stretch=0)
-        main_row.addWidget(self.landmark_canvas, stretch=1)
-        workstation_layout.addLayout(main_row)
+        splitter.addWidget(controls)
+        splitter.addWidget(self.landmark_canvas)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([430, 980])
+        workstation_layout.addWidget(splitter)
         layout.addWidget(workstation)
 
-        output_group = QGroupBox("3. Selection output and requirement checks")
+        output_group = QGroupBox("3. Selection output, checks, and preset reference")
         output_layout = QVBoxLayout(output_group)
         self.selection_feedback_label = QLabel("No real overlay loaded yet. Refresh extracted videos, choose a detected-frame bookmark, then load the frame.")
         self.selection_feedback_label.setWordWrap(True)
         self.selection_feedback_label.setObjectName("SubtitleLabel")
         output_layout.addWidget(self.selection_feedback_label)
-        tables_row = QHBoxLayout()
+
+        selection_tabs = QTabWidget()
+        selected_tab = QWidget(); selected_layout = QVBoxLayout(selected_tab)
         self.selected_landmark_table = QTableWidget(0, 4)
         self.selected_landmark_table.setHorizontalHeaderLabels(["Landmark", "Region", "Meaning / use", "Status"])
         self.selected_landmark_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.selected_landmark_table.setMinimumHeight(190)
+        self.selected_landmark_table.setMinimumHeight(250)
         self.selected_landmark_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        tables_row.addWidget(self.selected_landmark_table, stretch=1)
+        selected_layout.addWidget(self.selected_landmark_table)
+        selection_tabs.addTab(selected_tab, "Selected landmarks")
+
+        requirements_tab = QWidget(); requirements_layout = QVBoxLayout(requirements_tab)
         self.selection_requirement_table = QTableWidget(0, 5)
         self.selection_requirement_table.setHorizontalHeaderLabels(["Requirement", "Status", "Missing required", "Missing recommended", "Reason"])
         self.selection_requirement_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.selection_requirement_table.setMinimumHeight(190)
+        self.selection_requirement_table.setMinimumHeight(250)
         self.selection_requirement_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        tables_row.addWidget(self.selection_requirement_table, stretch=1)
-        output_layout.addLayout(tables_row)
-        layout.addWidget(output_group)
+        requirements_layout.addWidget(self.selection_requirement_table)
+        selection_tabs.addTab(requirements_tab, "Requirement checks")
 
-        guide = QTextBrowser()
-        guide.setMaximumHeight(155)
-        guide.setHtml(
-            "<h3>Scientific use</h3>"
-            "<p><b>Frame review:</b> use detected-frame bookmarks for reliable audit points. Full playback is intentionally not used here because it can hide single-frame tracking failures and make landmark placement look better than it is.</p>"
-            "<p><b>Display:</b> default rendering shows all landmarks faintly. Use <b>Selected + anchors</b> to reduce clutter, or <b>High contrast</b> only for difficult frames.</p>"
-            "<p><b>Normalization:</b> preferred intercanthal scaling uses inner canthus anchors <b>133/362</b>. If unavailable, normalization can fall back to outer-eye anchors <b>33/263</b>, but that fallback is recorded and QC-flagged for review.</p>"
-        )
-        layout.addWidget(guide)
-
+        preset_tab = QWidget(); preset_layout = QVBoxLayout(preset_tab)
         self.preset_table = QTableWidget(0, 4)
         self.preset_table.setHorizontalHeaderLabels(["Preset", "N landmarks", "Recommended use", "Indices"])
+        self.preset_table.setMinimumHeight(250)
         rows = []
         use_map = {
             "ALS oral-motor core 15": "Default oral/jaw/lip kinematics and normalization anchors.",
@@ -1451,14 +1491,31 @@ class KinematicsPipelineWindow(QMainWindow):
         for name, vals in LANDMARK_PRESETS.items():
             rows.append({"Preset": name, "N landmarks": len(vals), "Recommended use": use_map.get(name, "Task-specific or exploratory review."), "Indices": ", ".join(map(str, vals))})
         self._fill_table(self.preset_table, pd.DataFrame(rows), max_rows=20)
-        layout.addWidget(self.preset_table)
+        preset_layout.addWidget(self.preset_table)
+        selection_tabs.addTab(preset_tab, "Preset reference")
+
+        guide_tab = QWidget(); guide_layout = QVBoxLayout(guide_tab)
+        guide = QTextBrowser()
+        guide.setMinimumHeight(220)
+        guide.setHtml(
+            "<h3>Scientific use</h3>"
+            "<p><b>Frame review:</b> use detected-frame bookmarks for reliable audit points. Full playback is intentionally not used here because it can hide single-frame tracking failures and make landmark placement look better than it is.</p>"
+            "<p><b>Display:</b> default rendering is intentionally quiet. Use <b>Selected + anchors</b> for routine review and <b>High contrast</b> only for difficult frames.</p>"
+            "<p><b>Normalization:</b> preferred intercanthal scaling uses inner canthus anchors <b>133/362</b>. If unavailable, normalization can fall back to outer-eye anchors <b>33/263</b>, but that fallback is recorded and QC-flagged for review.</p>"
+        )
+        guide_layout.addWidget(guide)
+        selection_tabs.addTab(guide_tab, "Notes")
+
+        output_layout.addWidget(selection_tabs)
+        layout.addWidget(output_group)
         layout.addStretch(1)
         return self._scrollable(container)
 
     def _build_normalization_tab(self) -> QWidget:
         container = QWidget()
+        container.setMinimumWidth(1120)
         layout = QVBoxLayout(container)
-        layout.setSpacing(12)
+        layout.setSpacing(14)
         layout.addWidget(self._info_panel(
             "Normalization dashboard",
             "Normalization converts raw MediaPipe image/model coordinates into centered, face-scale units. It reduces camera-distance and face-size effects before ALS/PD kinematic features are computed. It does not create true millimeter biomechanics and it does not fix poor tracking, head rotation, or missing landmarks; those are handled by QC.",
@@ -1485,9 +1542,8 @@ class KinematicsPipelineWindow(QMainWindow):
             metric_grid.addWidget(card, 0, i)
         layout.addWidget(metric_group)
 
-        main_row = QHBoxLayout()
-        left_group = QGroupBox("1. Policy and controls")
-        left = QVBoxLayout(left_group)
+        policy_group = QGroupBox("1. Normalization policy")
+        policy_layout = QVBoxLayout(policy_group)
         form = QGridLayout()
         self.norm_combo = QComboBox(); self.norm_combo.addItems(list(NORMALIZATION_METHODS.keys()))
         self.norm_combo.setCurrentText("intercanthal_distance")
@@ -1498,16 +1554,13 @@ class KinematicsPipelineWindow(QMainWindow):
         form.addWidget(QLabel("Method"), 0, 0); form.addWidget(self.norm_combo, 0, 1)
         form.addWidget(QLabel("Center landmark"), 1, 0); form.addWidget(self.center_landmark_spin, 1, 1)
         form.addWidget(QLabel("Output policy"), 2, 0); form.addWidget(self.norm_overwrite_check, 2, 1)
-        left.addLayout(form)
+        policy_layout.addLayout(form)
 
-        self.norm_visual = NormalizationMethodVisual()
-        left.addWidget(self.norm_visual)
-        self.norm_desc = QLabel(""); self.norm_desc.setWordWrap(True); self.norm_desc.setObjectName("SubtitleLabel")
-        left.addWidget(self.norm_desc)
-        self.norm_science_note = QTextBrowser()
-        self.norm_science_note.setMaximumHeight(150)
-        self.norm_science_note.setOpenExternalLinks(False)
-        left.addWidget(self.norm_science_note)
+        self.norm_desc = QLabel("")
+        self.norm_desc.setWordWrap(True)
+        self.norm_desc.setObjectName("SubtitleLabel")
+        policy_layout.addWidget(self.norm_desc)
+
         btn_row = QHBoxLayout()
         config_btn = QPushButton("Write Config")
         config_btn.clicked.connect(self.write_normalization_config_only)
@@ -1515,22 +1568,39 @@ class KinematicsPipelineWindow(QMainWindow):
         btn.setObjectName("RunButton"); btn.clicked.connect(self.run_normalization_stage)
         refresh = QPushButton("Refresh Results")
         refresh.clicked.connect(self._load_normalization_results)
-        btn_row.addWidget(config_btn); btn_row.addWidget(btn); btn_row.addWidget(refresh)
-        left.addLayout(btn_row)
-        main_row.addWidget(left_group, 1)
+        btn_row.addWidget(config_btn); btn_row.addWidget(btn); btn_row.addWidget(refresh); btn_row.addStretch(1)
+        policy_layout.addLayout(btn_row)
+        layout.addWidget(policy_group)
 
-        right_group = QGroupBox("2. Method audit")
-        right = QVBoxLayout(right_group)
+        details_group = QGroupBox("2. Method audit and scientific notes")
+        details_layout = QVBoxLayout(details_group)
+        details_tabs = QTabWidget()
+
+        anchor_tab = QWidget(); anchor_layout = QVBoxLayout(anchor_tab)
         self.norm_anchor_table = QTableWidget(0, 2)
         self.norm_anchor_table.setHorizontalHeaderLabels(["Audit item", "Meaning"])
         self.norm_anchor_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        right.addWidget(self.norm_anchor_table)
+        self.norm_anchor_table.setMinimumHeight(230)
+        anchor_layout.addWidget(self.norm_anchor_table)
+        details_tabs.addTab(anchor_tab, "Current method audit")
+
+        method_tab = QWidget(); method_layout = QVBoxLayout(method_tab)
         self.norm_method_table = QTableWidget(0, 5)
         self.norm_method_table.setHorizontalHeaderLabels(["Method", "Anchors", "Best use", "Caution", "Evidence"])
         self.norm_method_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        right.addWidget(self.norm_method_table)
-        main_row.addWidget(right_group, 1)
-        layout.addLayout(main_row)
+        self.norm_method_table.setMinimumHeight(230)
+        method_layout.addWidget(self.norm_method_table)
+        details_tabs.addTab(method_tab, "Method comparison")
+
+        note_tab = QWidget(); note_layout = QVBoxLayout(note_tab)
+        self.norm_science_note = QTextBrowser()
+        self.norm_science_note.setMinimumHeight(220)
+        self.norm_science_note.setOpenExternalLinks(False)
+        note_layout.addWidget(self.norm_science_note)
+        details_tabs.addTab(note_tab, "Why normalize")
+
+        details_layout.addWidget(details_tabs)
+        layout.addWidget(details_group)
 
         results_group = QGroupBox("3. Outputs and diagnostics")
         results_layout = QVBoxLayout(results_group)
