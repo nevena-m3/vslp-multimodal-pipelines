@@ -8,6 +8,7 @@ from __future__ import annotations
 import sys
 import json
 import shutil
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -80,7 +81,7 @@ from vslp.analysis.features.plots import (
     plot_ml_export_manifest_summary
 )
 
-APP_VERSION = "v0.59.0"
+APP_VERSION = "v0.61.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -361,7 +362,7 @@ class LogoBar(QFrame):
         title_box = QVBoxLayout()
         title = QLabel("VSLP Feature Analysis GUI")
         title.setObjectName("Title")
-        sub = QLabel("Feature audit · QC integration · reliability screening · export")
+        sub = QLabel("Feature audit | QC integration | reliability screening | export")
         sub.setObjectName("Subtitle")
         title_box.addWidget(title)
         title_box.addWidget(sub)
@@ -420,7 +421,7 @@ class Sidebar(QFrame):
         brand.setObjectName("Brand")
         sub = QLabel(f"Feature Analysis GUI {APP_VERSION}")
         sub.setObjectName("Sub")
-        credit = QLabel("© 2026 Nevena Musikic & Yana Yunusova\nSpeech Production Lab\nUniversity of Toronto")
+        credit = QLabel("(c) 2026 Nevena Musikic & Yana Yunusova\nSpeech Production Lab\nUniversity of Toronto")
         credit.setObjectName("Credit")
         credit.setWordWrap(True)
         layout.addWidget(brand)
@@ -429,18 +430,18 @@ class Sidebar(QFrame):
         layout.addWidget(credit)
         layout.addSpacing(18)
         for key, text in [
-            ("project", "○  Project"),
-            ("mapping", "○  Column Mapping"),
-            ("overview", "○  Overview"),
-            ("missing", "○  Missingness"),
-            ("dist", "○  Distributions"),
-            ("qc", "○  QC Integration"),
-            ("relationships", "○  Feature Relationships"),
-            ("screening", "○  Group / Outcome Screening"),
-            ("reliability", "○  Reliability"),
-            ("recommendations", "○  Recommendations"),
-            ("ml_export", "○  ML Export Builder"),
-            ("export", "○  Export / Report"),
+            ("project", "o  Project"),
+            ("mapping", "o  Column Mapping"),
+            ("overview", "o  Overview"),
+            ("missing", "o  Missingness"),
+            ("dist", "o  Distributions"),
+            ("qc", "o  QC Integration"),
+            ("relationships", "o  Feature Relationships"),
+            ("screening", "o  Group / Outcome Screening"),
+            ("reliability", "o  Reliability"),
+            ("recommendations", "o  Recommendations"),
+            ("ml_export", "o  ML Export Builder"),
+            ("export", "o  Export / Report"),
         ]:
             b = QPushButton(text)
             b.clicked.connect(lambda _=False, k=key: self.on_select(k))
@@ -451,7 +452,7 @@ class Sidebar(QFrame):
     def set_active(self, key: str) -> None:
         for k, b in self.buttons.items():
             b.setProperty("active", k == key)
-            prefix = "●" if k == key else "○"
+            prefix = "*" if k == key else "o"
             b.setText(prefix + b.text()[1:])
             b.style().unpolish(b); b.style().polish(b)
 
@@ -596,7 +597,7 @@ class FeatureAnalysisGUI(QMainWindow):
         layout.setContentsMargins(14, 8, 14, 10)
         layout.setSpacing(6)
         header = QHBoxLayout()
-        title = QLabel(f"Run Log · Feature Analysis GUI {APP_VERSION}")
+        title = QLabel(f"Run Log | Feature Analysis GUI {APP_VERSION}")
         title.setObjectName("RunLogTitle")
         hint = QLabel("Persistent messages for loading, mapping, analysis, export, and errors")
         hint.setObjectName("RunLogHint")
@@ -752,18 +753,99 @@ class FeatureAnalysisGUI(QMainWindow):
 
         card = Card(
             "Overview",
-            "Dataset orientation, design structure, feature coverage, and readiness for downstream feature review. This screen is descriptive; it does not perform ML."
+            "High-level dataset orientation. This page summarizes design context, column roles, feature-family coverage, and first-pass feature quality without duplicating the deeper Missingness, Distribution, QC, or ML Export menus."
         )
-
-        self.overview_metric_grid = QGridLayout()
-        self.overview_metric_grid.setHorizontalSpacing(12)
-        self.overview_metric_grid.setVerticalSpacing(12)
-        card.layout.addLayout(self.overview_metric_grid)
 
         self.overview_note = QLabel("Load tables, review/accept column mapping, then run Feature Analysis to populate this dashboard.")
         self.overview_note.setWordWrap(True)
         self.overview_note.setStyleSheet(f"color:{MUTED}; background:#F7FAFD; border:1px solid {LINE}; border-radius:8px; padding:10px;")
         card.layout.addWidget(self.overview_note)
+
+        overview_split = QHBoxLayout()
+        overview_split.setSpacing(14)
+
+        # Main visual area: one plot selector toolbar, one large preview.  Overview only
+        # contains non-redundant orientation plots; detailed missingness/distribution/QC
+        # plots live in their own menus.
+        plot_panel = QFrame()
+        plot_panel.setStyleSheet(f"QFrame {{ background:#F8FBFE; border:1px solid {LINE}; border-radius:12px; }}")
+        plot_panel_layout = QVBoxLayout(plot_panel)
+        plot_panel_layout.setContentsMargins(14, 14, 14, 14)
+        plot_panel_layout.setSpacing(10)
+
+        plot_header = QHBoxLayout()
+        plot_header.setSpacing(10)
+        plot_title = QLabel("Overview plot")
+        plot_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
+        plot_header.addWidget(plot_title)
+
+        self.overview_plot_combo = QComboBox()
+        self.overview_plot_combo.setMinimumWidth(360)
+        self.overview_plot_combo.addItems([
+            "Readiness scorecard",
+            "Design context",
+            "Role mapping summary",
+            "Feature-family coverage",
+            "Feature-quality landscape",
+            "Subject x task coverage",
+        ])
+        plot_header.addWidget(self.overview_plot_combo, 1)
+
+        show_btn = QPushButton("Show")
+        show_btn.setProperty("secondary", True)
+        show_btn.clicked.connect(self.preview_selected_overview_plot)
+        plot_header.addWidget(show_btn)
+
+        regen = QPushButton("Regenerate")
+        regen.clicked.connect(self.regenerate_overview_plots)
+        plot_header.addWidget(regen)
+
+        plot_header.addStretch(1)
+
+        open_current = QPushButton("Open current plot")
+        open_current.setProperty("secondary", True)
+        open_current.clicked.connect(self.open_current_overview_plot)
+        plot_header.addWidget(open_current)
+        plot_panel_layout.addLayout(plot_header)
+
+        self.overview_plot_caption = QLabel("Overview uses a deliberately small plot set: readiness, design context, role mapping, feature-family coverage, feature quality, and subjectxtask coverage. Missingness, distribution, QC, and ML-export plots are handled in their own menus.")
+        self.overview_plot_caption.setWordWrap(True)
+        self.overview_plot_caption.setStyleSheet(f"color:{MUTED}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:9px;")
+        plot_panel_layout.addWidget(self.overview_plot_caption)
+
+        self.overview_plot_preview = QLabel("Run Feature Analysis, then choose one overview plot.")
+        self.overview_plot_preview.setAlignment(Qt.AlignCenter)
+        self.overview_plot_preview.setMinimumHeight(520)
+        self.overview_plot_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.overview_plot_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
+        plot_panel_layout.addWidget(self.overview_plot_preview, 1)
+        overview_split.addWidget(plot_panel, 1)
+
+        # Side summary keeps metric tiles visible without occupying the top of the page.
+        side_panel = QFrame()
+        side_panel.setStyleSheet(f"QFrame {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:12px; }}")
+        side_layout = QVBoxLayout(side_panel)
+        side_layout.setContentsMargins(12, 12, 12, 12)
+        side_layout.setSpacing(10)
+        side_title = QLabel("Dataset snapshot")
+        side_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
+        side_layout.addWidget(side_title)
+        side_note = QLabel("Compact orientation metrics. Values use the accepted mapping and metadata-augmented analysis table when metadata can be joined safely.")
+        side_note.setWordWrap(True)
+        side_note.setStyleSheet(f"color:{MUTED}; border:none; background:transparent; font-size:12px;")
+        side_layout.addWidget(side_note)
+        self.overview_metric_grid = QGridLayout()
+        self.overview_metric_grid.setHorizontalSpacing(8)
+        self.overview_metric_grid.setVerticalSpacing(8)
+        side_layout.addLayout(self.overview_metric_grid)
+        side_layout.addStretch(1)
+        side_panel.setFixedWidth(300)
+        overview_split.addWidget(side_panel)
+        card.layout.addLayout(overview_split)
+
+        tables_header = QLabel("Detailed overview tables")
+        tables_header.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; padding-top:8px;")
+        card.layout.addWidget(tables_header)
 
         tabs = QTabWidget()
         tabs.setStyleSheet(f"""
@@ -785,7 +867,9 @@ class FeatureAnalysisGUI(QMainWindow):
             self.overview_family_table, self.overview_quality_table,
         ]:
             t.setAlternatingRowColors(True)
-            t.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+            t.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+            t.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+            t.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
 
         tabs.addTab(self.overview_readiness_table, "Readiness")
         tabs.addTab(self.overview_inventory_table, "Inventory")
@@ -793,89 +877,7 @@ class FeatureAnalysisGUI(QMainWindow):
         tabs.addTab(self.overview_design_table, "Design variables")
         tabs.addTab(self.overview_family_table, "Feature families")
         tabs.addTab(self.overview_quality_table, "Feature quality")
-        # Tables are placed below plots for visual-first review.
-
-
-        plot_panel = QFrame()
-        plot_panel.setStyleSheet(f"QFrame {{ background:#F8FBFE; border:1px solid {LINE}; border-radius:12px; }}")
-        plot_panel_layout = QHBoxLayout(plot_panel)
-        plot_panel_layout.setContentsMargins(14, 14, 14, 14)
-        plot_panel_layout.setSpacing(14)
-
-        plot_controls = QFrame()
-        plot_controls.setStyleSheet("QFrame { border:none; background:transparent; }")
-        plot_controls_layout = QVBoxLayout(plot_controls)
-        plot_controls_layout.setContentsMargins(0, 0, 0, 0)
-        plot_controls_layout.setSpacing(8)
-        plot_title = QLabel("Overview plot gallery")
-        plot_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
-        plot_controls_layout.addWidget(plot_title)
-        plot_note = QLabel("Use this as a visual orientation board before Missingness, Distributions, QC, and ML export. Each plot is regenerated from the accepted column mapping.")
-        plot_note.setWordWrap(True)
-        plot_note.setStyleSheet(f"color:{MUTED}; border:none; background:transparent;")
-        plot_controls_layout.addWidget(plot_note)
-
-        self.overview_plot_combo = QComboBox()
-        self.overview_plot_combo.addItems([
-            "Readiness scorecard",
-            "Dataset design tiles",
-            "Role counts",
-            "Task / group counts",
-            "Subject × task coverage",
-            "Feature-family coverage",
-            "Feature quality landscape",
-            "Feature availability heatmap",
-            "Top missing features",
-        ])
-        plot_controls_layout.addWidget(self.overview_plot_combo)
-        show_btn = QPushButton("Show selected plot")
-        show_btn.clicked.connect(self.preview_selected_overview_plot)
-        plot_controls_layout.addWidget(show_btn)
-
-        for label, attr in [
-            ("Readiness", "overview_readiness_scorecard"),
-            ("Design tiles", "overview_design_tiles"),
-            ("Feature quality", "overview_feature_quality_landscape"),
-            ("Subject × task", "overview_subject_task_matrix"),
-        ]:
-            b = QPushButton(label)
-            b.setProperty("secondary", True)
-            b.clicked.connect(lambda _=False, a=attr: self.preview_plot(a))
-            plot_controls_layout.addWidget(b)
-
-        regen = QPushButton("Regenerate overview visuals")
-        regen.clicked.connect(self.regenerate_overview_plots)
-        plot_controls_layout.addWidget(regen)
-        open_current = QPushButton("Open current plot file")
-        open_current.setProperty("secondary", True)
-        open_current.clicked.connect(self.open_current_overview_plot)
-        plot_controls_layout.addWidget(open_current)
-        plot_controls_layout.addStretch(1)
-        plot_controls.setFixedWidth(270)
-        plot_panel_layout.addWidget(plot_controls)
-
-        preview_box = QFrame()
-        preview_box.setStyleSheet("QFrame { border:none; background:transparent; }")
-        preview_layout = QVBoxLayout(preview_box)
-        preview_layout.setContentsMargins(0, 0, 0, 0)
-        preview_layout.setSpacing(8)
-        self.overview_plot_caption = QLabel("Run Feature Analysis, then select a plot. The plot preview is embedded here and saved to feature_analysis/plots.")
-        self.overview_plot_caption.setWordWrap(True)
-        self.overview_plot_caption.setStyleSheet(f"color:{MUTED}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:9px;")
-        preview_layout.addWidget(self.overview_plot_caption)
-        self.overview_plot_preview = QLabel("Run Feature Analysis, then select a plot on the left.")
-        self.overview_plot_preview.setAlignment(Qt.AlignCenter)
-        self.overview_plot_preview.setMinimumHeight(500)
-        self.overview_plot_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.overview_plot_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
-        preview_layout.addWidget(self.overview_plot_preview, 1)
-        plot_panel_layout.addWidget(preview_box, 1)
-        card.layout.addWidget(plot_panel)
-        tables_header = QLabel("Detailed tables")
-        tables_header.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; padding-top:8px;")
-        card.layout.addWidget(tables_header)
         card.layout.addWidget(tabs)
-
 
         layout.addWidget(card)
         return self._wrap_scroll(body)
@@ -902,13 +904,13 @@ class FeatureAnalysisGUI(QMainWindow):
         readiness = outputs.get("overview_readiness_summary", pd.DataFrame())
         quality = outputs.get("overview_feature_quality_landscape", pd.DataFrame())
 
-        def metric_value(name: str, default: object = "—") -> object:
+        def metric_value(name: str, default: object = "-") -> object:
             if inv.empty or "metric" not in inv.columns:
                 return default
             row = inv.loc[inv["metric"].eq(name)]
             return row["value"].iloc[0] if not row.empty else default
 
-        def score_value(name: str, default: object = "—") -> object:
+        def score_value(name: str, default: object = "-") -> object:
             if readiness.empty or "dimension" not in readiness.columns:
                 return default
             row = readiness.loc[readiness["dimension"].astype(str).eq(name)]
@@ -924,17 +926,16 @@ class FeatureAnalysisGUI(QMainWindow):
 
         tiles = [
             ("Rows", metric_value("feature_table_rows"), "records / files"),
-            ("Features", metric_value("detected_feature_columns"), "mapped feature columns"),
-            ("Numeric", metric_value("numeric_feature_columns"), "usable for quantitative audit"),
-            ("Completeness", score_value("Feature completeness"), "0–100 orientation score"),
-            ("Design", score_value("Design richness"), "group/task/session context"),
+            ("Features", metric_value("detected_feature_columns"), "mapped predictors"),
+            ("Subjects", metric_value("unique_subjects"), "metadata-aware if joined"),
+            ("Tasks", metric_value("unique_tasks"), "metadata-aware if joined"),
+            ("Completeness", score_value("Feature completeness"), "0-100 audit score"),
+            ("Design", score_value("Design richness"), "context richness"),
             ("Review flags", n_review, f"monitor: {n_monitor}"),
-            ("Subjects", metric_value("unique_subjects"), "if subject_id exists"),
-            ("Tasks", metric_value("unique_tasks"), "if task exists"),
             ("QC", "yes" if str(metric_value("qc_table_loaded", False)).lower() == "true" else "no", "artifact context"),
         ]
         for idx, (title, value, subtitle) in enumerate(tiles):
-            self.overview_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx // 3, idx % 3)
+            self.overview_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx, 0)
 
         self._fill_table(self.overview_readiness_table, outputs.get("overview_readiness_summary", pd.DataFrame()))
         self._fill_table(self.overview_inventory_table, outputs.get("dataset_inventory", pd.DataFrame()))
@@ -960,49 +961,143 @@ class FeatureAnalysisGUI(QMainWindow):
         from vslp.analysis.features.column_mapping import normalize_name
         return {normalize_name(c): str(c) for c in df.columns}
 
+    def _canonical_metadata_name(self, column: str) -> str:
+        """Map common REDCap/export names to the Feature GUI's canonical field names."""
+        from vslp.analysis.features.column_mapping import normalize_name
+
+        n = normalize_name(column)
+        aliases = {
+            "raw_media_file_name": "file_name",
+            "media_file_name": "file_name",
+            "filename": "file_name",
+            "file": "file_name",
+            "subjectid": "subject_id",
+            "subject_id": "subject_id",
+            "participant_id": "subject_id",
+            "patient_id": "subject_id",
+            "clinical_visit_id": "visit_id",
+            "visit_id": "visit_id",
+            "session_id": "session_id",
+            "recording_session": "session_id",
+            "iteration": "iteration",
+            "recording_date": "recording_date",
+            "assessment_date": "assessment_date",
+            "task_name": "task",
+            "task": "task",
+            "diagnosis": "diagnosis",
+            "sex": "sex_or_gender",
+            "gender": "sex_or_gender",
+            "sex_or_gender": "sex_or_gender",
+            "alsfrs_total_score": "severity_score",
+            "severity_score": "severity_score",
+            "severity_bin": "severity_bin",
+            "frame_rate": "frame_rate",
+            "sampling_rate": "sampling_rate",
+            "duration_s": "duration_sec",
+            "duration_sec": "duration_sec",
+            "protocol_id": "protocol_id",
+            "extension": "extension",
+            "device": "device",
+            "organization_name": "site",
+        }
+        return aliases.get(n, n)
+
+    def _basename_series(self, values: pd.Series) -> pd.Series:
+        """Return lower-case file basenames from Windows, POSIX, or plain filename strings."""
+        def one(v: object) -> str:
+            if pd.isna(v):
+                return ""
+            s = str(v).strip().strip('"').strip("'")
+            if not s:
+                return ""
+            s = re.split(r"[\\/]", s)[-1]
+            return s.lower()
+        return values.map(one)
+
+    def _add_file_match_helpers(self, df: pd.DataFrame) -> pd.DataFrame:
+        out = df.copy()
+        source = None
+        for c in ["file_name", "source_file_path", "raw_media_file_name", "segmentation_wav_path", "video_id"]:
+            if c in out.columns:
+                source = c
+                break
+        if source is not None:
+            out["_match_file_basename"] = self._basename_series(out[source])
+            out["_match_file_stem"] = out["_match_file_basename"].str.replace(r"\.[a-z0-9]+$", "", regex=True)
+        return out
+
+    def _standardize_metadata_table(self, meta_df: pd.DataFrame) -> pd.DataFrame:
+        """Rename common metadata columns and add match helpers without discarding originals."""
+        if meta_df is None or meta_df.empty:
+            return meta_df
+        out = meta_df.copy()
+        rename: dict[str, str] = {}
+        used = set(str(c) for c in out.columns)
+        for col in out.columns:
+            canon = self._canonical_metadata_name(str(col))
+            if canon != str(col):
+                if canon not in used:
+                    rename[str(col)] = canon
+                    used.add(canon)
+                else:
+                    rename[str(col)] = f"metadata__{canon}"
+        if rename:
+            out = out.rename(columns=rename)
+        return self._add_file_match_helpers(out)
+
+    def _standardize_feature_match_helpers(self, feature_df: pd.DataFrame) -> pd.DataFrame:
+        return self._add_file_match_helpers(feature_df)
+
     def _metadata_join_candidates(self) -> list[list[str]]:
         return [
             ["record_key"],
             ["recording_id"],
             ["file_name"],
-            ["source_file_path"],
+            ["_match_file_basename"],
+            ["_match_file_stem"],
             ["subject_id", "session_id", "task"],
             ["subject_id", "visit_id", "task"],
             ["subject_id", "session_id"],
             ["subject_id", "visit_id"],
             ["subject_id", "task"],
+            ["subject_id", "recording_date", "task"],
             ["subject_id"],
         ]
+
+    def _is_effectively_empty(self, s: pd.Series) -> pd.Series:
+        return s.isna() | s.astype(str).str.strip().isin(["", "nan", "NaN", "None", "none"])
 
     def _metadata_extra_columns(self, feature_df: pd.DataFrame, meta_df: pd.DataFrame, keys: list[str] | None) -> list[str]:
         keyset = set(keys or [])
         extras = []
+        helper_cols = {"_match_file_basename", "_match_file_stem"}
         for col in meta_df.columns:
-            if str(col) in keyset:
+            if str(col) in keyset or str(col) in helper_cols:
                 continue
-            if str(col) not in feature_df.columns:
-                extras.append(str(col))
-            else:
-                # Keep conflicting metadata columns available but explicit.
-                extras.append(str(col))
+            extras.append(str(col))
         return extras
 
     def _merge_metadata_context(self, feature_df: pd.DataFrame, feature_mapping: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, str]:
         """Return feature table enriched with safe metadata labels/covariates when available.
 
-        The Feature GUI is descriptive and must search both the feature table and
-        metadata table for labels, tasks, sessions and subject IDs. This method
-        merges metadata conservatively: exact safe keys first, row-order only when
-        row counts match, otherwise metadata remains loaded but unmerged.
+        The Feature GUI must search both the feature table and metadata table for
+        subject/session/task/diagnosis/context variables. Metadata is joined only
+        when a defensible key is available. When metadata fills an empty canonical
+        feature-table column, the canonical column is populated so all downstream
+        menus see the same information.
         """
         if self.meta_df is None or self.meta_df.empty:
             return feature_df.copy(), feature_mapping.copy(), "feature_table_only"
-        meta_df = self.meta_df.copy()
-        feature_lookup = self._normal_col_lookup(feature_df)
+
+        feature_base = self._standardize_feature_match_helpers(feature_df)
+        meta_df = self._standardize_metadata_table(self.meta_df.copy())
+        feature_lookup = self._normal_col_lookup(feature_base)
         meta_lookup = self._normal_col_lookup(meta_df)
+
         chosen_keys: list[str] = []
         strategy = "metadata_loaded_not_merged"
-        merged = feature_df.copy()
+        merged = feature_base.copy()
+        duplicate_canonical_cols: list[tuple[str, str]] = []
 
         for candidate in self._metadata_join_candidates():
             if all(k in feature_lookup and k in meta_lookup for k in candidate):
@@ -1011,13 +1106,18 @@ class FeatureAnalysisGUI(QMainWindow):
                 right = meta_df.copy()
                 if left_keys != right_keys:
                     right = right.rename(columns={rk: lk for lk, rk in zip(left_keys, right_keys)})
+
                 if right.duplicated(subset=left_keys).any():
                     continue
-                extra_cols = [c for c in right.columns if c not in left_keys]
-                rename_map = {}
+
+                extra_cols = self._metadata_extra_columns(merged, right, left_keys)
+                rename_map: dict[str, str] = {}
+                duplicate_canonical_cols = []
                 for c in extra_cols:
                     if c in merged.columns:
-                        rename_map[c] = f"metadata__{c}"
+                        new_name = f"metadata__{c}"
+                        rename_map[c] = new_name
+                        duplicate_canonical_cols.append((c, new_name))
                 right = right[left_keys + extra_cols].rename(columns=rename_map)
                 merged = merged.merge(right, on=left_keys, how="left", validate="m:1")
                 chosen_keys = left_keys
@@ -1026,14 +1126,31 @@ class FeatureAnalysisGUI(QMainWindow):
 
         if not chosen_keys and len(meta_df) == len(feature_df):
             add = meta_df.reset_index(drop=True).copy()
-            rename_map = {c: (str(c) if str(c) not in merged.columns else f"metadata__{c}") for c in add.columns}
+            rename_map: dict[str, str] = {}
+            duplicate_canonical_cols = []
+            for c in add.columns:
+                if c in {"_match_file_basename", "_match_file_stem"}:
+                    rename_map[c] = f"metadata__{c}"
+                    continue
+                if c in merged.columns:
+                    new_name = f"metadata__{c}"
+                    rename_map[c] = new_name
+                    duplicate_canonical_cols.append((c, new_name))
             add = add.rename(columns=rename_map)
-            # Do not duplicate columns that ended up identical to feature columns.
             add = add[[c for c in add.columns if c not in merged.columns]]
             merged = pd.concat([merged.reset_index(drop=True), add], axis=1)
             strategy = "metadata_row_order_join:same_row_count"
 
-        if merged.shape[1] == feature_df.shape[1]:
+        for canonical, metadata_col in duplicate_canonical_cols:
+            if canonical in merged.columns and metadata_col in merged.columns:
+                empty_mask = self._is_effectively_empty(merged[canonical])
+                merged.loc[empty_mask, canonical] = merged.loc[empty_mask, metadata_col]
+
+        helper_cols = [c for c in ["_match_file_basename", "_match_file_stem"] if c in merged.columns]
+        if helper_cols:
+            merged = merged.drop(columns=helper_cols)
+
+        if merged.shape[1] == feature_df.shape[1] and strategy == "metadata_loaded_not_merged":
             return merged, feature_mapping.copy(), strategy
 
         added_cols = [c for c in merged.columns if c not in feature_df.columns]
@@ -1047,7 +1164,7 @@ class FeatureAnalysisGUI(QMainWindow):
         self.mapping_modified = True
         self.mapping_accepted = False
         if hasattr(self, "mapping_summary_label"):
-            self.mapping_summary_label.setText((self.mapping_summary_label.text() or "Current mapping") + "  · unsaved edits")
+            self.mapping_summary_label.setText((self.mapping_summary_label.text() or "Current mapping") + "  | unsaved edits")
 
     def _accepted_mapping_path(self) -> Path | None:
         out = self.output_edit.text().strip() if hasattr(self, "output_edit") else ""
@@ -1273,29 +1390,22 @@ class FeatureAnalysisGUI(QMainWindow):
         label = self.overview_plot_combo.currentText() if hasattr(self, "overview_plot_combo") else ""
         key_map = {
             "Readiness scorecard": "overview_readiness_scorecard",
-            "Dataset design tiles": "overview_design_tiles",
-            "Role counts": "role_counts",
-            "Task / group counts": "group_counts",
-            "Subject × task coverage": "overview_subject_task_matrix",
+            "Design context": "overview_design_tiles",
+            "Role mapping summary": "role_counts",
             "Feature-family coverage": "overview_feature_family_quality",
-            "Feature quality landscape": "overview_feature_quality_landscape",
-            "Feature availability heatmap": "feature_availability_heatmap",
-            "Top missing features": "missingness_top_features",
+            "Feature-quality landscape": "overview_feature_quality_landscape",
+            "Subject x task coverage": "overview_subject_task_matrix",
         }
         self.preview_plot(key_map.get(label, "overview_readiness_scorecard"))
 
     def _overview_plot_caption_text(self, key: str) -> str:
         captions = {
-            "overview_readiness_scorecard": "Readiness scorecard: quick orientation across completeness, numeric analyzability, metadata context, QC context, design richness, row depth, and feature breadth. It is not an ML score.",
-            "overview_design_tiles": "Dataset design tiles: shows whether subject, session, task, diagnosis/severity, sex/gender, and device columns are detected. Missing design variables limit stratified analyses.",
-            "role_counts": "Role counts: verifies that columns are mapped as features, identifiers, targets, covariates, QC variables, or ignored columns before analysis proceeds.",
-            "group_counts": "Group counts: shows balance across the most relevant detected grouping variable, usually task or diagnosis. Severe imbalance affects interpretation and downstream ML splitting.",
-            "overview_subject_task_matrix": "Subject × task coverage: shows repeated-measures/task coverage. Empty cells reveal missing task coverage and potential bias in task-specific summaries.",
-            "feature_family_counts": "Feature-family counts: shows coverage across acoustic/kinematic/other feature subsystems when registry labels are available.",
-            "overview_feature_family_quality": "Feature-family quality: combines family coverage with average missingness. Use it to see whether an entire subsystem is weak, not just individual features.",
-            "overview_feature_quality_landscape": "Feature quality landscape: each feature is positioned by missingness and robust outlier burden. Review-zone features need inspection before ML export.",
-            "feature_availability_heatmap": "Feature availability heatmap: row-by-feature matrix showing available versus missing feature values. Blocks of missingness often indicate task or computation support issues.",
-            "missingness_top_features": "Top missing features: first-pass ranking of features with the highest missingness. Detailed missingness review is handled in the Missingness menu.",
+            "overview_readiness_scorecard": "Readiness scorecard: a compact orientation panel across completeness, numeric analyzability, metadata context, QC context, design richness, row depth, and feature breadth. This is an audit readiness view, not an ML performance score.",
+            "overview_design_tiles": "Design context: shows whether subject, session/visit, task, diagnosis/severity, sex/gender, and device/context variables are detected. Metadata-derived variables are included when metadata can be joined safely.",
+            "role_counts": "Role mapping summary: verifies that columns are classified as features, identifiers, targets, covariates, QC variables, audit/status fields, or ignored fields before downstream analysis.",
+            "overview_subject_task_matrix": "Subject x task coverage: shows repeated-measures and task coverage when subject/task fields are available. Empty blocks reveal missing task coverage or incomplete alignment.",
+            "overview_feature_family_quality": "Feature-family coverage: summarizes predictor coverage by subsystem/family. This is the high-level family view; detailed missingness and QC are handled in their own menus.",
+            "overview_feature_quality_landscape": "Feature-quality landscape: positions features by missingness and robust outlier burden. Use it only to identify features needing review; use the Distribution and QC menus for detailed diagnosis.",
         }
         return captions.get(key, "Overview plot.")
 
@@ -1324,7 +1434,7 @@ class FeatureAnalysisGUI(QMainWindow):
             self.update_recommendations_dashboard(outputs)
             self.update_export_dashboard(outputs)
             self.log(f"Overview/missingness plots generated in: {plots_dir}")
-            self.preview_plot("role_counts", generate_if_missing=False)
+            self.preview_plot("overview_readiness_scorecard", generate_if_missing=False)
         except Exception as exc:
             QMessageBox.critical(self, "Could not generate overview plots", str(exc))
 
@@ -1441,7 +1551,7 @@ class FeatureAnalysisGUI(QMainWindow):
         note.setWordWrap(True)
         note.setStyleSheet(f"color:{MUTED}; border:none; background:transparent;")
         controls_layout.addWidget(note)
-        guide = QLabel("Interpretation guide:<br>• &lt;20%: usually low concern<br>• 20–50%: monitor mechanism<br>• ≥50%: review before ML<br>• blocks/clusters: possible task, QC, or computation support problem")
+        guide = QLabel("Interpretation guide:<br>- &lt;20%: usually low concern<br>- 20-50%: monitor mechanism<br>- >=50%: review before ML<br>- blocks/clusters: possible task, QC, or computation support problem")
         guide.setWordWrap(True)
         guide.setStyleSheet(f"color:{INK}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:9px; font-size:12px;")
         controls_layout.addWidget(guide)
@@ -1506,10 +1616,10 @@ class FeatureAnalysisGUI(QMainWindow):
         row = outputs.get("missingness_by_row", pd.DataFrame())
         group = outputs.get("missingness_by_group", pd.DataFrame())
         n_features = len(feat) if feat is not None else 0
-        mean_miss = "—"
-        high_features = "—"
-        high_rows = "—"
-        groups = "—"
+        mean_miss = "-"
+        high_features = "-"
+        high_rows = "-"
+        groups = "-"
         if feat is not None and not feat.empty and "missing_fraction" in feat.columns:
             mean_miss = f"{pd.to_numeric(feat['missing_fraction'], errors='coerce').mean():.3f}"
             high_features = int(feat.get("missingness_status", pd.Series(dtype=str)).isin(["review", "high_review"]).sum())
@@ -1520,8 +1630,8 @@ class FeatureAnalysisGUI(QMainWindow):
         tiles = [
             ("Features audited", n_features, "selected feature columns"),
             ("Mean missingness", mean_miss, "across selected features"),
-            ("Review features", high_features, "≥50% missing or worse"),
-            ("Review rows", high_rows, "≥50% selected features missing"),
+            ("Review features", high_features, ">=50% missing or worse"),
+            ("Review rows", high_rows, ">=50% selected features missing"),
             ("Group screens", groups, "available metadata strata"),
             ("Default policy", "do not auto-impute", "review mechanism first"),
         ]
@@ -1976,10 +2086,10 @@ class FeatureAnalysisGUI(QMainWindow):
         tabs.addTab(self.qc_summary_table, "Summary")
         tabs.addTab(self.qc_catalog_table, "QC metrics")
         tabs.addTab(self.qc_family_table, "Family burden")
-        tabs.addTab(self.qc_assoc_table, "Feature × QC")
-        tabs.addTab(self.qc_family_assoc_table, "Feature × family")
-        tabs.addTab(self.qc_missing_table, "Missingness × QC")
-        tabs.addTab(self.qc_outlier_table, "Outliers × QC")
+        tabs.addTab(self.qc_assoc_table, "Feature x QC")
+        tabs.addTab(self.qc_family_assoc_table, "Feature x family")
+        tabs.addTab(self.qc_missing_table, "Missingness x QC")
+        tabs.addTab(self.qc_outlier_table, "Outliers x QC")
         tabs.addTab(self.qc_row_table, "Row QC burden")
         card.layout.addWidget(tabs)
         layout.addWidget(card)
@@ -2004,11 +2114,11 @@ class FeatureAnalysisGUI(QMainWindow):
             ("QC framework", "qc_artifact_model"),
             ("Family burden", "qc_family_burden"),
             ("QC metric distributions", "qc_metric_distributions"),
-            ("Feature × QC-family heatmap", "qc_feature_association_heatmap"),
+            ("Feature x QC-family heatmap", "qc_feature_association_heatmap"),
             ("Top feature-QC associations", "qc_top_feature_associations"),
             ("Missingness linked to QC", "qc_missingness_associations"),
             ("Row QC burden", "qc_row_burden"),
-            ("Selected feature × selected QC", "selected_feature_qc_scatter"),
+            ("Selected feature x selected QC", "selected_feature_qc_scatter"),
         ]:
             b = QPushButton(label)
             b.setProperty("secondary", True)
@@ -2048,7 +2158,7 @@ class FeatureAnalysisGUI(QMainWindow):
             if item.widget():
                 item.widget().deleteLater()
         summary = outputs.get("qc_integration_summary", pd.DataFrame())
-        def metric_value(name, default="—"):
+        def metric_value(name, default="-"):
             if summary is None or summary.empty or "metric" not in summary.columns:
                 return default
             hit = summary[summary["metric"].astype(str).eq(name)]
@@ -2058,8 +2168,8 @@ class FeatureAnalysisGUI(QMainWindow):
             ("QC rows", metric_value("qc_rows"), "recordings with QC data"),
             ("QC metrics", metric_value("numeric_qc_metrics"), "numeric artifact indicators"),
             ("Families", metric_value("artifact_families_detected"), "recognized QC domains"),
-            ("Feature-QC pairs ≥ .30", metric_value("feature_qc_pairs_abs_rho_ge_0_30", 0), "monitor associations"),
-            ("Feature-QC pairs ≥ .50", metric_value("feature_qc_pairs_abs_rho_ge_0_50", 0), "review associations"),
+            ("Feature-QC pairs >= .30", metric_value("feature_qc_pairs_abs_rho_ge_0_30", 0), "monitor associations"),
+            ("Feature-QC pairs >= .50", metric_value("feature_qc_pairs_abs_rho_ge_0_50", 0), "review associations"),
         ]
         for idx, (title, value, subtitle) in enumerate(tiles):
             self.qc_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx // 3, idx % 3)
@@ -2142,13 +2252,13 @@ class FeatureAnalysisGUI(QMainWindow):
                 "<b>What it shows</b><br>The conceptual QC model: recording quality is a vector of artifact families, not a single good/bad score.<br><br>"
                 "<b>Concerning pattern</b><br>Any family can perturb features differently. A recording can be acceptable overall but still artifact-sensitive for specific feature families.<br><br>"
                 "<b>Do not overinterpret</b><br>QC families are proxy estimates of latent acquisition processes, not direct physical measurements of the room/device.<br><br>"
-                "<b>Next check</b><br>Inspect family burden, feature-QC associations, and selected feature × QC scatter plots."
+                "<b>Next check</b><br>Inspect family burden, feature-QC associations, and selected feature x QC scatter plots."
             ),
             "qc_family_burden": (
                 "<b>What it shows</b><br>Which artifact families have elevated QC metrics across recordings.<br><br>"
                 "<b>Concerning pattern</b><br>High burden in additive, gain, channel, reverberation, distortion, or temporal families indicates acquisition effects that may bias feature interpretation.<br><br>"
                 "<b>Do not overinterpret</b><br>High family burden does not automatically mean recordings are unusable; it means downstream features need artifact-aware interpretation.<br><br>"
-                "<b>Next check</b><br>Use Feature × QC-family heatmap to see which acoustic features are sensitive to that family."
+                "<b>Next check</b><br>Use Feature x QC-family heatmap to see which acoustic features are sensitive to that family."
             ),
             "qc_metric_distributions": (
                 "<b>What it shows</b><br>Distributions of the highest-spread QC metrics, grouped by artifact family.<br><br>"
@@ -2160,11 +2270,11 @@ class FeatureAnalysisGUI(QMainWindow):
                 "<b>What it shows</b><br>Maximum absolute monotonic association between each feature and each QC artifact family.<br><br>"
                 "<b>Concerning pattern</b><br>A block of high associations for one feature family suggests acquisition-sensitive measurements.<br><br>"
                 "<b>Do not overinterpret</b><br>Correlation does not prove artifact causation; QC may also be linked to task, severity, device, or cohort.<br><br>"
-                "<b>Next check</b><br>Inspect top feature-QC associations and selected feature × selected QC scatter."
+                "<b>Next check</b><br>Inspect top feature-QC associations and selected feature x selected QC scatter."
             ),
             "qc_top_feature_associations": (
                 "<b>What it shows</b><br>The strongest individual feature-QC metric associations ranked by |Spearman rho|.<br><br>"
-                "<b>Concerning pattern</b><br>|rho| ≥ .30 warrants monitoring; |rho| ≥ .50 should be reviewed before using the feature in ML or clinical interpretation.<br><br>"
+                "<b>Concerning pattern</b><br>|rho| >= .30 warrants monitoring; |rho| >= .50 should be reviewed before using the feature in ML or clinical interpretation.<br><br>"
                 "<b>Do not overinterpret</b><br>A strong association can represent true task/acquisition structure, not necessarily bad data.<br><br>"
                 "<b>Next check</b><br>Check whether the association remains after stratifying by task/group and after reviewing row-level QC."
             ),
@@ -2281,7 +2391,7 @@ class FeatureAnalysisGUI(QMainWindow):
             if item.widget():
                 item.widget().deleteLater()
         summary = outputs.get("feature_relationship_summary", pd.DataFrame())
-        def metric(name: str, default: object = "—") -> object:
+        def metric(name: str, default: object = "-") -> object:
             if summary is None or summary.empty or "metric" not in summary.columns:
                 return default
             row = summary.loc[summary["metric"].astype(str).eq(name)]
@@ -2289,10 +2399,10 @@ class FeatureAnalysisGUI(QMainWindow):
         tiles = [
             ("Numeric features", metric("numeric_features"), "usable for relationships"),
             ("Pairwise links", metric("feature_pairs_evaluated"), "Spearman pairs"),
-            ("|ρ| ≥ .80", metric("redundant_pairs_abs_rho_ge_0_80"), "strong redundancy"),
+            ("|rho| >= .80", metric("redundant_pairs_abs_rho_ge_0_80"), "strong redundancy"),
             ("Modules", metric("correlation_modules_abs_rho_ge_0_70"), "connected blocks"),
             ("PC1 variance", metric("pc1_variance_percent"), "% if PCA available"),
-            ("PC1–PC3", metric("pc1_pc3_cumulative_percent"), "cumulative variance"),
+            ("PC1-PC3", metric("pc1_pc3_cumulative_percent"), "cumulative variance"),
         ]
         for idx, (title, value, subtitle) in enumerate(tiles):
             self.relationship_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx // 3, idx % 3)
@@ -2367,7 +2477,7 @@ class FeatureAnalysisGUI(QMainWindow):
             ),
             "relationship_redundant_pairs": (
                 "<b>What it shows</b><br>The strongest feature-feature associations ranked by |Spearman rho|.<br><br>"
-                "<b>Concerning pattern</b><br>|ρ| ≥ .80 suggests near-duplicate information. |ρ| ≥ .90 often indicates variables should not all enter the same small-sample ML model.<br><br>"
+                "<b>Concerning pattern</b><br>|rho| >= .80 suggests near-duplicate information. |rho| >= .90 often indicates variables should not all enter the same small-sample ML model.<br><br>"
                 "<b>Do not overinterpret</b><br>Redundancy is not automatically bad for descriptive science; it can validate a feature family. It is mainly a problem for ML and feature-count inflation.<br><br>"
                 "<b>Next check</b><br>Use the module table to decide whether to keep one representative or carry the block forward as a family."
             ),
@@ -2450,8 +2560,8 @@ class FeatureAnalysisGUI(QMainWindow):
         for label, key in [
             ("Group balance", "screening_group_balance"),
             ("Top screening effects", "screening_effect_ranking"),
-            ("Feature × continuous outcome heatmap", "screening_continuous_heatmap"),
-            ("Feature × categorical group heatmap", "screening_group_heatmap"),
+            ("Feature x continuous outcome heatmap", "screening_continuous_heatmap"),
+            ("Feature x categorical group heatmap", "screening_group_heatmap"),
             ("Effect-size landscape", "screening_effect_landscape"),
             ("Selected feature vs selected outcome/group", "selected_feature_outcome"),
         ]:
@@ -2488,7 +2598,7 @@ class FeatureAnalysisGUI(QMainWindow):
             if item.widget():
                 item.widget().deleteLater()
         summary = outputs.get("screening_summary", pd.DataFrame())
-        def metric(name: str, default: object = "—") -> object:
+        def metric(name: str, default: object = "-") -> object:
             if summary is None or summary.empty or "metric" not in summary.columns:
                 return default
             row = summary.loc[summary["metric"].astype(str).eq(name)]
@@ -2499,9 +2609,9 @@ class FeatureAnalysisGUI(QMainWindow):
             ("Screening variables", metric("screening_variables_detected"), "outcomes/groups/covariates"),
             ("Continuous screens", metric("continuous_feature_outcome_tests"), "Spearman screens"),
             ("Group screens", metric("categorical_group_feature_tests"), "robust contrasts"),
-            ("Continuous |effect| ≥ .30", metric("continuous_abs_effect_ge_0_30"), "monitor/review"),
-            ("Group |effect| ≥ .30", metric("group_abs_effect_ge_0_30"), "monitor/review"),
-            ("Top effect", "—" if (cont is None or cont.empty) and (cat is None or cat.empty) else round(float(pd.concat([d for d in [cont.get('abs_effect') if cont is not None and not cont.empty else pd.Series(dtype=float), cat.get('abs_effect') if cat is not None and not cat.empty else pd.Series(dtype=float)]], ignore_index=True).max()), 3), "descriptive only"),
+            ("Continuous |effect| >= .30", metric("continuous_abs_effect_ge_0_30"), "monitor/review"),
+            ("Group |effect| >= .30", metric("group_abs_effect_ge_0_30"), "monitor/review"),
+            ("Top effect", "-" if (cont is None or cont.empty) and (cat is None or cat.empty) else round(float(pd.concat([d for d in [cont.get('abs_effect') if cont is not None and not cont.empty else pd.Series(dtype=float), cat.get('abs_effect') if cat is not None and not cat.empty else pd.Series(dtype=float)]], ignore_index=True).max()), 3), "descriptive only"),
         ]
         for idx, (title, value, subtitle) in enumerate(tiles):
             self.screening_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx // 3, idx % 3)
@@ -2715,7 +2825,7 @@ class FeatureAnalysisGUI(QMainWindow):
         rep = outputs.get("feature_repeatability_summary", pd.DataFrame())
         fam = outputs.get("reliability_family_summary", pd.DataFrame())
         subj = outputs.get("reliability_subject_record_counts", pd.DataFrame())
-        def metric(name: str, default: object = "—") -> object:
+        def metric(name: str, default: object = "-") -> object:
             if design is None or design.empty or "metric" not in design.columns:
                 return default
             row = design.loc[design["metric"].astype(str).eq(name)]
@@ -2728,7 +2838,7 @@ class FeatureAnalysisGUI(QMainWindow):
             ("Subjects with repeats", metric("subjects_with_repeats", 0), "required for ICC-style review"),
             ("Median records / subject", metric("median_records_per_subject", 0), "design depth"),
             ("Evaluable features", evaluable, "ICC-style estimates"),
-            ("Stable features", stable, "ICC proxy ≥ .75"),
+            ("Stable features", stable, "ICC proxy >= .75"),
             ("Moderate features", moderate, "ICC proxy .50-.75"),
         ]
         for idx, (title, value, subtitle) in enumerate(tiles):
@@ -3111,11 +3221,11 @@ class FeatureAnalysisGUI(QMainWindow):
         )
         guide_text = QLabel(
             "Outputs written under feature_analysis/ml_export_builder/tables:\n"
-            "• acoustic_ml_ready.csv and acoustic_features_only.csv\n"
-            "• kinematic_ml_ready.csv and kinematic_features_only.csv\n"
-            "• multimodal_early_fusion_ml_ready.csv when a safe shared key exists\n"
-            "• feature_manifest_unified.csv\n"
-            "• row_alignment_report.csv, row_exclusions.csv, ml_export_manifest.json"
+            "- acoustic_ml_ready.csv and acoustic_features_only.csv\n"
+            "- kinematic_ml_ready.csv and kinematic_features_only.csv\n"
+            "- multimodal_early_fusion_ml_ready.csv when a safe shared key exists\n"
+            "- feature_manifest_unified.csv\n"
+            "- row_alignment_report.csv, row_exclusions.csv, ml_export_manifest.json"
         )
         guide_text.setWordWrap(True)
         guide_text.setStyleSheet(f"color:{MUTED}; background:#FFFFFF; border:none; padding:4px;")
@@ -3344,9 +3454,9 @@ class FeatureAnalysisGUI(QMainWindow):
         n_hold = int(n_total - n_inc)
         profile_table = pd.DataFrame([
             {"export_profile": self._export_profile_label(profile), "n_total_features": n_total, "n_included_features": n_inc, "n_held_or_excluded_features": n_hold, "purpose": "Choose the feature matrix breadth before downstream ML."},
-            {"export_profile": "recommended_only", "n_total_features": n_total, "n_included_features": int((recs.get("readiness_recommendation", pd.Series(dtype=str)).astype(str) == "recommended").sum()) if not recs.empty else 0, "n_held_or_excluded_features": "—", "purpose": "Strictest clean set."},
-            {"export_profile": "recommended_plus_caution", "n_total_features": n_total, "n_included_features": int(recs.get("readiness_recommendation", pd.Series(dtype=str)).astype(str).isin(["recommended", "recommended_with_caution"]).sum()) if not recs.empty else 0, "n_held_or_excluded_features": "—", "purpose": "Default starting set for ML."},
-            {"export_profile": "review_set", "n_total_features": n_total, "n_included_features": int(recs.get("readiness_recommendation", pd.Series(dtype=str)).astype(str).isin(["recommended", "recommended_with_caution", "review_before_use"]).sum()) if not recs.empty else 0, "n_held_or_excluded_features": "—", "purpose": "Broad sensitivity/review set."},
+            {"export_profile": "recommended_only", "n_total_features": n_total, "n_included_features": int((recs.get("readiness_recommendation", pd.Series(dtype=str)).astype(str) == "recommended").sum()) if not recs.empty else 0, "n_held_or_excluded_features": "-", "purpose": "Strictest clean set."},
+            {"export_profile": "recommended_plus_caution", "n_total_features": n_total, "n_included_features": int(recs.get("readiness_recommendation", pd.Series(dtype=str)).astype(str).isin(["recommended", "recommended_with_caution"]).sum()) if not recs.empty else 0, "n_held_or_excluded_features": "-", "purpose": "Default starting set for ML."},
+            {"export_profile": "review_set", "n_total_features": n_total, "n_included_features": int(recs.get("readiness_recommendation", pd.Series(dtype=str)).astype(str).isin(["recommended", "recommended_with_caution", "review_before_use"]).sum()) if not recs.empty else 0, "n_held_or_excluded_features": "-", "purpose": "Broad sensitivity/review set."},
         ])
         summary = outputs.get("feature_recommendation_summary", pd.DataFrame()).copy() if outputs else pd.DataFrame()
         return manifest, summary, profile_table
@@ -3568,7 +3678,7 @@ Decision colors:
                 self.run_progress.setValue(100)
 
     def log_error(self, context: str, exc: Exception) -> None:
-        self.log(f"ERROR · {context}: {exc}")
+        self.log(f"ERROR | {context}: {exc}")
 
     def load_and_map(self) -> None:
         try:
@@ -3587,14 +3697,14 @@ Decision colors:
             self.mapping_accepted = False
             self.refresh_mapping_table()
             roles = summarize_roles(self.mapping_df)
-            self.log(f"Loaded feature table: {self.feature_df.shape[0]} rows × {self.feature_df.shape[1]} columns")
+            self.log(f"Loaded feature table: {self.feature_df.shape[0]} rows x {self.feature_df.shape[1]} columns")
             if self.qc_df is not None:
-                self.log(f"Loaded QC table: {self.qc_df.shape[0]} rows × {self.qc_df.shape[1]} columns")
+                self.log(f"Loaded QC table: {self.qc_df.shape[0]} rows x {self.qc_df.shape[1]} columns")
             if self.meta_df is not None:
-                self.log(f"Loaded metadata table: {self.meta_df.shape[0]} rows × {self.meta_df.shape[1]} columns")
+                self.log(f"Loaded metadata table: {self.meta_df.shape[0]} rows x {self.meta_df.shape[1]} columns")
                 self.log(f"Metadata context strategy: {self.metadata_join_strategy}")
             if self.registry_df is not None:
-                self.log(f"Loaded registry/policy table: {self.registry_df.shape[0]} rows × {self.registry_df.shape[1]} columns")
+                self.log(f"Loaded registry/policy table: {self.registry_df.shape[0]} rows x {self.registry_df.shape[1]} columns")
             self.log("Proposed role counts:\n" + roles.to_string(index=False))
             self.log("Review Column Mapping, then click Accept Mapping and Continue or manually revise roles.")
             self.show_page("mapping")
@@ -3705,7 +3815,7 @@ Decision colors:
             return
         summary = summarize_roles(self.mapping_df)
         parts = [f"{r['role']}: {int(r['n_columns'])}" for _, r in summary.iterrows()]
-        self.mapping_summary_label.setText("Current mapping · " + " | ".join(parts))
+        self.mapping_summary_label.setText("Current mapping | " + " | ".join(parts))
 
     def run_analysis(self) -> None:
         try:
