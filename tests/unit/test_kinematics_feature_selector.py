@@ -17,7 +17,8 @@ def test_kinematic_feature_registry_contains_uploaded_feature_groups():
     assert "Lip symmetry" in groups
     assert "Bilateral coordination" in groups
     ids = {spec.feature_id for spec in KINEMATIC_FEATURE_SPECS}
-    assert {"sLL_vert", "aLL_horz", "lip_aspect", "jaw_lateralization", "lip_symmetry", "lat_xcorr"}.issubset(ids)
+    assert {"sLL_vert_med", "aLL_horz_med", "aspect_med", "jaw_lat_med", "lip_symm_ratio_med", "lat_xcorr"}.issubset(ids)
+    assert len(ids) == 65
     assert DEFAULT_KINEMATIC_FEATURE_IDS
 
 
