@@ -41,7 +41,7 @@ The preferred intercanthal normalization anchors remain inner canthus landmarks 
 Validated in the development sandbox with:
 
 ```text
-PYTHONPATH=src python -m pytest tests/unit/test_kinematics_*.py -q
+python -m pytest tests/unit -k kinematics -q
 46 passed
 
 PYTHONPATH=src python -m pytest tests/integration/test_acoustic_preprocess_stage.py -q

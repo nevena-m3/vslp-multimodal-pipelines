@@ -85,7 +85,7 @@ KINEMATICS_STAGE_SPECS: tuple[StageSpec, ...] = (
         "Inspector",
         "008_inspector",
         (),
-        ("tables/artifact_inventory.csv", "tables/stage_status.csv"),
+        ("tables/artifact_inventory.csv", "tables/stage_status.csv", "tables/readiness_checklist.csv", "tables/readiness_checklist.json"),
     ),
     StageSpec(
         "009_reports",
@@ -207,6 +207,93 @@ def artifact_inventory_dataframe(output_root: Path) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+
+def readiness_checklist_dataframe(output_root: Path) -> pd.DataFrame:
+    """Return a compact readiness checklist for end-to-end kinematics testing.
+
+    This is an interface/workflow readiness audit. It does not validate clinical
+    correctness, disease interpretation, or future visual-degradation QC.
+    """
+    root = _kin_root(output_root)
+    stage_df = stage_status_dataframe(output_root)
+    status_by_id = dict(zip(stage_df.get("stage_id", []), stage_df.get("status", [])))
+
+    def has(rel: str) -> bool:
+        return (root / rel).exists()
+
+    checks: list[dict[str, object]] = []
+
+    def add(category: str, check: str, status: str, rationale: str, action: str) -> None:
+        checks.append({
+            "category": category,
+            "check": check,
+            "status": status,
+            "rationale": rationale,
+            "recommended_action": action,
+        })
+
+    required_pipeline = [
+        ("000_ingest", "Video ingest"),
+        ("002_landmarks", "Landmark extraction"),
+        ("003_selection", "Landmark selection"),
+        ("004_normalization", "Normalization"),
+        ("005_video_qc", "Automated landmark/video QC"),
+        ("006_features", "Feature computation"),
+        ("007_aggregation", "Temporal aggregation"),
+    ]
+    missing = [label for stage_id, label in required_pipeline if status_by_id.get(stage_id) != "complete"]
+    add(
+        "pipeline_outputs",
+        "Required pipeline artifacts through aggregation",
+        "pass" if not missing else "review",
+        "ML GUI work should start from stable kinematics outputs, especially features and aggregated tables.",
+        "Complete or rerun: " + "; ".join(missing) if missing else "No action required for interface readiness.",
+    )
+
+    add(
+        "metadata",
+        "Metadata linkage artifacts",
+        "pass" if status_by_id.get("001_metadata") in {"available", "complete"} or has("001_metadata/tables/metadata_linkage.csv") else "optional_review",
+        "Metadata is optional for GUI mechanics but required for subject/session/task-aware ML modeling.",
+        "Link metadata before ML modeling if labels, groups, sessions, or outcomes are needed.",
+    )
+
+    qc_placeholder = has("005_video_qc/tables/video_qc_framework_placeholder.csv") or has("005_video_qc/tables/video_qc_framework_placeholder.json")
+    add(
+        "known_deferred_work",
+        "Visual-degradation QC framework placeholder",
+        "known_gap" if qc_placeholder else "review",
+        "Automated landmark QC exists, but the acoustic-style visual QC framework for lighting, freezing, camera motion, occlusion, and multiple people is intentionally not built yet.",
+        "Keep as a clearly documented deferred module; do not treat visual-degradation QC as validated.",
+    )
+
+    add(
+        "features",
+        "65-feature scalar layer output",
+        "pass" if has("006_features/tables/kinematic_features.csv") else "review",
+        "The ML GUI will need a stable feature table and/or aggregated feature table as input.",
+        "Run feature computation after normalization and QC if missing.",
+    )
+
+    add(
+        "aggregation",
+        "Analysis-ready aggregated feature table",
+        "pass" if has("007_aggregation/tables/kinematic_aggregated_features.csv") else "review",
+        "Most classical ML workflows expect one row per video/session/task after aggregation.",
+        "Run temporal aggregation if you need scalar ML-ready features.",
+    )
+
+    add(
+        "reports",
+        "Reports are summary artifacts, not source data",
+        "pass" if status_by_id.get("009_reports") in {"available", "complete"} else "optional_review",
+        "Reports help review the pipeline but should not be treated as primary analysis data.",
+        "Use CSV/JSON tables as ML inputs; use reports for human review.",
+    )
+
+    return pd.DataFrame(checks)
+
+
 def write_inspector_inventory(output_root: Path) -> dict[str, str]:
     """Write stage status and artifact inventory tables for the GUI/report."""
     root = _kin_root(output_root)
@@ -214,25 +301,41 @@ def write_inspector_inventory(output_root: Path) -> dict[str, str]:
     tables.mkdir(parents=True, exist_ok=True)
     stage_df = stage_status_dataframe(output_root)
     artifact_df = artifact_inventory_dataframe(output_root)
+    readiness_df = readiness_checklist_dataframe(output_root)
     stage_csv = tables / "stage_status.csv"
     artifact_csv = tables / "artifact_inventory.csv"
+    readiness_csv = tables / "readiness_checklist.csv"
+    readiness_json = tables / "readiness_checklist.json"
     manifest_json = tables / "inspector_manifest.json"
     stage_df.to_csv(stage_csv, index=False)
     artifact_df.to_csv(artifact_csv, index=False)
+    readiness_df.to_csv(readiness_csv, index=False)
+    readiness_json.write_text(json.dumps({
+        "schema": "vslp_kinematics_readiness_checklist_v1",
+        "created_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "scope": "Interface/workflow readiness, not clinical validation.",
+        "items": readiness_df.to_dict(orient="records"),
+    }, indent=2), encoding="utf-8")
     payload = {
         "schema": "vslp_kinematics_inspector_v1",
         "created_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "stage_status_csv": str(stage_csv),
         "artifact_inventory_csv": str(artifact_csv),
+        "readiness_checklist_csv": str(readiness_csv),
+        "readiness_checklist_json": str(readiness_json),
         "n_stages": int(len(stage_df)),
         "n_artifacts": int(len(artifact_df)),
+        "n_readiness_checks": int(len(readiness_df)),
         "note": "Read-only artifact inventory. This does not validate clinical or scientific correctness by itself.",
     }
     manifest_json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     return {
         "stage_status_csv": str(stage_csv),
         "artifact_inventory_csv": str(artifact_csv),
+        "readiness_checklist_csv": str(readiness_csv),
+        "readiness_checklist_json": str(readiness_json),
         "inspector_manifest_json": str(manifest_json),
         "n_stages": str(len(stage_df)),
         "n_artifacts": str(len(artifact_df)),
+        "n_readiness_checks": str(len(readiness_df)),
     }

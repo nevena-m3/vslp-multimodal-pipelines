@@ -71,7 +71,7 @@ Added:
 Validated in the sandbox with:
 
 ```text
-PYTHONPATH=src python -m pytest tests/unit/test_kinematics_*.py -q
+python -m pytest tests/unit -k kinematics -q
 40 passed
 
 PYTHONPATH=src python -m pytest tests/integration/test_acoustic_preprocess_stage.py -q

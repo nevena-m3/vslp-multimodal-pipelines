@@ -83,7 +83,7 @@ Validated locally in the sandbox with:
 
 ```powershell
 python -m pytest tests/unit/test_kinematics_setup_dashboard_ingest.py tests/unit/test_kinematics_scaffold.py -q
-python -m pytest tests/unit/test_kinematics_*.py -q
+python -m pytest tests/unit -k kinematics -q
 ```
 
 The kinematics unit test subset passed.
