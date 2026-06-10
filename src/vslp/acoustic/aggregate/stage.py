@@ -20,6 +20,8 @@ import pandas as pd
 from vslp.core.project import ensure_stage_folders
 from vslp.core.provenance import python_environment
 from vslp.core.schemas import ArtifactRef, StageManifest, StageResult
+from vslp.acoustic.features.registry import build_acoustic_feature_registry
+import json
 
 DEFAULT_GROUP_COLUMNS = ["subject_id", "session_id", "iteration", "task"]
 NON_FEATURE_COLUMNS = {
@@ -27,6 +29,173 @@ NON_FEATURE_COLUMNS = {
     "task", "recording_date", "diagnosis", "severity_score", "severity_bin", "record_key", "duration_sec",
     "feature_extraction_status",
 }
+
+ACOUSTIC_ML_ID_COLUMNS: tuple[str, ...] = (
+    "subject_id", "session_id", "visit_id", "iteration", "task", "record_key", "file_name"
+)
+ACOUSTIC_ML_CONTEXT_COLUMNS: tuple[str, ...] = (
+    "diagnosis", "severity_score", "severity_bin", "recording_date", "n_files_aggregated"
+)
+
+
+def acoustic_feature_manifest_dataframe(columns: list[str] | None = None) -> pd.DataFrame:
+    """Return a column-level manifest for acoustic ML-ready exports.
+
+    This mirrors the kinematic feature manifest contract: predictors, metadata,
+    QC/provenance fields, and dense engineering summaries are separated so the
+    ML GUI can avoid leakage and expose feature families cleanly.
+    """
+    registry = build_acoustic_feature_registry()
+    by_name = {str(row["feature"]): row for _, row in registry.iterrows()}
+    column_list = list(columns) if columns is not None else registry["feature"].astype(str).tolist()
+    rows: list[dict[str, object]] = []
+    metadata_cols = set(ACOUSTIC_ML_ID_COLUMNS) | {"source_file_path", "segmentation_wav_path", "recording_date"}
+    label_cols = {"diagnosis", "severity_score", "severity_bin", "target", "label", "disease_group"}
+    qc_cols = {"feature_extraction_status", "qc_status", "quality_status", "duration_sec", "n_files_aggregated"}
+    for col in column_list:
+        base_col = str(col)
+        if base_col in by_name:
+            rec = by_name[base_col]
+            role = "canonical_feature"
+            family = str(rec.get("subsystem", "acoustic"))
+            primitive = str(rec.get("subsystem", "acoustic"))
+            unit = str(rec.get("unit", "varies"))
+            model_role = "candidate_predictor"
+            include_gui = True
+            include_ml = str(rec.get("implementation_status", "")).lower() in {"implemented", "computed_proxy"}
+            interpretation = str(rec.get("meaning", "Acoustic feature."))
+            caution = str(rec.get("computation_note", "Use after acoustic QC and task validation."))
+            summary_stat = "per-row acoustic scalar"
+            evidence_tier = str(rec.get("evidence_tier", ""))
+        elif base_col in metadata_cols:
+            role = "metadata"
+            family = "metadata"
+            primitive = "identifier"
+            unit = "n/a"
+            model_role = "join_key_or_provenance"
+            include_gui = False
+            include_ml = False
+            interpretation = "Identifier/provenance field; do not use as a model predictor."
+            caution = "May leak subject, task, file, or source identity if used as a predictor."
+            summary_stat = "n/a"
+            evidence_tier = "n/a"
+        elif base_col in label_cols:
+            role = "label_or_outcome"
+            family = "target_metadata"
+            primitive = "outcome"
+            unit = "varies"
+            model_role = "target_or_stratification"
+            include_gui = True
+            include_ml = False
+            interpretation = "Outcome or label column; may be selected as target, not predictor."
+            caution = "Never include target/outcome columns as predictors."
+            summary_stat = "n/a"
+            evidence_tier = "n/a"
+        elif base_col in qc_cols or "qc" in base_col.lower() or "status" in base_col.lower():
+            role = "qc_metric"
+            family = "quality_control"
+            primitive = "qc/provenance"
+            unit = "varies"
+            model_role = "filter_or_stratify"
+            include_gui = True
+            include_ml = False
+            interpretation = "Acoustic quality-control or processing-readiness metric."
+            caution = "Use to filter/stratify data; do not treat as a disease biomarker."
+            summary_stat = "n/a"
+            evidence_tier = "n/a"
+        elif any(base_col.endswith(suffix) for suffix in ("__mean", "__median", "__sd", "__iqr", "__q05", "__q95", "__min", "__max", "__n", "__missing_fraction")):
+            stem = base_col.split("__", 1)[0]
+            rec = by_name.get(stem)
+            role = "dense_engineering_summary"
+            family = str(rec.get("subsystem", "expanded_acoustic_summary")) if rec is not None else "expanded_acoustic_summary"
+            primitive = "summary_statistic"
+            unit = str(rec.get("unit", "varies")) if rec is not None else "varies"
+            model_role = "optional_predictor"
+            include_gui = True
+            include_ml = False
+            interpretation = "Expanded acoustic summary retained for research review."
+            caution = "Can inflate dimensionality and redundancy; not part of default ML-ready acoustic set."
+            summary_stat = base_col.split("__", 1)[1]
+            evidence_tier = str(rec.get("evidence_tier", "")) if rec is not None else "review"
+        else:
+            role = "other"
+            family = "uncategorized"
+            primitive = "unknown"
+            unit = "varies"
+            model_role = "review_before_modeling"
+            include_gui = False
+            include_ml = False
+            interpretation = "Uncategorized acoustic output column."
+            caution = "Review manually before use in analysis or ML."
+            summary_stat = "unknown"
+            evidence_tier = "review"
+        rows.append({
+            "column_name": base_col,
+            "column_role": role,
+            "modality": "acoustic",
+            "family": family,
+            "subsystem": family,
+            "primitive": primitive,
+            "summary_statistic": summary_stat,
+            "unit": unit,
+            "model_role": model_role,
+            "include_in_feature_gui_default": bool(include_gui),
+            "include_in_ml_default": bool(include_ml),
+            "evidence_tier": evidence_tier,
+            "interpretation": interpretation,
+            "caution": caution,
+        })
+    return pd.DataFrame(rows)
+
+
+def write_acoustic_ml_ready_exports(features_df: pd.DataFrame, output_root: Path | str) -> dict[str, Path | int]:
+    """Write acoustic ML-ready and manifest exports parallel to kinematics.
+
+    The full aggregation outputs remain unchanged. These derivative tables expose
+    a clean predictor matrix and a column manifest for the ML GUI.
+    """
+    root = Path(output_root).expanduser().resolve()
+    tables = root / "acoustic" / "005_aggregation" / "tables"
+    tables.mkdir(parents=True, exist_ok=True)
+    manifest = acoustic_feature_manifest_dataframe(list(features_df.columns))
+    feature_cols = manifest.loc[manifest["include_in_ml_default"].astype(bool), "column_name"].astype(str).tolist()
+    feature_cols = [c for c in feature_cols if c in features_df.columns]
+    id_cols = [c for c in ACOUSTIC_ML_ID_COLUMNS if c in features_df.columns]
+    context_cols = [c for c in ACOUSTIC_ML_CONTEXT_COLUMNS if c in features_df.columns and c not in id_cols]
+
+    ml_ready = features_df[id_cols + feature_cols].copy() if feature_cols else pd.DataFrame(columns=id_cols)
+    context = features_df[id_cols + context_cols + feature_cols].copy() if feature_cols else features_df[id_cols + context_cols].copy()
+    features_only = features_df[feature_cols].copy() if feature_cols else pd.DataFrame()
+
+    ml_ready_csv = tables / "acoustic_features_ml_ready.csv"
+    context_csv = tables / "acoustic_features_canonical.csv"
+    features_only_csv = tables / "acoustic_features_only.csv"
+    manifest_csv = tables / "acoustic_feature_manifest.csv"
+    manifest_json = tables / "acoustic_feature_manifest.json"
+
+    ml_ready.to_csv(ml_ready_csv, index=False)
+    context.to_csv(context_csv, index=False)
+    features_only.to_csv(features_only_csv, index=False)
+    manifest.to_csv(manifest_csv, index=False)
+    payload = {
+        "status": "ACOUSTIC_FEATURE_EXPORT_MANIFEST",
+        "ml_ready_csv": str(ml_ready_csv),
+        "features_only_csv": str(features_only_csv),
+        "feature_manifest_csv": str(manifest_csv),
+        "n_rows": int(len(features_df)),
+        "n_full_columns": int(len(features_df.columns)),
+        "n_ml_default_features": int(len(feature_cols)),
+        "note": "acoustic_features_ml_ready.csv keeps row IDs plus default acoustic predictors. acoustic_feature_manifest.csv labels all columns for ML safety.",
+    }
+    manifest_json.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    return {
+        "ml_ready_csv": ml_ready_csv,
+        "features_only_csv": features_only_csv,
+        "canonical_csv": context_csv,
+        "feature_manifest_csv": manifest_csv,
+        "feature_manifest_json": manifest_json,
+        "n_ml_default_features": len(feature_cols),
+    }
 
 
 @dataclass(frozen=True)
@@ -129,6 +298,7 @@ def run_acoustic_aggregation(
     feature_missing.rename("missing_fraction").rename_axis("feature").reset_index().to_csv(missingness_path, index=False)
     pd.DataFrame({"feature": dropped_features}).to_csv(dropped_path, index=False)
     pd.DataFrame(errors).to_csv(errors_path, index=False)
+    ml_exports = write_acoustic_ml_ready_exports(out, output_root)
 
     missing_plot = folders["plots"] / "aggregation_missingness_top30.png"
     group_plot = folders["plots"] / "aggregation_group_counts.png"
@@ -146,6 +316,8 @@ def run_acoustic_aggregation(
         output_artifacts=[
             ArtifactRef(path=str(aggregated_path), role="aggregated_features", media_type="text/csv"),
             ArtifactRef(path=str(multistat_path), role="aggregated_features_multistat", media_type="text/csv"),
+            ArtifactRef(path=str(ml_exports["ml_ready_csv"]), role="acoustic_ml_ready_features", media_type="text/csv"),
+            ArtifactRef(path=str(ml_exports["feature_manifest_csv"]), role="acoustic_feature_manifest", media_type="text/csv"),
             ArtifactRef(path=str(strategy_path), role="aggregation_strategy", media_type="text/csv"),
             ArtifactRef(path=str(missingness_path), role="aggregation_missingness", media_type="text/csv"),
             ArtifactRef(path=str(report_path), role="aggregation_html_report", media_type="text/html"),
@@ -154,7 +326,7 @@ def run_acoustic_aggregation(
         environment={"python": python_environment()},
         warnings=warnings,
         errors=errors,
-        notes=["Aggregation is explicit and reproducible; missingness is not silently hidden.", "v0.32 adds multistat aggregation so mean/median are not the only ML-ready summary choices."],
+        notes=["Aggregation is explicit and reproducible; missingness is not silently hidden.", "v0.32 adds multistat aggregation so mean/median are not the only ML-ready summary choices.", "v0.88 writes acoustic_features_ml_ready.csv and acoustic_feature_manifest.csv for multimodal ML GUI input."],
     )
     manifest_path = folders["logs"] / "stage_manifest.json"
     manifest.write_json(manifest_path)
