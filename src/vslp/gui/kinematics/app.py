@@ -1,4 +1,4 @@
-"""VSLP Kinematics Pipeline GUI v0.86.
+"""VSLP Kinematics Pipeline GUI v0.87.
 
 This GUI mirrors the acoustic pipeline layout: left stage sidebar, institutional
 branding strip, top workflow tabs, run log, and scientific stage dashboards. The
@@ -90,6 +90,7 @@ from vslp.analysis.kinematics import (
     QC_FEATURE_REQUIREMENTS,
     feature_framework_dataframe,
     feature_implementation_audit_dataframe,
+    feature_manifest_dataframe,
     write_feature_framework_catalog,
     FeatureComputationConfig,
     run_feature_computation,
@@ -106,7 +107,7 @@ from vslp.analysis.kinematics import (
 )
 from vslp.analysis.kinematics.schemas import DEFAULT_VIDEO_EXTENSIONS, parse_int_list
 
-APP_VERSION = "v0.86"
+APP_VERSION = "v0.87"
 BRAND_DIR = Path(__file__).resolve().parent / "assets" / "branding"
 LAB_LOGO = BRAND_DIR / "lab_logo.png"
 UOFT_LOGO = BRAND_DIR / "uoft_logo.png"
@@ -1927,7 +1928,28 @@ class KinematicsPipelineWindow(QMainWindow):
         self.feature_results_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.feature_results_table.setMinimumHeight(260)
         outputs_layout.addWidget(self.feature_results_table)
-        bottom_tabs.addTab(outputs_tab, "Computed feature table")
+        bottom_tabs.addTab(outputs_tab, "Full wide export")
+
+        canonical_tab = QWidget(); canonical_layout = QVBoxLayout(canonical_tab)
+        self.feature_canonical_label = QLabel("No canonical 65-feature table loaded yet. Run or refresh feature computation.")
+        self.feature_canonical_label.setWordWrap(True); self.feature_canonical_label.setObjectName("SubtitleLabel")
+        canonical_layout.addWidget(self.feature_canonical_label)
+        self.feature_canonical_table = QTableWidget(0, 0)
+        self.feature_canonical_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.feature_canonical_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.feature_canonical_table.setMinimumHeight(260)
+        canonical_layout.addWidget(self.feature_canonical_table)
+        bottom_tabs.addTab(canonical_tab, "Canonical 65 / ML-ready")
+
+        manifest_tab = QWidget(); manifest_layout = QVBoxLayout(manifest_tab)
+        manifest_note = QLabel("Column manifest: labels each output column as canonical feature, support signal, QC metric, metadata, or dense engineering summary. ML should use canonical features by default, not every wide-export column.")
+        manifest_note.setWordWrap(True); manifest_note.setObjectName("SubtitleLabel")
+        manifest_layout.addWidget(manifest_note)
+        self.feature_manifest_table = QTableWidget(0, 0)
+        self.feature_manifest_table.setMinimumHeight(240)
+        self._fill_table(self.feature_manifest_table, feature_manifest_dataframe(), max_rows=80)
+        manifest_layout.addWidget(self.feature_manifest_table)
+        bottom_tabs.addTab(manifest_tab, "Column manifest")
 
         family_tab = QWidget(); family_layout = QVBoxLayout(family_tab)
         family_note = QLabel("Feature-family roadmap from the uploaded ALS/video kinematic maps. This table explains scope; computed scalars are in the output table.")
@@ -3575,7 +3597,13 @@ class KinematicsPipelineWindow(QMainWindow):
         features_csv = Path(res["features_csv"])
         self.stage_records["features"] = StageRecord(status="completed", manifest_path=str(features_csv))
         self._refresh_stage_cards()
-        self._log(f"Feature computation completed: {res.get('n_videos', 0)} video(s); ok={res.get('n_ok', 0)}, qc_flagged={res.get('n_qc_flagged', 0)}, error={res.get('n_error', 0)}. Features: {features_csv}")
+        self._log(f"Feature computation completed: {res.get('n_videos', 0)} video(s); ok={res.get('n_ok', 0)}, qc_flagged={res.get('n_qc_flagged', 0)}, error={res.get('n_error', 0)}. Full wide features: {features_csv}")
+        if res.get("canonical65_csv"):
+            self._log(f"Canonical 65-feature table: {res.get('canonical65_csv')}")
+        if res.get("features_only_csv"):
+            self._log(f"Features-only numeric table: {res.get('features_only_csv')}")
+        if res.get("ml_ready_csv"):
+            self._log(f"ML-ready feature table: {res.get('ml_ready_csv')}")
         self._load_feature_results(features_csv)
 
     def _load_feature_results(self, path: Path | None = None) -> None:
@@ -3601,6 +3629,34 @@ class KinematicsPipelineWindow(QMainWindow):
         cols = [c for c in preferred if c in df.columns]
         if hasattr(self, "feature_results_table"):
             self._fill_table(self.feature_results_table, df[cols] if cols else df, max_rows=200)
+
+        tables_dir = Path(path).parent
+        canonical_path = tables_dir / "kinematic_features_canonical65.csv"
+        feature_only_path = tables_dir / "kinematic_features_only.csv"
+        manifest_path = tables_dir / "kinematic_feature_manifest.csv"
+        if hasattr(self, "feature_canonical_table"):
+            if canonical_path.exists():
+                cdf = pd.read_csv(canonical_path)
+                preview_cols = [c for c in [
+                    "video_id", "task_guess", "status", "feature_qc_flags",
+                    "path_vert_med", "rom_vert_med", "sLL_vert_med", "aLL_vert_med",
+                    "path_horz_med", "rom_horz_med", "sLL_horz_med", "aLL_horz_med",
+                    "aspect_med", "jaw_lat_med", "lip_symm_ratio_med", "lat_xcorr",
+                ] if c in cdf.columns]
+                self._fill_table(self.feature_canonical_table, cdf[preview_cols] if preview_cols else cdf, max_rows=200)
+                if hasattr(self, "feature_canonical_label"):
+                    n_feature_cols = max(0, len([c for c in cdf.columns if c not in {"video_id", "task_guess", "status", "normalization_status", "feature_qc_flags", "face_detected_fraction", "n_frames", "n_movements", "n_legacy65_features_computed", "n_legacy65_features_expected"}]))
+                    self.feature_canonical_label.setText(
+                        f"Canonical feature table: {canonical_path}. Contains row context plus {n_feature_cols} canonical scalar features. "
+                        f"Features-only numeric table: {feature_only_path if feature_only_path.exists() else 'not found'}."
+                    )
+            else:
+                self._fill_table(self.feature_canonical_table, pd.DataFrame(), max_rows=1)
+                if hasattr(self, "feature_canonical_label"):
+                    self.feature_canonical_label.setText("Canonical 65-feature table not found yet. Re-run feature computation with v0.87 or later.")
+        if hasattr(self, "feature_manifest_table") and manifest_path.exists():
+            mdf = pd.read_csv(manifest_path)
+            self._fill_table(self.feature_manifest_table, mdf, max_rows=250)
 
     def run_temporal_aggregation_stage(self) -> None:
         out = self._path_or_warn(self.output_edit, "an output project folder")
