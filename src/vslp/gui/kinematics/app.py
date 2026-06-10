@@ -1,4 +1,4 @@
-"""VSLP Kinematics Pipeline GUI v0.83.
+"""VSLP Kinematics Pipeline GUI v0.84.
 
 This GUI intentionally mirrors the acoustic pipeline layout: left stage sidebar,
 institutional branding strip, top tabs, run log, and compact scientific workflow
@@ -97,10 +97,14 @@ from vslp.analysis.kinematics import (
     write_aggregation_guide,
     run_temporal_aggregation,
     write_scaffold_report,
+    write_pipeline_summary_report,
+    artifact_inventory_dataframe,
+    stage_status_dataframe,
+    write_inspector_inventory,
 )
 from vslp.analysis.kinematics.schemas import DEFAULT_VIDEO_EXTENSIONS, parse_int_list
 
-APP_VERSION = "v0.83"
+APP_VERSION = "v0.84"
 BRAND_DIR = Path(__file__).resolve().parent / "assets" / "branding"
 LAB_LOGO = BRAND_DIR / "lab_logo.png"
 UOFT_LOGO = BRAND_DIR / "uoft_logo.png"
@@ -715,6 +719,7 @@ class KinematicsPipelineWindow(QMainWindow):
             "qc": StageRecord(),
             "features": StageRecord(),
             "aggregation": StageRecord(),
+            "inspector": StageRecord(),
             "reports": StageRecord(),
         }
         self._build_ui()
@@ -762,6 +767,7 @@ class KinematicsPipelineWindow(QMainWindow):
             ("qc", "Video QC"),
             ("features", "Feature Computation"),
             ("aggregation", "Temporal Aggregation"),
+            ("inspector", "Inspector"),
             ("reports", "Reports"),
         ]:
             card = QFrame()
@@ -2229,38 +2235,124 @@ class KinematicsPipelineWindow(QMainWindow):
             self._fill_table(self.aggregation_guide_table, aggregation_guide_dataframe(), max_rows=200)
 
     def _build_inspector_tab(self) -> QWidget:
-        container = QWidget(); layout = QVBoxLayout(container)
-        layout.addWidget(self._info_panel("Info", "Preview the current kinematics stage tables and manifests before trusting downstream outputs."))
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setSpacing(12)
+        layout.addWidget(self._info_panel(
+            "Inspector",
+            "Read-only audit view for kinematics outputs. Use this tab to confirm which artifacts exist, which stages are complete or missing, and what table the downstream stages are actually using.",
+        ))
+
+        card_row = QHBoxLayout()
+        self.inspector_status_cards: dict[str, QLabel] = {}
+        for title, value in [("Stages", "-"), ("Complete", "-"), ("Artifacts", "-"), ("Latest", "-")]:
+            card = QFrame(); card.setObjectName("Card")
+            c_layout = QVBoxLayout(card); c_layout.setContentsMargins(12, 10, 12, 10)
+            t = QLabel(title); t.setObjectName("SubtitleLabel")
+            v = QLabel(value); v.setObjectName("MetricValue")
+            c_layout.addWidget(t); c_layout.addWidget(v)
+            self.inspector_status_cards[title] = v
+            card_row.addWidget(card)
+        layout.addLayout(card_row)
+
         btn_row = QHBoxLayout()
-        refresh = QPushButton("Refresh Inspector")
+        refresh = QPushButton("Refresh Inspector / Inventory")
+        refresh.setObjectName("RunButton")
         refresh.clicked.connect(self.refresh_inspector)
         open_out = QPushButton("Open Output Project Folder")
         open_out.clicked.connect(self.open_output_root)
         btn_row.addWidget(refresh); btn_row.addWidget(open_out); btn_row.addStretch(1)
         layout.addLayout(btn_row)
-        self.inspector_label = QLabel("No table loaded yet."); self.inspector_label.setObjectName("SubtitleLabel")
+
+        self.inspector_label = QLabel("No artifact inventory loaded yet.")
+        self.inspector_label.setObjectName("SubtitleLabel")
+        self.inspector_label.setWordWrap(True)
         layout.addWidget(self.inspector_label)
+
+        tabs = QTabWidget()
+        self.inspector_stage_table = QTableWidget(0, 0)
+        self.inspector_stage_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.inspector_stage_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.inspector_artifact_table = QTableWidget(0, 0)
+        self.inspector_artifact_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.inspector_artifact_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.inspector_table = QTableWidget(0, 0)
         self.inspector_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.inspector_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        layout.addWidget(self.inspector_table)
+        notes = QTextBrowser()
+        notes.setMinimumHeight(240)
+        notes.setHtml(
+            "<b>Inspector design</b><br>"
+            "This tab is read-only. It does not recompute features or change output files except for writing an inventory under <code>008_inspector/tables</code>.<br><br>"
+            "<b>What to check before full testing</b><ul>"
+            "<li>Required outputs are present for each stage you expect to have run.</li>"
+            "<li>Feature and aggregation tables are newer than normalization/QC when you rerun upstream stages.</li>"
+            "<li>Report files are treated as summaries, not primary scientific data.</li>"
+            "</ul>"
+        )
+        tabs.addTab(self.inspector_stage_table, "Stage status")
+        tabs.addTab(self.inspector_artifact_table, "Artifact inventory")
+        tabs.addTab(self.inspector_table, "Latest table preview")
+        tabs.addTab(notes, "Inspector notes")
+        layout.addWidget(tabs, stretch=1)
         return self._scrollable(container)
 
     def _build_reports_tab(self) -> QWidget:
-        container = QWidget(); layout = QVBoxLayout(container)
-        layout.addWidget(self._info_panel("Info", "Create a reproducible kinematics workflow report and open output artifacts."))
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setSpacing(12)
+        layout.addWidget(self._info_panel(
+            "Reports & Outputs",
+            "Package the current kinematics run into reviewable reports. Reports summarize provenance and outputs; they do not replace QC review and they are not clinical diagnostic reports.",
+        ))
+
+        card_row = QHBoxLayout()
+        self.report_status_cards: dict[str, QLabel] = {}
+        for title, value in [("Workflow report", "Not run"), ("Pipeline report", "Not run"), ("Manifest", "-"), ("Output", "-")]:
+            card = QFrame(); card.setObjectName("Card")
+            c_layout = QVBoxLayout(card); c_layout.setContentsMargins(12, 10, 12, 10)
+            t = QLabel(title); t.setObjectName("SubtitleLabel")
+            v = QLabel(value); v.setObjectName("MetricValue")
+            c_layout.addWidget(t); c_layout.addWidget(v)
+            self.report_status_cards[title] = v
+            card_row.addWidget(card)
+        layout.addLayout(card_row)
+
         btn_row = QHBoxLayout()
-        create = QPushButton("Create Scaffold Report")
-        create.setObjectName("RunButton"); create.clicked.connect(self.run_report_stage)
-        open_report = QPushButton("Open HTML Report")
+        create = QPushButton("Create Workflow Outline Report")
+        create.clicked.connect(self.run_report_stage)
+        create_summary = QPushButton("Create Pipeline Summary Report")
+        create_summary.setObjectName("RunButton")
+        create_summary.clicked.connect(self.run_pipeline_summary_report_stage)
+        open_report = QPushButton("Open Latest HTML Report")
         open_report.clicked.connect(self.open_report)
         open_folder = QPushButton("Open Output Project Folder")
         open_folder.clicked.connect(self.open_output_root)
-        btn_row.addWidget(create); btn_row.addWidget(open_report); btn_row.addWidget(open_folder); btn_row.addStretch(1)
+        btn_row.addWidget(create); btn_row.addWidget(create_summary); btn_row.addWidget(open_report); btn_row.addWidget(open_folder); btn_row.addStretch(1)
         layout.addLayout(btn_row)
-        self.report_box = QTextBrowser(); self.report_box.setMinimumHeight(340)
-        self.report_box.setHtml("<b>No report generated yet.</b><br>Run the report stage after configuring the workflow outline.")
-        layout.addWidget(self.report_box)
+
+        tabs = QTabWidget()
+        self.report_box = QTextBrowser(); self.report_box.setMinimumHeight(380)
+        self.report_box.setHtml("<b>No report generated yet.</b><br>Create a workflow outline or pipeline summary report after configuring the workflow.")
+        self.report_checklist_table = QTableWidget(0, 0)
+        self.report_checklist_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.report_manifest_table = QTableWidget(0, 0)
+        self.report_manifest_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        guide = QTextBrowser()
+        guide.setMinimumHeight(260)
+        guide.setHtml(
+            "<b>Recommended testing sequence</b><ol>"
+            "<li>Run Inspector and confirm stage artifacts exist.</li>"
+            "<li>Create Pipeline Summary Report after aggregation.</li>"
+            "<li>Check that QC, normalization, features, and aggregation summaries are included.</li>"
+            "<li>Use reports for review/provenance only. Use CSV/JSON artifacts as source data.</li>"
+            "</ol>"
+        )
+        tabs.addTab(self.report_box, "Report preview")
+        tabs.addTab(self.report_checklist_table, "Report checklist")
+        tabs.addTab(self.report_manifest_table, "Report manifest")
+        tabs.addTab(guide, "Output guidance")
+        layout.addWidget(tabs, stretch=1)
         return self._scrollable(container)
 
     # ---------------------------- ACTIONS ----------------------------
@@ -3577,15 +3669,62 @@ class KinematicsPipelineWindow(QMainWindow):
     def refresh_inspector(self) -> None:
         out_text = self.output_edit.text().strip()
         if not out_text:
+            QMessageBox.information(self, "No output folder", "Select an output folder first.")
             return
-        root = Path(out_text) / "kinematics"
-        candidates = sorted(root.glob("**/*.csv"), key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
-        if not candidates:
-            self.inspector_label.setText("No CSV outputs found yet."); self.inspector_table.setRowCount(0); self.inspector_table.setColumnCount(0); return
-        path = candidates[0]
-        df = pd.read_csv(path)
-        self.inspector_label.setText(f"Previewing latest CSV: {path}")
-        self._fill_table(self.inspector_table, df, max_rows=300)
+        out = Path(out_text).expanduser().resolve()
+        try:
+            paths = write_inspector_inventory(out)
+            stage_df = pd.read_csv(paths["stage_status_csv"])
+            artifact_df = pd.read_csv(paths["artifact_inventory_csv"])
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Inspector refresh failed", str(exc))
+            return
+
+        if hasattr(self, "inspector_stage_table"):
+            preferred = [
+                "stage_id", "stage", "status", "required_present", "required_expected",
+                "optional_present", "latest_modified_utc", "missing_required",
+            ]
+            cols = [c for c in preferred if c in stage_df.columns]
+            self._fill_table(self.inspector_stage_table, stage_df[cols] if cols else stage_df, max_rows=50)
+        if hasattr(self, "inspector_artifact_table"):
+            preferred = [
+                "stage", "artifact_type", "filename", "relative_path", "size_kb",
+                "modified_utc", "previewable", "rows", "columns",
+            ]
+            cols = [c for c in preferred if c in artifact_df.columns]
+            self._fill_table(self.inspector_artifact_table, artifact_df[cols] if cols else artifact_df, max_rows=500)
+
+        latest_csv = None
+        if not artifact_df.empty and "absolute_path" in artifact_df.columns:
+            csv_df = artifact_df[artifact_df.get("artifact_type", "") == "table"]
+            if not csv_df.empty:
+                latest_csv = Path(str(csv_df.iloc[0]["absolute_path"]))
+        if latest_csv is not None and latest_csv.exists():
+            try:
+                df = pd.read_csv(latest_csv)
+                self._fill_table(self.inspector_table, df, max_rows=300)
+                preview_text = f"Previewing latest table: {latest_csv}"
+            except Exception as exc:  # noqa: BLE001
+                self.inspector_table.setRowCount(0); self.inspector_table.setColumnCount(0)
+                preview_text = f"Latest table could not be previewed: {latest_csv} ({exc})"
+        else:
+            self.inspector_table.setRowCount(0); self.inspector_table.setColumnCount(0)
+            preview_text = "No CSV tables found yet."
+
+        complete_count = int((stage_df.get("status", pd.Series(dtype=str)) == "complete").sum()) if not stage_df.empty else 0
+        latest_name = latest_csv.name if latest_csv is not None else "-"
+        if hasattr(self, "inspector_status_cards"):
+            self.inspector_status_cards.get("Stages", QLabel()).setText(str(len(stage_df)))
+            self.inspector_status_cards.get("Complete", QLabel()).setText(str(complete_count))
+            self.inspector_status_cards.get("Artifacts", QLabel()).setText(str(len(artifact_df)))
+            self.inspector_status_cards.get("Latest", QLabel()).setText(latest_name)
+        self.inspector_label.setText(
+            f"Inventory written to {paths['artifact_inventory_csv']} and {paths['stage_status_csv']}. {preview_text}"
+        )
+        self.stage_records["inspector"] = StageRecord(status="completed", manifest_path=paths.get("inspector_manifest_json"), summary_path=paths.get("artifact_inventory_csv"))
+        self._refresh_stage_cards()
+        self._log(f"Inspector inventory refreshed: {paths['artifact_inventory_csv']}")
 
     def run_report_stage(self) -> None:
         out = self._path_or_warn(self.output_edit, "an output project folder")
@@ -3596,7 +3735,51 @@ class KinematicsPipelineWindow(QMainWindow):
         self.stage_records["reports"] = StageRecord(status="completed", report_path=str(report))
         self._refresh_stage_cards()
         self.report_box.setHtml(report.read_text(encoding="utf-8"))
-        self._log(f"Kinematics report written: {report}")
+        if hasattr(self, "report_status_cards"):
+            self.report_status_cards.get("Workflow report", QLabel()).setText("Created")
+            self.report_status_cards.get("Output", QLabel()).setText(report.name)
+        self._load_report_checklist(out)
+        self._log(f"Kinematics workflow report written: {report}")
+
+    def run_pipeline_summary_report_stage(self) -> None:
+        out = self._path_or_warn(self.output_edit, "an output project folder")
+        if out is None:
+            return
+        # Ensure report is based on a fresh artifact inventory.
+        try:
+            write_inspector_inventory(out)
+            res = write_pipeline_summary_report(out)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.critical(self, "Pipeline report failed", str(exc))
+            return
+        report = Path(res["report_html"])
+        self.last_report_html = report
+        self.stage_records["reports"] = StageRecord(status="completed", report_path=str(report), manifest_path=res.get("manifest_json"))
+        self._refresh_stage_cards()
+        self.report_box.setHtml(report.read_text(encoding="utf-8"))
+        if hasattr(self, "report_status_cards"):
+            self.report_status_cards.get("Pipeline report", QLabel()).setText("Created")
+            self.report_status_cards.get("Manifest", QLabel()).setText(Path(res.get("manifest_json", "-")).name)
+            self.report_status_cards.get("Output", QLabel()).setText(report.name)
+        self._load_report_checklist(out)
+        self._log(f"Kinematics pipeline summary report written: {report}")
+
+    def _load_report_checklist(self, output_root: Path) -> None:
+        kin = Path(output_root).expanduser().resolve() / "kinematics"
+        stage_path = kin / "008_inspector" / "tables" / "stage_status.csv"
+        manifest_path = kin / "009_reports" / "report_manifest.json"
+        if hasattr(self, "report_checklist_table") and stage_path.exists():
+            df = pd.read_csv(stage_path)
+            preferred = ["stage_id", "stage", "status", "required_present", "required_expected", "latest_modified_utc"]
+            cols = [c for c in preferred if c in df.columns]
+            self._fill_table(self.report_checklist_table, df[cols] if cols else df, max_rows=50)
+        if hasattr(self, "report_manifest_table") and manifest_path.exists():
+            try:
+                payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+                df = pd.DataFrame([{"field": k, "value": v} for k, v in payload.items()])
+                self._fill_table(self.report_manifest_table, df, max_rows=100)
+            except Exception:
+                self.report_manifest_table.setRowCount(0); self.report_manifest_table.setColumnCount(0)
 
     def refresh_latest_outputs(self) -> None:
         self._load_ingest_summary()
