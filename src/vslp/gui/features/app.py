@@ -81,7 +81,7 @@ from vslp.analysis.features.plots import (
     plot_ml_export_manifest_summary
 )
 
-APP_VERSION = "v0.63.0"
+APP_VERSION = "v0.64.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -1578,18 +1578,98 @@ class FeatureAnalysisGUI(QMainWindow):
 
         card = Card(
             "Missingness",
-            "Audit feature failure and data availability. Missingness may be informative in clinical datasets; inspect patterns before imputation, exclusion, or ML."
+            "Audit feature and row availability. This page is limited to missing-data burden and structure; distribution shape, QC sensitivity, and outcome screening stay in their own menus."
         )
 
-        self.missing_metric_grid = QGridLayout()
-        self.missing_metric_grid.setHorizontalSpacing(12)
-        self.missing_metric_grid.setVerticalSpacing(12)
-        card.layout.addLayout(self.missing_metric_grid)
-
-        self.missing_note = QLabel("Run Feature Analysis to populate missingness tables and plots. Review feature-level, row-level, family-level, and group-level patterns before modeling.")
+        self.missing_note = QLabel("Run Feature Analysis to populate missingness plots and tables. Use this page to decide whether missingness is isolated, feature-family specific, row/recording specific, or related to metadata groups before any imputation or exclusion.")
         self.missing_note.setWordWrap(True)
         self.missing_note.setStyleSheet(f"color:{MUTED}; background:#F7FAFD; border:1px solid {LINE}; border-radius:8px; padding:10px;")
         card.layout.addWidget(self.missing_note)
+
+        missing_split = QHBoxLayout()
+        missing_split.setSpacing(14)
+
+        # Main visual area follows the same pattern as Overview: compact toolbar,
+        # explanatory caption, large plot preview, and detailed tables below.
+        plot_panel = QFrame()
+        plot_panel.setStyleSheet(f"QFrame {{ background:#F8FBFE; border:1px solid {LINE}; border-radius:12px; }}")
+        plot_panel_layout = QVBoxLayout(plot_panel)
+        plot_panel_layout.setContentsMargins(14, 14, 14, 14)
+        plot_panel_layout.setSpacing(10)
+
+        plot_header = QHBoxLayout()
+        plot_header.setSpacing(10)
+        plot_title = QLabel("Missingness plot")
+        plot_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
+        plot_header.addWidget(plot_title)
+
+        self.missing_plot_combo = QComboBox()
+        self.missing_plot_combo.setMinimumWidth(360)
+        self.missing_plot_combo.addItem("Feature missingness burden", "missingness_top_features")
+        self.missing_plot_combo.addItem("Recording missingness burden", "missingness_row_distribution")
+        self.missing_plot_combo.addItem("Missingness by metadata group", "missingness_by_group")
+        self.missing_plot_combo.addItem("Missingness by feature family", "missingness_by_family")
+        self.missing_plot_combo.addItem("Feature availability heatmap", "feature_availability_heatmap")
+        self.missing_plot_combo.addItem("Co-missingness clusters", "missingness_comissing_heatmap")
+        plot_header.addWidget(self.missing_plot_combo, 1)
+
+        show_btn = QPushButton("Show")
+        show_btn.setProperty("secondary", True)
+        show_btn.clicked.connect(lambda: self.preview_missingness_plot(self.missing_plot_combo.currentData()))
+        plot_header.addWidget(show_btn)
+
+        regen = QPushButton("Regenerate")
+        regen.clicked.connect(self.regenerate_overview_plots)
+        plot_header.addWidget(regen)
+
+        plot_header.addStretch(1)
+        open_btn = QPushButton("Open current plot")
+        open_btn.setProperty("secondary", True)
+        open_btn.clicked.connect(self.open_current_missingness_plot)
+        plot_header.addWidget(open_btn)
+        plot_panel_layout.addLayout(plot_header)
+
+        self.missing_plot_caption = QLabel(
+            "Missingness uses only availability plots: feature burden, recording burden, metadata-group structure, feature-family structure, availability heatmap, and co-missingness clusters. It does not duplicate distribution, QC, relationship, screening, or ML-export plots."
+        )
+        self.missing_plot_caption.setWordWrap(True)
+        self.missing_plot_caption.setStyleSheet(f"color:{MUTED}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:9px;")
+        plot_panel_layout.addWidget(self.missing_plot_caption)
+
+        self.missing_plot_preview = QLabel("Run Feature Analysis, then choose one missingness plot.")
+        self.missing_plot_preview.setAlignment(Qt.AlignCenter)
+        self.missing_plot_preview.setMinimumHeight(520)
+        self.missing_plot_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.missing_plot_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
+        plot_panel_layout.addWidget(self.missing_plot_preview, 1)
+        missing_split.addWidget(plot_panel, 1)
+
+        # Side summary keeps availability metrics visible without occupying the top
+        # of the page, matching the Overview page pattern.
+        side_panel = QFrame()
+        side_panel.setStyleSheet(f"QFrame {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:12px; }}")
+        side_layout = QVBoxLayout(side_panel)
+        side_layout.setContentsMargins(12, 12, 12, 12)
+        side_layout.setSpacing(10)
+        side_title = QLabel("Availability snapshot")
+        side_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
+        side_layout.addWidget(side_title)
+        side_note = QLabel("Compact missingness metrics. Use these as navigation cues; detailed feature, row, group, family, and co-missing tables remain below the plot.")
+        side_note.setWordWrap(True)
+        side_note.setStyleSheet(f"color:{MUTED}; border:none; background:transparent; font-size:12px;")
+        side_layout.addWidget(side_note)
+        self.missing_metric_grid = QGridLayout()
+        self.missing_metric_grid.setHorizontalSpacing(8)
+        self.missing_metric_grid.setVerticalSpacing(8)
+        side_layout.addLayout(self.missing_metric_grid)
+        side_layout.addStretch(1)
+        side_panel.setFixedWidth(300)
+        missing_split.addWidget(side_panel)
+        card.layout.addLayout(missing_split)
+
+        tables_header = QLabel("Detailed missingness tables")
+        tables_header.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; padding-top:8px;")
+        card.layout.addWidget(tables_header)
 
         tabs = QTabWidget()
         tabs.setStyleSheet(f"""
@@ -1605,40 +1685,15 @@ class FeatureAnalysisGUI(QMainWindow):
         self.missing_comissing_table = QTableWidget(0, 0)
         for t in [self.missing_feature_table, self.missing_row_table, self.missing_group_table, self.missing_family_table, self.missing_comissing_table]:
             t.setAlternatingRowColors(True)
-            t.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+            t.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+            t.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+            t.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         tabs.addTab(self.missing_feature_table, "By feature")
         tabs.addTab(self.missing_row_table, "By row / recording")
         tabs.addTab(self.missing_group_table, "By group")
         tabs.addTab(self.missing_family_table, "By family")
         tabs.addTab(self.missing_comissing_table, "Co-missing pairs")
-        # Tables are placed below plots for visual-first review.
-
-
-        self._add_standard_plot_gallery(
-            card.layout,
-            "Missingness plot",
-            "Missingness uses focused availability plots only: feature burden, row burden, group/family structure, availability heatmap, and co-missingness. Distribution and QC-specific plots stay in their own menus.",
-            "missing_plot_combo",
-            [
-                ("Top missing features", "missingness_top_features"),
-                ("Row-level missingness", "missingness_row_distribution"),
-                ("Missingness by group", "missingness_by_group"),
-                ("Missingness by family", "missingness_by_family"),
-                ("Feature availability heatmap", "feature_availability_heatmap"),
-                ("Co-missing heatmap", "missingness_comissing_heatmap"),
-            ],
-            "missing_plot_preview",
-            "missing_plot_caption",
-            self.preview_missingness_plot,
-            self.open_current_missingness_plot,
-            "Run Feature Analysis, then choose one missingness plot.",
-            500,
-        )
-        tables_header = QLabel("Detailed tables")
-        tables_header.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; padding-top:8px;")
-        card.layout.addWidget(tables_header)
         card.layout.addWidget(tabs)
-
 
         layout.addWidget(card)
         return self._wrap_scroll(body)

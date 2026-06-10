@@ -3,7 +3,7 @@ from pathlib import Path
 
 def test_feature_gui_v062_version_and_shared_plot_gallery():
     text = Path('src/vslp/gui/features/app.py').read_text(encoding='utf-8')
-    assert 'APP_VERSION = "v0.63.0"' in text
+    assert 'APP_VERSION = "v0.64.0"' in text
     assert 'def _add_standard_plot_gallery' in text
     assert 'Open current plot' in text
     assert 'Detailed tables' in text
@@ -22,7 +22,7 @@ def test_feature_gui_v062_core_menus_use_standard_gallery():
     ]:
         assert attr in text
     for phrase in [
-        'Missingness uses focused availability plots only',
+        'Missingness uses only availability plots',
         'Distribution review focuses on shape',
         'QC Integration keeps only acquisition-sensitivity plots',
         'Feature Relationships keeps redundancy',
