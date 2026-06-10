@@ -1,4 +1,4 @@
-"""VSLP Kinematics Pipeline GUI v0.80.
+"""VSLP Kinematics Pipeline GUI v0.82.
 
 This GUI intentionally mirrors the acoustic pipeline layout: left stage sidebar,
 institutional branding strip, top tabs, run log, and compact scientific workflow
@@ -98,7 +98,7 @@ from vslp.analysis.kinematics import (
 )
 from vslp.analysis.kinematics.schemas import DEFAULT_VIDEO_EXTENSIONS, parse_int_list
 
-APP_VERSION = "v0.80"
+APP_VERSION = "v0.82"
 BRAND_DIR = Path(__file__).resolve().parent / "assets" / "branding"
 LAB_LOGO = BRAND_DIR / "lab_logo.png"
 UOFT_LOGO = BRAND_DIR / "uoft_logo.png"
@@ -1782,26 +1782,26 @@ class KinematicsPipelineWindow(QMainWindow):
     def _build_features_tab(self) -> QWidget:
         container = QWidget()
         layout = QVBoxLayout(container)
-        layout.setSpacing(10)
+        layout.setSpacing(12)
         layout.addWidget(self._info_panel(
             "Features",
-            "Compute research-grade kinematic features only after normalization and QC. This stage separates the current implemented oral-motor feature kernel from the broader ALS/video feature framework roadmap derived from the uploaded field maps. It does not provide ALS/PD diagnostic cutoffs.",
+            "Compute kinematic biomarkers from normalized landmark trajectories. The visible selector below is the working extractor: choose the feature definitions to document/run, tune conservative preprocessing settings, then inspect outputs in the bottom tables.",
         ))
 
         feature_card_grid = QGridLayout()
         self.feature_metric_values: dict[str, QLabel] = {}
         feature_cards = [
-            ("Mode", "mode", "Implemented kernel"),
+            ("Kernel", "mode", "65-map scalar layer"),
             ("Selected", "selected", "0"),
-            ("Framework", "framework", "Roadmap + audit"),
-            ("QC dependency", "qc", "Required before trust"),
-            ("Next", "next", "Run features, then aggregate"),
+            ("Inputs", "inputs", "Normalization + QC"),
+            ("Status", "qc", "Not run"),
+            ("Next", "next", "Compute, then aggregate"),
         ]
         for idx, (title, key, default) in enumerate(feature_cards):
             card = QFrame()
             card.setObjectName("MetricCard")
             card_layout = QVBoxLayout(card)
-            card_layout.setContentsMargins(10, 7, 10, 7)
+            card_layout.setContentsMargins(12, 8, 12, 8)
             card_title = QLabel(title)
             card_title.setObjectName("SubtitleLabel")
             value = QLabel(default)
@@ -1813,35 +1813,20 @@ class KinematicsPipelineWindow(QMainWindow):
             feature_card_grid.addWidget(card, 0, idx)
         layout.addLayout(feature_card_grid)
 
-        framework_group = QGroupBox("Feature framework and provenance")
-        framework_layout = QVBoxLayout(framework_group)
-        framework_note = QLabel(
-            "The uploaded maps are used here as a feature-family roadmap. The current backend computes an implemented oral-motor kernel from normalized landmarks; exact full field-map parity should be built incrementally with tests and locked landmark/normalization conventions."
-        )
-        framework_note.setWordWrap(True)
-        framework_note.setObjectName("SubtitleLabel")
-        framework_layout.addWidget(framework_note)
-        framework_tabs = QTabWidget()
-        family_tab = QWidget(); family_layout = QVBoxLayout(family_tab)
-        self.feature_family_table = QTableWidget(0, 0)
-        self.feature_family_table.setMinimumHeight(220)
-        self._fill_table(self.feature_family_table, feature_framework_dataframe(), max_rows=20)
-        family_layout.addWidget(self.feature_family_table)
-        framework_tabs.addTab(family_tab, "Feature families")
-        audit_tab = QWidget(); audit_layout = QVBoxLayout(audit_tab)
-        self.feature_audit_table = QTableWidget(0, 0)
-        self.feature_audit_table.setMinimumHeight(180)
-        self._fill_table(self.feature_audit_table, feature_implementation_audit_dataframe(), max_rows=20)
-        audit_layout.addWidget(self.feature_audit_table)
-        framework_tabs.addTab(audit_tab, "Implementation audit")
-        framework_layout.addWidget(framework_tabs)
-        layout.addWidget(framework_group)
+        splitter = QSplitter(Qt.Horizontal)
 
-        body = QHBoxLayout()
-        left = QGroupBox("Feature selector")
-        left_layout = QVBoxLayout(left)
+        extractor_group = QGroupBox("Feature selector / extractor")
+        extractor_layout = QVBoxLayout(extractor_group)
+        extractor_layout.setSpacing(8)
+        extractor_note = QLabel(
+            "Select feature definitions from the 65-feature kinematic map. The computation writes the full implemented scalar layer and preserves QC/provenance; selected definitions are saved into the computation plan for audit."
+        )
+        extractor_note.setWordWrap(True)
+        extractor_note.setObjectName("SubtitleLabel")
+        extractor_layout.addWidget(extractor_note)
+
         btn_row = QHBoxLayout()
-        all_btn = QPushButton("All")
+        all_btn = QPushButton("Select all 65")
         default_btn = QPushButton("Default oral-motor")
         robust_btn = QPushButton("Tier B only")
         clear_btn = QPushButton("Clear")
@@ -1851,27 +1836,33 @@ class KinematicsPipelineWindow(QMainWindow):
         clear_btn.clicked.connect(lambda: self._set_feature_selection(set()))
         for b in [all_btn, default_btn, robust_btn, clear_btn]:
             btn_row.addWidget(b)
-        left_layout.addLayout(btn_row)
+        btn_row.addStretch(1)
+        extractor_layout.addLayout(btn_row)
 
         self.feature_tree = QTreeWidget()
         self.feature_tree.setColumnCount(5)
         self.feature_tree.setHeaderLabels(["Feature / subsystem", "Status", "Tier", "Landmarks", "Native signal / unit"])
         self.feature_tree.setAlternatingRowColors(True)
+        self.feature_tree.setMinimumHeight(520)
         self.feature_tree.itemChanged.connect(self._on_feature_tree_item_changed)
         self.feature_tree.itemSelectionChanged.connect(self._refresh_feature_detail_panel)
-        left_layout.addWidget(self.feature_tree, stretch=1)
+        extractor_layout.addWidget(self.feature_tree, stretch=1)
+        splitter.addWidget(extractor_group)
 
-        right = QVBoxLayout()
-        selected_group = QGroupBox("Selected features")
+        side_group = QGroupBox("Run settings and interpretation")
+        side_layout = QVBoxLayout(side_group)
+        side_layout.setSpacing(10)
+
+        selected_group = QGroupBox("Current selection")
         selected_layout = QVBoxLayout(selected_group)
         self.feature_selected_label = QLabel("Selected: 0")
         self.feature_selected_label.setObjectName("InfoTitle")
         selected_layout.addWidget(self.feature_selected_label)
         self.feature_selected_box = QPlainTextEdit()
         self.feature_selected_box.setReadOnly(True)
-        self.feature_selected_box.setMaximumHeight(120)
+        self.feature_selected_box.setMaximumHeight(130)
         selected_layout.addWidget(self.feature_selected_box)
-        right.addWidget(selected_group)
+        side_layout.addWidget(selected_group)
 
         param_group = QGroupBox("Computation settings")
         param_grid = QGridLayout(param_group)
@@ -1880,32 +1871,25 @@ class KinematicsPipelineWindow(QMainWindow):
         self.feature_sigma_tight = QDoubleSpinBox(); self.feature_sigma_tight.setRange(1.5, 6.0); self.feature_sigma_tight.setSingleStep(0.25); self.feature_sigma_tight.setValue(3.0)
         self.feature_onset_frac = QDoubleSpinBox(); self.feature_onset_frac.setRange(0.01, 0.40); self.feature_onset_frac.setSingleStep(0.01); self.feature_onset_frac.setValue(0.10)
         self.feature_offset_frac = QDoubleSpinBox(); self.feature_offset_frac.setRange(0.50, 0.99); self.feature_offset_frac.setSingleStep(0.01); self.feature_offset_frac.setValue(0.90)
-        self.feature_use_smoothing = QCheckBox("Smooth cleaned trajectories before feature computation"); self.feature_use_smoothing.setChecked(True)
+        self.feature_use_smoothing = QCheckBox("Smooth cleaned trajectories")
+        self.feature_use_smoothing.setChecked(True)
         param_grid.addWidget(QLabel("Low-pass cutoff"), 0, 0); param_grid.addWidget(self.feature_smoothing_cutoff, 0, 1)
-        param_grid.addWidget(QLabel("Extreme outlier sigma"), 0, 2); param_grid.addWidget(self.feature_sigma_extreme, 0, 3)
-        param_grid.addWidget(QLabel("Tight outlier sigma"), 1, 0); param_grid.addWidget(self.feature_sigma_tight, 1, 1)
-        param_grid.addWidget(QLabel("Movement onset fraction"), 1, 2); param_grid.addWidget(self.feature_onset_frac, 1, 3)
-        param_grid.addWidget(QLabel("Movement offset fraction"), 2, 0); param_grid.addWidget(self.feature_offset_frac, 2, 1)
-        param_grid.addWidget(self.feature_use_smoothing, 2, 2, 1, 2)
-        right.addWidget(param_group)
+        param_grid.addWidget(QLabel("Extreme sigma"), 1, 0); param_grid.addWidget(self.feature_sigma_extreme, 1, 1)
+        param_grid.addWidget(QLabel("Tight sigma"), 2, 0); param_grid.addWidget(self.feature_sigma_tight, 2, 1)
+        param_grid.addWidget(QLabel("Onset fraction"), 3, 0); param_grid.addWidget(self.feature_onset_frac, 3, 1)
+        param_grid.addWidget(QLabel("Offset fraction"), 4, 0); param_grid.addWidget(self.feature_offset_frac, 4, 1)
+        param_grid.addWidget(self.feature_use_smoothing, 5, 0, 1, 2)
+        side_layout.addWidget(param_group)
 
-        detail_group = QGroupBox("Feature interpretation")
+        detail_group = QGroupBox("Selected feature interpretation")
         detail_layout = QVBoxLayout(detail_group)
         self.feature_detail_box = QTextBrowser()
-        self.feature_detail_box.setMinimumHeight(160)
+        self.feature_detail_box.setMinimumHeight(210)
         self.feature_detail_box.setOpenExternalLinks(False)
         detail_layout.addWidget(self.feature_detail_box)
-        right.addWidget(detail_group)
+        side_layout.addWidget(detail_group, stretch=1)
 
-        qc_group = QGroupBox("QC requirements for selected features")
-        qc_layout = QVBoxLayout(qc_group)
-        self.feature_qc_table = QTableWidget(0, 3)
-        self.feature_qc_table.setHorizontalHeaderLabels(["Parameter", "Recommended threshold", "Reason"])
-        self._fill_table(self.feature_qc_table, pd.DataFrame(QC_FEATURE_REQUIREMENTS), max_rows=20)
-        qc_layout.addWidget(self.feature_qc_table)
-        right.addWidget(qc_group)
-
-        run_row = QHBoxLayout()
+        run_row = QVBoxLayout()
         plan_btn = QPushButton("Write Feature Computation Plan")
         plan_btn.clicked.connect(self.write_feature_computation_plan)
         framework_btn = QPushButton("Write Feature Framework Catalog")
@@ -1915,20 +1899,54 @@ class KinematicsPipelineWindow(QMainWindow):
         run_btn.clicked.connect(self.run_feature_computation_stage)
         refresh_btn = QPushButton("Refresh Feature Outputs")
         refresh_btn.clicked.connect(self._load_feature_results)
-        run_row.addWidget(plan_btn); run_row.addWidget(framework_btn); run_row.addWidget(run_btn); run_row.addWidget(refresh_btn); run_row.addStretch(1)
-        right.addLayout(run_row)
+        for b in [plan_btn, framework_btn, run_btn, refresh_btn]:
+            run_row.addWidget(b)
+        side_layout.addLayout(run_row)
+        splitter.addWidget(side_group)
+        splitter.setStretchFactor(0, 5)
+        splitter.setStretchFactor(1, 2)
+        layout.addWidget(splitter, stretch=1)
 
-        body.addWidget(left, stretch=3)
-        body.addLayout(right, stretch=2)
-        layout.addLayout(body, stretch=1)
-
+        bottom_tabs = QTabWidget()
+        outputs_tab = QWidget(); outputs_layout = QVBoxLayout(outputs_tab)
         self.feature_results_label = QLabel("No kinematic feature table loaded yet.")
         self.feature_results_label.setObjectName("SubtitleLabel")
-        layout.addWidget(self.feature_results_label)
+        outputs_layout.addWidget(self.feature_results_label)
         self.feature_results_table = QTableWidget(0, 0)
         self.feature_results_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.feature_results_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        layout.addWidget(self.feature_results_table)
+        self.feature_results_table.setMinimumHeight(260)
+        outputs_layout.addWidget(self.feature_results_table)
+        bottom_tabs.addTab(outputs_tab, "Computed feature table")
+
+        family_tab = QWidget(); family_layout = QVBoxLayout(family_tab)
+        family_note = QLabel("Feature-family roadmap from the uploaded ALS/video kinematic maps. This table explains scope; computed scalars are in the output table.")
+        family_note.setWordWrap(True); family_note.setObjectName("SubtitleLabel")
+        family_layout.addWidget(family_note)
+        self.feature_family_table = QTableWidget(0, 0)
+        self.feature_family_table.setMinimumHeight(240)
+        self._fill_table(self.feature_family_table, feature_framework_dataframe(), max_rows=20)
+        family_layout.addWidget(self.feature_family_table)
+        bottom_tabs.addTab(family_tab, "Feature framework")
+
+        audit_tab = QWidget(); audit_layout = QVBoxLayout(audit_tab)
+        audit_note = QLabel("Implementation audit: separates implemented 65-feature scalar extraction from future clinical/diagnostic validation.")
+        audit_note.setWordWrap(True); audit_note.setObjectName("SubtitleLabel")
+        audit_layout.addWidget(audit_note)
+        self.feature_audit_table = QTableWidget(0, 0)
+        self.feature_audit_table.setMinimumHeight(220)
+        self._fill_table(self.feature_audit_table, feature_implementation_audit_dataframe(), max_rows=20)
+        audit_layout.addWidget(self.feature_audit_table)
+        bottom_tabs.addTab(audit_tab, "Implementation audit")
+
+        qc_tab = QWidget(); qc_layout = QVBoxLayout(qc_tab)
+        self.feature_qc_table = QTableWidget(0, 3)
+        self.feature_qc_table.setHorizontalHeaderLabels(["Parameter", "Recommended threshold", "Reason"])
+        self._fill_table(self.feature_qc_table, pd.DataFrame(QC_FEATURE_REQUIREMENTS), max_rows=20)
+        qc_layout.addWidget(self.feature_qc_table)
+        bottom_tabs.addTab(qc_tab, "QC requirements for selected features")
+
+        layout.addWidget(bottom_tabs)
 
         self._populate_feature_tree()
         return self._scrollable(container)
@@ -3368,9 +3386,11 @@ class KinematicsPipelineWindow(QMainWindow):
             self.feature_results_label.setText(f"Loaded kinematic features: {path}. Status counts: {counts}")
         preferred = [
             "video_id", "status", "n_frames", "face_detected_fraction", "n_movements",
-            "mouth_aperture_median", "mouth_aperture_range_p05_p95",
-            "outer_lip_spread_median", "lip_aspect_ratio_median",
-            "jaw_to_nose_median", "corner_vertical_asymmetry_median", "feature_qc_flags",
+            "n_legacy65_features_computed", "n_legacy65_features_expected",
+            "path_vert_med", "rom_vert_med", "sLL_vert_med", "aLL_vert_med",
+            "path_horz_med", "rom_horz_med", "sLL_horz_med", "aLL_horz_med",
+            "aspect_med", "jaw_lat_med", "lip_symm_ratio_med", "lat_xcorr",
+            "feature_qc_flags",
         ]
         cols = [c for c in preferred if c in df.columns]
         if hasattr(self, "feature_results_table"):

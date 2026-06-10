@@ -14,7 +14,7 @@ def test_feature_framework_separates_implemented_kernel_from_roadmap():
     audit = feature_implementation_audit_dataframe()
     assert not framework.empty
     assert {"Feature family", "Current implementation", "Evidence status"}.issubset(framework.columns)
-    assert framework["Current implementation"].str.contains("implemented kernel|partial", case=False, regex=True).any()
+    assert framework["Current implementation"].str.contains("implemented 65-feature scalar layer|implemented legacy|partial", case=False, regex=True).any()
     assert not audit.empty
     assert audit["Audit item"].str.contains("Landmark convention").any()
 

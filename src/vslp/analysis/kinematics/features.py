@@ -54,72 +54,337 @@ class KinematicFeatureSpec:
     source_function: str
 
 
-ICD_NORMALIZATION_DESCRIPTION = "intercanthal distance; landmarks 243 and 463"
+ICD_NORMALIZATION_DESCRIPTION = "normalized coordinate layer; GUI default scale uses 133/362 with 33/263 fallback; legacy map ratios use 243/463 when present"
 ROBUST_AGGREGATION_DESCRIPTION = "median, IQR, 5th percentile, 95th percentile, 5-95 spread"
 MEDIAN_IQR_AGGREGATION_DESCRIPTION = "median and IQR"
 
 
 KINEMATIC_FEATURE_SPECS: tuple[KinematicFeatureSpec, ...] = (
     KinematicFeatureSpec(
-        "path_vert_med", "Vertical lip/jaw displacement", "Vertical path length", "implemented-formula", "B",
-        "lower lip vertical aperture trajectory", "ICD-normalized distance", (17, 8, 243, 463), ICD_NORMALIZATION_DESCRIPTION, MEDIAN_IQR_AGGREGATION_DESCRIPTION,
-        "Total absolute vertical movement over the analysis window or repetition.", "vertical aperture trajectory plus path length summary",
+        'path_vert_med', 'Vertical lip/jaw displacement', 'Vertical-opening cumulative path — median', 'implemented-legacy65', 'B',
+        'Cumulative path of lower-lip vertical movement, median across reps (integration over frame index, dx=1).', 'ICD (cumulative)', (0, 17, 13, 14), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Total vertical excursion travelled. HIGHER in symptomatic ALS (longer, more effortful movement; Bandini 2018).', 'legacy_65_vertical_path_from_aperture',
     ),
     KinematicFeatureSpec(
-        "rom_vert_med", "Vertical lip/jaw displacement", "Vertical range of motion", "implemented-formula", "B",
-        "lower lip vertical aperture trajectory", "ICD-normalized distance", (17, 8, 243, 463), ICD_NORMALIZATION_DESCRIPTION, MEDIAN_IQR_AGGREGATION_DESCRIPTION,
-        "95th minus 5th percentile vertical opening range.", "vertical aperture trajectory plus robust range summary",
+        'path_vert_iqr', 'Vertical lip/jaw displacement', 'Vertical-opening cumulative path — inter-rep IQR', 'implemented-legacy65', 'C',
+        'IQR across reps of vertical cumulative path.', 'ICD', (0, 17, 13, 14), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Consistency of vertical excursion across repetitions; rises with movement variability.', 'legacy_65_vertical_path_from_aperture',
     ),
     KinematicFeatureSpec(
-        "sLL_vert", "Vertical lip/jaw displacement", "Vertical speed", "implemented-formula", "B",
-        "gradient of vertical aperture trajectory", "ICD-normalized distance/s", (17, 8, 243, 463), ICD_NORMALIZATION_DESCRIPTION, ROBUST_AGGREGATION_DESCRIPTION,
-        "Magnitude of lower-lip/jaw vertical movement speed.", "vertical speed summary",
+        'rom_vert_med', 'Vertical lip/jaw displacement', 'Vertical range of motion — median', 'implemented-legacy65', 'B',
+        'Range of normalized vertical lip-opening position (P95-P5), median across reps.', 'ICD', (0, 17, 13, 14), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Mouth-opening amplitude. May REDUCE (lip) or INCREASE (compensatory jaw) in ALS — direction is informative, not fixed.', 'legacy_65_vertical_range_from_aperture',
     ),
     KinematicFeatureSpec(
-        "aLL_vert", "Vertical lip/jaw displacement", "Vertical acceleration", "implemented-formula", "C",
-        "gradient of vertical speed", "ICD-normalized distance/s2", (17, 8, 243, 463), ICD_NORMALIZATION_DESCRIPTION, ROBUST_AGGREGATION_DESCRIPTION,
-        "Magnitude of vertical movement acceleration; sensitive to smoothing and timestamps.", "vertical acceleration summary",
+        'rom_vert_iqr', 'Vertical lip/jaw displacement', 'Vertical range of motion — inter-rep IQR', 'implemented-legacy65', 'C',
+        'IQR across reps of vertical ROM.', 'ICD', (0, 17, 13, 14), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Trial-to-trial consistency of opening amplitude; rises with incoordination.', 'legacy_65_vertical_range_from_aperture',
     ),
     KinematicFeatureSpec(
-        "path_horz_med", "Horizontal lip spread", "Horizontal path length", "implemented-formula", "B",
-        "left-right commissure spread trajectory", "ICD-normalized distance", (61, 291, 243, 463), ICD_NORMALIZATION_DESCRIPTION, MEDIAN_IQR_AGGREGATION_DESCRIPTION,
-        "Total absolute horizontal lip-spread movement over the window or repetition.", "horizontal spread trajectory plus path length summary",
+        'sLL_vert_prc_5', 'Vertical lip/jaw displacement', 'Vertical lip-opening speed — 5th-pct level', 'implemented-legacy65', 'B',
+        'sLL_vert =', 'ICD/s', (0, 17, 13, 14), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Speed of vertical lip/jaw opening. SLOWS with bulbar decline (reduced velocity; Bandini/Yunusova) (5th-pct level: movement amplitude/level).', 'legacy_65_vertical_speed_from_aperture_gradient',
     ),
     KinematicFeatureSpec(
-        "rom_horz_med", "Horizontal lip spread", "Horizontal range of motion", "implemented-formula", "B",
-        "left-right commissure spread trajectory", "ICD-normalized distance", (61, 291, 243, 463), ICD_NORMALIZATION_DESCRIPTION, MEDIAN_IQR_AGGREGATION_DESCRIPTION,
-        "95th minus 5th percentile horizontal lip-spread range.", "horizontal spread trajectory plus robust range summary",
+        'sLL_vert_med', 'Vertical lip/jaw displacement', 'Vertical lip-opening speed — median level', 'implemented-legacy65', 'B',
+        'sLL_vert =', 'ICD/s', (0, 17, 13, 14), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Speed of vertical lip/jaw opening. SLOWS with bulbar decline (reduced velocity; Bandini/Yunusova) (median level: movement amplitude/level).', 'legacy_65_vertical_speed_from_aperture_gradient',
     ),
     KinematicFeatureSpec(
-        "sLL_horz", "Horizontal lip spread", "Horizontal speed", "implemented-formula", "B",
-        "gradient of horizontal spread trajectory", "ICD-normalized distance/s", (61, 291, 243, 463), ICD_NORMALIZATION_DESCRIPTION, ROBUST_AGGREGATION_DESCRIPTION,
-        "Magnitude of horizontal lip-spread speed.", "horizontal speed summary",
+        'sLL_vert_prc_95', 'Vertical lip/jaw displacement', 'Vertical lip-opening speed — 95th-pct level', 'implemented-legacy65', 'B',
+        'sLL_vert =', 'ICD/s', (0, 17, 13, 14), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Speed of vertical lip/jaw opening. SLOWS with bulbar decline (reduced velocity; Bandini/Yunusova) (95th-pct level: movement amplitude/level).', 'legacy_65_vertical_speed_from_aperture_gradient',
     ),
     KinematicFeatureSpec(
-        "aLL_horz", "Horizontal lip spread", "Horizontal acceleration", "implemented-formula", "C",
-        "gradient of horizontal speed", "ICD-normalized distance/s2", (61, 291, 243, 463), ICD_NORMALIZATION_DESCRIPTION, ROBUST_AGGREGATION_DESCRIPTION,
-        "Magnitude of horizontal spread acceleration; sensitive to smoothing and timestamps.", "horizontal acceleration summary",
+        'sLL_vert_prc_5_95', 'Vertical lip/jaw displacement', 'Vertical lip-opening speed — within-rep range', 'implemented-legacy65', 'B',
+        'sLL_vert =', 'ICD/s', (0, 17, 13, 14), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Speed of vertical lip/jaw opening. SLOWS with bulbar decline (reduced velocity; Bandini/Yunusova) (within-rep range: movement amplitude/level).', 'legacy_65_vertical_speed_from_aperture_gradient',
     ),
     KinematicFeatureSpec(
-        "lip_aspect", "Lip aperture geometry", "Lip aspect ratio", "implemented-formula", "B",
-        "vertical lip distance divided by horizontal commissure distance", "ratio", (0, 17, 61, 291, 243, 463), ICD_NORMALIZATION_DESCRIPTION, ROBUST_AGGREGATION_DESCRIPTION,
-        "Relative mouth opening shape: vertical aperture scaled by horizontal lip spread.", "lip aspect ratio summary",
+        'sLL_vert_prc_5_iqr', 'Vertical lip/jaw displacement', 'Vertical lip-opening speed — P5 inter-rep IQR', 'implemented-legacy65', 'C',
+        'sLL_vert =', 'ICD/s', (0, 17, 13, 14), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Speed of vertical lip/jaw opening. SLOWS with bulbar decline (reduced velocity; Bandini/Yunusova) (P5 inter-rep IQR: inter-trial consistency).', 'legacy_65_vertical_speed_from_aperture_gradient',
     ),
     KinematicFeatureSpec(
-        "jaw_lateralization", "Jaw lateralization", "Jaw lateralization ratio", "implemented-formula", "B",
-        "distance lower lip/jaw point to left canthus divided by distance to right canthus", "ratio", (17, 243, 463), ICD_NORMALIZATION_DESCRIPTION, ROBUST_AGGREGATION_DESCRIPTION,
-        "Asymmetry/lateral deviation of the lower jaw or lower lip relative to eye anchors.", "jaw lateralization summary",
+        'sLL_vert_med_iqr', 'Vertical lip/jaw displacement', 'Vertical lip-opening speed — median inter-rep IQR', 'implemented-legacy65', 'C',
+        'sLL_vert =', 'ICD/s', (0, 17, 13, 14), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Speed of vertical lip/jaw opening. SLOWS with bulbar decline (reduced velocity; Bandini/Yunusova) (median inter-rep IQR: inter-trial consistency).', 'legacy_65_vertical_speed_from_aperture_gradient',
     ),
     KinematicFeatureSpec(
-        "lip_symmetry", "Lip symmetry", "Left-right lip motion symmetry", "implemented-formula", "B",
-        "left commissure-to-reference distance divided by right commissure-to-reference distance", "ratio", (61, 291, 8, 243, 463), ICD_NORMALIZATION_DESCRIPTION, ROBUST_AGGREGATION_DESCRIPTION,
-        "Symmetry of left and right oral commissure movement relative to a midline reference.", "lip symmetry summary",
+        'sLL_vert_prc_95_iqr', 'Vertical lip/jaw displacement', 'Vertical lip-opening speed — P95 inter-rep IQR', 'implemented-legacy65', 'C',
+        'sLL_vert =', 'ICD/s', (0, 17, 13, 14), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Speed of vertical lip/jaw opening. SLOWS with bulbar decline (reduced velocity; Bandini/Yunusova) (P95 inter-rep IQR: inter-trial consistency).', 'legacy_65_vertical_speed_from_aperture_gradient',
     ),
     KinematicFeatureSpec(
-        "lat_xcorr", "Bilateral coordination", "Left-right oral commissure cross-correlation", "implemented-formula", "C",
-        "normalized cross-correlation of left and right commissure distance trajectories", "correlation", (61, 291, 8, 243, 463), ICD_NORMALIZATION_DESCRIPTION, "maximum normalized cross-correlation",
-        "Coordination between left and right oral commissure trajectories.", "lateral cross-correlation summary",
+        'sLL_vert_prc_5_95_iqr', 'Vertical lip/jaw displacement', 'Vertical lip-opening speed — range inter-rep IQR', 'implemented-legacy65', 'C',
+        'sLL_vert =', 'ICD/s', (0, 17, 13, 14), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Speed of vertical lip/jaw opening. SLOWS with bulbar decline (reduced velocity; Bandini/Yunusova) (range inter-rep IQR: inter-trial consistency).', 'legacy_65_vertical_speed_from_aperture_gradient',
     ),
+    KinematicFeatureSpec(
+        'aLL_vert_prc_5', 'Vertical lip/jaw displacement', 'Vertical lip-opening acceleration — 5th-pct level', 'implemented-legacy65', 'C',
+        'aLL_vert =', 'ICD/s^2', (0, 17, 13, 14), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Acceleration of vertical opening; peaks decline with bulbar progression. Noise-amplified by double differentiation — interpret cautiously (5th-pct level: movement amplitude/level).', 'legacy_65_vertical_acceleration_from_speed_gradient',
+    ),
+    KinematicFeatureSpec(
+        'aLL_vert_med', 'Vertical lip/jaw displacement', 'Vertical lip-opening acceleration — median level', 'implemented-legacy65', 'C',
+        'aLL_vert =', 'ICD/s^2', (0, 17, 13, 14), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Acceleration of vertical opening; peaks decline with bulbar progression. Noise-amplified by double differentiation — interpret cautiously (median level: movement amplitude/level).', 'legacy_65_vertical_acceleration_from_speed_gradient',
+    ),
+    KinematicFeatureSpec(
+        'aLL_vert_prc_95', 'Vertical lip/jaw displacement', 'Vertical lip-opening acceleration — 95th-pct level', 'implemented-legacy65', 'C',
+        'aLL_vert =', 'ICD/s^2', (0, 17, 13, 14), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Acceleration of vertical opening; peaks decline with bulbar progression. Noise-amplified by double differentiation — interpret cautiously (95th-pct level: movement amplitude/level).', 'legacy_65_vertical_acceleration_from_speed_gradient',
+    ),
+    KinematicFeatureSpec(
+        'aLL_vert_prc_5_95', 'Vertical lip/jaw displacement', 'Vertical lip-opening acceleration — within-rep range', 'implemented-legacy65', 'C',
+        'aLL_vert =', 'ICD/s^2', (0, 17, 13, 14), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Acceleration of vertical opening; peaks decline with bulbar progression. Noise-amplified by double differentiation — interpret cautiously (within-rep range: movement amplitude/level).', 'legacy_65_vertical_acceleration_from_speed_gradient',
+    ),
+    KinematicFeatureSpec(
+        'aLL_vert_prc_5_iqr', 'Vertical lip/jaw displacement', 'Vertical lip-opening acceleration — P5 inter-rep IQR', 'implemented-legacy65', 'C',
+        'aLL_vert =', 'ICD/s^2', (0, 17, 13, 14), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Acceleration of vertical opening; peaks decline with bulbar progression. Noise-amplified by double differentiation — interpret cautiously (P5 inter-rep IQR: inter-trial consistency).', 'legacy_65_vertical_acceleration_from_speed_gradient',
+    ),
+    KinematicFeatureSpec(
+        'aLL_vert_med_iqr', 'Vertical lip/jaw displacement', 'Vertical lip-opening acceleration — median inter-rep IQR', 'implemented-legacy65', 'C',
+        'aLL_vert =', 'ICD/s^2', (0, 17, 13, 14), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Acceleration of vertical opening; peaks decline with bulbar progression. Noise-amplified by double differentiation — interpret cautiously (median inter-rep IQR: inter-trial consistency).', 'legacy_65_vertical_acceleration_from_speed_gradient',
+    ),
+    KinematicFeatureSpec(
+        'aLL_vert_prc_95_iqr', 'Vertical lip/jaw displacement', 'Vertical lip-opening acceleration — P95 inter-rep IQR', 'implemented-legacy65', 'C',
+        'aLL_vert =', 'ICD/s^2', (0, 17, 13, 14), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Acceleration of vertical opening; peaks decline with bulbar progression. Noise-amplified by double differentiation — interpret cautiously (P95 inter-rep IQR: inter-trial consistency).', 'legacy_65_vertical_acceleration_from_speed_gradient',
+    ),
+    KinematicFeatureSpec(
+        'aLL_vert_prc_5_95_iqr', 'Vertical lip/jaw displacement', 'Vertical lip-opening acceleration — range inter-rep IQR', 'implemented-legacy65', 'C',
+        'aLL_vert =', 'ICD/s^2', (0, 17, 13, 14), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Acceleration of vertical opening; peaks decline with bulbar progression. Noise-amplified by double differentiation — interpret cautiously (range inter-rep IQR: inter-trial consistency).', 'legacy_65_vertical_acceleration_from_speed_gradient',
+    ),
+    KinematicFeatureSpec(
+        'path_horz_med', 'Horizontal lip spread', 'Horizontal-spreading cumulative path — median', 'implemented-legacy65', 'B',
+        'Cumulative path of lip-corner horizontal movement, median across reps.', 'ICD (cumulative)', (61, 291), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Total horizontal (spreading/retraction) excursion. HIGHER in symptomatic ALS.', 'legacy_65_horizontal_path_from_spread',
+    ),
+    KinematicFeatureSpec(
+        'path_horz_iqr', 'Horizontal lip spread', 'Horizontal-spreading cumulative path — inter-rep IQR', 'implemented-legacy65', 'C',
+        'IQR across reps of horizontal cumulative path.', 'ICD', (61, 291), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Consistency of horizontal excursion across reps.', 'legacy_65_horizontal_path_from_spread',
+    ),
+    KinematicFeatureSpec(
+        'rom_horz_med', 'Horizontal lip spread', 'Horizontal range of motion — median', 'implemented-legacy65', 'B',
+        'Range of normalized lip-width (P95-P5), median across reps.', 'ICD', (61, 291), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Lip spreading/retraction amplitude (e.g., /i/ vs /u/). Compressed range = reduced lingual-labial differentiation.', 'legacy_65_horizontal_range_from_spread',
+    ),
+    KinematicFeatureSpec(
+        'rom_horz_iqr', 'Horizontal lip spread', 'Horizontal range of motion — inter-rep IQR', 'implemented-legacy65', 'C',
+        'IQR across reps of horizontal ROM.', 'ICD', (61, 291), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Trial-to-trial consistency of spreading amplitude.', 'legacy_65_horizontal_range_from_spread',
+    ),
+    KinematicFeatureSpec(
+        'sLL_horz_prc_5', 'Horizontal lip spread', 'Horizontal lip-spreading speed — 5th-pct level', 'implemented-legacy65', 'B',
+        'sLL_horz =', 'ICD/s', (61, 291), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Speed of lip spreading/retraction. Slows with bulbar decline (5th-pct level: movement amplitude/level).', 'legacy_65_horizontal_speed_from_spread_gradient',
+    ),
+    KinematicFeatureSpec(
+        'sLL_horz_med', 'Horizontal lip spread', 'Horizontal lip-spreading speed — median level', 'implemented-legacy65', 'B',
+        'sLL_horz =', 'ICD/s', (61, 291), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Speed of lip spreading/retraction. Slows with bulbar decline (median level: movement amplitude/level).', 'legacy_65_horizontal_speed_from_spread_gradient',
+    ),
+    KinematicFeatureSpec(
+        'sLL_horz_prc_95', 'Horizontal lip spread', 'Horizontal lip-spreading speed — 95th-pct level', 'implemented-legacy65', 'B',
+        'sLL_horz =', 'ICD/s', (61, 291), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Speed of lip spreading/retraction. Slows with bulbar decline (95th-pct level: movement amplitude/level).', 'legacy_65_horizontal_speed_from_spread_gradient',
+    ),
+    KinematicFeatureSpec(
+        'sLL_horz_prc_5_95', 'Horizontal lip spread', 'Horizontal lip-spreading speed — within-rep range', 'implemented-legacy65', 'B',
+        'sLL_horz =', 'ICD/s', (61, 291), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Speed of lip spreading/retraction. Slows with bulbar decline (within-rep range: movement amplitude/level).', 'legacy_65_horizontal_speed_from_spread_gradient',
+    ),
+    KinematicFeatureSpec(
+        'sLL_horz_prc_5_iqr', 'Horizontal lip spread', 'Horizontal lip-spreading speed — P5 inter-rep IQR', 'implemented-legacy65', 'C',
+        'sLL_horz =', 'ICD/s', (61, 291), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Speed of lip spreading/retraction. Slows with bulbar decline (P5 inter-rep IQR: inter-trial consistency).', 'legacy_65_horizontal_speed_from_spread_gradient',
+    ),
+    KinematicFeatureSpec(
+        'sLL_horz_med_iqr', 'Horizontal lip spread', 'Horizontal lip-spreading speed — median inter-rep IQR', 'implemented-legacy65', 'C',
+        'sLL_horz =', 'ICD/s', (61, 291), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Speed of lip spreading/retraction. Slows with bulbar decline (median inter-rep IQR: inter-trial consistency).', 'legacy_65_horizontal_speed_from_spread_gradient',
+    ),
+    KinematicFeatureSpec(
+        'sLL_horz_prc_95_iqr', 'Horizontal lip spread', 'Horizontal lip-spreading speed — P95 inter-rep IQR', 'implemented-legacy65', 'C',
+        'sLL_horz =', 'ICD/s', (61, 291), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Speed of lip spreading/retraction. Slows with bulbar decline (P95 inter-rep IQR: inter-trial consistency).', 'legacy_65_horizontal_speed_from_spread_gradient',
+    ),
+    KinematicFeatureSpec(
+        'sLL_horz_prc_5_95_iqr', 'Horizontal lip spread', 'Horizontal lip-spreading speed — range inter-rep IQR', 'implemented-legacy65', 'C',
+        'sLL_horz =', 'ICD/s', (61, 291), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Speed of lip spreading/retraction. Slows with bulbar decline (range inter-rep IQR: inter-trial consistency).', 'legacy_65_horizontal_speed_from_spread_gradient',
+    ),
+    KinematicFeatureSpec(
+        'aLL_horz_prc_5', 'Horizontal lip spread', 'Horizontal lip-spreading acceleration — 5th-pct level', 'implemented-legacy65', 'C',
+        'aLL_horz =', 'ICD/s^2', (61, 291), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Acceleration of spreading; noise-amplified by double differentiation (5th-pct level: movement amplitude/level).', 'legacy_65_horizontal_acceleration_from_speed_gradient',
+    ),
+    KinematicFeatureSpec(
+        'aLL_horz_med', 'Horizontal lip spread', 'Horizontal lip-spreading acceleration — median level', 'implemented-legacy65', 'C',
+        'aLL_horz =', 'ICD/s^2', (61, 291), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Acceleration of spreading; noise-amplified by double differentiation (median level: movement amplitude/level).', 'legacy_65_horizontal_acceleration_from_speed_gradient',
+    ),
+    KinematicFeatureSpec(
+        'aLL_horz_prc_95', 'Horizontal lip spread', 'Horizontal lip-spreading acceleration — 95th-pct level', 'implemented-legacy65', 'C',
+        'aLL_horz =', 'ICD/s^2', (61, 291), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Acceleration of spreading; noise-amplified by double differentiation (95th-pct level: movement amplitude/level).', 'legacy_65_horizontal_acceleration_from_speed_gradient',
+    ),
+    KinematicFeatureSpec(
+        'aLL_horz_prc_5_95', 'Horizontal lip spread', 'Horizontal lip-spreading acceleration — within-rep range', 'implemented-legacy65', 'C',
+        'aLL_horz =', 'ICD/s^2', (61, 291), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Acceleration of spreading; noise-amplified by double differentiation (within-rep range: movement amplitude/level).', 'legacy_65_horizontal_acceleration_from_speed_gradient',
+    ),
+    KinematicFeatureSpec(
+        'aLL_horz_prc_5_iqr', 'Horizontal lip spread', 'Horizontal lip-spreading acceleration — P5 inter-rep IQR', 'implemented-legacy65', 'C',
+        'aLL_horz =', 'ICD/s^2', (61, 291), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Acceleration of spreading; noise-amplified by double differentiation (P5 inter-rep IQR: inter-trial consistency).', 'legacy_65_horizontal_acceleration_from_speed_gradient',
+    ),
+    KinematicFeatureSpec(
+        'aLL_horz_med_iqr', 'Horizontal lip spread', 'Horizontal lip-spreading acceleration — median inter-rep IQR', 'implemented-legacy65', 'C',
+        'aLL_horz =', 'ICD/s^2', (61, 291), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Acceleration of spreading; noise-amplified by double differentiation (median inter-rep IQR: inter-trial consistency).', 'legacy_65_horizontal_acceleration_from_speed_gradient',
+    ),
+    KinematicFeatureSpec(
+        'aLL_horz_prc_95_iqr', 'Horizontal lip spread', 'Horizontal lip-spreading acceleration — P95 inter-rep IQR', 'implemented-legacy65', 'C',
+        'aLL_horz =', 'ICD/s^2', (61, 291), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Acceleration of spreading; noise-amplified by double differentiation (P95 inter-rep IQR: inter-trial consistency).', 'legacy_65_horizontal_acceleration_from_speed_gradient',
+    ),
+    KinematicFeatureSpec(
+        'aLL_horz_prc_5_95_iqr', 'Horizontal lip spread', 'Horizontal lip-spreading acceleration — range inter-rep IQR', 'implemented-legacy65', 'C',
+        'aLL_horz =', 'ICD/s^2', (61, 291), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Acceleration of spreading; noise-amplified by double differentiation (range inter-rep IQR: inter-trial consistency).', 'legacy_65_horizontal_acceleration_from_speed_gradient',
+    ),
+    KinematicFeatureSpec(
+        'aspect_prc_5', 'Lip aperture geometry', 'Lip aspect ratio (vert/horz) — 5th-pct level', 'implemented-legacy65', 'C',
+        'aspect = (', 'dimensionless', (0, 17, 13, 14, 61, 291), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Mouth configuration (tall vs wide). Tracks opening-vs-spreading balance; near-collinear with vertical opening (5th-pct level: movement amplitude/level).', 'legacy_65_aspect_ratio',
+    ),
+    KinematicFeatureSpec(
+        'aspect_med', 'Lip aperture geometry', 'Lip aspect ratio (vert/horz) — median level', 'implemented-legacy65', 'C',
+        'aspect = (', 'dimensionless', (0, 17, 13, 14, 61, 291), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Mouth configuration (tall vs wide). Tracks opening-vs-spreading balance; near-collinear with vertical opening (median level: movement amplitude/level).', 'legacy_65_aspect_ratio',
+    ),
+    KinematicFeatureSpec(
+        'aspect_prc_95', 'Lip aperture geometry', 'Lip aspect ratio (vert/horz) — 95th-pct level', 'implemented-legacy65', 'C',
+        'aspect = (', 'dimensionless', (0, 17, 13, 14, 61, 291), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Mouth configuration (tall vs wide). Tracks opening-vs-spreading balance; near-collinear with vertical opening (95th-pct level: movement amplitude/level).', 'legacy_65_aspect_ratio',
+    ),
+    KinematicFeatureSpec(
+        'aspect_prc_5_95', 'Lip aperture geometry', 'Lip aspect ratio (vert/horz) — within-rep range', 'implemented-legacy65', 'C',
+        'aspect = (', 'dimensionless', (0, 17, 13, 14, 61, 291), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Mouth configuration (tall vs wide). Tracks opening-vs-spreading balance; near-collinear with vertical opening (within-rep range: movement amplitude/level).', 'legacy_65_aspect_ratio',
+    ),
+    KinematicFeatureSpec(
+        'aspect_prc_5_iqr', 'Lip aperture geometry', 'Lip aspect ratio (vert/horz) — P5 inter-rep IQR', 'implemented-legacy65', 'C',
+        'aspect = (', 'dimensionless', (0, 17, 13, 14, 61, 291), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Mouth configuration (tall vs wide). Tracks opening-vs-spreading balance; near-collinear with vertical opening (P5 inter-rep IQR: inter-trial consistency).', 'legacy_65_aspect_ratio',
+    ),
+    KinematicFeatureSpec(
+        'aspect_med_iqr', 'Lip aperture geometry', 'Lip aspect ratio (vert/horz) — median inter-rep IQR', 'implemented-legacy65', 'C',
+        'aspect = (', 'dimensionless', (0, 17, 13, 14, 61, 291), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Mouth configuration (tall vs wide). Tracks opening-vs-spreading balance; near-collinear with vertical opening (median inter-rep IQR: inter-trial consistency).', 'legacy_65_aspect_ratio',
+    ),
+    KinematicFeatureSpec(
+        'aspect_prc_95_iqr', 'Lip aperture geometry', 'Lip aspect ratio (vert/horz) — P95 inter-rep IQR', 'implemented-legacy65', 'C',
+        'aspect = (', 'dimensionless', (0, 17, 13, 14, 61, 291), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Mouth configuration (tall vs wide). Tracks opening-vs-spreading balance; near-collinear with vertical opening (P95 inter-rep IQR: inter-trial consistency).', 'legacy_65_aspect_ratio',
+    ),
+    KinematicFeatureSpec(
+        'aspect_prc_5_95_iqr', 'Lip aperture geometry', 'Lip aspect ratio (vert/horz) — range inter-rep IQR', 'implemented-legacy65', 'C',
+        'aspect = (', 'dimensionless', (0, 17, 13, 14, 61, 291), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Mouth configuration (tall vs wide). Tracks opening-vs-spreading balance; near-collinear with vertical opening (range inter-rep IQR: inter-trial consistency).', 'legacy_65_aspect_ratio',
+    ),
+    KinematicFeatureSpec(
+        'jaw_lat_prc_5', 'Jaw lateralization', 'Jaw lateral deviation (L/R) — 5th-pct level', 'implemented-legacy65', 'C',
+        'jaw_lat = (', 'ratio (~1 centred)', (17, 14, 243, 463, 133, 362, 33, 263), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Lateral jaw deviation from midline. Deviation from 1.0 (either direction) flags asymmetric jaw movement / unilateral weakness (5th-pct level: movement amplitude/level).', 'legacy_65_jaw_lateralization_ratio',
+    ),
+    KinematicFeatureSpec(
+        'jaw_lat_med', 'Jaw lateralization', 'Jaw lateral deviation (L/R) — median level', 'implemented-legacy65', 'C',
+        'jaw_lat = (', 'ratio (~1 centred)', (17, 14, 243, 463, 133, 362, 33, 263), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Lateral jaw deviation from midline. Deviation from 1.0 (either direction) flags asymmetric jaw movement / unilateral weakness (median level: movement amplitude/level).', 'legacy_65_jaw_lateralization_ratio',
+    ),
+    KinematicFeatureSpec(
+        'jaw_lat_prc_95', 'Jaw lateralization', 'Jaw lateral deviation (L/R) — 95th-pct level', 'implemented-legacy65', 'C',
+        'jaw_lat = (', 'ratio (~1 centred)', (17, 14, 243, 463, 133, 362, 33, 263), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Lateral jaw deviation from midline. Deviation from 1.0 (either direction) flags asymmetric jaw movement / unilateral weakness (95th-pct level: movement amplitude/level).', 'legacy_65_jaw_lateralization_ratio',
+    ),
+    KinematicFeatureSpec(
+        'jaw_lat_prc_5_95', 'Jaw lateralization', 'Jaw lateral deviation (L/R) — within-rep range', 'implemented-legacy65', 'C',
+        'jaw_lat = (', 'ratio (~1 centred)', (17, 14, 243, 463, 133, 362, 33, 263), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Lateral jaw deviation from midline. Deviation from 1.0 (either direction) flags asymmetric jaw movement / unilateral weakness (within-rep range: movement amplitude/level).', 'legacy_65_jaw_lateralization_ratio',
+    ),
+    KinematicFeatureSpec(
+        'jaw_lat_prc_5_iqr', 'Jaw lateralization', 'Jaw lateral deviation (L/R) — P5 inter-rep IQR', 'implemented-legacy65', 'C',
+        'jaw_lat = (', 'ratio (~1 centred)', (17, 14, 243, 463, 133, 362, 33, 263), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Lateral jaw deviation from midline. Deviation from 1.0 (either direction) flags asymmetric jaw movement / unilateral weakness (P5 inter-rep IQR: inter-trial consistency).', 'legacy_65_jaw_lateralization_ratio',
+    ),
+    KinematicFeatureSpec(
+        'jaw_lat_med_iqr', 'Jaw lateralization', 'Jaw lateral deviation (L/R) — median inter-rep IQR', 'implemented-legacy65', 'C',
+        'jaw_lat = (', 'ratio (~1 centred)', (17, 14, 243, 463, 133, 362, 33, 263), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Lateral jaw deviation from midline. Deviation from 1.0 (either direction) flags asymmetric jaw movement / unilateral weakness (median inter-rep IQR: inter-trial consistency).', 'legacy_65_jaw_lateralization_ratio',
+    ),
+    KinematicFeatureSpec(
+        'jaw_lat_prc_95_iqr', 'Jaw lateralization', 'Jaw lateral deviation (L/R) — P95 inter-rep IQR', 'implemented-legacy65', 'C',
+        'jaw_lat = (', 'ratio (~1 centred)', (17, 14, 243, 463, 133, 362, 33, 263), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Lateral jaw deviation from midline. Deviation from 1.0 (either direction) flags asymmetric jaw movement / unilateral weakness (P95 inter-rep IQR: inter-trial consistency).', 'legacy_65_jaw_lateralization_ratio',
+    ),
+    KinematicFeatureSpec(
+        'jaw_lat_prc_5_95_iqr', 'Jaw lateralization', 'Jaw lateral deviation (L/R) — range inter-rep IQR', 'implemented-legacy65', 'C',
+        'jaw_lat = (', 'ratio (~1 centred)', (17, 14, 243, 463, 133, 362, 33, 263), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Lateral jaw deviation from midline. Deviation from 1.0 (either direction) flags asymmetric jaw movement / unilateral weakness (range inter-rep IQR: inter-trial consistency).', 'legacy_65_jaw_lateralization_ratio',
+    ),
+    KinematicFeatureSpec(
+        'lip_symm_ratio_prc_5', 'Lip symmetry', 'Lip motion symmetry (L/R) — 5th-pct level', 'implemented-legacy65', 'C',
+        'lip_symm_ratio = (', 'ratio (~1 symmetric)', (61, 291, 8), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Left-right lip-movement symmetry. Departure from 1.0 indicates asymmetric oral-commissure excursion (lower-facial weakness) (5th-pct level: movement amplitude/level).', 'legacy_65_lip_symmetry_ratio',
+    ),
+    KinematicFeatureSpec(
+        'lip_symm_ratio_med', 'Lip symmetry', 'Lip motion symmetry (L/R) — median level', 'implemented-legacy65', 'C',
+        'lip_symm_ratio = (', 'ratio (~1 symmetric)', (61, 291, 8), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Left-right lip-movement symmetry. Departure from 1.0 indicates asymmetric oral-commissure excursion (lower-facial weakness) (median level: movement amplitude/level).', 'legacy_65_lip_symmetry_ratio',
+    ),
+    KinematicFeatureSpec(
+        'lip_symm_ratio_prc_95', 'Lip symmetry', 'Lip motion symmetry (L/R) — 95th-pct level', 'implemented-legacy65', 'C',
+        'lip_symm_ratio = (', 'ratio (~1 symmetric)', (61, 291, 8), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Left-right lip-movement symmetry. Departure from 1.0 indicates asymmetric oral-commissure excursion (lower-facial weakness) (95th-pct level: movement amplitude/level).', 'legacy_65_lip_symmetry_ratio',
+    ),
+    KinematicFeatureSpec(
+        'lip_symm_ratio_prc_5_95', 'Lip symmetry', 'Lip motion symmetry (L/R) — within-rep range', 'implemented-legacy65', 'C',
+        'lip_symm_ratio = (', 'ratio (~1 symmetric)', (61, 291, 8), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Left-right lip-movement symmetry. Departure from 1.0 indicates asymmetric oral-commissure excursion (lower-facial weakness) (within-rep range: movement amplitude/level).', 'legacy_65_lip_symmetry_ratio',
+    ),
+    KinematicFeatureSpec(
+        'lip_symm_ratio_prc_5_iqr', 'Lip symmetry', 'Lip motion symmetry (L/R) — P5 inter-rep IQR', 'implemented-legacy65', 'C',
+        'lip_symm_ratio = (', 'ratio (~1 symmetric)', (61, 291, 8), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Left-right lip-movement symmetry. Departure from 1.0 indicates asymmetric oral-commissure excursion (lower-facial weakness) (P5 inter-rep IQR: inter-trial consistency).', 'legacy_65_lip_symmetry_ratio',
+    ),
+    KinematicFeatureSpec(
+        'lip_symm_ratio_med_iqr', 'Lip symmetry', 'Lip motion symmetry (L/R) — median inter-rep IQR', 'implemented-legacy65', 'C',
+        'lip_symm_ratio = (', 'ratio (~1 symmetric)', (61, 291, 8), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Left-right lip-movement symmetry. Departure from 1.0 indicates asymmetric oral-commissure excursion (lower-facial weakness) (median inter-rep IQR: inter-trial consistency).', 'legacy_65_lip_symmetry_ratio',
+    ),
+    KinematicFeatureSpec(
+        'lip_symm_ratio_prc_95_iqr', 'Lip symmetry', 'Lip motion symmetry (L/R) — P95 inter-rep IQR', 'implemented-legacy65', 'C',
+        'lip_symm_ratio = (', 'ratio (~1 symmetric)', (61, 291, 8), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Left-right lip-movement symmetry. Departure from 1.0 indicates asymmetric oral-commissure excursion (lower-facial weakness) (P95 inter-rep IQR: inter-trial consistency).', 'legacy_65_lip_symmetry_ratio',
+    ),
+    KinematicFeatureSpec(
+        'lip_symm_ratio_prc_5_95_iqr', 'Lip symmetry', 'Lip motion symmetry (L/R) — range inter-rep IQR', 'implemented-legacy65', 'C',
+        'lip_symm_ratio = (', 'ratio (~1 symmetric)', (61, 291, 8), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Left-right lip-movement symmetry. Departure from 1.0 indicates asymmetric oral-commissure excursion (lower-facial weakness) (range inter-rep IQR: inter-trial consistency).', 'legacy_65_lip_symmetry_ratio',
+    ),
+    KinematicFeatureSpec(
+        'lat_xcorr', 'Bilateral coordination', 'Bilateral commissure coordination', 'implemented-legacy65', 'C',
+        'Max normalized cross-correlation of left vs right commissure trajectories (single scalar over the whole signal).', 'corr (~[-1,1])', (61, 291, 8), 'intercanthal-normalized coordinate layer; default GUI scale uses 133/362 with 33/263 fallback; legacy feature-map ratios also use 243/463 when available', 'movement-window robust percentiles: p05, median, p95, p95-p05; median and IQR across windows',
+        'Coordination/synchrony of the two mouth corners. LOWER = less coordinated bilateral movement (dyscoordination/asymmetric timing).', 'legacy_65_bilateral_commissure_xcorr',
+    )
 )
 
 
@@ -141,8 +406,8 @@ QC_FEATURE_REQUIREMENTS: tuple[dict[str, str], ...] = (
     },
     {
         "Parameter": "ICD availability",
-        "Recommended threshold": "landmarks 243 and 463 valid for most detected frames",
-        "Reason": "The current formulas normalize distances by intercanthal distance; unstable anchors corrupt every ICD-normalized feature.",
+        "Recommended threshold": "normalized landmark layer valid; 243/463 available for legacy lateralization ratios when possible",
+        "Reason": "Most distances are computed from normalized coordinates. Legacy lateralization ratios also use canthus reference landmarks when available.",
     },
     {
         "Parameter": "Long no-face gaps",
@@ -171,7 +436,7 @@ KINEMATIC_FEATURE_FRAMEWORK: tuple[dict[str, str], ...] = (
     {
         "Feature family": "Vertical lip/jaw opening",
         "Primary constructs": "aperture, range of motion, cumulative path, speed, acceleration",
-        "Current implementation": "implemented kernel: mouth_aperture + velocity/path/range summaries",
+        "Current implementation": "implemented 65-feature scalar layer: path_vert_*, rom_vert_*, sLL_vert_*, aLL_vert_*",
         "Best tasks": "open-close, DDK, Buy Bobby a Puppy, sentence/passage",
         "ALS/PD relevance": "ALS bulbar slowing and reduced/compensatory range; PD speech/facial bradykinesia exploratory",
         "Evidence status": "literature-informed research feature family",
@@ -179,7 +444,7 @@ KINEMATIC_FEATURE_FRAMEWORK: tuple[dict[str, str], ...] = (
     {
         "Feature family": "Horizontal lip spreading/retraction",
         "Primary constructs": "outer/inner lip spread, horizontal ROM, speed, acceleration",
-        "Current implementation": "implemented kernel: outer_lip_spread, inner_lip_spread + summary derivatives",
+        "Current implementation": "implemented 65-feature scalar layer: path_horz_*, rom_horz_*, sLL_horz_*, aLL_horz_*",
         "Best tasks": "smile/spread, /i/-loaded sentence, connected speech",
         "ALS/PD relevance": "ALS lower-face weakness and PD hypomimia/masked facial movement",
         "Evidence status": "literature-informed; task-specific validation needed",
@@ -187,7 +452,7 @@ KINEMATIC_FEATURE_FRAMEWORK: tuple[dict[str, str], ...] = (
     {
         "Feature family": "Mouth shape / aspect",
         "Primary constructs": "aperture-to-spread ratio and robust shape summaries",
-        "Current implementation": "implemented kernel: lip_aspect_ratio",
+        "Current implementation": "implemented 65-feature scalar layer: aspect_*",
         "Best tasks": "open-close, speech tasks with alternating vowels/consonants",
         "ALS/PD relevance": "configuration change, reduced oral shaping, compensatory jaw/lip strategy",
         "Evidence status": "translational feature derived from geometric oral-motor constructs",
@@ -195,7 +460,7 @@ KINEMATIC_FEATURE_FRAMEWORK: tuple[dict[str, str], ...] = (
     {
         "Feature family": "Jaw/lower-face displacement",
         "Primary constructs": "chin/nose distance, lower-lip-to-chin distance, lower-face motion",
-        "Current implementation": "implemented kernel: jaw_to_nose, lower_lip_to_chin",
+        "Current implementation": "implemented scalar support signals plus legacy jaw_lat_* lateralization ratios",
         "Best tasks": "max open, speech with large jaw excursion",
         "ALS/PD relevance": "jaw compensation, slowing, reduced or excessive excursion",
         "Evidence status": "literature-informed, but MediaPipe chin points are anatomical proxies",
@@ -203,7 +468,7 @@ KINEMATIC_FEATURE_FRAMEWORK: tuple[dict[str, str], ...] = (
     {
         "Feature family": "Symmetry and lateralization",
         "Primary constructs": "left-right corner asymmetry, jaw/lip lateral balance",
-        "Current implementation": "implemented kernel: corner_vertical_asymmetry, corner_lateral_asymmetry",
+        "Current implementation": "implemented 65-feature scalar layer: jaw_lat_* and lip_symm_ratio_*",
         "Best tasks": "smile/spread, pucker, speech, non-speech facial tasks",
         "ALS/PD relevance": "unilateral lower-face weakness, asymmetric recruitment, exploratory PD asymmetry",
         "Evidence status": "moderate; requires visual QC and task-specific interpretation",
@@ -211,7 +476,7 @@ KINEMATIC_FEATURE_FRAMEWORK: tuple[dict[str, str], ...] = (
     {
         "Feature family": "Coordination and timing",
         "Primary constructs": "bilateral correlation, movement segmentation, repetition consistency",
-        "Current implementation": "partial: movement windows and repetition range summaries; full correlation library to be built",
+        "Current implementation": "implemented legacy lat_xcorr plus movement windows; broader coordination/timing library remains planned",
         "Best tasks": "DDK/AMR/SMR, repeated open-close, connected speech",
         "ALS/PD relevance": "incoordination, irregularity, bradykinesia, reduced movement synchrony",
         "Evidence status": "planned expansion; needs dataset calibration",
@@ -238,7 +503,7 @@ KINEMATIC_FEATURE_IMPLEMENTATION_AUDIT: tuple[dict[str, str], ...] = (
     {
         "Audit item": "Current computation",
         "Decision": "Compute the implemented oral-motor kernel after normalization and QC",
-        "Rationale": "The current backend emits frame-level signals and robust per-video summaries from normalized trajectories; field-map expansion should be implemented incrementally with tests.",
+        "Rationale": "The current backend emits the 65 scalar names from the uploaded feature map, plus frame-level support signals. Future expansion should focus on task-specific presets, visual QC gating and clinical validation rather than hidden formula changes.",
     },
 )
 
@@ -269,18 +534,16 @@ def write_feature_framework_catalog(output_root: Path | str) -> dict[str, Path]:
     feature_framework_dataframe().to_csv(framework_csv, index=False)
     feature_implementation_audit_dataframe().to_csv(audit_csv, index=False)
     payload = {
-        "status": "FEATURE_FRAMEWORK_ROADMAP_WITH_IMPLEMENTED_KERNEL",
+        "status": "FEATURE_FRAMEWORK_WITH_IMPLEMENTED_65_SCALAR_LAYER",
         "purpose": "Document kinematic feature families, current implementation coverage, and scientific cautions.",
         "implemented_now": [
-            "mouth aperture and robust summaries",
-            "lip spread and robust summaries",
-            "mouth aspect ratio",
-            "jaw/lower-face proxy distances",
-            "mouth-corner asymmetry",
-            "movement-window summaries",
+            "65 scalar features from the uploaded kinematic feature map",
+            "vertical opening path, ROM, speed and acceleration families",
+            "horizontal spreading path, ROM, speed and acceleration families",
+            "aspect, jaw lateralization, lip symmetry and bilateral xcorr features",
+            "backward-compatible support signals for mouth aperture, lip spread and lower-face geometry",
         ],
         "planned_expansion": [
-            "full 65-feature field-map parity",
             "task-specific feature presets",
             "complete coordination/correlation library",
             "jerk, stiffness, duration and repetition timing features",
@@ -325,11 +588,14 @@ class FeatureComputationConfig:
 
 
 _FEATURE_DEFINITIONS: dict[str, dict] = {
+    # Canonical feature-map aperture signal. Prefer the uploaded-map landmarks
+    # 0/17; fall back to the older visual preset 13/14 for backward-compatible
+    # projects that do not contain 0/17.
     "mouth_aperture": {
-        "kind": "distance",
-        "points": (13, 14),
+        "kind": "distance_preferred_pairs",
+        "pairs": ((0, 17), (13, 14)),
         "family": "oral_aperture",
-        "description": "Upper-lower lip opening distance.",
+        "description": "Upper-lower lip opening distance; preferred feature-map pair 0/17, fallback 13/14.",
     },
     "outer_lip_spread": {
         "kind": "distance",
@@ -350,10 +616,10 @@ _FEATURE_DEFINITIONS: dict[str, dict] = {
         "description": "Chin-to-midface/nose reference distance.",
     },
     "lower_lip_to_chin": {
-        "kind": "distance",
-        "points": (14, 152),
+        "kind": "distance_preferred_pairs",
+        "pairs": ((14, 152), (17, 152)),
         "family": "lower_face_geometry",
-        "description": "Lower lip-to-chin distance.",
+        "description": "Lower lip-to-chin distance; fallback available for feature-map lip point.",
     },
     "lip_aspect_ratio": {
         "kind": "ratio",
@@ -361,6 +627,20 @@ _FEATURE_DEFINITIONS: dict[str, dict] = {
         "denominator": "outer_lip_spread",
         "family": "oral_aperture",
         "description": "Mouth aperture divided by outer lip spread.",
+    },
+    "jaw_lateralization": {
+        "kind": "ratio_of_distances",
+        "numerator_pairs": ((17, 243), (14, 243), (17, 133), (14, 133), (17, 33), (14, 33)),
+        "denominator_pairs": ((17, 463), (14, 463), (17, 362), (14, 362), (17, 263), (14, 263)),
+        "family": "jaw_lateralization",
+        "description": "Lower-lip/jaw distance to left canthus divided by distance to right canthus.",
+    },
+    "lip_symmetry_ratio": {
+        "kind": "ratio_of_distances",
+        "numerator_pairs": ((291, 8), (291, 1)),
+        "denominator_pairs": ((61, 8), (61, 1)),
+        "family": "lip_symmetry",
+        "description": "Left versus right commissure distance to midline forehead/reference point.",
     },
     "corner_vertical_asymmetry": {
         "kind": "abs_delta_axis",
@@ -375,6 +655,18 @@ _FEATURE_DEFINITIONS: dict[str, dict] = {
         "axis": "x_norm",
         "family": "lip_symmetry",
         "description": "Absolute left-right lateral imbalance of mouth corners after centering.",
+    },
+    "left_commissure_reference_distance": {
+        "kind": "distance_preferred_pairs",
+        "pairs": ((291, 8), (291, 1)),
+        "family": "bilateral_coordination",
+        "description": "Left commissure distance to forehead/reference point for bilateral coordination.",
+    },
+    "right_commissure_reference_distance": {
+        "kind": "distance_preferred_pairs",
+        "pairs": ((61, 8), (61, 1)),
+        "family": "bilateral_coordination",
+        "description": "Right commissure distance to forehead/reference point for bilateral coordination.",
     },
 }
 
@@ -495,6 +787,21 @@ def _distance(df: pd.DataFrame, a: int, b: int) -> np.ndarray:
     return np.sqrt(np.nansum((_point_matrix(df, a) - _point_matrix(df, b)) ** 2, axis=1))
 
 
+def _distance_first_available(df: pd.DataFrame, pairs: Iterable[tuple[int, int]]) -> tuple[np.ndarray | None, tuple[int, int] | None]:
+    for a, b in pairs:
+        if _has_point(df, int(a)) and _has_point(df, int(b)):
+            return _distance(df, int(a), int(b)), (int(a), int(b))
+    return None, None
+
+
+def _ratio_first_available(df: pd.DataFrame, numerator_pairs: Iterable[tuple[int, int]], denominator_pairs: Iterable[tuple[int, int]]) -> tuple[np.ndarray | None, tuple[int, int] | None, tuple[int, int] | None]:
+    num, npair = _distance_first_available(df, numerator_pairs)
+    den, dpair = _distance_first_available(df, denominator_pairs)
+    if num is None or den is None:
+        return None, npair, dpair
+    return _safe_ratio(num, den), npair, dpair
+
+
 def _axis(df: pd.DataFrame, idx: int, axis: str) -> np.ndarray:
     col = f"{idx}_{axis}"
     return pd.to_numeric(df[col], errors="coerce").to_numpy(dtype=float)
@@ -596,6 +903,12 @@ def compute_feature_timeseries(df: pd.DataFrame, cfg: FeatureComputationConfig) 
                     missing_feature_inputs.add(name)
                     continue
                 raw_signals[name] = _distance(df, a, b)
+            elif kind == "distance_preferred_pairs":
+                values, pair = _distance_first_available(df, definition["pairs"])
+                if values is None:
+                    missing_feature_inputs.add(name)
+                    continue
+                raw_signals[name] = values
             elif kind == "ratio":
                 num = raw_signals.get(definition["numerator"])
                 den = raw_signals.get(definition["denominator"])
@@ -603,6 +916,12 @@ def compute_feature_timeseries(df: pd.DataFrame, cfg: FeatureComputationConfig) 
                     missing_feature_inputs.add(name)
                     continue
                 raw_signals[name] = _safe_ratio(num, den)
+            elif kind == "ratio_of_distances":
+                values, npair, dpair = _ratio_first_available(df, definition["numerator_pairs"], definition["denominator_pairs"])
+                if values is None:
+                    missing_feature_inputs.add(name)
+                    continue
+                raw_signals[name] = values
             elif kind == "abs_delta_axis":
                 a, b = definition["points"]
                 axis = definition["axis"]
@@ -655,6 +974,121 @@ def compute_feature_timeseries(df: pd.DataFrame, cfg: FeatureComputationConfig) 
     return out, meta
 
 
+def _window_values(ts: pd.DataFrame, col: str) -> list[np.ndarray]:
+    if col not in ts.columns:
+        return []
+    if "movement_id" not in ts.columns:
+        vals = ts[col].to_numpy(dtype=float)
+        return [vals] if vals.size else []
+    windows: list[np.ndarray] = []
+    mids = [int(v) for v in pd.unique(ts["movement_id"]) if int(v) >= 0]
+    for mid in sorted(mids):
+        vals = ts.loc[ts["movement_id"] == mid, col].to_numpy(dtype=float)
+        if vals.size:
+            windows.append(vals)
+    if not windows:
+        vals = ts[col].to_numpy(dtype=float)
+        return [vals] if vals.size else []
+    return windows
+
+
+def _window_stat_arrays(ts: pd.DataFrame, col: str) -> dict[str, np.ndarray]:
+    rows: dict[str, list[float]] = {"prc_5": [], "med": [], "prc_95": [], "prc_5_95": []}
+    for vals in _window_values(ts, col):
+        vals = np.asarray(vals, dtype=float)
+        vals = vals[np.isfinite(vals)]
+        if vals.size == 0:
+            continue
+        p05 = float(np.nanpercentile(vals, 5))
+        p50 = float(np.nanmedian(vals))
+        p95 = float(np.nanpercentile(vals, 95))
+        rows["prc_5"].append(p05)
+        rows["med"].append(p50)
+        rows["prc_95"].append(p95)
+        rows["prc_5_95"].append(p95 - p05)
+    return {k: np.asarray(v, dtype=float) for k, v in rows.items()}
+
+
+def _add_level_family_features(row: dict[str, object], ts: pd.DataFrame, col: str, prefix: str) -> None:
+    arrays = _window_stat_arrays(ts, col)
+    for suffix, values in arrays.items():
+        row[f"{prefix}_{suffix}"] = float(np.nanmedian(values)) if values.size else math.nan
+        row[f"{prefix}_{suffix}_iqr"] = _iqr(values) if values.size else math.nan
+
+
+def _add_path_rom_features(row: dict[str, object], ts: pd.DataFrame, col: str, path_prefix: str, rom_prefix: str) -> None:
+    paths: list[float] = []
+    roms: list[float] = []
+    t = ts.get("time_s", pd.Series(np.arange(len(ts), dtype=float))).to_numpy(dtype=float)
+    for vals in _window_values(ts, col):
+        vals = np.asarray(vals, dtype=float)
+        valid = vals[np.isfinite(vals)]
+        if valid.size >= 2:
+            roms.append(float(np.nanpercentile(valid, 95) - np.nanpercentile(valid, 5)))
+            # Cumulative path in normalized-distance units. This is equivalent
+            # to integrating absolute velocity over time, but is more stable
+            # for short windows and avoids frame-rate dependence.
+            paths.append(float(np.nansum(np.abs(np.diff(valid)))))
+    row[f"{path_prefix}_med"] = float(np.nanmedian(paths)) if paths else math.nan
+    row[f"{path_prefix}_iqr"] = _iqr(np.asarray(paths, dtype=float)) if paths else math.nan
+    row[f"{rom_prefix}_med"] = float(np.nanmedian(roms)) if roms else math.nan
+    row[f"{rom_prefix}_iqr"] = _iqr(np.asarray(roms, dtype=float)) if roms else math.nan
+
+
+def _max_normalized_xcorr(a: np.ndarray, b: np.ndarray) -> float:
+    a = _interpolate_nans(np.asarray(a, dtype=float))
+    b = _interpolate_nans(np.asarray(b, dtype=float))
+    ok = np.isfinite(a) & np.isfinite(b)
+    a = a[ok]
+    b = b[ok]
+    if a.size < 3 or b.size < 3:
+        return math.nan
+    a = a - np.nanmean(a)
+    b = b - np.nanmean(b)
+    denom = float(np.sqrt(np.nansum(a * a) * np.nansum(b * b)))
+    if not np.isfinite(denom) or denom <= 0:
+        return math.nan
+    corr = np.correlate(a, b, mode="full") / denom
+    return float(np.nanmax(corr)) if corr.size else math.nan
+
+
+def _add_legacy65_features(row: dict[str, object], ts: pd.DataFrame) -> None:
+    """Add the canonical 65 scalar features from the uploaded feature map.
+
+    The implementation uses the current normalized coordinate layer. It keeps
+    the uploaded map's feature names, disambiguates vertical/horizontal speed
+    families, and uses a consistent non-negative IQR-of-window-ranges definition
+    for *_prc_5_95_iqr.
+    """
+    if "mouth_aperture" in ts.columns:
+        _add_path_rom_features(row, ts, "mouth_aperture", "path_vert", "rom_vert")
+        if "mouth_aperture_velocity" in ts.columns:
+            row["_tmp_sLL_vert_source"] = "mouth_aperture_velocity"
+            _add_level_family_features(row, ts.assign(_sLL_vert=np.abs(ts["mouth_aperture_velocity"].to_numpy(dtype=float))), "_sLL_vert", "sLL_vert")
+            acc = _velocity(np.abs(ts["mouth_aperture_velocity"].to_numpy(dtype=float)), ts["time_s"].to_numpy(dtype=float) if "time_s" in ts else np.arange(len(ts)))
+            _add_level_family_features(row, ts.assign(_aLL_vert=np.abs(acc)), "_aLL_vert", "aLL_vert")
+    if "outer_lip_spread" in ts.columns:
+        _add_path_rom_features(row, ts, "outer_lip_spread", "path_horz", "rom_horz")
+        if "outer_lip_spread_velocity" in ts.columns:
+            _add_level_family_features(row, ts.assign(_sLL_horz=np.abs(ts["outer_lip_spread_velocity"].to_numpy(dtype=float))), "_sLL_horz", "sLL_horz")
+            acc = _velocity(np.abs(ts["outer_lip_spread_velocity"].to_numpy(dtype=float)), ts["time_s"].to_numpy(dtype=float) if "time_s" in ts else np.arange(len(ts)))
+            _add_level_family_features(row, ts.assign(_aLL_horz=np.abs(acc)), "_aLL_horz", "aLL_horz")
+    if "lip_aspect_ratio" in ts.columns:
+        _add_level_family_features(row, ts, "lip_aspect_ratio", "aspect")
+    if "jaw_lateralization" in ts.columns:
+        _add_level_family_features(row, ts, "jaw_lateralization", "jaw_lat")
+    if "lip_symmetry_ratio" in ts.columns:
+        _add_level_family_features(row, ts, "lip_symmetry_ratio", "lip_symm_ratio")
+    if "left_commissure_reference_distance" in ts.columns and "right_commissure_reference_distance" in ts.columns:
+        row["lat_xcorr"] = _max_normalized_xcorr(
+            ts["left_commissure_reference_distance"].to_numpy(dtype=float),
+            ts["right_commissure_reference_distance"].to_numpy(dtype=float),
+        )
+    else:
+        row["lat_xcorr"] = math.nan
+    row.pop("_tmp_sLL_vert_source", None)
+
+
 def summarize_timeseries(ts: pd.DataFrame, meta: dict) -> dict:
     row: dict[str, object] = dict(meta)
     signal_cols = [c for c in ts.columns if c in _FEATURE_DEFINITIONS]
@@ -677,6 +1111,10 @@ def summarize_timeseries(ts: pd.DataFrame, meta: dict) -> dict:
             else:
                 row[f"{col}_movement_range_median"] = math.nan
                 row[f"{col}_movement_range_iqr"] = math.nan
+    _add_legacy65_features(row, ts)
+    legacy_ids = [spec.feature_id for spec in KINEMATIC_FEATURE_SPECS]
+    row["n_legacy65_features_expected"] = len(legacy_ids)
+    row["n_legacy65_features_computed"] = int(sum(1 for fid in legacy_ids if fid in row and pd.notna(row.get(fid))))
     flags: list[str] = []
     if row.get("face_detected_fraction", 1.0) < 0.75:
         flags.append("low_face_detection")
