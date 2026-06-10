@@ -102,22 +102,34 @@ def design_overview(feature_df: pd.DataFrame, mapping: pd.DataFrame) -> pd.DataF
         ("task", ["task", "task_name", "prompt"]),
         ("diagnosis", ["diagnosis", "dx", "group"]),
         ("severity_bin", ["severity_bin", "severity_class"]),
-        ("sex_or_gender", ["sex", "gender"]),
+        ("sex_or_gender", ["sex", "gender", "sex_or_gender"]),
         ("device", ["device", "microphone", "site"]),
     ]
     rows = []
+    n_rows = int(len(feature_df))
+    empty_tokens = {"", "nan", "none", "null", "nat", "<na>"}
     for label, names in cols:
         c = _first_present(feature_df, names)
         if not c:
-            rows.append({"variable_type": label, "column": "not_detected", "n_unique": 0, "n_missing": len(feature_df), "top_values": ""})
+            rows.append({"variable_type": label, "column": "not_detected", "status": "missing", "n_unique": 0, "n_missing": n_rows, "top_values": ""})
             continue
-        vc = feature_df[c].astype(str).replace("nan", np.nan).value_counts(dropna=True).head(8)
+        raw = feature_df[c]
+        cleaned = raw.astype("string").str.strip()
+        valid_mask = raw.notna() & ~cleaned.str.lower().isin(empty_tokens)
+        valid = cleaned[valid_mask]
+        n_unique = int(valid.nunique(dropna=True))
+        n_missing = int(n_rows - int(valid_mask.sum()))
+        if n_unique == 0:
+            rows.append({"variable_type": label, "column": c, "status": "empty_column", "n_unique": 0, "n_missing": n_missing, "top_values": ""})
+            continue
+        vc = valid.value_counts(dropna=True).head(8)
         rows.append({
             "variable_type": label,
             "column": c,
-            "n_unique": int(feature_df[c].nunique(dropna=True)),
-            "n_missing": int(feature_df[c].isna().sum()),
-            "top_values": "; ".join([f"{idx}: {val}" for idx, val in vc.items()]),
+            "status": "detected",
+            "n_unique": n_unique,
+            "n_missing": n_missing,
+            "top_values": "; ".join([f"{str(idx)}: {int(val)}" for idx, val in vc.items()]),
         })
     return pd.DataFrame(rows)
 
@@ -1787,31 +1799,22 @@ def reliability_design_summary(feature_df: pd.DataFrame, feature_cols: list[str]
 
 
 def reliability_subject_record_counts(feature_df: pd.DataFrame, mapping: pd.DataFrame | None = None) -> pd.DataFrame:
-    """Summarize repeated-record support by subject without failing on empty IDs.
-
-    Some valid feature tables contain a subject-like column whose values are all
-    missing or not yet linked to metadata. The GUI still needs to complete the
-    audit and show a clear empty reliability table instead of raising
-    ``KeyError: 'n_records'`` during sorting.
-    """
-    columns = ["subject", "n_records", "n_sessions", "n_tasks", "interpretation"]
     design = _detect_reliability_design_columns(feature_df, mapping)
     subject = design.get("subject_col")
     session = design.get("session_col")
     task = design.get("task_col")
     if not subject or subject not in feature_df.columns:
-        return pd.DataFrame(columns=columns)
+        return pd.DataFrame(columns=["subject", "n_records", "n_sessions", "n_tasks", "interpretation"])
+    grp = feature_df.groupby(subject, dropna=True)
     rows=[]
-    for sid, sub in feature_df.groupby(subject, dropna=True):
+    for sid, sub in grp:
         n_sessions = int(sub[session].nunique(dropna=True)) if session and session in sub.columns else 0
         n_tasks = int(sub[task].nunique(dropna=True)) if task and task in sub.columns else 0
         interp = "repeatable_design" if len(sub) >= 2 else "single_record_only"
         if len(sub) >= 2 and task and n_tasks > 1:
             interp = "repeated records include multiple tasks; interpret within-task reliability cautiously"
         rows.append({"subject": sid, "n_records": int(len(sub)), "n_sessions": n_sessions, "n_tasks": n_tasks, "interpretation": interp})
-    if not rows:
-        return pd.DataFrame(columns=columns)
-    return pd.DataFrame(rows, columns=columns).sort_values(["n_records", "subject"], ascending=[False, True])
+    return pd.DataFrame(rows).sort_values(["n_records", "subject"], ascending=[False, True])
 
 
 def feature_repeatability_summary(feature_df: pd.DataFrame, feature_cols: list[str], mapping: pd.DataFrame | None = None, registry: pd.DataFrame | None = None) -> pd.DataFrame:

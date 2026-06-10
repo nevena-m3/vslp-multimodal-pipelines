@@ -377,7 +377,7 @@ def plot_overview_readiness_scorecard(readiness: pd.DataFrame, path: Path) -> Pa
     fig, ax = plt.subplots(figsize=(10.5, max(4.8, 0.54 * len(df))))
     ax.barh(df["dimension"].astype(str), df["score_0_100"], color=colors)
     ax.set_xlim(0, 100)
-    ax.set_xlabel("Orientation score (0-100)", color=MUTED)
+    ax.set_xlabel("Orientation score (0–100)", color=MUTED)
     ax.axvline(50, color=GOLD, linestyle="--", linewidth=1, alpha=0.8)
     ax.axvline(80, color=TEAL, linestyle="--", linewidth=1, alpha=0.8)
     _style(ax, "Dataset readiness orientation")
@@ -387,69 +387,59 @@ def plot_overview_readiness_scorecard(readiness: pd.DataFrame, path: Path) -> Pa
 
 
 def plot_dataset_design_tiles(design: pd.DataFrame, path: Path) -> Path:
+    """Compact design-context overview.
+
+    This intentionally avoids large card tiles. It shows only whether each
+    design variable is usable, empty, or absent, with value counts when
+    available. The detailed metadata table remains below the plot in the GUI.
+    """
     required = {"variable_type", "column", "n_unique", "n_missing"}
     if design is None or design.empty or not required.issubset(design.columns):
         return _empty(path, "No dataset-design summary was available.", "Dataset design")
+    # Available means a detected column has at least one non-missing value.
+    df = design.copy().head(12)
+    for col in ["variable_type", "column", "status", "top_values"]:
+        if col not in df.columns:
+            df[col] = ""
+        df[col] = df[col].astype("string").fillna("").astype(str)
+    df["n_unique"] = pd.to_numeric(df["n_unique"], errors="coerce").fillna(0).astype(int)
+    df["n_missing"] = pd.to_numeric(df["n_missing"], errors="coerce").fillna(0).astype(int)
+    if "status" not in df.columns or (df["status"].astype(str).str.len().sum() == 0):
+        df["status"] = np.where(df["column"].eq("not_detected"), "missing", np.where(df["n_unique"].gt(0), "detected", "empty_column"))
 
-    df = design.copy().head(14)
-    df["n_unique"] = pd.to_numeric(df.get("n_unique", 0), errors="coerce").fillna(0).astype(int)
-    df["n_missing"] = pd.to_numeric(df.get("n_missing", 0), errors="coerce").fillna(0).astype(int)
-    df["column"] = df["column"].astype(str)
-    df["available"] = (df["column"] != "not_detected") & (df["n_unique"] > 0)
-
-    # Compact status table rather than large card tiles. This keeps the Overview
-    # plot an orientation graphic and leaves detailed tables below the plot.
-    n = len(df)
-    fig_h = max(4.4, 0.42 * n + 1.4)
-    fig, ax = plt.subplots(figsize=(12.0, fig_h))
-    ax.set_xlim(0, 1)
-    ax.set_ylim(-0.5, n - 0.5)
+    label_map = {"detected": "Detected", "empty_column": "Empty column", "missing": "Not detected"}  # empty column
+    color_map = {"detected": TEAL, "empty_column": GOLD, "missing": RED}
+    y = np.arange(len(df))[::-1]
+    fig, ax = plt.subplots(figsize=(12, max(4.8, 0.62 * len(df) + 1.7)))
+    ax.set_xlim(0, 100)
+    ax.set_ylim(-0.8, len(df) - 0.2)
     ax.axis("off")
+    ax.set_title("Dataset design context", fontsize=15, fontweight="bold", color=NAVY, pad=16)
 
-    x_status = 0.03
-    x_var = 0.10
-    x_col = 0.30
-    x_unique = 0.72
-    x_missing = 0.84
-    x_note = 0.93
-
-    ax.text(x_var, n - 0.05, "Variable", fontsize=9, color=MUTED, fontweight="bold")
-    ax.text(x_col, n - 0.05, "Detected column", fontsize=9, color=MUTED, fontweight="bold")
-    ax.text(x_unique, n - 0.05, "Unique", fontsize=9, color=MUTED, fontweight="bold", ha="center")
-    ax.text(x_missing, n - 0.05, "Missing", fontsize=9, color=MUTED, fontweight="bold", ha="center")
-    ax.text(x_note, n - 0.05, "Status", fontsize=9, color=MUTED, fontweight="bold", ha="center")
-
-    for display_i, (_, r) in enumerate(df.iterrows()):
-        y = n - 1 - display_i
-        available = bool(r["available"])
-        detected_col = str(r.get("column", "not_detected"))
-        n_unique = int(r.get("n_unique", 0))
-        n_missing = int(r.get("n_missing", 0))
-        if available:
-            status = "available"
-            color = TEAL
-            bg = "#F3FAF9"
-        elif detected_col != "not_detected":
-            status = "empty column"
-            color = GOLD
-            bg = "#FFF9EC"
-        else:
-            status = "not detected"
-            color = RED
-            bg = "#FFF7F5"
-
-        ax.add_patch(plt.Rectangle((0.015, y - 0.35), 0.97, 0.70, color=bg, ec=GRID, lw=0.8))
-        ax.text(x_status, y, "*" if available else "!", fontsize=13, color=color, fontweight="bold", va="center")
-        ax.text(x_var, y, str(r.get("variable_type", "variable")).replace("_", " ").title(), fontsize=10, color=NAVY, fontweight="bold", va="center")
-        ax.text(x_col, y, detected_col[:46] + ("..." if len(detected_col) > 46 else ""), fontsize=9, color=color, va="center")
-        ax.text(x_unique, y, str(n_unique), fontsize=9, color=MUTED, ha="center", va="center")
-        ax.text(x_missing, y, str(n_missing), fontsize=9, color=MUTED, ha="center", va="center")
-        ax.text(x_note, y, status, fontsize=8.5, color=color, ha="center", va="center")
-
-    fig.suptitle("Dataset design context", fontsize=14, fontweight="bold", color=NAVY, y=0.995)
-    ax.text(0.015, -0.72, "Available means a detected column has at least one non-missing value. Empty detected columns are not treated as usable design metadata.", fontsize=8.5, color=MUTED)
+    headers = [(0, "Variable"), (22, "Detected column"), (52, "Status"), (72, "Values")]
+    for x, h in headers:
+        ax.text(x, len(df) - 0.1, h, fontsize=10, fontweight="bold", color=NAVY, va="bottom")
+    for i, (_, r) in enumerate(df.iterrows()):
+        yy = y[i]
+        if i % 2 == 0:
+            ax.add_patch(plt.Rectangle((0, yy - 0.36), 100, 0.72, color="#F7FAFD", ec="none", zorder=0))
+        status = str(r.get("status", "")) or ("detected" if str(r.get("column", "")) != "not_detected" and int(r.get("n_unique", 0)) > 0 else "missing")
+        status_label = label_map.get(status, status.replace("_", " ").title())
+        status_color = color_map.get(status, MUTED)
+        variable = str(r.get("variable_type", "variable")).replace("_", " ").title()
+        column = str(r.get("column", "not_detected"))
+        if len(column) > 36:
+            column = column[:33] + "..."
+        values = f"unique={int(r.get('n_unique', 0))}; missing={int(r.get('n_missing', 0))}"
+        top_values = str(r.get("top_values", ""))
+        if top_values and top_values.lower() != "nan":
+            top_values = top_values[:58] + ("..." if len(top_values) > 58 else "")
+            values = values + " | " + top_values
+        ax.text(0, yy, variable, fontsize=10, color=NAVY, va="center", fontweight="bold")
+        ax.text(22, yy, column, fontsize=9, color=MUTED if status == "missing" else TEAL, va="center")
+        ax.text(52, yy, status_label, fontsize=9, color=status_color, va="center", fontweight="bold")
+        ax.text(72, yy, values, fontsize=8.5, color=MUTED, va="center")
     return _save(fig, path)
-
 
 def plot_feature_quality_landscape(quality: pd.DataFrame, path: Path) -> Path:
     required = {"feature", "missing_fraction", "robust_outlier_fraction", "quality_status"}
@@ -502,20 +492,20 @@ def plot_feature_family_quality(family_overview: pd.DataFrame, path: Path) -> Pa
 
 def plot_subject_task_matrix(df: pd.DataFrame, path: Path) -> Path:
     if df is None or df.empty:
-        return _empty(path, "No feature table was available.", "Subject x task coverage")
+        return _empty(path, "No feature table was available.", "Subject × task coverage")
     subject_col = next((c for c in ["subject_id", "participant_id", "patient_id"] if c in df.columns), None)
     task_col = next((c for c in ["task", "task_name", "prompt"] if c in df.columns), None)
     if subject_col is None or task_col is None:
-        return _empty(path, "Subject and task columns are both required for this coverage matrix.", "Subject x task coverage")
+        return _empty(path, "Subject and task columns are both required for this coverage matrix.", "Subject × task coverage")
     work = df[[subject_col, task_col]].dropna().copy()
     if work.empty:
-        return _empty(path, "No non-missing subject/task pairs were available.", "Subject x task coverage")
+        return _empty(path, "No non-missing subject/task pairs were available.", "Subject × task coverage")
     top_subjects = work[subject_col].astype(str).value_counts().head(60).index.tolist()
     top_tasks = work[task_col].astype(str).value_counts().head(25).index.tolist()
     mat = pd.crosstab(work[subject_col].astype(str), work[task_col].astype(str)).reindex(index=top_subjects, columns=top_tasks, fill_value=0)
     fig, ax = plt.subplots(figsize=(max(8, 0.34 * len(top_tasks) + 4), max(6, 0.12 * len(top_subjects) + 3)))
     im = ax.imshow(mat.to_numpy(), aspect="auto", interpolation="nearest", cmap="viridis")
-    ax.set_title("Subject x task recording coverage", fontsize=14, fontweight="bold", color=NAVY, pad=12)
+    ax.set_title("Subject × task recording coverage", fontsize=14, fontweight="bold", color=NAVY, pad=12)
     ax.set_xlabel("Task", color=MUTED); ax.set_ylabel("Subject", color=MUTED)
     ax.set_xticks(range(len(top_tasks))); ax.set_xticklabels(top_tasks, rotation=70, ha="right", fontsize=7, color=MUTED)
     ystep = max(1, len(top_subjects) // 30)
@@ -562,8 +552,8 @@ def plot_distribution_shape_landscape(shape: pd.DataFrame, path: Path) -> Path:
     ax.axvline(0.75, color=GOLD, linestyle="--", linewidth=1)
     ax.axvline(-0.75, color=GOLD, linestyle="--", linewidth=1)
     ax.axhline(4.5, color=GOLD, linestyle="--", linewidth=1)
-    ax.set_xlabel("Skew proxy: (mean - median) / SD", color=MUTED)
-    ax.set_ylabel("Tail ratio: (q95 - q05) / IQR", color=MUTED)
+    ax.set_xlabel("Skew proxy: (mean − median) / SD", color=MUTED)
+    ax.set_ylabel("Tail ratio: (q95 − q05) / IQR", color=MUTED)
     _style(ax, "Distribution shape landscape")
     # label highest-risk points only
     lab = df[df["priority"].astype(str).eq("review")].head(10)
@@ -754,7 +744,7 @@ def plot_qc_top_feature_associations(qc_corr: pd.DataFrame, path: Path, top_n: i
     df = df.dropna(subset=["abs_rho"]).sort_values("abs_rho", ascending=False).head(top_n).sort_values("abs_rho", ascending=True)
     if df.empty:
         return _empty(path, "No non-missing feature-QC associations were available.", "Feature-QC associations")
-    labels = [f"{f}\nx {q}" for f, q in zip(df["feature"].astype(str), df["qc_variable"].astype(str))]
+    labels = [f"{f}\n× {q}" for f, q in zip(df["feature"].astype(str), df["qc_variable"].astype(str))]
     colors = [RED if r < 0 else TEAL for r in pd.to_numeric(df["spearman_rho"], errors="coerce").fillna(0)]
     fig, ax = plt.subplots(figsize=(12, max(5.5, 0.42*len(df))))
     ax.barh(labels, df["abs_rho"].astype(float), color=colors)
@@ -769,13 +759,13 @@ def plot_qc_top_feature_associations(qc_corr: pd.DataFrame, path: Path, top_n: i
 def plot_qc_feature_association_heatmap(family_assoc: pd.DataFrame, path: Path, top_features: int = 30) -> Path:
     required = {"feature", "artifact_family", "max_abs_spearman"}
     if family_assoc is None or family_assoc.empty or not required.issubset(family_assoc.columns):
-        return _empty(path, "No family-level feature-QC association summary was available.", "Feature x QC-family associations")
+        return _empty(path, "No family-level feature-QC association summary was available.", "Feature × QC-family associations")
     df = family_assoc.copy()
     df["max_abs_spearman"] = pd.to_numeric(df["max_abs_spearman"], errors="coerce")
     features = df.groupby("feature")["max_abs_spearman"].max().sort_values(ascending=False).head(top_features).index.tolist()
     mat = df[df["feature"].isin(features)].pivot_table(index="feature", columns="artifact_family", values="max_abs_spearman", aggfunc="max").fillna(0)
     if mat.empty:
-        return _empty(path, "No feature-QC-family matrix could be constructed.", "Feature x QC-family associations")
+        return _empty(path, "No feature-QC-family matrix could be constructed.", "Feature × QC-family associations")
     mat = mat.loc[features]
     fig, ax = plt.subplots(figsize=(10.8, max(6.0, 0.28*len(mat))))
     im = ax.imshow(mat.to_numpy(float), aspect="auto", vmin=0, vmax=max(.5, float(mat.to_numpy(float).max())), cmap="YlGnBu")
@@ -792,7 +782,7 @@ def plot_qc_missingness_associations(missing_assoc: pd.DataFrame, path: Path, to
     df = missing_assoc.copy().dropna(subset=["abs_spearman"]).sort_values("abs_spearman", ascending=False).head(top_n).sort_values("abs_spearman", ascending=True)
     if df.empty:
         return _empty(path, "No non-missing QC-missingness associations were available.", "Missingness linked to QC")
-    labels = [f"{f}\nx {q}" for f, q in zip(df["feature"].astype(str), df["qc_variable"].astype(str))]
+    labels = [f"{f}\n× {q}" for f, q in zip(df["feature"].astype(str), df["qc_variable"].astype(str))]
     fig, ax = plt.subplots(figsize=(12, max(5.2, 0.42*len(df))))
     ax.barh(labels, df["abs_spearman"].astype(float), color=GOLD)
     ax.set_xlabel("Absolute Spearman rho between feature-missing indicator and QC metric", color=MUTED)
@@ -819,7 +809,7 @@ def plot_qc_row_burden(row_burden: pd.DataFrame, path: Path, top_n: int = 35) ->
 
 def plot_selected_feature_qc_scatter(feature_df: pd.DataFrame, qc_df: pd.DataFrame | None, feature: str, qc_variable: str, path: Path) -> Path:
     if feature_df is None or feature_df.empty or qc_df is None or qc_df.empty or not feature or not qc_variable:
-        return _empty(path, "Select one feature and one QC variable after loading an aligned QC table.", "Selected feature x QC metric")
+        return _empty(path, "Select one feature and one QC variable after loading an aligned QC table.", "Selected feature × QC metric")
     # Align by common key if possible, else by row order when lengths match.
     join_keys = [k for k in ["record_key", "file_name", "filename", "source_file", "audio_file", "subject_id", "participant_id"] if k in feature_df.columns and k in qc_df.columns]
     if join_keys:
@@ -827,12 +817,12 @@ def plot_selected_feature_qc_scatter(feature_df: pd.DataFrame, qc_df: pd.DataFra
     elif len(feature_df) == len(qc_df):
         merged = pd.DataFrame({feature: pd.to_numeric(feature_df[feature], errors="coerce"), qc_variable: pd.to_numeric(qc_df[qc_variable], errors="coerce")})
     else:
-        return _empty(path, "QC table could not be aligned to the feature table for selected scatter plotting.", "Selected feature x QC metric")
+        return _empty(path, "QC table could not be aligned to the feature table for selected scatter plotting.", "Selected feature × QC metric")
     x = pd.to_numeric(merged[qc_variable], errors="coerce")
     y = pd.to_numeric(merged[feature], errors="coerce")
     pair = pd.DataFrame({"x": x, "y": y}).dropna()
     if len(pair) < 4:
-        return _empty(path, "Too few paired non-missing observations for this feature/QC pair.", "Selected feature x QC metric")
+        return _empty(path, "Too few paired non-missing observations for this feature/QC pair.", "Selected feature × QC metric")
     rho = pair["x"].corr(pair["y"], method="spearman") if pair["x"].nunique() > 1 and pair["y"].nunique() > 1 else np.nan
     fig, ax = plt.subplots(figsize=(9.5, 6.0))
     ax.scatter(pair["x"], pair["y"], s=28, alpha=.72, color=TEAL, edgecolor="white", linewidth=.35)
@@ -841,7 +831,7 @@ def plot_selected_feature_qc_scatter(feature_df: pd.DataFrame, qc_df: pd.DataFra
     title = f"{feature} vs QC: {qc_variable}"
     _style(ax, title)
     if pd.notna(rho):
-        ax.text(.02, .98, f"Spearman rho = {rho:.2f}\nn = {len(pair)}", transform=ax.transAxes, va="top", ha="left", fontsize=10, color=NAVY, bbox=dict(facecolor="white", edgecolor=GRID, boxstyle="round,pad=.35"))
+        ax.text(.02, .98, f"Spearman ρ = {rho:.2f}\nn = {len(pair)}", transform=ax.transAxes, va="top", ha="left", fontsize=10, color=NAVY, bbox=dict(facecolor="white", edgecolor=GRID, boxstyle="round,pad=.35"))
     return _save(fig, path)
 
 
@@ -887,7 +877,7 @@ def plot_relationship_redundant_pairs(pairs: pd.DataFrame, path: Path, top_n: in
     if pairs is None or pairs.empty or "abs_spearman" not in pairs.columns:
         return _empty(path, "No feature pairs exceeded the redundancy threshold. This is good, but still inspect PCA and family structure.", "Top redundant pairs")
     df = pairs.copy().sort_values("abs_spearman", ascending=False).head(top_n).sort_values("abs_spearman", ascending=True)
-    labels = [f"{a}\nx {b}" for a,b in zip(df["feature_1"].astype(str), df["feature_2"].astype(str))]
+    labels = [f"{a}\n× {b}" for a,b in zip(df["feature_1"].astype(str), df["feature_2"].astype(str))]
     fig, ax = plt.subplots(figsize=(12, max(5.5, .45*len(df))))
     colors = [RED if v >= .90 else GOLD for v in df["abs_spearman"].astype(float)]
     ax.barh(labels, df["abs_spearman"].astype(float), color=colors)
@@ -1002,9 +992,9 @@ def plot_screening_group_balance(balance: pd.DataFrame, path: Path) -> Path:
 def plot_screening_effect_ranking(cont: pd.DataFrame, cat: pd.DataFrame, path: Path, top_n: int = 30) -> Path:
     frames=[]
     if cont is not None and not cont.empty:
-        a = cont.copy(); a["screening_source"] = a.get("outcome_variable", "continuous").astype(str); a["label"] = a["feature"].astype(str) + " -> " + a["screening_source"].astype(str); frames.append(a)
+        a = cont.copy(); a["screening_source"] = a.get("outcome_variable", "continuous").astype(str); a["label"] = a["feature"].astype(str) + " → " + a["screening_source"].astype(str); frames.append(a)
     if cat is not None and not cat.empty:
-        b = cat.copy(); b["screening_source"] = b.get("group_variable", "group").astype(str); b["label"] = b["feature"].astype(str) + " <-> " + b["screening_source"].astype(str); frames.append(b)
+        b = cat.copy(); b["screening_source"] = b.get("group_variable", "group").astype(str); b["label"] = b["feature"].astype(str) + " ↔ " + b["screening_source"].astype(str); frames.append(b)
     if not frames:
         return _empty(path, "No feature-outcome or feature-group screening effects were available.", "Screening effects")
     df = pd.concat(frames, ignore_index=True, sort=False)
@@ -1024,7 +1014,7 @@ def plot_screening_effect_ranking(cont: pd.DataFrame, cat: pd.DataFrame, path: P
 
 def plot_screening_continuous_heatmap(cont: pd.DataFrame, path: Path, max_features: int = 40, max_outcomes: int = 12) -> Path:
     if cont is None or cont.empty or not {"feature", "outcome_variable", "effect"}.issubset(cont.columns):
-        return _empty(path, "No continuous outcome screening results were available.", "Feature x continuous outcome")
+        return _empty(path, "No continuous outcome screening results were available.", "Feature × continuous outcome")
     df = cont.copy()
     df["abs_effect"] = pd.to_numeric(df["abs_effect"], errors="coerce")
     df["effect"] = pd.to_numeric(df["effect"], errors="coerce")
@@ -1032,32 +1022,32 @@ def plot_screening_continuous_heatmap(cont: pd.DataFrame, path: Path, max_featur
     top_out = df.groupby("outcome_variable")["abs_effect"].max().sort_values(ascending=False).head(max_outcomes).index.tolist()
     mat = df[df["feature"].isin(top_feats) & df["outcome_variable"].isin(top_out)].pivot_table(index="feature", columns="outcome_variable", values="effect", aggfunc="max")
     if mat.empty:
-        return _empty(path, "No evaluable continuous outcome heatmap could be formed.", "Feature x continuous outcome")
+        return _empty(path, "No evaluable continuous outcome heatmap could be formed.", "Feature × continuous outcome")
     fig, ax = plt.subplots(figsize=(max(8, 0.5 * len(mat.columns) + 5), max(6, 0.24 * len(mat.index) + 2)))
     im = ax.imshow(mat.fillna(0).to_numpy(dtype=float), vmin=-1, vmax=1, cmap="coolwarm", aspect="auto")
     ax.set_xticks(range(len(mat.columns))); ax.set_xticklabels(mat.columns, rotation=45, ha="right", fontsize=8, color=MUTED)
     ax.set_yticks(range(len(mat.index))); ax.set_yticklabels(mat.index, fontsize=6, color=MUTED)
-    ax.set_title("Feature x continuous outcome Spearman screen", fontsize=14, fontweight="bold", color=NAVY, pad=12)
+    ax.set_title("Feature × continuous outcome Spearman screen", fontsize=14, fontweight="bold", color=NAVY, pad=12)
     cbar = fig.colorbar(im, ax=ax, fraction=0.025, pad=0.02); cbar.set_label("Spearman rho", color=MUTED); cbar.ax.tick_params(labelsize=8, colors=MUTED)
     return _save(fig, path)
 
 
 def plot_screening_group_heatmap(cat: pd.DataFrame, path: Path, max_features: int = 40, max_groups: int = 12) -> Path:
     if cat is None or cat.empty or not {"feature", "group_variable", "effect"}.issubset(cat.columns):
-        return _empty(path, "No categorical group screening results were available.", "Feature x group")
+        return _empty(path, "No categorical group screening results were available.", "Feature × group")
     df = cat.copy(); df["abs_effect"] = pd.to_numeric(df["abs_effect"], errors="coerce"); df["effect"] = pd.to_numeric(df["effect"], errors="coerce")
     top_feats = df.groupby("feature")["abs_effect"].max().sort_values(ascending=False).head(max_features).index.tolist()
     top_groups = df.groupby("group_variable")["abs_effect"].max().sort_values(ascending=False).head(max_groups).index.tolist()
     mat = df[df["feature"].isin(top_feats) & df["group_variable"].isin(top_groups)].pivot_table(index="feature", columns="group_variable", values="effect", aggfunc="max")
     if mat.empty:
-        return _empty(path, "No evaluable group screening heatmap could be formed.", "Feature x group")
+        return _empty(path, "No evaluable group screening heatmap could be formed.", "Feature × group")
     lim = float(np.nanmax(np.abs(mat.to_numpy(dtype=float)))) if mat.size else 1.0
     lim = max(lim, 1.0)
     fig, ax = plt.subplots(figsize=(max(8, 0.5 * len(mat.columns) + 5), max(6, 0.24 * len(mat.index) + 2)))
     im = ax.imshow(mat.fillna(0).to_numpy(dtype=float), vmin=-lim, vmax=lim, cmap="coolwarm", aspect="auto")
     ax.set_xticks(range(len(mat.columns))); ax.set_xticklabels(mat.columns, rotation=45, ha="right", fontsize=8, color=MUTED)
     ax.set_yticks(range(len(mat.index))); ax.set_yticklabels(mat.index, fontsize=6, color=MUTED)
-    ax.set_title("Feature x categorical group contrast screen", fontsize=14, fontweight="bold", color=NAVY, pad=12)
+    ax.set_title("Feature × categorical group contrast screen", fontsize=14, fontweight="bold", color=NAVY, pad=12)
     cbar = fig.colorbar(im, ax=ax, fraction=0.025, pad=0.02); cbar.set_label("Signed robust effect", color=MUTED); cbar.ax.tick_params(labelsize=8, colors=MUTED)
     return _save(fig, path)
 
