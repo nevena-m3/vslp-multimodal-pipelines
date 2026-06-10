@@ -81,7 +81,7 @@ from vslp.analysis.features.plots import (
     plot_ml_export_manifest_summary
 )
 
-APP_VERSION = "v0.64.0"
+APP_VERSION = "v0.65.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -1654,7 +1654,7 @@ class FeatureAnalysisGUI(QMainWindow):
         side_title = QLabel("Availability snapshot")
         side_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
         side_layout.addWidget(side_title)
-        side_note = QLabel("Compact missingness metrics. Use these as navigation cues; detailed feature, row, group, family, and co-missing tables remain below the plot.")
+        side_note = QLabel("Compact availability metrics. Use these as navigation cues; detailed feature, row, group, family, and co-missing tables remain below the plot.")
         side_note.setWordWrap(True)
         side_note.setStyleSheet(f"color:{MUTED}; border:none; background:transparent; font-size:12px;")
         side_layout.addWidget(side_note)
@@ -1722,15 +1722,15 @@ class FeatureAnalysisGUI(QMainWindow):
         if group is not None and not group.empty and "group_variable" in group.columns:
             groups = int(group["group_variable"].nunique())
         tiles = [
-            ("Features audited", n_features, "selected feature columns"),
-            ("Mean missingness", mean_miss, "across selected features"),
-            ("Review features", high_features, ">=50% missing or worse"),
-            ("Review rows", high_rows, ">=50% selected features missing"),
-            ("Group screens", groups, "available metadata strata"),
+            ("Features", n_features, "selected predictors"),
+            ("Rows", len(row) if row is not None else "-", "recordings / files"),
+            ("Mean missingness", mean_miss, "across selected predictors"),
+            ("High-missing features", high_features, ">=50% missing or worse"),
+            ("Metadata groups", groups, "available strata"),
             ("Default policy", "do not auto-impute", "review mechanism first"),
         ]
         for idx, (title, value, subtitle) in enumerate(tiles):
-            self.missing_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx // 3, idx % 3)
+            self.missing_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx, 0)
         self._fill_table(self.missing_feature_table, outputs.get("missingness_by_feature", pd.DataFrame()))
         self._fill_table(self.missing_row_table, outputs.get("missingness_by_row", pd.DataFrame()))
         self._fill_table(self.missing_group_table, outputs.get("missingness_by_group", pd.DataFrame()))
