@@ -31,6 +31,148 @@ class TemporalAggregationConfig:
     overwrite: bool = True
 
 
+@dataclass(frozen=True)
+class AggregationGuideRow:
+    section: str
+    item: str
+    meaning: str
+    output_effect: str
+    recommended_use: str
+
+
+AGGREGATION_GUIDE_ROWS: tuple[AggregationGuideRow, ...] = (
+    AggregationGuideRow(
+        "Why aggregate?",
+        "Frame-level signal -> per-video scalar table",
+        "A kinematic signal can have one value per frame. Aggregation summarizes that distribution so each video can be joined with metadata, QC, acoustic features, and ML/statistical models.",
+        "Writes one row per video while preserving the original time-series CSV for audit.",
+        "Use scalar tables for cohort modeling/export; inspect time series when a video is REVIEW/FAIL or a feature is biologically surprising.",
+    ),
+    AggregationGuideRow(
+        "Information retention",
+        "Do not rely on mean alone",
+        "Mean collapses the entire trajectory into one average level and can hide bursts, peaks, pauses, dropouts, and asymmetric movement.",
+        "Robust profiles export median, IQR, p05, p95, and p95-p05 range in addition to optional dense summaries.",
+        "Use median/IQR/p95 as default biomarkers; treat mean as descriptive, not primary.",
+    ),
+    AggregationGuideRow(
+        "Statistic",
+        "median",
+        "Typical value of the signal across valid frames, less sensitive to tracking spikes than mean.",
+        "<signal>_median",
+        "Default central tendency for amplitude, speed, acceleration, and ratio signals.",
+    ),
+    AggregationGuideRow(
+        "Statistic",
+        "IQR",
+        "Middle-spread of the signal distribution; reflects variability without being dominated by extremes.",
+        "<signal>_iqr",
+        "Useful for movement variability, consistency, and possible incoordination.",
+    ),
+    AggregationGuideRow(
+        "Statistic",
+        "p05 / p95",
+        "Lower and upper robust tails of the signal distribution. p95 often approximates near-peak movement without using a single noisy maximum.",
+        "<signal>_p05 and <signal>_p95",
+        "Use p95/range for near-peak opening, speed, or spread; avoid raw max unless visually audited.",
+    ),
+    AggregationGuideRow(
+        "Statistic",
+        "p95 - p05 range",
+        "Robust dynamic range across the analyzed frames.",
+        "<signal>_range_p05_p95",
+        "Better default than max-min for noisy markerless video.",
+    ),
+    AggregationGuideRow(
+        "Statistic",
+        "valid fraction",
+        "Fraction of frames where that signal had a finite value.",
+        "<signal>_valid_fraction",
+        "Do not trust scalar features with low valid fraction; review the video/QC first.",
+    ),
+    AggregationGuideRow(
+        "Profile",
+        "robust_default",
+        "Summarizes each selected signal over the whole video using robust distributional statistics.",
+        "One row per video; no movement-level rows required.",
+        "Default export for most early ALS/PD exploratory analyses.",
+    ),
+    AggregationGuideRow(
+        "Profile",
+        "movement_segmented",
+        "Uses movement_id/movement_kind when available to summarize individual movement events before summarizing across events.",
+        "Adds movement_level_features.csv and movement-derived summary columns.",
+        "Use for repeated open/close, DDK, smile, pucker, or other event-like tasks.",
+    ),
+    AggregationGuideRow(
+        "Profile",
+        "full_timeseries_summary",
+        "Summarizes the full trajectory without assuming repeated movement events.",
+        "One row per video using whole-video distribution summaries.",
+        "Use for passage/conversation or continuous tasks where movement segmentation is not meaningful.",
+    ),
+    AggregationGuideRow(
+        "Profile",
+        "clinically_sensitive",
+        "Exports robust summaries plus more dense tail/mean/sd descriptors. More informative but more QC-sensitive.",
+        "Larger scalar table; movement-level summaries enabled.",
+        "Use after good QC, not as the first-pass ML feature set.",
+    ),
+    AggregationGuideRow(
+        "Profile",
+        "exploratory_dense",
+        "Large discovery-oriented reduction set.",
+        "Many scalar columns; higher multiple-comparison/overfitting risk.",
+        "Use for research discovery only, then down-select and validate.",
+    ),
+    AggregationGuideRow(
+        "Setting",
+        "include raw unsmoothed signals",
+        "Includes raw/less-processed signals if the feature time-series table contains columns ending in _raw.",
+        "Adds more columns if raw signals exist.",
+        "Keep off by default; turn on for debugging or method comparison.",
+    ),
+    AggregationGuideRow(
+        "Setting",
+        "include velocity-derived signals",
+        "Includes columns ending in _velocity. Velocity can be clinically meaningful but is more sensitive to frame rate and tracking noise.",
+        "Controls whether velocity signals are summarized.",
+        "Keep on for oral-motor speed analysis after QC.",
+    ),
+    AggregationGuideRow(
+        "Setting",
+        "minimum valid fraction",
+        "Minimum finite-frame fraction required for each signal before flagging it.",
+        "Adds low_valid_fraction:<signal> to aggregation_qc_flags when violated.",
+        "Use 0.50 for exploratory review; use 0.80-0.90 for stricter export.",
+    ),
+    AggregationGuideRow(
+        "Setting",
+        "minimum detected-face fraction",
+        "Minimum fraction of frames with a detected face before flagging the video-level aggregation.",
+        "Adds low_face_detection to aggregation_qc_flags when violated.",
+        "Keep aligned with Video QC; strict analyses should use >=0.90.",
+    ),
+)
+
+
+def aggregation_guide_dataframe() -> pd.DataFrame:
+    """Return a reviewer-facing guide for aggregation statistics and settings."""
+    return pd.DataFrame([asdict(row) for row in AGGREGATION_GUIDE_ROWS])
+
+
+def write_aggregation_guide(output_root: Path | str) -> dict:
+    """Write the aggregation guide next to aggregation outputs."""
+    out_root = _aggregation_dir(output_root)
+    tables = out_root / "tables"
+    guide = aggregation_guide_dataframe()
+    csv_path = tables / "aggregation_guide.csv"
+    json_path = tables / "aggregation_guide.json"
+    guide.to_csv(csv_path, index=False)
+    json_path.write_text(json.dumps({"rows": guide.to_dict(orient="records")}, indent=2), encoding="utf-8")
+    return {"aggregation_guide_csv": csv_path, "aggregation_guide_json": json_path, "n_rows": int(len(guide))}
+
+
 def _aggregation_dir(output_root: Path | str) -> Path:
     out = Path(output_root).expanduser().resolve() / "kinematics" / "007_aggregation"
     (out / "tables").mkdir(parents=True, exist_ok=True)
@@ -233,6 +375,7 @@ def run_temporal_aggregation(
     config_json = tables / "aggregation_config.json"
     config_payload = asdict(cfg) | {"profile_description": AGGREGATION_PROFILES.get(cfg.profile, "")}
     config_json.write_text(json.dumps(config_payload, indent=2, default=str), encoding="utf-8")
+    guide_outputs = write_aggregation_guide(root)
     counts = agg_df.get("status", pd.Series(dtype=str)).value_counts(dropna=False).to_dict() if not agg_df.empty else {}
     manifest = {
         "n_videos": int(len(agg_df)),
@@ -245,13 +388,30 @@ def run_temporal_aggregation(
             "aggregated_features_csv": str(agg_csv),
             "movement_level_features_csv": str(movement_csv),
             "aggregation_config_json": str(config_json),
+            "aggregation_guide_csv": str(guide_outputs["aggregation_guide_csv"]),
+            "aggregation_guide_json": str(guide_outputs["aggregation_guide_json"]),
         },
         "config": config_payload,
         "note": "Temporal aggregation collapses frame-level kinematic time series. QC flags are retained for analyst review and are not automatic exclusions.",
     }
     manifest_json = tables / "aggregation_manifest.json"
     manifest_json.write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
-    return {"aggregated_features_csv": agg_csv, "movement_level_features_csv": movement_csv, "config_json": config_json, "manifest_json": manifest_json, **{k: manifest[k] for k in ["n_videos", "n_ok", "n_qc_flagged", "n_error", "status_counts"]}}
+    return {
+        "aggregated_features_csv": agg_csv,
+        "movement_level_features_csv": movement_csv,
+        "config_json": config_json,
+        "manifest_json": manifest_json,
+        **guide_outputs,
+        **{k: manifest[k] for k in ["n_videos", "n_ok", "n_qc_flagged", "n_error", "status_counts"]},
+    }
 
 
-__all__ = ["TemporalAggregationConfig", "aggregate_timeseries_file", "run_temporal_aggregation"]
+__all__ = [
+    "TemporalAggregationConfig",
+    "AggregationGuideRow",
+    "AGGREGATION_GUIDE_ROWS",
+    "aggregation_guide_dataframe",
+    "write_aggregation_guide",
+    "aggregate_timeseries_file",
+    "run_temporal_aggregation",
+]

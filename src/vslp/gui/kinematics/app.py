@@ -1,4 +1,4 @@
-"""VSLP Kinematics Pipeline GUI v0.82.
+"""VSLP Kinematics Pipeline GUI v0.83.
 
 This GUI intentionally mirrors the acoustic pipeline layout: left stage sidebar,
 institutional branding strip, top tabs, run log, and compact scientific workflow
@@ -93,12 +93,14 @@ from vslp.analysis.kinematics import (
     FeatureComputationConfig,
     run_feature_computation,
     TemporalAggregationConfig,
+    aggregation_guide_dataframe,
+    write_aggregation_guide,
     run_temporal_aggregation,
     write_scaffold_report,
 )
 from vslp.analysis.kinematics.schemas import DEFAULT_VIDEO_EXTENSIONS, parse_int_list
 
-APP_VERSION = "v0.82"
+APP_VERSION = "v0.83"
 BRAND_DIR = Path(__file__).resolve().parent / "assets" / "branding"
 LAB_LOGO = BRAND_DIR / "lab_logo.png"
 UOFT_LOGO = BRAND_DIR / "uoft_logo.png"
@@ -2081,44 +2083,150 @@ class KinematicsPipelineWindow(QMainWindow):
 
     def _build_aggregation_tab(self) -> QWidget:
         container = QWidget(); layout = QVBoxLayout(container)
+        layout.setSpacing(14)
         layout.addWidget(self._info_panel(
             "Info",
-            "Collapse frame-level kinematic time series into per-video scalar tables using an explicit, auditable aggregation policy. This stage does not delete time-series evidence; it writes a separate aggregation layer for export and review.",
+            "Aggregation converts frame-level or time-series kinematic signals into per-video scalar summaries for export, modeling, and comparison. The original time-series files are preserved; this stage writes an additional summary layer, not a replacement for visual/time-series review.",
         ))
-        group = QGroupBox("Temporal aggregation profile")
-        grid = QGridLayout(group)
+
+        cards = QHBoxLayout()
+        self.agg_status_cards: dict[str, QLabel] = {}
+        for title, value in [
+            ("Profile", "robust_default"),
+            ("Signals", "Not run"),
+            ("Videos", "0"),
+            ("QC flagged", "0"),
+            ("Output", "No table"),
+        ]:
+            card = QFrame(); card.setObjectName("MetricCard")
+            vbox = QVBoxLayout(card)
+            t = QLabel(title); t.setObjectName("MetricLabel")
+            val = QLabel(value); val.setObjectName("MetricValue")
+            val.setWordWrap(True)
+            vbox.addWidget(t); vbox.addWidget(val)
+            cards.addWidget(card)
+            self.agg_status_cards[title] = val
+        layout.addLayout(cards)
+
+        main_split = QSplitter(Qt.Horizontal)
+
+        profile_group = QGroupBox("Aggregation policy")
+        profile_layout = QVBoxLayout(profile_group)
+        profile_layout.setSpacing(10)
         self.agg_combo = QComboBox(); self.agg_combo.addItems(list(AGGREGATION_PROFILES.keys()))
         self.agg_combo.setCurrentText("robust_default")
-        self.agg_desc = QLabel(AGGREGATION_PROFILES["robust_default"]); self.agg_desc.setWordWrap(True); self.agg_desc.setObjectName("SubtitleLabel")
-        self.agg_combo.currentTextChanged.connect(lambda name: self.agg_desc.setText(AGGREGATION_PROFILES.get(name, "")))
-        self.agg_include_raw = QCheckBox("Include raw unsmoothed feature signals")
+        self.agg_desc = QLabel(AGGREGATION_PROFILES["robust_default"])
+        self.agg_desc.setWordWrap(True); self.agg_desc.setObjectName("SubtitleLabel")
+        self.agg_combo.currentTextChanged.connect(self._update_aggregation_profile_text)
+        profile_layout.addWidget(QLabel("Profile"))
+        profile_layout.addWidget(self.agg_combo)
+        profile_layout.addWidget(self.agg_desc)
+
+        explanation = QTextBrowser()
+        explanation.setMinimumHeight(220)
+        explanation.setHtml(
+            "<b>What is being collapsed?</b><br>"
+            "For each video, a signal such as mouth aperture, lip-spread velocity, or jaw-to-nose distance can have one value per frame. "
+            "Aggregation summarizes those N frame values into scalar descriptors such as median, IQR, p95, and valid fraction.<br><br>"
+            "<b>Why not just mean?</b><br>"
+            "Mean is easy to interpret, but it hides peaks, pauses, missing sections, and tracking spikes. Robust summaries are safer for markerless video.<br><br>"
+            "<b>What is preserved?</b><br>"
+            "The frame-level time-series CSV remains on disk. Aggregation produces a separate per-video table for statistics/ML/reporting."
+        )
+        profile_layout.addWidget(explanation, stretch=1)
+
+        run_row = QHBoxLayout()
+        run_btn = QPushButton("Run Temporal Aggregation")
+        run_btn.setObjectName("RunButton"); run_btn.clicked.connect(self.run_temporal_aggregation_stage)
+        refresh_btn = QPushButton("Refresh Outputs")
+        refresh_btn.clicked.connect(self._load_aggregation_results)
+        guide_btn = QPushButton("Write Aggregation Guide")
+        guide_btn.clicked.connect(self.write_aggregation_guide_stage)
+        run_row.addWidget(run_btn); run_row.addWidget(refresh_btn); run_row.addWidget(guide_btn)
+        profile_layout.addLayout(run_row)
+        main_split.addWidget(profile_group)
+
+        settings_group = QGroupBox("Computation settings")
+        settings_layout = QVBoxLayout(settings_group)
+        settings_layout.setSpacing(10)
+        grid = QGridLayout()
+        self.agg_include_raw = QCheckBox("Include raw unsmoothed signals")
         self.agg_include_raw.setChecked(False)
         self.agg_include_velocity = QCheckBox("Include velocity-derived signals")
         self.agg_include_velocity.setChecked(True)
         self.agg_min_valid = QDoubleSpinBox(); self.agg_min_valid.setRange(0.0, 1.0); self.agg_min_valid.setSingleStep(0.05); self.agg_min_valid.setDecimals(2); self.agg_min_valid.setValue(0.50)
         self.agg_min_detected = QDoubleSpinBox(); self.agg_min_detected.setRange(0.0, 1.0); self.agg_min_detected.setSingleStep(0.05); self.agg_min_detected.setDecimals(2); self.agg_min_detected.setValue(0.60)
-        run_btn = QPushButton("Run Temporal Aggregation")
-        run_btn.setObjectName("RunButton"); run_btn.clicked.connect(self.run_temporal_aggregation_stage)
-        refresh_btn = QPushButton("Refresh Aggregation Outputs")
-        refresh_btn.clicked.connect(self._load_aggregation_results)
-        grid.addWidget(QLabel("Aggregation profile"), 0, 0); grid.addWidget(self.agg_combo, 0, 1, 1, 2)
-        grid.addWidget(QLabel("Interpretation"), 1, 0); grid.addWidget(self.agg_desc, 1, 1, 1, 2)
-        grid.addWidget(QLabel("Minimum valid fraction per signal"), 2, 0); grid.addWidget(self.agg_min_valid, 2, 1)
-        grid.addWidget(QLabel("Minimum detected-face fraction"), 3, 0); grid.addWidget(self.agg_min_detected, 3, 1)
-        grid.addWidget(self.agg_include_raw, 4, 1, 1, 2)
-        grid.addWidget(self.agg_include_velocity, 5, 1, 1, 2)
-        grid.addWidget(run_btn, 6, 1); grid.addWidget(refresh_btn, 6, 2)
-        layout.addWidget(group)
-        table = QTableWidget(0, 2); table.setHorizontalHeaderLabels(["Profile", "Recommended use"])
-        self._fill_table(table, pd.DataFrame([{"Profile": k, "Recommended use": v} for k, v in AGGREGATION_PROFILES.items()]), max_rows=20)
-        layout.addWidget(table)
-        self.aggregation_results_label = QLabel("No temporal aggregation table loaded yet."); self.aggregation_results_label.setObjectName("SubtitleLabel")
-        layout.addWidget(self.aggregation_results_label)
+        grid.addWidget(QLabel("Minimum valid fraction / signal"), 0, 0); grid.addWidget(self.agg_min_valid, 0, 1)
+        grid.addWidget(QLabel("Minimum detected-face fraction"), 1, 0); grid.addWidget(self.agg_min_detected, 1, 1)
+        grid.addWidget(self.agg_include_raw, 2, 0, 1, 2)
+        grid.addWidget(self.agg_include_velocity, 3, 0, 1, 2)
+        settings_layout.addLayout(grid)
+
+        self.agg_settings_box = QTextBrowser()
+        self.agg_settings_box.setMinimumHeight(270)
+        self.agg_settings_box.setHtml(
+            "<b>Minimum valid fraction</b><br>"
+            "If a signal is finite in fewer than this fraction of frames, the scalar output is still written but flagged as low_valid_fraction. "
+            "For strict analyses, use 0.80-0.90; for exploratory review, 0.50 is acceptable.<br><br>"
+            "<b>Minimum detected-face fraction</b><br>"
+            "Flags the whole video if face detection was too sparse. This should eventually align with Video QC thresholds.<br><br>"
+            "<b>Velocity-derived signals</b><br>"
+            "Velocity is biologically important for bulbar slowing, but differentiation amplifies noise. Keep enabled only when QC/normalization are acceptable.<br><br>"
+            "<b>Raw unsmoothed signals</b><br>"
+            "Use for audit/debugging. Do not make raw signals the default scalar export."
+        )
+        settings_layout.addWidget(self.agg_settings_box, stretch=1)
+        main_split.addWidget(settings_group)
+        main_split.setSizes([760, 420])
+        layout.addWidget(main_split, stretch=1)
+
+        bottom_tabs = QTabWidget()
+        self.aggregation_results_label = QLabel("No temporal aggregation table loaded yet.")
+        self.aggregation_results_label.setObjectName("SubtitleLabel")
+        results_panel = QWidget(); results_layout = QVBoxLayout(results_panel)
+        results_layout.addWidget(self.aggregation_results_label)
         self.aggregation_results_table = QTableWidget(0, 0)
         self.aggregation_results_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.aggregation_results_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        layout.addWidget(self.aggregation_results_table)
+        results_layout.addWidget(self.aggregation_results_table)
+        bottom_tabs.addTab(results_panel, "Aggregated output")
+
+        profile_table = QTableWidget(0, 2); profile_table.setHorizontalHeaderLabels(["Profile", "Recommended use"])
+        self._fill_table(profile_table, pd.DataFrame([{"Profile": k, "Recommended use": v} for k, v in AGGREGATION_PROFILES.items()]), max_rows=20)
+        bottom_tabs.addTab(profile_table, "Profiles")
+
+        self.aggregation_guide_table = QTableWidget(0, 0)
+        self._fill_table(self.aggregation_guide_table, aggregation_guide_dataframe(), max_rows=200)
+        bottom_tabs.addTab(self.aggregation_guide_table, "Statistics guide")
+
+        notes = QTextBrowser()
+        notes.setHtml(
+            "<b>Recommended strategy</b><br>"
+            "1. Keep the frame-level feature time-series for audit and visualization.<br>"
+            "2. Use robust per-video scalars for export/modeling: median, IQR, p05, p95, p95-p05 range, and valid fraction.<br>"
+            "3. Use movement-segmented aggregation for repeated gestures or DDK-like tasks.<br>"
+            "4. Avoid treating a single mean as the biomarker unless the signal is stable, well-sampled, and visually reviewed.<br><br>"
+            "<b>Interpretation</b><br>"
+            "Aggregation is not a truth step; it is a compression policy. The chosen policy should be stored, reported, and kept stable within a study."
+        )
+        bottom_tabs.addTab(notes, "Design notes")
+        layout.addWidget(bottom_tabs, stretch=1)
         return self._scrollable(container)
+
+    def _update_aggregation_profile_text(self, name: str) -> None:
+        if hasattr(self, "agg_desc"):
+            self.agg_desc.setText(AGGREGATION_PROFILES.get(name, ""))
+        if hasattr(self, "agg_status_cards") and "Profile" in self.agg_status_cards:
+            self.agg_status_cards["Profile"].setText(name)
+
+    def write_aggregation_guide_stage(self) -> None:
+        out = self._path_or_warn(self.output_edit, "an output project folder")
+        if out is None:
+            return
+        res = write_aggregation_guide(out)
+        self._log(f"Aggregation guide written: {res['aggregation_guide_csv']}")
+        if hasattr(self, "aggregation_guide_table"):
+            self._fill_table(self.aggregation_guide_table, aggregation_guide_dataframe(), max_rows=200)
 
     def _build_inspector_tab(self) -> QWidget:
         container = QWidget(); layout = QVBoxLayout(container)
@@ -3425,6 +3533,10 @@ class KinematicsPipelineWindow(QMainWindow):
         self.stage_records["aggregation"] = StageRecord(status="completed", manifest_path=str(res.get("manifest_json", agg_csv)))
         self._refresh_stage_cards()
         self._log(f"Temporal aggregation completed: {res.get('n_videos', 0)} video(s); ok={res.get('n_ok', 0)}, qc_flagged={res.get('n_qc_flagged', 0)}, error={res.get('n_error', 0)}. Aggregated table: {agg_csv}")
+        if hasattr(self, "agg_status_cards"):
+            self.agg_status_cards.get("Videos", QLabel()).setText(str(res.get("n_videos", 0)))
+            self.agg_status_cards.get("QC flagged", QLabel()).setText(str(res.get("n_qc_flagged", 0)))
+            self.agg_status_cards.get("Output", QLabel()).setText("Loaded")
         self._load_aggregation_results(agg_csv)
 
     def _load_aggregation_results(self, path: Path | None = None) -> None:
@@ -3436,9 +3548,18 @@ class KinematicsPipelineWindow(QMainWindow):
                 self.aggregation_results_label.setText("No temporal aggregation table loaded yet.")
             return
         df = pd.read_csv(path)
+        counts = df.get("status", pd.Series(dtype=str)).value_counts(dropna=False).to_dict() if not df.empty else {}
         if hasattr(self, "aggregation_results_label"):
-            counts = df.get("status", pd.Series(dtype=str)).value_counts(dropna=False).to_dict() if not df.empty else {}
             self.aggregation_results_label.setText(f"Loaded temporal aggregation: {path}. Status counts: {counts}")
+        if hasattr(self, "agg_status_cards"):
+            self.agg_status_cards.get("Videos", QLabel()).setText(str(len(df)))
+            self.agg_status_cards.get("QC flagged", QLabel()).setText(str(counts.get("qc_flagged", 0)))
+            self.agg_status_cards.get("Output", QLabel()).setText("Loaded")
+            if "n_signals_aggregated" in df.columns and not df.empty:
+                try:
+                    self.agg_status_cards.get("Signals", QLabel()).setText(str(int(pd.to_numeric(df["n_signals_aggregated"], errors="coerce").max())))
+                except Exception:
+                    self.agg_status_cards.get("Signals", QLabel()).setText("Loaded")
         preferred = [
             "video_id", "status", "aggregation_profile", "n_frames", "duration_s",
             "face_detected_fraction", "n_signals_aggregated", "n_movements",
