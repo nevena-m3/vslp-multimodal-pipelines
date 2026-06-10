@@ -38,6 +38,63 @@ NORMALIZATION_METHODS: dict[str, str] = {
     "raw_normalized_coordinates": "Audit only: MediaPipe normalized coordinates without anatomical scaling; not recommended for default analysis.",
 }
 
+NORMALIZATION_METHOD_DETAILS: dict[str, dict[str, object]] = {
+    "intercanthal_distance": {
+        "display_name": "Intercanthal / inner-eye scaling",
+        "anchor_landmarks": (133, 362),
+        "fallback_landmarks": (33, 263),
+        "what_changes": "Coordinates are centered, then divided by a stable eye-corner distance so mouth/jaw motion is expressed in face-scale units.",
+        "best_for": "Default for ALS/oral-motor and speech kinematics when the face is mostly frontal.",
+        "caution": "Does not correct head rotation, depth changes, or poor tracking; fallback outer-eye scaling is flagged for review.",
+        "evidence_level": "Anatomy/system-informed research default",
+    },
+    "interpupillary_or_outer_eye": {
+        "display_name": "Outer-eye width scaling",
+        "anchor_landmarks": (33, 263),
+        "fallback_landmarks": (),
+        "what_changes": "Coordinates are divided by outer-eye width, an easily visible face-size proxy.",
+        "best_for": "Fallback when inner canthus points are difficult to audit or custom selections use outer-eye anchors.",
+        "caution": "Less anatomically precise than inner-canthus scaling and more sensitive to yaw/head pose.",
+        "evidence_level": "Engineering fallback / visual audit proxy",
+    },
+    "face_bbox_width": {
+        "display_name": "Face bounding-box width scaling",
+        "anchor_landmarks": (),
+        "fallback_landmarks": (),
+        "what_changes": "Coordinates are divided by the width of the detected face mesh rather than a named anatomical pair.",
+        "best_for": "Fallback when eye landmarks are unreliable but global face detection is stable.",
+        "caution": "Can absorb facial expression, pose, and partial-visibility artifacts; use only with QC review.",
+        "evidence_level": "Robust engineering fallback",
+    },
+    "face_height_nose_chin": {
+        "display_name": "Vertical face-height scaling",
+        "anchor_landmarks": (10, 152),
+        "fallback_landmarks": (),
+        "what_changes": "Coordinates are divided by a vertical upper-face-to-chin proxy.",
+        "best_for": "Exploratory review of lower-face/jaw signals when eye-width scaling is not usable.",
+        "caution": "Pose-sensitive and may be contaminated by lower-face motion; not the default for ALS oral-motor features.",
+        "evidence_level": "Exploratory anatomical proxy",
+    },
+    "procrustes_head_stabilized": {
+        "display_name": "Head-stabilized Procrustes",
+        "anchor_landmarks": (33, 133, 263, 362),
+        "fallback_landmarks": (),
+        "what_changes": "Intended to remove rigid head translation/rotation before feature computation.",
+        "best_for": "Future head-motion correction when a stable multi-point face anchor set is validated.",
+        "caution": "Currently marked as future/placeholder; the backend falls back to canthus scaling and records that Procrustes was not applied.",
+        "evidence_level": "Future method / not active as full rigid stabilization",
+    },
+    "raw_normalized_coordinates": {
+        "display_name": "Raw MediaPipe coordinates",
+        "anchor_landmarks": (),
+        "fallback_landmarks": (),
+        "what_changes": "No anatomical scaling is applied; values remain in MediaPipe normalized coordinate space.",
+        "best_for": "Debugging, audit, and comparison against normalized outputs.",
+        "caution": "Not recommended for final biomarkers because camera distance and face size remain confounds.",
+        "evidence_level": "Audit only",
+    },
+}
+
 AGGREGATION_PROFILES: dict[str, str] = {
     "robust_default": "Median, IQR, 5th/95th percentiles, tail spread, and missing/quality coverage; default for per-video scalar export.",
     "movement_segmented": "Segment opening/closing movements first, then summarize per movement and across movements.",
