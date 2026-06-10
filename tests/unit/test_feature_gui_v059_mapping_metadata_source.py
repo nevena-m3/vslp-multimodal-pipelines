@@ -3,7 +3,7 @@ from pathlib import Path
 
 def test_feature_gui_v059_version_mapping_confirmation_and_no_wheel_combo():
     source = Path('src/vslp/gui/features/app.py').read_text(encoding='utf-8')
-    assert 'APP_VERSION = "v0.62.0"' in source
+    assert 'APP_VERSION = "v0.63.0"' in source
     assert 'NoWheelComboBox' in source
     assert 'Confirm modified column mapping' in source
     assert 'accepted_column_mapping.csv' in source

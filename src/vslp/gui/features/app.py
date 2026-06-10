@@ -81,7 +81,7 @@ from vslp.analysis.features.plots import (
     plot_ml_export_manifest_summary
 )
 
-APP_VERSION = "v0.62.0"
+APP_VERSION = "v0.63.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -1144,7 +1144,13 @@ class FeatureAnalysisGUI(QMainWindow):
         for canonical, metadata_col in duplicate_canonical_cols:
             if canonical in merged.columns and metadata_col in merged.columns:
                 empty_mask = self._is_effectively_empty(merged[canonical])
-                merged.loc[empty_mask, canonical] = merged.loc[empty_mask, metadata_col]
+                # Metadata may contain strings for canonical fields that pandas read as
+                # all-missing float columns in the feature table. Cast before assignment
+                # so filling subject/session/task/diagnosis never raises a dtype error.
+                if bool(empty_mask.any()):
+                    merged[canonical] = merged[canonical].astype("object")
+                    fill_values = merged.loc[empty_mask, metadata_col].astype("object")
+                    merged.loc[empty_mask, canonical] = fill_values
 
         helper_cols = [c for c in ["_match_file_basename", "_match_file_stem"] if c in merged.columns]
         if helper_cols:
