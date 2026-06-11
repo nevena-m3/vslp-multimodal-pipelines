@@ -3,7 +3,7 @@ from pathlib import Path
 
 def test_feature_gui_v060_overview_source_layout_contract():
     text = Path('src/vslp/gui/features/app.py').read_text(encoding='utf-8')
-    assert 'APP_VERSION = "v0.69.0"' in text
+    assert 'APP_VERSION = "v0.71.0"' in text
     assert 'Dataset snapshot' in text
     assert 'Detailed overview tables' in text
     assert 'Open current plot' in text
