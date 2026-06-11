@@ -666,7 +666,7 @@ def plot_selected_feature_diagnostic(
     return _save(fig, path)
 
 
-def plot_qc_artifact_model(path: Path) -> Path:
+def plot_qc_artifact_model(path: Path, framework: str = "Auto / all QC") -> Path:
     families = [
         ("Additive\ninterference", "noise, hum, competing speech"),
         ("Gain / level\ndynamics", "AGC, distance, level drift"),
@@ -675,20 +675,25 @@ def plot_qc_artifact_model(path: Path) -> Path:
         ("Nonlinear\ndistortion", "clipping, saturation"),
         ("Temporal\ndiscontinuities", "dropouts, glitches, jumps"),
     ]
-    fig, ax = plt.subplots(figsize=(12.5, 5.2))
+    fig, ax = plt.subplots(figsize=(12.5, 5.7))
     ax.axis("off")
-    ax.text(0.5, 0.92, "Multidimensional QC interpretation model", ha="center", va="center", fontsize=16, fontweight="bold", color=NAVY)
-    ax.text(0.5, 0.84, "QC is interpreted as a vector of artifact families, not as one global good/bad score.", ha="center", va="center", fontsize=10.5, color=MUTED)
+    ax.text(0.5, 0.93, "Multidimensional QC interpretation model", ha="center", va="center", fontsize=16, fontweight="bold", color=NAVY)
+    ax.text(0.5, 0.855, "QC is interpreted as a vector of artifact families, not as one global good/bad score.", ha="center", va="center", fontsize=10.5, color=MUTED)
     xs = np.linspace(0.08, 0.92, len(families))
     for i, ((title, desc), x) in enumerate(zip(families, xs)):
         color = [TEAL, GOLD, "#6B5DD3", "#4E7AA8", RED, "#7A8798"][i]
-        rect = plt.Rectangle((x-0.07, 0.34), 0.14, 0.30, transform=ax.transAxes, facecolor=color, alpha=0.95, edgecolor="white", linewidth=1.5)
+        rect = plt.Rectangle((x-0.07, 0.36), 0.14, 0.29, transform=ax.transAxes, facecolor=color, alpha=0.95, edgecolor="white", linewidth=1.5)
         ax.add_patch(rect)
-        ax.text(x, 0.53, title, ha="center", va="center", fontsize=9.5, fontweight="bold", color="white", transform=ax.transAxes)
-        ax.text(x, 0.27, desc, ha="center", va="center", fontsize=8.2, color=MUTED, transform=ax.transAxes, wrap=True)
-    ax.text(0.5, 0.12, "Use QC to ask whether feature variation, missingness, or outliers are plausibly explained by acquisition artifacts before interpreting them as speech physiology.", ha="center", va="center", fontsize=10, color=NAVY, transform=ax.transAxes, wrap=True)
+        ax.text(x, 0.54, title, ha="center", va="center", fontsize=9.5, fontweight="bold", color="white", transform=ax.transAxes)
+        ax.text(x, 0.29, desc, ha="center", va="center", fontsize=8.2, color=MUTED, transform=ax.transAxes, wrap=True)
+    framework_note = {
+        "Auto / all QC": "Current framework: Auto / all QC. All detected numeric QC variables are used when available.",
+        "Acoustic QC": "Current framework: Acoustic QC. Uses detected acoustic/audio QC variables when available. Acoustic-specific extensions can be added later.",
+        "Kinematic QC": "Current framework: Kinematic QC. Uses detected video/landmark/tracking QC variables when available. Kinematic-specific extensions can be added later.",
+    }.get(str(framework), f"Current framework: {framework}.")
+    ax.text(0.5, 0.165, framework_note, ha="center", va="center", fontsize=9.5, color=NAVY, transform=ax.transAxes, wrap=True)
+    ax.text(0.5, 0.075, "Use QC to ask whether feature variation, missingness, or outliers are plausibly explained by acquisition artifacts before interpreting them as speech physiology.", ha="center", va="center", fontsize=9.5, color=NAVY, transform=ax.transAxes, wrap=True)
     return _save(fig, path)
-
 
 def plot_qc_family_burden(family_summary: pd.DataFrame, path: Path) -> Path:
     if family_summary is None or family_summary.empty or "artifact_family" not in family_summary.columns:
