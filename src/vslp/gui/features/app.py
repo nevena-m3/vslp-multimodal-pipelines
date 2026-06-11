@@ -85,7 +85,7 @@ from vslp.analysis.features.plots import (
     plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.72.0"
+APP_VERSION = "v0.73.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -1945,7 +1945,7 @@ class FeatureAnalysisGUI(QMainWindow):
         plot_panel_layout.addLayout(plot_header)
 
         self.dist_plot_caption = QLabel(
-            "Distributions uses only value-shape and plausibility plots: review status, shape priority, shape landscape, expected ranges, outlier burden, row burden, variance screen, and one selected-feature diagnostic. It does not duplicate Missingness, QC Integration, Relationships, Screening, or ML Export."
+            "Distributions uses only value-shape and plausibility plots. Task focus filters all distribution plots locally. Clinical context/value filters the distribution scope and also supplies grouping for selected-feature plots. There is no separate group overlay control."
         )
         self.dist_plot_caption.setWordWrap(True)
         self.dist_plot_caption.setStyleSheet(f"color:{MUTED}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:9px;")
@@ -1963,7 +1963,7 @@ class FeatureAnalysisGUI(QMainWindow):
         self.dist_context_combo = QComboBox()
         self.dist_context_combo.setMinimumWidth(250)
         self.dist_context_combo.addItem("Auto / not available")
-        self.dist_context_combo.currentIndexChanged.connect(lambda _=0: self._refresh_dist_context_value_combo(self._active_analysis_table()))
+        self.dist_context_combo.currentIndexChanged.connect(lambda _=0: (self._refresh_dist_context_value_combo(self._active_analysis_table()), self.preview_distribution_plot(self.dist_plot_combo.currentData() if hasattr(self, "dist_plot_combo") else "distribution_review_status")))
         scope_row.addWidget(self.dist_context_combo, 1)
         scope_row.addWidget(QLabel("Value:"))
         self.dist_context_value_combo = QComboBox()
@@ -1977,14 +1977,11 @@ class FeatureAnalysisGUI(QMainWindow):
         selectors.setSpacing(10)
         selectors.addWidget(QLabel("Feature to inspect:"))
         self.dist_feature_combo = QComboBox()
-        self.dist_feature_combo.setMinimumWidth(320)
+        self.dist_feature_combo.setMinimumWidth(360)
         self.dist_feature_combo.currentTextChanged.connect(lambda _: self.generate_selected_distribution_plot())
         selectors.addWidget(self.dist_feature_combo, 1)
-        selectors.addWidget(QLabel("Group overlay:"))
-        self.dist_group_combo = QComboBox()
-        self.dist_group_combo.setMinimumWidth(220)
-        self.dist_group_combo.currentTextChanged.connect(lambda _: self.generate_selected_group_plot())
-        selectors.addWidget(self.dist_group_combo)
+        selectors.addWidget(QLabel("Grouping for selected-feature plots comes from Clinical context above."))
+        selectors.addStretch(1)
         plot_panel_layout.addLayout(selectors)
 
         self.dist_plot_preview = QLabel("Run Feature Analysis, then choose one distribution plot.")
@@ -2279,23 +2276,6 @@ class FeatureAnalysisGUI(QMainWindow):
                 if ix >= 0:
                     self.dist_feature_combo.setCurrentIndex(ix)
             self.dist_feature_combo.blockSignals(False)
-        if hasattr(self, "dist_group_combo"):
-            active_df = self.analysis_df if self.analysis_df is not None else self.feature_df
-            current = self.dist_group_combo.currentText()
-            self.dist_group_combo.blockSignals(True)
-            self.dist_group_combo.clear()
-            self.dist_group_combo.addItem("Auto")
-            if hasattr(self, "dist_context_combo") and self.dist_context_combo.currentText() not in {"", "Auto / not available"}:
-                self.dist_group_combo.addItem("Clinical context")
-            if self.feature_df is not None:
-                for c in ["task", "diagnosis", "severity_bin", "modality", "sex", "gender", "session_id", "subject_id", "__local_clinical_context__"]:
-                    if c in active_df.columns:
-                        self.dist_group_combo.addItem(c)
-            if current:
-                ix = self.dist_group_combo.findText(current)
-                if ix >= 0:
-                    self.dist_group_combo.setCurrentIndex(ix)
-            self.dist_group_combo.blockSignals(False)
         self.dist_note.setText("Distribution audit generated. Review statistical outliers together with expected ranges, QC artifacts, task compatibility, and clinical/context metadata before excluding or transforming features.")
 
     def _selected_distribution_feature(self) -> str | None:
@@ -2305,14 +2285,20 @@ class FeatureAnalysisGUI(QMainWindow):
         return val or None
 
     def _selected_distribution_group(self) -> str | None:
-        if not hasattr(self, "dist_group_combo"):
-            return None
-        val = self.dist_group_combo.currentText().strip()
-        if val in ["", "Auto"]:
-            return None
-        if val == "Clinical context":
+        """Grouping variable for selected-feature distribution plots.
+
+        The old separate "Group overlay" control was removed because it was
+        ambiguous. Distributions now uses the local Clinical context selector as
+        the single grouping source. If no clinical context is available, fallback
+        to task when present.
+        """
+        df, _scope = self._distribution_scope_table()
+        if "__local_clinical_context__" in df.columns and df["__local_clinical_context__"].notna().sum() > 0:
             return "__local_clinical_context__"
-        return val
+        task_col = self._task_col(df) if hasattr(self, "_task_col") else None
+        if task_col and task_col in df.columns and df[task_col].notna().sum() > 0:
+            return task_col
+        return None
 
     def _selected_expected_bounds(self, feature: str | None) -> tuple[float | None, float | None]:
         if not feature or not getattr(self, "outputs", None):
@@ -2386,7 +2372,7 @@ class FeatureAnalysisGUI(QMainWindow):
         if not hasattr(self, "dist_interpretation_label"):
             return
         feature = self._selected_distribution_feature() or "selected feature"
-        group = self._selected_distribution_group() or "detected group"
+        group = self.dist_context_combo.currentText() if hasattr(self, "dist_context_combo") and self.dist_context_combo.currentText() not in {"", "Auto / not available"} else "task or detected context"
         captions = {
             "distribution_review_status": (
                 "<b>What it shows</b><br>Counts of features labelled ok, monitor, or review after combining valid n, missingness, zero variance, robust outlier burden, and expected-range flags.<br><br>"

@@ -3,7 +3,7 @@ from pathlib import Path
 
 def test_feature_gui_v058_version_and_run_log_source():
     source = Path('src/vslp/gui/features/app.py').read_text(encoding='utf-8')
-    assert 'APP_VERSION = "v0.72.0"' in source
+    assert 'APP_VERSION = "v0.73.0"' in source
     assert 'Run Log' in source
     assert 'run_progress' in source
 
