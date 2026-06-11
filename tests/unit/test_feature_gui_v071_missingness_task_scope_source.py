@@ -3,7 +3,7 @@ from pathlib import Path
 
 def test_feature_gui_v071_missingness_has_local_task_scope():
     text = Path("src/vslp/gui/features/app.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "v0.74.0"' in text
+    assert 'APP_VERSION = "v0.75.0"' in text
     assert 'self.missing_task_combo' in text
     assert 'def _refresh_missingness_task_combo' in text
     assert 'def _missingness_scope_table' in text

@@ -85,7 +85,7 @@ from vslp.analysis.features.plots import (
     plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.74.0"
+APP_VERSION = "v0.75.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -658,6 +658,30 @@ class FeatureAnalysisGUI(QMainWindow):
         policy_note.setStyleSheet(f"color:{MUTED}; background:#F7FAFD; border:1px solid {LINE}; border-radius:8px; padding:10px;")
         intro.layout.addWidget(policy_note)
 
+        infer_box = QGroupBox("Filename context inference")
+        infer_layout = QVBoxLayout(infer_box)
+        infer_note = QLabel(
+            "Optional fallback when metadata is absent, incomplete, or cannot be matched. "
+            "The safe default parses common VSLP-style names such as SUBJECT_PROTOCOL_ITERATION_YYYYMMDD_RECORD_TASK, "
+            "using the last textual block as task. Metadata values always take priority when successfully matched."
+        )
+        infer_note.setWordWrap(True)
+        infer_note.setStyleSheet(f"color:{MUTED};")
+        infer_layout.addWidget(infer_note)
+        infer_row = QHBoxLayout()
+        infer_row.addWidget(QLabel("Filename parser:"))
+        self.filename_parser_combo = QComboBox()
+        self.filename_parser_combo.addItems([
+            "Auto fallback: metadata first, then filename",
+            "Filename only when metadata is absent",
+            "Off",
+        ])
+        self.filename_parser_combo.setMinimumWidth(360)
+        infer_row.addWidget(self.filename_parser_combo)
+        infer_row.addStretch(1)
+        infer_layout.addLayout(infer_row)
+        intro.layout.addWidget(infer_box)
+
         row = QHBoxLayout()
         row.addWidget(QLabel("Modality:"))
         self.modality_combo = QComboBox()
@@ -805,7 +829,7 @@ class FeatureAnalysisGUI(QMainWindow):
         plot_header.addWidget(show_btn)
 
         regen = QPushButton("Regenerate")
-        regen.clicked.connect(self.regenerate_missingness_scope_plots)
+        regen.clicked.connect(self.regenerate_overview_plots)
         plot_header.addWidget(regen)
 
         plot_header.addStretch(1)
@@ -1022,17 +1046,127 @@ class FeatureAnalysisGUI(QMainWindow):
             return s.lower()
         return values.map(one)
 
+    def _file_source_column(self, df: pd.DataFrame) -> str | None:
+        for c in [
+            "file_name", "source_file_path", "raw_media_file_name", "segmentation_wav_path",
+            "video_id", "input_timeseries_csv", "Raw Media File name"
+        ]:
+            if c in df.columns:
+                return c
+        return None
+
     def _add_file_match_helpers(self, df: pd.DataFrame) -> pd.DataFrame:
         out = df.copy()
-        source = None
-        for c in ["file_name", "source_file_path", "raw_media_file_name", "segmentation_wav_path", "video_id"]:
-            if c in out.columns:
-                source = c
-                break
+        source = self._file_source_column(out)
         if source is not None:
             out["_match_file_basename"] = self._basename_series(out[source])
             out["_match_file_stem"] = out["_match_file_basename"].str.replace(r"\.[a-z0-9]+$", "", regex=True)
         return out
+
+    def _filename_parser_mode(self) -> str:
+        if hasattr(self, "filename_parser_combo"):
+            return self.filename_parser_combo.currentText()
+        return "Auto fallback: metadata first, then filename"
+
+    def _parse_filename_context_frame(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Parse common VSLP filename context without requiring metadata.
+
+        Expected robust pattern:
+        SUBJECT_PROTOCOL_ITERATION_YYYYMMDD_RECORD_TASK...
+        The task fallback is the final nonnumeric textual portion after date and
+        record/index tokens. This is intentionally heuristic and never raises.
+        """
+        if df is None or df.empty:
+            return pd.DataFrame(index=df.index if df is not None else None)
+        source = self._file_source_column(df)
+        out = pd.DataFrame(index=df.index)
+        if source is None:
+            return out
+        base = self._basename_series(df[source])
+        stem = base.str.replace(r"\.[a-z0-9]+$", "", regex=True)
+        out["parsed_file_stem"] = stem
+
+        def parse_one(s: str) -> dict[str, object]:
+            tokens = [t for t in re.split(r"[_\\-\\s]+", str(s)) if t]
+            result: dict[str, object] = {
+                "parsed_subject_id": pd.NA,
+                "parsed_protocol_id": pd.NA,
+                "parsed_iteration": pd.NA,
+                "parsed_recording_date": pd.NaT,
+                "parsed_task": pd.NA,
+                "parsed_context_status": "unparsed",
+            }
+            if not tokens:
+                return result
+            result["parsed_subject_id"] = tokens[0]
+            if len(tokens) > 1 and re.fullmatch(r"\d+", tokens[1]):
+                result["parsed_protocol_id"] = tokens[1]
+            if len(tokens) > 2 and re.fullmatch(r"\d+", tokens[2]):
+                result["parsed_iteration"] = tokens[2]
+            date_idx = None
+            for i, tok in enumerate(tokens):
+                if re.fullmatch(r"(19|20)\d{6}", tok):
+                    date_idx = i
+                    try:
+                        result["parsed_recording_date"] = pd.to_datetime(tok, format="%Y%m%d", errors="coerce")
+                    except Exception:
+                        result["parsed_recording_date"] = pd.NaT
+                    break
+            task_tokens: list[str] = []
+            if date_idx is not None:
+                tail = tokens[date_idx + 1:]
+                if tail and re.fullmatch(r"\d+", tail[0]):
+                    tail = tail[1:]
+                task_tokens = [t for t in tail if re.search(r"[A-Za-z]", t)]
+            if not task_tokens:
+                # Last textual run anywhere in the filename, used as final fallback.
+                text_positions = [i for i, t in enumerate(tokens) if re.search(r"[A-Za-z]", t)]
+                if text_positions:
+                    last = text_positions[-1]
+                    first = last
+                    while first - 1 >= 0 and re.search(r"[A-Za-z]", tokens[first - 1]):
+                        first -= 1
+                    task_tokens = tokens[first:last + 1]
+            if task_tokens:
+                result["parsed_task"] = "_".join(task_tokens).upper()
+                result["parsed_context_status"] = "parsed"
+            return result
+
+        parsed = [parse_one(s) for s in stem.tolist()]
+        parsed_df = pd.DataFrame(parsed, index=df.index)
+        return pd.concat([out, parsed_df], axis=1)
+
+    def _fill_empty_context_from_filename(self, df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Fill empty canonical context columns from filename parsing, preserving metadata."""
+        mode = self._filename_parser_mode()
+        out = df.copy()
+        parsed = self._parse_filename_context_frame(out)
+        if parsed.empty or mode == "Off":
+            return out, parsed
+
+        def fill_col(canonical: str, parsed_col: str) -> None:
+            if parsed_col not in parsed.columns:
+                return
+            if canonical not in out.columns:
+                out[canonical] = parsed[parsed_col]
+                return
+            empty = self._is_effectively_empty(out[canonical])
+            if mode == "Filename only when metadata is absent":
+                # Only fill if the whole field is unavailable/empty.
+                if empty.all():
+                    out.loc[:, canonical] = parsed[parsed_col]
+                return
+            out.loc[empty, canonical] = parsed.loc[empty, parsed_col]
+
+        fill_col("subject_id", "parsed_subject_id")
+        fill_col("protocol_id", "parsed_protocol_id")
+        fill_col("iteration", "parsed_iteration")
+        fill_col("recording_date", "parsed_recording_date")
+        fill_col("task", "parsed_task")
+        for c in parsed.columns:
+            if c not in out.columns:
+                out[c] = parsed[c]
+        return out, parsed
 
     def _standardize_metadata_table(self, meta_df: pd.DataFrame) -> pd.DataFrame:
         """Rename common metadata columns and add match helpers without discarding originals."""
@@ -1107,30 +1241,72 @@ class FeatureAnalysisGUI(QMainWindow):
         merged = feature_base.copy()
         duplicate_canonical_cols: list[tuple[str, str]] = []
 
+        # Select the best actual metadata join, not simply the first column pair
+        # that exists. This matters for kinematic tables where `video_id` has no
+        # extension while metadata has .webm/.wav names: basename exists but has
+        # zero matches; stem is the correct key.
+        best_join: dict[str, object] | None = None
         for candidate in self._metadata_join_candidates():
-            if all(k in feature_lookup and k in meta_lookup for k in candidate):
-                left_keys = [feature_lookup[k] for k in candidate]
-                right_keys = [meta_lookup[k] for k in candidate]
-                right = meta_df.copy()
-                if left_keys != right_keys:
-                    right = right.rename(columns={rk: lk for lk, rk in zip(left_keys, right_keys)})
+            if not all(k in feature_lookup and k in meta_lookup for k in candidate):
+                continue
+            left_keys = [feature_lookup[k] for k in candidate]
+            right_keys_orig = [meta_lookup[k] for k in candidate]
+            right = meta_df.copy()
+            if left_keys != right_keys_orig:
+                right = right.rename(columns={rk: lk for lk, rk in zip(left_keys, right_keys_orig)})
 
-                if right.duplicated(subset=left_keys).any():
+            deduped = False
+            if right.duplicated(subset=left_keys).any():
+                # File-stem metadata can legitimately duplicate audio/video rows
+                # for the same recording. Keep one row for context merge; do not
+                # allow broad subject-only duplicate joins.
+                if any(k in {"_match_file_stem", "_match_file_basename", "file_name", "record_key", "recording_id"} for k in candidate):
+                    right = right.drop_duplicates(subset=left_keys, keep="first")
+                    deduped = True
+                else:
                     continue
 
-                extra_cols = self._metadata_extra_columns(merged, right, left_keys)
-                rename_map: dict[str, str] = {}
-                duplicate_canonical_cols = []
-                for c in extra_cols:
-                    if c in merged.columns:
-                        new_name = f"metadata__{c}"
-                        rename_map[c] = new_name
-                        duplicate_canonical_cols.append((c, new_name))
-                right = right[left_keys + extra_cols].rename(columns=rename_map)
-                merged = merged.merge(right, on=left_keys, how="left", validate="m:1")
-                chosen_keys = left_keys
-                strategy = "metadata_key_join:" + "+".join(left_keys)
-                break
+            left_frame = merged[left_keys].astype(str).fillna("")
+            right_frame = right[left_keys].astype(str).fillna("")
+            if len(left_keys) == 1:
+                right_values = set(right_frame[left_keys[0]].tolist())
+                match_mask = left_frame[left_keys[0]].isin(right_values)
+            else:
+                right_values = set(map(tuple, right_frame[left_keys].to_numpy()))
+                match_mask = left_frame[left_keys].apply(lambda r: tuple(r.values) in right_values, axis=1)
+            n_matches = int(match_mask.sum())
+            if n_matches <= 0:
+                continue
+            score = (n_matches / max(1, len(merged)), len(left_keys), -int(deduped))
+            if best_join is None or score > best_join["score"]:
+                best_join = {
+                    "score": score,
+                    "candidate": candidate,
+                    "left_keys": left_keys,
+                    "right": right,
+                    "deduped": deduped,
+                    "n_matches": n_matches,
+                }
+
+        if best_join is not None:
+            left_keys = list(best_join["left_keys"])
+            right = best_join["right"]
+            extra_cols = self._metadata_extra_columns(merged, right, left_keys)
+            rename_map: dict[str, str] = {}
+            duplicate_canonical_cols = []
+            for c in extra_cols:
+                if c in merged.columns:
+                    new_name = f"metadata__{c}"
+                    rename_map[c] = new_name
+                    duplicate_canonical_cols.append((c, new_name))
+            right = right[left_keys + extra_cols].rename(columns=rename_map)
+            merged = merged.merge(right, on=left_keys, how="left", validate="m:1")
+            chosen_keys = left_keys
+            strategy = (
+                "metadata_key_join:" + "+".join(left_keys)
+                + f":matched_{int(best_join['n_matches'])}_of_{len(feature_base)}"
+                + (":dedup_file_metadata" if best_join.get("deduped") else "")
+            )
 
         if not chosen_keys and len(meta_df) == len(feature_df):
             add = meta_df.reset_index(drop=True).copy()
@@ -1159,6 +1335,12 @@ class FeatureAnalysisGUI(QMainWindow):
                     merged[canonical] = merged[canonical].astype("object")
                     fill_values = merged.loc[empty_mask, metadata_col].astype("object")
                     merged.loc[empty_mask, canonical] = fill_values
+
+        merged, parsed_context = self._fill_empty_context_from_filename(merged)
+        self.filename_context_parse_df = parsed_context
+        if parsed_context is not None and not parsed_context.empty:
+            parsed_ok = int(parsed_context.get("parsed_context_status", pd.Series(dtype=str)).astype(str).eq("parsed").sum())
+            strategy = strategy + f":filename_context_fallback_{parsed_ok}_rows"
 
         helper_cols = [c for c in ["_match_file_basename", "_match_file_stem"] if c in merged.columns]
         if helper_cols:
@@ -1270,7 +1452,8 @@ class FeatureAnalysisGUI(QMainWindow):
             "dataset_inventory": inventory,
             "feature_role_summary": role_sum,
             "dataset_design_overview": design,
-            "metadata_context": pd.DataFrame([{"strategy": getattr(self, "metadata_join_strategy", "feature_table_only")}]),
+            "metadata_context": pd.DataFrame([{"strategy": getattr(self, "metadata_join_strategy", "feature_table_only"), "filename_parser_mode": self._filename_parser_mode()}]),
+            "filename_context_parse": getattr(self, "filename_context_parse_df", pd.DataFrame()),
             "feature_family_overview": family,
             "overview_readiness_summary": readiness,
             "overview_feature_quality_landscape": quality_landscape,
@@ -5128,6 +5311,12 @@ Decision colors:
             if self.meta_df is not None:
                 self.log(f"Loaded metadata table: {self.meta_df.shape[0]} rows x {self.meta_df.shape[1]} columns")
                 self.log(f"Metadata context strategy: {self.metadata_join_strategy}")
+            else:
+                self.log("No metadata table loaded; filename context inference can provide subject/iteration/date/task when filenames follow a parsable pattern.")
+            parsed_df = getattr(self, "filename_context_parse_df", pd.DataFrame())
+            if parsed_df is not None and not parsed_df.empty and "parsed_context_status" in parsed_df.columns:
+                parsed_ok = int(parsed_df["parsed_context_status"].astype(str).eq("parsed").sum())
+                self.log(f"Filename context parser mode: {self._filename_parser_mode()} | parsed task context rows: {parsed_ok} / {len(parsed_df)}")
             if self.registry_df is not None:
                 self.log(f"Loaded registry/policy table: {self.registry_df.shape[0]} rows x {self.registry_df.shape[1]} columns")
             self.log("Proposed role counts:\n" + roles.to_string(index=False))
