@@ -3,7 +3,7 @@ from pathlib import Path
 
 def test_feature_gui_v069_task_longitudinal_plots_are_real_plot_previews():
     text = Path("src/vslp/gui/features/app.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "v0.69.0"' in text
+    assert 'APP_VERSION = "v0.72.0"' in text
     assert 'plot_task_counts' in text
     assert 'plot_task_subject_matrix' in text
     assert 'plot_task_label_context' in text

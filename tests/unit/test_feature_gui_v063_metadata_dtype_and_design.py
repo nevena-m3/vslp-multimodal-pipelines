@@ -9,7 +9,7 @@ from vslp.analysis.features.plots import plot_dataset_design_tiles
 
 def test_v063_source_version_and_metadata_fill_cast():
     source = Path("src/vslp/gui/features/app.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "v0.69.0"' in source
+    assert 'APP_VERSION = "v0.72.0"' in source
     assert 'merged[canonical] = merged[canonical].astype("object")' in source
     assert 'fill_values = merged.loc[empty_mask, metadata_col].astype("object")' in source
 

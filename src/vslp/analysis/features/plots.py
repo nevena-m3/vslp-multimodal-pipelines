@@ -1523,3 +1523,59 @@ def plot_longitudinal_date_timeline(df: pd.DataFrame, subject_col: str | None, d
     ax.set_yticks(range(0, len(subjects), y_step)); ax.set_yticklabels([subjects[i] for i in range(0, len(subjects), y_step)], fontsize=7, color=MUTED)
     _style(ax)
     return _save(fig, path)
+
+
+def plot_longitudinal_feature_trajectory(
+    df: pd.DataFrame,
+    subject_col: str | None,
+    feature_col: str | None,
+    path: Path,
+    date_col: str | None = None,
+    session_col: str | None = None,
+    iteration_col: str | None = None,
+    subject_value: str | None = None,
+) -> Path:
+    if df is None or df.empty or not subject_col or subject_col not in df.columns:
+        return _empty(path, "No subject_id column was available for subject trajectory review.", "Subject trajectory")
+    if not feature_col or feature_col not in df.columns:
+        return _empty(path, "No selected numeric feature was available for subject trajectory review.", "Subject trajectory")
+    d = df.copy()
+    if subject_value and subject_value not in {"All subjects", "All subjects / not available"}:
+        d = d[d[subject_col].astype(str).eq(str(subject_value))]
+    y = pd.to_numeric(d[feature_col], errors="coerce")
+    d = d.assign(_feature_value=y).dropna(subset=["_feature_value"])
+    if d.empty:
+        return _empty(path, "The selected subject/feature has no numeric values.", "Subject trajectory")
+    if date_col and date_col in d.columns:
+        d["_x"] = pd.to_datetime(d[date_col], errors="coerce")
+        x_label = str(date_col)
+        d = d.dropna(subset=["_x"])
+    elif session_col and session_col in d.columns:
+        d["_x"] = d[session_col].astype(str)
+        x_label = str(session_col)
+    elif iteration_col and iteration_col in d.columns:
+        d["_x"] = d[iteration_col].astype(str)
+        x_label = str(iteration_col)
+    else:
+        d["_x"] = np.arange(len(d))
+        x_label = "row order"
+    if d.empty:
+        return _empty(path, "The selected date/session/iteration field could not be plotted.", "Subject trajectory")
+    fig, ax = plt.subplots(figsize=(11, 5.8))
+    if subject_value and subject_value not in {"All subjects", "All subjects / not available"}:
+        d = d.sort_values("_x")
+        ax.plot(d["_x"], d["_feature_value"], marker="o", color=TEAL, linewidth=2)
+        ax.set_title(f"{feature_col} trajectory for subject {subject_value}", fontsize=14, fontweight="bold", color=NAVY, pad=12)
+    else:
+        # Show up to 30 subjects as faint trajectories for readability.
+        subjects = d[subject_col].astype(str).dropna().unique().tolist()[:30]
+        for sid in subjects:
+            sub = d[d[subject_col].astype(str).eq(sid)].sort_values("_x")
+            if len(sub) > 0:
+                ax.plot(sub["_x"], sub["_feature_value"], marker="o", linewidth=1.1, alpha=0.55)
+        ax.set_title(f"{feature_col} trajectories by subject", fontsize=14, fontweight="bold", color=NAVY, pad=12)
+    ax.set_xlabel(x_label, color=MUTED)
+    ax.set_ylabel(str(feature_col), color=MUTED)
+    ax.tick_params(axis="x", rotation=45)
+    _style(ax)
+    return _save(fig, path)
