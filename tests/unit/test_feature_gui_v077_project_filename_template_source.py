@@ -3,7 +3,7 @@ from pathlib import Path
 
 def test_feature_gui_v077_project_has_filename_template_controls():
     text = Path("src/vslp/gui/features/app.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "v0.77.0"' in text
+    assert 'APP_VERSION = "v0.84.0"' in text
     assert 'self.filename_example_label' in text
     assert 'self.filename_token_combos' in text
     assert 'Subject ID' in text

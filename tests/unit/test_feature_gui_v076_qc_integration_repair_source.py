@@ -4,7 +4,7 @@ from pathlib import Path
 def test_feature_gui_v076_restores_qc_framework_model_plot():
     text = Path("src/vslp/gui/features/app.py").read_text(encoding="utf-8")
     plots = Path("src/vslp/analysis/features/plots.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "v0.77.0"' in text
+    assert 'APP_VERSION = "v0.84.0"' in text
     assert 'plot_qc_framework_selection' not in text
     assert 'plot_qc_artifact_model(plots_dir / f"qc_artifact_model_{safe_scope}.png", self._qc_framework_mode())' in text
     assert 'def plot_qc_artifact_model(path: Path, framework: str = "Auto / all QC")' in plots

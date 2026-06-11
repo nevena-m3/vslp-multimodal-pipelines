@@ -37,9 +37,14 @@ def numeric_columns(df: pd.DataFrame, cols: list[str]) -> list[str]:
 
 def _first_present(df: pd.DataFrame, names: list[str]) -> str | None:
     norm = {normalize_name(c): c for c in df.columns}
+    empty_tokens = {"", "nan", "none", "null", "nat", "<na>"}
     for n in names:
-        if n in norm:
-            return norm[n]
+        hit = norm.get(normalize_name(n))
+        if hit is not None:
+            s = df[hit]
+            valid = s.notna() & ~s.astype("string").str.strip().str.lower().isin(empty_tokens)
+            if bool(valid.any()):
+                return hit
     return None
 
 
@@ -67,10 +72,10 @@ def dataset_inventory(feature_df: pd.DataFrame, qc_df: pd.DataFrame | None, meta
         {"section": "linked_tables", "metric": "metadata_table_loaded", "value": bool(meta_df is not None), "interpretation": "Metadata table available for labels/covariates."},
         {"section": "linked_tables", "metric": "metadata_rows", "value": 0 if meta_df is None else len(meta_df), "interpretation": "Rows in optional metadata table."},
     ]
-    subject_col = _first_present(feature_df, ["subject_id", "participant_id", "patient_id"])
-    session_col = _first_present(feature_df, ["session_id", "visit_id", "clinical_visit_id"])
-    task_col = _first_present(feature_df, ["task", "task_name", "prompt"])
-    target_col = _first_present(feature_df, ["diagnosis", "severity_bin", "severity_score", "alsfrs_total", "alsfrs_bulbar"])
+    subject_col = _first_present(feature_df, ["subject_id", "SubjectID", "participant_id", "patient_id", "metadata__subject_id", "metadata__SubjectID"])
+    session_col = _first_present(feature_df, ["session_id", "visit_id", "clinical_visit_id", "Clinical Visit ID", "metadata__session_id", "metadata__visit_id", "metadata__Clinical Visit ID"])
+    task_col = _first_present(feature_df, ["task", "task_name", "Task Name", "prompt", "metadata__task", "metadata__Task Name"])
+    target_col = _first_present(feature_df, ["diagnosis", "Diagnosis", "dx", "group", "severity_bin", "severity_score", "ALSFRS total score", "ALSFRS bulbar", "ALSBDI", "metadata__Diagnosis", "metadata__ALSFRS total score", "metadata__ALSFRS bulbar", "metadata__ALSBDI"])
     if subject_col:
         rows.append({"section": "design", "metric": "unique_subjects", "value": int(feature_df[subject_col].nunique(dropna=True)), "interpretation": f"Unique values in {subject_col}."})
     if session_col:
@@ -97,13 +102,14 @@ def role_summary(mapping: pd.DataFrame) -> pd.DataFrame:
 
 def design_overview(feature_df: pd.DataFrame, mapping: pd.DataFrame) -> pd.DataFrame:
     cols = [
-        ("subject", ["subject_id", "participant_id", "patient_id"]),
-        ("session", ["session_id", "visit_id", "clinical_visit_id"]),
-        ("task", ["task", "task_name", "prompt"]),
-        ("diagnosis", ["diagnosis", "dx", "group"]),
-        ("severity_bin", ["severity_bin", "severity_class"]),
-        ("sex_or_gender", ["sex", "gender", "sex_or_gender"]),
-        ("device", ["device", "microphone", "site"]),
+        ("subject", ["subject_id", "SubjectID", "participant_id", "patient_id", "metadata__subject_id", "metadata__SubjectID"]),
+        ("session", ["session_id", "visit_id", "clinical_visit_id", "Clinical Visit ID", "metadata__session_id", "metadata__visit_id", "metadata__Clinical Visit ID"]),
+        ("task", ["task", "task_name", "Task Name", "prompt", "metadata__task", "metadata__Task Name"]),
+        ("diagnosis", ["diagnosis", "Diagnosis", "dx", "Dx", "diagnostic_group", "group", "Group", "metadata__diagnosis", "metadata__Diagnosis"]),
+        ("severity_score", ["severity_score", "ALSFRS total score", "ALSFRS-R total score", "ALSFRS bulbar", "ALSFRS-R bulbar", "ALSBDI", "metadata__ALSFRS total score", "metadata__ALSFRS bulbar", "metadata__ALSBDI"]),
+        ("severity_bin", ["severity_bin", "severity_class", "alsfrs_bulbar_severity", "metadata__severity_bin", "metadata__severity_class"]),
+        ("sex_or_gender", ["sex", "Sex", "gender", "Gender", "sex_or_gender", "metadata__Sex", "metadata__Gender"]),
+        ("device", ["device", "microphone", "site", "platform", "recording_device", "metadata__device", "metadata__microphone", "metadata__site"]),
     ]
     rows = []
     n_rows = int(len(feature_df))
@@ -168,11 +174,11 @@ def feature_family_overview(feature_df: pd.DataFrame, feature_cols: list[str], r
 def group_counts(feature_df: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for group_name, candidates in [
-        ("task", ["task", "task_name", "prompt"]),
-        ("diagnosis", ["diagnosis", "dx", "group"]),
-        ("severity_bin", ["severity_bin", "severity_class"]),
-        ("sex_or_gender", ["sex", "gender"]),
-        ("session", ["session_id", "visit_id", "clinical_visit_id"]),
+        ("task", ["task", "task_name", "Task Name", "prompt", "metadata__task", "metadata__Task Name"]),
+        ("diagnosis", ["diagnosis", "Diagnosis", "dx", "Dx", "diagnostic_group", "group", "Group", "metadata__diagnosis", "metadata__Diagnosis"]),
+        ("severity_bin", ["severity_bin", "severity_class", "alsfrs_bulbar_severity", "metadata__severity_bin", "metadata__severity_class"]),
+        ("sex_or_gender", ["sex", "Sex", "gender", "Gender", "sex_or_gender", "metadata__Sex", "metadata__Gender"]),
+        ("session", ["session_id", "visit_id", "clinical_visit_id", "Clinical Visit ID", "metadata__session_id", "metadata__visit_id", "metadata__Clinical Visit ID"]),
     ]:
         c = _first_present(feature_df, candidates)
         if not c:
@@ -716,13 +722,13 @@ def missingness_group_summary(feature_df: pd.DataFrame, feature_cols: list[str])
         return pd.DataFrame(columns=["group_variable", "column", "level", "n_rows", "mean_feature_missing_fraction", "median_feature_missing_fraction", "n_high_review_rows"])
     row_miss = feature_df[feature_cols].isna().mean(axis=1)
     candidates = [
-        ("task", ["task", "task_name", "prompt"]),
-        ("diagnosis", ["diagnosis", "dx", "group"]),
-        ("severity_bin", ["severity_bin", "severity_class"]),
-        ("sex_or_gender", ["sex", "gender"]),
-        ("session", ["session_id", "visit_id", "clinical_visit_id"]),
-        ("subject", ["subject_id", "participant_id", "patient_id"]),
-        ("device", ["device", "microphone", "site"]),
+        ("task", ["task", "task_name", "Task Name", "prompt", "metadata__task", "metadata__Task Name"]),
+        ("diagnosis", ["diagnosis", "Diagnosis", "dx", "Dx", "diagnostic_group", "group", "Group", "metadata__diagnosis", "metadata__Diagnosis"]),
+        ("severity_bin", ["severity_bin", "severity_class", "alsfrs_bulbar_severity", "metadata__severity_bin", "metadata__severity_class"]),
+        ("sex_or_gender", ["sex", "Sex", "gender", "Gender", "sex_or_gender", "metadata__Sex", "metadata__Gender"]),
+        ("session", ["session_id", "visit_id", "clinical_visit_id", "Clinical Visit ID", "metadata__session_id", "metadata__visit_id", "metadata__Clinical Visit ID"]),
+        ("subject", ["subject_id", "SubjectID", "participant_id", "patient_id", "metadata__subject_id", "metadata__SubjectID"]),
+        ("device", ["device", "microphone", "site", "platform", "recording_device", "metadata__device", "metadata__microphone", "metadata__site"]),
         ("modality", ["modality"]),
     ]
     rows = []

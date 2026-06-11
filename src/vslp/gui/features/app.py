@@ -85,7 +85,7 @@ from vslp.analysis.features.plots import (
     plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.77.0"
+APP_VERSION = "v0.84.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -435,7 +435,8 @@ class Sidebar(QFrame):
         layout.addSpacing(18)
         for key, text in [
             ("project", "o  Project"),
-            ("mapping", "o  Column Mapping"),
+            ("mapping", "o  Feature Mapping"),
+            ("metadata_mapping", "o  Metadata Mapping"),
             ("overview", "o  Overview"),
             ("missing", "o  Missingness"),
             ("dist", "o  Distributions"),
@@ -534,13 +535,15 @@ class FeatureAnalysisGUI(QMainWindow):
         self.registry_df: Optional[pd.DataFrame] = None
         self.mapping_df = pd.DataFrame()
         self.proposed_mapping_df = pd.DataFrame()
+        self.metadata_mapping_df = pd.DataFrame()
+        self.metadata_mapping_accepted = False
         self.analysis_df: Optional[pd.DataFrame] = None
         self.metadata_join_strategy = "feature_table_only"
         self.mapping_modified = False
         self.mapping_accepted = False
         self.outputs: dict[str, pd.DataFrame] = {}
         self.output_dir: Optional[Path] = None
-        self.page_keys = ["project", "mapping", "overview", "missing", "dist", "qc", "relationships", "task_review", "longitudinal", "screening", "reliability", "recommendations", "ml_export", "export"]
+        self.page_keys = ["project", "mapping", "metadata_mapping", "overview", "missing", "dist", "qc", "relationships", "task_review", "longitudinal", "screening", "reliability", "recommendations", "ml_export", "export"]
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -573,6 +576,7 @@ class FeatureAnalysisGUI(QMainWindow):
         self.pages = {
             "project": self._project_page(),
             "mapping": self._mapping_page(),
+            "metadata_mapping": self._metadata_mapping_page(),
             "overview": self._overview_page(),
             "missing": self._missingness_page(),
             "dist": self._distributions_page(),
@@ -635,109 +639,178 @@ class FeatureAnalysisGUI(QMainWindow):
         widget.setMinimumWidth(980)
         return sc
 
+    def _project_step_label(self, number: int, title: str, subtitle: str) -> QFrame:
+        step = QFrame()
+        step.setStyleSheet(
+            f"QFrame {{ background:#F8FBFE; border:1px solid {LINE}; border-radius:14px; }}"
+            f"QLabel#StepNum {{ color:#FFFFFF; background:{TEAL}; border-radius:13px; font-weight:900; }}"
+            f"QLabel#StepTitle {{ color:{NAVY}; font-size:13px; font-weight:900; border:none; background:transparent; }}"
+            f"QLabel#StepSub {{ color:{MUTED}; font-size:11px; border:none; background:transparent; }}"
+        )
+        lay = QHBoxLayout(step)
+        lay.setContentsMargins(12, 10, 12, 10)
+        lay.setSpacing(10)
+        num = QLabel(str(number)); num.setObjectName("StepNum"); num.setAlignment(Qt.AlignCenter); num.setFixedSize(26, 26)
+        texts = QVBoxLayout(); texts.setSpacing(1)
+        t = QLabel(title); t.setObjectName("StepTitle")
+        s = QLabel(subtitle); s.setObjectName("StepSub"); s.setWordWrap(True)
+        texts.addWidget(t); texts.addWidget(s)
+        lay.addWidget(num); lay.addLayout(texts, 1)
+        return step
+
+    def _project_section_title(self, title: str, subtitle: str | None = None) -> QWidget:
+        box = QWidget()
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(2)
+        title_label = QLabel(title)
+        title_label.setStyleSheet(f"color:{NAVY}; font-size:14px; font-weight:900; border:none; background:transparent;")
+        lay.addWidget(title_label)
+        if subtitle:
+            sub = QLabel(subtitle)
+            sub.setWordWrap(True)
+            sub.setStyleSheet(f"color:{MUTED}; font-size:11px; border:none; background:transparent;")
+            lay.addWidget(sub)
+        return box
+
     def _project_page(self) -> QWidget:
         body = QWidget()
         layout = QVBoxLayout(body)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(16)
+        layout.setContentsMargins(24, 22, 24, 24)
+        layout.setSpacing(14)
 
-        intro = Card("Project", "Upload a primary feature table and optional QC, metadata, and feature-definition tables. The analysis is local and non-destructive.")
+        intro = Card("Project setup", "Load source tables, choose output, and optionally parse recording context from filenames.")
+        intro.layout.setSpacing(16)
+
+        step_row = QHBoxLayout()
+        step_row.setSpacing(12)
+        step_row.addWidget(self._project_step_label(1, "Tables", "Feature table required; QC, metadata, registry optional."))
+        step_row.addWidget(self._project_step_label(2, "Output", "Select modality and analysis folder."))
+        step_row.addWidget(self._project_step_label(3, "Filename context", "Optional subject/task/date parsing from a selected column."))
+        intro.layout.addLayout(step_row)
+
+        # Source tables
+        intro.layout.addWidget(self._project_section_title("Source tables"))
         grid = QGridLayout()
+        grid.setHorizontalSpacing(18)
+        grid.setVerticalSpacing(12)
         self.feature_picker = FilePicker("Primary feature table", optional=False)
-        self.qc_picker = FilePicker("Optional QC table", optional=True)
-        self.meta_picker = FilePicker("Optional metadata table", optional=True)
-        self.registry_picker = FilePicker("Optional feature registry / policy", optional=True)
+        self.qc_picker = FilePicker("QC table", optional=True)
+        self.meta_picker = FilePicker("Metadata table", optional=True)
+        self.registry_picker = FilePicker("Feature registry / policy", optional=True)
         grid.addWidget(self.feature_picker, 0, 0)
         grid.addWidget(self.qc_picker, 0, 1)
         grid.addWidget(self.meta_picker, 1, 0)
         grid.addWidget(self.registry_picker, 1, 1)
         intro.layout.addLayout(grid)
 
-        policy_note = QLabel("Registry / policy files help the GUI understand feature names, subsystems, units, expected ranges, computation policies, and implementation status. If omitted, VSLP uses conservative automatic column-role detection.")
-        policy_note.setWordWrap(True)
-        policy_note.setStyleSheet(f"color:{MUTED}; background:#F7FAFD; border:1px solid {LINE}; border-radius:8px; padding:10px;")
-        intro.layout.addWidget(policy_note)
+        # Output and modality
+        intro.layout.addWidget(self._project_section_title("Analysis settings"))
+        settings = QGridLayout()
+        settings.setHorizontalSpacing(14)
+        settings.setVerticalSpacing(8)
+        modality_label = QLabel("Modality")
+        modality_label.setStyleSheet(f"color:{NAVY}; font-weight:800; border:none; background:transparent;")
+        self.modality_combo = QComboBox()
+        self.modality_combo.addItems(["Auto-detect", "Acoustic", "Kinematic", "Mixed acoustic + kinematic", "Generic"])
+        self.modality_combo.setMinimumWidth(290)
+        output_label = QLabel("Output folder")
+        output_label.setStyleSheet(f"color:{NAVY}; font-weight:800; border:none; background:transparent;")
+        self.output_edit = QLineEdit()
+        self.output_edit.setPlaceholderText("Required output folder for analysis results")
+        out_button = QPushButton("Browse")
+        out_button.setProperty("secondary", True)
+        out_button.clicked.connect(self.pick_output_folder)
+        settings.addWidget(modality_label, 0, 0)
+        settings.addWidget(self.modality_combo, 1, 0)
+        settings.addWidget(output_label, 0, 1)
+        settings.addWidget(self.output_edit, 1, 1)
+        settings.addWidget(out_button, 1, 2)
+        settings.setColumnStretch(1, 1)
+        intro.layout.addLayout(settings)
 
-        infer_box = QGroupBox("Filename context inference")
-        infer_layout = QVBoxLayout(infer_box)
-        infer_note = QLabel(
-            "Optional fallback when metadata is absent, incomplete, or cannot be matched. "
-            "The safe default parses common VSLP-style names such as SUBJECT_PROTOCOL_ITERATION_YYYYMMDD_RECORD_TASK, "
-            "using the last textual block as task. Metadata values always take priority when successfully matched."
+        # Filename context: compact, clean, and operational.
+        context_frame = QFrame()
+        context_frame.setStyleSheet(
+            f"QFrame {{ background:#F8FBFE; border:1px solid {LINE}; border-radius:14px; }}"
+            f"QLabel#SectionCaption {{ color:{MUTED}; font-size:11px; border:none; background:transparent; }}"
+            f"QLabel#ExampleBox {{ color:{INK}; background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; padding:10px; font-family:Consolas, 'Courier New'; font-size:11px; }}"
         )
-        infer_note.setWordWrap(True)
-        infer_note.setStyleSheet(f"color:{MUTED};")
-        infer_layout.addWidget(infer_note)
-        infer_row = QHBoxLayout()
-        infer_row.addWidget(QLabel("Filename parser:"))
+        context_layout = QVBoxLayout(context_frame)
+        context_layout.setContentsMargins(14, 12, 14, 14)
+        context_layout.setSpacing(10)
+        context_layout.addWidget(self._project_section_title(
+            "Filename context",
+            "Use when metadata is absent or incomplete. Metadata remains the source for diagnosis, severity, and clinical scores."
+        ))
+
+        infer_row = QGridLayout()
+        infer_row.setHorizontalSpacing(12)
+        infer_row.setVerticalSpacing(6)
+        source_label = QLabel("Context source")
+        source_label.setStyleSheet(f"color:{NAVY}; font-weight:800; border:none; background:transparent;")
         self.filename_parser_combo = QComboBox()
         self.filename_parser_combo.addItems([
-            "Auto fallback: metadata first, then filename",
-            "Filename only when metadata is absent",
-            "Off",
+            "Selected filename column + metadata fallback",
+            "Auto-detect filename column + metadata fallback",
+            "Metadata only (no filename parsing)",
         ])
-        self.filename_parser_combo.setMinimumWidth(360)
-        infer_row.addWidget(self.filename_parser_combo)
-        infer_row.addStretch(1)
-        infer_layout.addLayout(infer_row)
+        self.filename_parser_combo.setMinimumWidth(340)
+        file_col_label = QLabel("Filename column")
+        file_col_label.setStyleSheet(f"color:{NAVY}; font-weight:800; border:none; background:transparent;")
+        self.filename_source_combo = QComboBox()
+        self.filename_source_combo.addItem("Auto-detect")
+        self.filename_source_combo.setMinimumWidth(340)
+        self.filename_source_combo.currentIndexChanged.connect(lambda _=0: self.refresh_filename_template_ui())
+        infer_row.addWidget(source_label, 0, 0)
+        infer_row.addWidget(file_col_label, 0, 1)
+        infer_row.addWidget(self.filename_parser_combo, 1, 0)
+        infer_row.addWidget(self.filename_source_combo, 1, 1)
+        infer_row.setColumnStretch(1, 1)
+        context_layout.addLayout(infer_row)
 
-        template_note = QLabel(
-            "Optional naming-template parser: after loading a table, the GUI shows one example filename/stem. "
-            "Assign token positions if your files follow a fixed convention. Leave fields as Auto to use the built-in safe parser."
-        )
-        template_note.setWordWrap(True)
-        template_note.setStyleSheet(f"color:{MUTED};")
-        infer_layout.addWidget(template_note)
-
-        self.filename_example_label = QLabel("Example filename: load a feature table to inspect naming tokens.")
+        self.filename_example_label = QLabel("Choose a feature table, then click Inspect filename example.")
+        self.filename_example_label.setObjectName("ExampleBox")
         self.filename_example_label.setWordWrap(True)
-        self.filename_example_label.setStyleSheet(f"color:{INK}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:8px;")
-        infer_layout.addWidget(self.filename_example_label)
+        context_layout.addWidget(self.filename_example_label)
 
         token_grid = QGridLayout()
+        token_grid.setHorizontalSpacing(10)
+        token_grid.setVerticalSpacing(8)
         self.filename_token_combos = {}
         token_roles = [
             ("subject_id", "Subject ID"),
             ("protocol_id", "Protocol ID"),
             ("iteration", "Iteration"),
+            ("duration", "Duration"),
             ("recording_date", "Recording date"),
             ("task_code", "Task code"),
-            ("task", "Task name"),
+            ("task", "Task start"),
+            ("task_end", "Task end"),
         ]
         for row_i, (role_key, role_label) in enumerate(token_roles):
-            token_grid.addWidget(QLabel(role_label + ":"), row_i // 3, (row_i % 3) * 2)
+            label = QLabel(role_label)
+            label.setStyleSheet(f"color:{MUTED}; font-size:11px; font-weight:800; border:none; background:transparent;")
             combo = QComboBox()
             combo.addItem("Auto")
-            combo.setMinimumWidth(210)
+            combo.setMinimumWidth(170)
             self.filename_token_combos[role_key] = combo
-            token_grid.addWidget(combo, row_i // 3, (row_i % 3) * 2 + 1)
-        infer_layout.addLayout(token_grid)
+            token_grid.addWidget(label, row_i // 4 * 2, row_i % 4)
+            token_grid.addWidget(combo, row_i // 4 * 2 + 1, row_i % 4)
+        context_layout.addLayout(token_grid)
 
+        token_actions = QHBoxLayout()
         refresh_tokens_btn = QPushButton("Inspect filename example")
         refresh_tokens_btn.setProperty("secondary", True)
         refresh_tokens_btn.clicked.connect(self.refresh_filename_template_ui)
-        infer_layout.addWidget(refresh_tokens_btn)
+        token_actions.addWidget(refresh_tokens_btn)
+        token_actions.addStretch(1)
+        context_layout.addLayout(token_actions)
 
-        intro.layout.addWidget(infer_box)
-
-        row = QHBoxLayout()
-        row.addWidget(QLabel("Modality:"))
-        self.modality_combo = QComboBox()
-        self.modality_combo.addItems(["Auto-detect", "Acoustic", "Kinematic", "Mixed acoustic + kinematic", "Generic"])
-        self.modality_combo.setMinimumWidth(290)
-        row.addWidget(self.modality_combo)
-        row.addSpacing(16)
-        row.addWidget(QLabel("Output folder:"))
-        self.output_edit = QLineEdit()
-        self.output_edit.setPlaceholderText("Required output folder for analysis results")
-        row.addWidget(self.output_edit, 1)
-        out_button = QPushButton("Browse")
-        out_button.setProperty("secondary", True)
-        out_button.clicked.connect(self.pick_output_folder)
-        row.addWidget(out_button)
-        intro.layout.addLayout(row)
+        intro.layout.addWidget(context_frame)
 
         actions = QHBoxLayout()
+        actions.setSpacing(10)
         load_btn = QPushButton("Load and Map Tables")
         load_btn.clicked.connect(self.load_and_map)
         run_btn = QPushButton("Run Feature Analysis")
@@ -749,12 +822,14 @@ class FeatureAnalysisGUI(QMainWindow):
 
         self.project_status = QTextEdit()
         self.project_status.setReadOnly(True)
-        self.project_status.setMinimumHeight(170)
-        self.project_status.setPlaceholderText("Status messages will appear here.")
+        self.project_status.setMinimumHeight(145)
+        self.project_status.setPlaceholderText("Run messages will appear here.")
         intro.layout.addWidget(self.project_status)
+
         layout.addWidget(intro)
         layout.addStretch(1)
         return self._wrap_scroll(body)
+
 
     def _mapping_page(self) -> QWidget:
         body = QWidget()
@@ -814,6 +889,337 @@ class FeatureAnalysisGUI(QMainWindow):
         layout.addWidget(card)
         return self._wrap_scroll(body)
 
+
+
+    def _metadata_mapping_roles(self) -> list[str]:
+        return [
+            "Ignore",
+            "File name",
+            "Subject ID",
+            "Protocol ID",
+            "Iteration",
+            "Recording date",
+            "Task code",
+            "Task name",
+            "Visit/session ID",
+            "Timepoint",
+            "Diagnosis",
+            "Disease group",
+            "Group label",
+            "Primary target",
+            "Secondary target",
+            "Target 1",
+            "Target 2",
+            "Target 3",
+            "Outcome 1",
+            "Outcome 2",
+            "Outcome 3",
+            "Severity score",
+            "Severity class/bin",
+            "Clinical score 1",
+            "Clinical score 2",
+            "Clinical score 3",
+            "Functional score",
+            "Bulbar score",
+            "Demographic covariate",
+            "Clinical covariate",
+            "Sex / gender",
+            "Age",
+            "Site / batch",
+            "Device",
+            "Other covariate",
+        ]
+
+    def _metadata_role_to_canonical(self, role: str) -> str | None:
+        return {
+            "File name": "file_name",
+            "Subject ID": "subject_id",
+            "Protocol ID": "protocol_id",
+            "Iteration": "iteration",
+            "Recording date": "recording_date",
+            "Task code": "task_code",
+            "Task name": "task",
+            "Visit/session ID": "visit_id",
+            "Timepoint": "timepoint",
+            "Diagnosis": "diagnosis",
+            "Disease group": "diagnosis",
+            "Group label": "group_label",
+            "Primary target": "target_primary",
+            "Secondary target": "target_secondary",
+            "Target 1": "target_1",
+            "Target 2": "target_2",
+            "Target 3": "target_3",
+            "Outcome 1": "outcome_1",
+            "Outcome 2": "outcome_2",
+            "Outcome 3": "outcome_3",
+            "Severity score": "severity_score",
+            "Severity class/bin": "severity_bin",
+            "Clinical score 1": "clinical_score_1",
+            "Clinical score 2": "clinical_score_2",
+            "Clinical score 3": "clinical_score_3",
+            "Functional score": "functional_score",
+            "Bulbar score": "bulbar_score",
+            "Demographic covariate": None,
+            "Clinical covariate": None,
+            "Sex / gender": "sex_or_gender",
+            "Age": "age",
+            "Site / batch": "site",
+            "Device": "device",
+            "Other covariate": None,
+            "Ignore": None,
+        }.get(role)
+
+    def _infer_metadata_role(self, column: str) -> tuple[str, str]:
+        n = normalize_name(column)
+        alias = {
+            "raw_media_file_name": "File name",
+            "media_file_name": "File name",
+            "filename": "File name",
+            "file_name": "File name",
+            "file": "File name",
+            "subjectid": "Subject ID",
+            "subject_id": "Subject ID",
+            "participant_id": "Subject ID",
+            "patient_id": "Subject ID",
+            "protocol_id": "Protocol ID",
+            "iteration": "Iteration",
+            "recording_date": "Recording date",
+            "assessment_date": "Recording date",
+            "visit_date": "Recording date",
+            "task_name": "Task name",
+            "task": "Task name",
+            "task_code": "Task code",
+            "clinical_visit_id": "Visit/session ID",
+            "visit_id": "Visit/session ID",
+            "session_id": "Visit/session ID",
+            "timepoint": "Timepoint",
+            "diagnosis": "Diagnosis",
+            "dx": "Diagnosis",
+            "diagnostic_group": "Disease group",
+            "disease_group": "Disease group",
+            "group": "Group label",
+            "group_label": "Group label",
+            "target": "Primary target",
+            "label": "Primary target",
+            "outcome": "Outcome 1",
+            "primary_outcome": "Outcome 1",
+            "secondary_outcome": "Outcome 2",
+            "severity_score": "Severity score",
+            "severity": "Severity score",
+            "severity_bin": "Severity class/bin",
+            "severity_class": "Severity class/bin",
+            "alsfrs_total_score": "Functional score",
+            "alsfrs_r_total_score": "Functional score",
+            "alsfrs_total": "Functional score",
+            "alsfrsr_total": "Functional score",
+            "alsfrs_bulbar": "Bulbar score",
+            "alsfrs_r_bulbar": "Bulbar score",
+            "bulbar_score": "Bulbar score",
+            "alsbdi": "Clinical score 1",
+            "alsbdi_score": "Clinical score 1",
+            "clinical_score": "Clinical score 1",
+            "score": "Clinical score 1",
+            "sex": "Sex / gender",
+            "gender": "Sex / gender",
+            "sex_or_gender": "Sex / gender",
+            "age": "Age",
+            "site": "Site / batch",
+            "organization_name": "Site / batch",
+            "batch": "Site / batch",
+            "device": "Device",
+            "microphone": "Device",
+            "platform": "Device",
+        }
+        role = alias.get(n)
+        if role is None:
+            if any(x in n for x in ["diagnosis", "disease", "dx"]):
+                role = "Diagnosis"
+            elif any(x in n for x in ["target", "label", "outcome"]):
+                role = "Primary target"
+            elif any(x in n for x in ["severity", "stage"]):
+                role = "Severity score"
+            elif any(x in n for x in ["score", "clinical", "scale", "rating"]):
+                role = "Clinical score 1"
+            elif any(x in n for x in ["sex", "gender", "age", "demographic"]):
+                role = "Demographic covariate"
+            elif any(x in n for x in ["visit", "session", "timepoint"]):
+                role = "Visit/session ID"
+            else:
+                role = "Ignore"
+        return role, "Matched metadata naming pattern." if role != "Ignore" else "No clinical/demographic role inferred."
+
+    def _build_metadata_mapping_df(self) -> pd.DataFrame:
+        if self.meta_df is None or self.meta_df.empty:
+            return pd.DataFrame(columns=["column", "role", "canonical_field", "confidence", "reason", "dtype", "missing", "unique"])
+        rows = []
+        for c in self.meta_df.columns:
+            role, reason = self._infer_metadata_role(str(c))
+            canon = self._metadata_role_to_canonical(role)
+            s = self.meta_df[c]
+            rows.append({
+                "column": str(c),
+                "role": role,
+                "canonical_field": canon or "",
+                "confidence": 0.9 if role != "Ignore" else 0.4,
+                "reason": reason,
+                "dtype": str(s.dtype),
+                "missing": int(s.isna().sum()),
+                "unique": int(s.nunique(dropna=True)),
+            })
+        return pd.DataFrame(rows)
+
+    def _metadata_mapping_page(self) -> QWidget:
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(14)
+        card = Card("Metadata Mapping", "Map metadata columns explicitly. Use general roles such as targets, outcomes, severity, clinical scores, demographics, and covariates; specific instruments can be interpreted later in analysis.")
+        self.metadata_mapping_table = QTableWidget(0, 8)
+        self.metadata_mapping_table.setHorizontalHeaderLabels(["Column", "Role", "Canonical field", "Confidence", "Reason", "dtype", "Missing", "Unique"])
+        self.metadata_mapping_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.metadata_mapping_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.metadata_mapping_table.setAlternatingRowColors(True)
+        self.metadata_mapping_table.setWordWrap(False)
+        self.metadata_mapping_table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.metadata_mapping_table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.metadata_mapping_table.verticalHeader().setDefaultSectionSize(30)
+        header = self.metadata_mapping_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.Interactive)
+        self.metadata_mapping_table.setColumnWidth(0, 270)
+        self.metadata_mapping_table.setColumnWidth(1, 180)
+        self.metadata_mapping_table.setColumnWidth(2, 155)
+        self.metadata_mapping_table.setColumnWidth(3, 85)
+        self.metadata_mapping_table.setColumnWidth(4, 420)
+        self.metadata_mapping_table.setColumnWidth(5, 110)
+        self.metadata_mapping_table.setColumnWidth(6, 85)
+        self.metadata_mapping_table.setColumnWidth(7, 85)
+        card.layout.addWidget(self.metadata_mapping_table)
+
+        self.metadata_mapping_summary_label = QLabel("Load a metadata table to inspect clinical/demographic roles.")
+        self.metadata_mapping_summary_label.setWordWrap(True)
+        self.metadata_mapping_summary_label.setStyleSheet(f"color:{MUTED}; background:#F7FAFD; border:1px solid {LINE}; border-radius:8px; padding:9px;")
+        card.layout.addWidget(self.metadata_mapping_summary_label)
+
+        quick = QHBoxLayout()
+        for label, role in [
+            ("Diagnosis", "Diagnosis"),
+            ("Target 1", "Target 1"),
+            ("Outcome 1", "Outcome 1"),
+            ("Severity", "Severity score"),
+            ("Clinical score", "Clinical score 1"),
+            ("Subject ID", "Subject ID"),
+            ("Ignore", "Ignore"),
+        ]:
+            b = QPushButton(label)
+            b.setProperty("secondary", True)
+            b.clicked.connect(lambda _=False, r=role: self.set_selected_metadata_role(r))
+            quick.addWidget(b)
+        quick.addStretch(1)
+        card.layout.addLayout(quick)
+
+        btns = QHBoxLayout()
+        refresh = QPushButton("Refresh Metadata Mapping")
+        refresh.setProperty("secondary", True)
+        refresh.clicked.connect(self.refresh_metadata_mapping_table)
+        accept = QPushButton("Accept Metadata Mapping")
+        accept.clicked.connect(self.accept_metadata_mapping)
+        btns.addWidget(refresh)
+        btns.addWidget(accept)
+        btns.addStretch(1)
+        card.layout.addLayout(btns)
+
+        layout.addWidget(card)
+        layout.addStretch(1)
+        return self._wrap_scroll(body)
+
+    def refresh_metadata_mapping_table(self) -> None:
+        if not hasattr(self, "metadata_mapping_table"):
+            return
+        if self.meta_df is None or self.meta_df.empty:
+            self.metadata_mapping_df = pd.DataFrame()
+            self.metadata_mapping_table.setRowCount(0)
+            if hasattr(self, "metadata_mapping_summary_label"):
+                self.metadata_mapping_summary_label.setText("No metadata table loaded.")
+            return
+        if self.metadata_mapping_df.empty:
+            self.metadata_mapping_df = self._build_metadata_mapping_df()
+        df = self.metadata_mapping_df.copy()
+        self.metadata_mapping_table.setRowCount(len(df))
+        self.metadata_mapping_table.setColumnCount(8)
+        roles = self._metadata_mapping_roles()
+        for i, r in df.iterrows():
+            self.metadata_mapping_table.setItem(i, 0, QTableWidgetItem(str(r["column"])))
+            combo = NoWheelComboBox()
+            combo.addItems(roles)
+            combo.setCurrentText(str(r.get("role", "Ignore")))
+            combo.currentTextChanged.connect(lambda _=None: self.collect_metadata_mapping_from_table())
+            self.metadata_mapping_table.setCellWidget(i, 1, combo)
+            for j, col in enumerate(["canonical_field", "confidence", "reason", "dtype", "missing", "unique"], start=2):
+                item = QTableWidgetItem(str(r.get(col, "")))
+                item.setFlags(item.flags() & ~Qt.ItemIsEditable)
+                self.metadata_mapping_table.setItem(i, j, item)
+        self.update_metadata_mapping_summary()
+
+    def collect_metadata_mapping_from_table(self) -> pd.DataFrame:
+        if self.metadata_mapping_df.empty or not hasattr(self, "metadata_mapping_table"):
+            return self.metadata_mapping_df
+        df = self.metadata_mapping_df.copy()
+        roles = []
+        canonical = []
+        for i in range(self.metadata_mapping_table.rowCount()):
+            widget = self.metadata_mapping_table.cellWidget(i, 1)
+            role = widget.currentText() if isinstance(widget, QComboBox) else str(df.iloc[i].get("role", "Ignore"))
+            roles.append(role)
+            canonical.append(self._metadata_role_to_canonical(role) or "")
+        df["role"] = roles
+        df["canonical_field"] = canonical
+        self.metadata_mapping_df = df
+        self.update_metadata_mapping_summary()
+        return df
+
+    def update_metadata_mapping_summary(self) -> None:
+        if self.metadata_mapping_df.empty or not hasattr(self, "metadata_mapping_summary_label"):
+            return
+        counts = self.metadata_mapping_df["role"].astype(str).value_counts()
+        useful = int((self.metadata_mapping_df["role"].astype(str) != "Ignore").sum())
+        parts = [f"{k}: {int(v)}" for k, v in counts.head(8).items()]
+        self.metadata_mapping_summary_label.setText(f"Metadata mapping | mapped clinical/context columns: {useful} | " + " | ".join(parts))
+
+    def set_selected_metadata_role(self, role: str) -> None:
+        if not hasattr(self, "metadata_mapping_table"):
+            return
+        rows = sorted({idx.row() for idx in self.metadata_mapping_table.selectedIndexes()})
+        if not rows:
+            QMessageBox.information(self, "No rows selected", "Select one or more metadata rows first.")
+            return
+        for row in rows:
+            widget = self.metadata_mapping_table.cellWidget(row, 1)
+            if isinstance(widget, QComboBox):
+                widget.setCurrentText(role)
+        self.collect_metadata_mapping_from_table()
+
+    def _metadata_mapping_path(self) -> Path | None:
+        out = self.output_edit.text().strip() if hasattr(self, "output_edit") else ""
+        if not out:
+            return None
+        tables_dir = Path(out) / "feature_analysis" / "tables"
+        tables_dir.mkdir(parents=True, exist_ok=True)
+        return tables_dir / "accepted_metadata_mapping.csv"
+
+    def accept_metadata_mapping(self) -> None:
+        if self.meta_df is None or self.meta_df.empty:
+            QMessageBox.information(self, "No metadata table", "Load a metadata table first.")
+            return
+        self.collect_metadata_mapping_from_table()
+        self.metadata_mapping_accepted = True
+        path = self._metadata_mapping_path()
+        if path is not None and not self.metadata_mapping_df.empty:
+            self.metadata_mapping_df.to_csv(path, index=False)
+            self.log(f"Metadata mapping accepted and saved: {path}")
+        if self.feature_df is not None and not self.mapping_df.empty:
+            self.analysis_df, self.mapping_df, self.metadata_join_strategy = self._merge_metadata_context(self.feature_df, self.mapping_df)
+            self.log(f"Metadata context refreshed after metadata mapping: {self.metadata_join_strategy}")
+        self.show_page("overview")
 
     def _overview_page(self) -> QWidget:
         body = QWidget()
@@ -878,38 +1284,38 @@ class FeatureAnalysisGUI(QMainWindow):
         plot_header.addWidget(open_current)
         plot_panel_layout.addLayout(plot_header)
 
-        self.overview_plot_caption = QLabel("Overview uses a deliberately small plot set: readiness, design context, role mapping, feature-family coverage, feature quality, and subjectxtask coverage. Missingness, distribution, QC, and ML-export plots are handled in their own menus.")
+        self.overview_plot_caption = QLabel("Overview is the orientation layer: it verifies design context, feature-role mapping, feature-family coverage, and first-pass readiness before you interpret deeper task, missingness, distribution, QC, or export views.")
         self.overview_plot_caption.setWordWrap(True)
-        self.overview_plot_caption.setStyleSheet(f"color:{MUTED}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:9px;")
+        self.overview_plot_caption.setStyleSheet(f"color:{INK}; background:#FFFFFF; border:1px solid {LINE}; border-left:5px solid {TEAL}; border-radius:10px; padding:12px; font-size:12px;")
         plot_panel_layout.addWidget(self.overview_plot_caption)
 
         self.overview_plot_preview = QLabel("Run Feature Analysis, then choose one overview plot.")
         self.overview_plot_preview.setAlignment(Qt.AlignCenter)
-        self.overview_plot_preview.setMinimumHeight(520)
+        self.overview_plot_preview.setMinimumHeight(560)
         self.overview_plot_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.overview_plot_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
+        self.overview_plot_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:14px; color:{MUTED}; padding:18px; }}")
         plot_panel_layout.addWidget(self.overview_plot_preview, 1)
         overview_split.addWidget(plot_panel, 1)
 
         # Side summary keeps metric tiles visible without occupying the top of the page.
         side_panel = QFrame()
-        side_panel.setStyleSheet(f"QFrame {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:12px; }}")
+        side_panel.setStyleSheet(f"QFrame {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:14px; }}")
         side_layout = QVBoxLayout(side_panel)
         side_layout.setContentsMargins(12, 12, 12, 12)
         side_layout.setSpacing(10)
         side_title = QLabel("Dataset snapshot")
-        side_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
+        side_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:15px; border:none; background:transparent;")
         side_layout.addWidget(side_title)
-        side_note = QLabel("Compact orientation metrics. Values use the accepted mapping and metadata-augmented analysis table when metadata can be joined safely.")
+        side_note = QLabel("Compact orientation metrics from the accepted mapping and current analysis table.")
         side_note.setWordWrap(True)
         side_note.setStyleSheet(f"color:{MUTED}; border:none; background:transparent; font-size:12px;")
         side_layout.addWidget(side_note)
         self.overview_metric_grid = QGridLayout()
-        self.overview_metric_grid.setHorizontalSpacing(8)
-        self.overview_metric_grid.setVerticalSpacing(8)
+        self.overview_metric_grid.setHorizontalSpacing(10)
+        self.overview_metric_grid.setVerticalSpacing(10)
         side_layout.addLayout(self.overview_metric_grid)
         side_layout.addStretch(1)
-        side_panel.setFixedWidth(300)
+        side_panel.setFixedWidth(340)
         overview_split.addWidget(side_panel)
         card.layout.addLayout(overview_split)
 
@@ -954,13 +1360,23 @@ class FeatureAnalysisGUI(QMainWindow):
 
     def _metric_tile(self, title: str, value: object, subtitle: str = "") -> QFrame:
         tile = QFrame()
-        tile.setStyleSheet(f"QFrame {{ background:#F8FBFE; border:1px solid {LINE}; border-radius:12px; }} QLabel#MetricTitle {{ color:{MUTED}; font-size:11px; font-weight:700; text-transform:uppercase; border:none; }} QLabel#MetricValue {{ color:{NAVY}; font-size:24px; font-weight:900; border:none; }} QLabel#MetricSub {{ color:{MUTED}; font-size:11px; border:none; }}")
+        tile.setMinimumHeight(86)
+        tile.setStyleSheet(
+            f"QFrame {{ background:#F8FBFE; border:1px solid {LINE}; border-radius:14px; }}"
+            f"QFrame:hover {{ border:1px solid {TEAL}; background:#FFFFFF; }}"
+            f"QLabel#MetricTitle {{ color:{MUTED}; font-size:10px; font-weight:800; letter-spacing:0.5px; text-transform:uppercase; border:none; background:transparent; }}"
+            f"QLabel#MetricValue {{ color:{NAVY}; font-size:25px; font-weight:950; border:none; background:transparent; }}"
+            f"QLabel#MetricSub {{ color:{MUTED}; font-size:10px; border:none; background:transparent; }}"
+        )
         lay = QVBoxLayout(tile)
         lay.setContentsMargins(12, 10, 12, 10)
+        lay.setSpacing(3)
         lab = QLabel(str(title)); lab.setObjectName("MetricTitle")
         val = QLabel(str(value)); val.setObjectName("MetricValue")
         sub = QLabel(str(subtitle)); sub.setObjectName("MetricSub"); sub.setWordWrap(True)
-        lay.addWidget(lab); lay.addWidget(val); lay.addWidget(sub)
+        lay.addWidget(lab)
+        lay.addWidget(val)
+        lay.addWidget(sub)
         return tile
 
     def update_overview_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
@@ -997,25 +1413,93 @@ class FeatureAnalysisGUI(QMainWindow):
         tiles = [
             ("Rows", metric_value("feature_table_rows"), "records / files"),
             ("Features", metric_value("detected_feature_columns"), "mapped predictors"),
-            ("Subjects", metric_value("unique_subjects"), "metadata-aware if joined"),
-            ("Tasks", metric_value("unique_tasks"), "metadata-aware if joined"),
-            ("Completeness", score_value("Feature completeness"), "0-100 audit score"),
-            ("Design", score_value("Design richness"), "context richness"),
-            ("Review flags", n_review, f"monitor: {n_monitor}"),
-            ("QC", "yes" if str(metric_value("qc_table_loaded", False)).lower() == "true" else "no", "artifact context"),
+            ("Subjects", metric_value("unique_subjects"), "unique IDs"),
+            ("Tasks", metric_value("unique_tasks"), "task levels"),
+            ("Complete", score_value("Feature completeness"), "0-100"),
+            ("Design", score_value("Design richness"), "context score"),
+            ("Review", n_review, f"monitor {n_monitor}"),
+            ("QC", "yes" if str(metric_value("qc_table_loaded", False)).lower() == "true" else "no", "artifact table"),
         ]
         for idx, (title, value, subtitle) in enumerate(tiles):
-            self.overview_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx, 0)
+            self.overview_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx // 2, idx % 2)
 
         self._fill_table(self.overview_readiness_table, outputs.get("overview_readiness_summary", pd.DataFrame()))
         self._fill_table(self.overview_inventory_table, outputs.get("dataset_inventory", pd.DataFrame()))
         self._fill_table(self.overview_roles_table, outputs.get("feature_role_summary", pd.DataFrame()))
-        self._fill_table(self.overview_design_table, outputs.get("dataset_design_overview", pd.DataFrame()))
+        active_for_context = self._active_analysis_table() if hasattr(self, "_active_analysis_table") else (self.analysis_df if self.analysis_df is not None else self.feature_df)
+        robust_design = self._overview_context_detection_table(active_for_context)
+        self._fill_table(self.overview_design_table, robust_design)
         self._fill_table(self.overview_family_table, outputs.get("feature_family_overview", pd.DataFrame()))
         self._fill_table(self.overview_quality_table, outputs.get("overview_feature_quality_landscape", pd.DataFrame()))
         self.overview_note.setText(
             "Overview generated. Use this page to verify design context, mapped feature coverage, available metadata/QC context, and major feature-quality risks before interpreting downstream modules or exporting to ML."
         )
+
+
+    def _context_aliases(self) -> dict[str, list[str]]:
+        return {
+            "subject": ["subject_id", "SubjectID", "participant_id", "patient_id", "metadata__subject_id", "metadata__SubjectID"],
+            "session": ["session_id", "visit_id", "clinical_visit_id", "Clinical Visit ID", "metadata__session_id", "metadata__visit_id", "metadata__Clinical Visit ID"],
+            "task": ["task", "task_name", "Task Name", "prompt", "metadata__task", "metadata__task_name", "metadata__Task Name"],
+            "task_code": ["task_code", "Task Code", "protocol_task_code", "metadata__task_code", "metadata__Task Code"],
+            "diagnosis": ["diagnosis", "Diagnosis", "dx", "Dx", "diagnostic_group", "disease_group", "group", "Group", "group_label", "metadata__diagnosis", "metadata__Diagnosis", "metadata__diagnostic_group"],
+            "severity_bin": ["severity_bin", "severity_class", "alsfrs_bulbar_severity", "ALSFRS bulbar severity", "metadata__severity_bin", "metadata__severity_class"],
+            "severity_score": ["severity_score", "functional_score", "bulbar_score", "clinical_score_1", "clinical_score_2", "clinical_score_3", "target_primary", "target_1", "outcome_1", "ALSFRS total score", "ALSFRS-R total score", "ALSFRS bulbar", "ALSFRS-R bulbar", "ALSBDI", "metadata__ALSFRS total score", "metadata__ALSFRS bulbar", "metadata__ALSBDI"],
+            "sex_or_gender": ["sex_or_gender", "sex", "Sex", "gender", "Gender", "metadata__sex_or_gender", "metadata__Sex", "metadata__Gender"],
+            "device": ["device", "microphone", "site", "platform", "recording_device", "metadata__device", "metadata__microphone", "metadata__site"],
+            "recording_date": ["recording_date", "Recording date", "assessment_date", "visit_date", "metadata__recording_date", "metadata__Recording date"],
+            "iteration": ["iteration", "Iteration", "metadata__iteration", "metadata__Iteration"],
+        }
+
+    def _first_context_column(self, df: pd.DataFrame, role: str) -> str | None:
+        if df is None or df.empty:
+            return None
+        aliases = self._context_aliases().get(role, [])
+        norm_lookup = {normalize_name(c): c for c in df.columns}
+        for a in aliases:
+            hit = norm_lookup.get(normalize_name(a))
+            if hit in df.columns:
+                s = df[hit]
+                if not self._is_effectively_empty(s).all():
+                    return hit
+        return None
+
+    def _overview_context_detection_table(self, df: pd.DataFrame) -> pd.DataFrame:
+        roles = [
+            ("subject", "Subject"),
+            ("session", "Session"),
+            ("task", "Task"),
+            ("task_code", "Task code"),
+            ("diagnosis", "Diagnosis"),
+            ("severity_score", "Severity score"),
+            ("severity_bin", "Severity bin"),
+            ("sex_or_gender", "Sex or gender"),
+            ("recording_date", "Recording date"),
+            ("iteration", "Iteration"),
+            ("device", "Device"),
+        ]
+        rows = []
+        n = len(df) if df is not None else 0
+        if df is None:
+            df = pd.DataFrame()
+        for role, label in roles:
+            col = self._first_context_column(df, role)
+            if not col:
+                rows.append({"variable_type": label, "column": "not_detected", "status": "missing", "n_unique": 0, "n_missing": n, "top_values": ""})
+                continue
+            s = df[col]
+            empty = self._is_effectively_empty(s)
+            valid = s.loc[~empty].astype(str)
+            vc = valid.value_counts().head(8)
+            rows.append({
+                "variable_type": label,
+                "column": col,
+                "status": "detected" if len(valid) else "empty_column",
+                "n_unique": int(valid.nunique()) if len(valid) else 0,
+                "n_missing": int(empty.sum()),
+                "top_values": "; ".join([f"{idx}: {int(val)}" for idx, val in vc.items()]),
+            })
+        return pd.DataFrame(rows)
 
     def _analysis_dirs(self) -> tuple[Path, Path, Path, Path]:
         if not getattr(self, "output_dir", None):
@@ -1085,13 +1569,38 @@ class FeatureAnalysisGUI(QMainWindow):
         return values.map(one)
 
     def _file_source_column(self, df: pd.DataFrame) -> str | None:
-        for c in [
+        if df is None or df.empty:
+            return None
+        if hasattr(self, "filename_source_combo"):
+            selected = self.filename_source_combo.currentText().strip()
+            if selected and selected != "Auto-detect" and selected in df.columns:
+                return selected
+        preferred = [
             "file_name", "source_file_path", "raw_media_file_name", "segmentation_wav_path",
-            "video_id", "input_timeseries_csv", "Raw Media File name"
-        ]:
+            "video_id", "input_timeseries_csv", "Raw Media File name", "filename", "file", "recording",
+            "recording_id", "record_key"
+        ]
+        for c in preferred:
             if c in df.columns:
                 return c
-        return None
+        # Fallback: choose the first text-like column with filename-looking values.
+        best_col = None
+        best_score = -1
+        for c in df.columns:
+            s = df[c].dropna().astype(str)
+            if s.empty:
+                continue
+            sample = s.head(50)
+            score = 0
+            score += int(any(x in str(c).lower() for x in ["file", "filename", "path", "media", "video", "audio", "wav", "webm", "record"]))
+            score += int(sample.str.contains(r"\\.(wav|webm|mp4|avi|mov|csv)$", case=False, regex=True).mean() * 5)
+            score += int(sample.str.contains(r"[_\\-]", regex=True).mean() * 3)
+            score += int(sample.str.contains(r"[A-Za-z]", regex=True).mean() * 2)
+            score += int(sample.str.contains(r"\\d", regex=True).mean() * 2)
+            if score > best_score:
+                best_col = c
+                best_score = score
+        return best_col if best_score >= 4 else None
 
     def _add_file_match_helpers(self, df: pd.DataFrame) -> pd.DataFrame:
         out = df.copy()
@@ -1104,11 +1613,77 @@ class FeatureAnalysisGUI(QMainWindow):
     def _filename_parser_mode(self) -> str:
         if hasattr(self, "filename_parser_combo"):
             return self.filename_parser_combo.currentText()
-        return "Auto fallback: metadata first, then filename"
+        return "Selected filename column + metadata fallback"
 
+    def _filename_parsing_enabled(self) -> bool:
+        mode = self._filename_parser_mode()
+        return mode not in {"Metadata only (no filename parsing)", "Off"}
+
+
+
+    def _filename_source_candidates(self, df: pd.DataFrame | None = None) -> list[str]:
+        """Return all primary-table columns as user-selectable filename sources.
+
+        The GUI must not hide columns behind heuristics. It may rank likely
+        filename columns first, but every column remains available because users
+        know their own naming convention.
+        """
+        source_df = df if df is not None else self.feature_df
+        if source_df is None or source_df.empty:
+            path = self.feature_picker.path if hasattr(self, "feature_picker") else ""
+            if path:
+                try:
+                    source_df = read_table(path)
+                except Exception:
+                    source_df = None
+        if source_df is None or source_df.empty:
+            return []
+
+        def score_col(c: object) -> tuple[float, str]:
+            s = source_df[c].dropna().astype(str)
+            if s.empty:
+                return (0.0, str(c))
+            sample = s.head(50)
+            cname = str(c).lower()
+            score = 0.0
+            score += 20.0 if any(x in cname for x in ["file", "filename", "path", "media", "raw", "source"]) else 0.0
+            score += 14.0 if any(x in cname for x in ["video", "audio", "record", "recording", "wav", "webm"]) else 0.0
+            score += float(sample.str.contains(r"\.(wav|webm|mp4|avi|mov|csv)$", case=False, regex=True).mean()) * 8.0
+            score += float(sample.str.contains(r"[_\-]", regex=True).mean()) * 4.0
+            score += float(sample.str.contains(r"[A-Za-z]", regex=True).mean()) * 2.0
+            score += float(sample.str.contains(r"\d", regex=True).mean()) * 2.0
+            return (score, str(c))
+
+        scored = sorted([score_col(c) for c in source_df.columns], key=lambda x: (-x[0], x[1]))
+        return [c for _score, c in scored]
+
+    def refresh_filename_source_combo(self, df: pd.DataFrame | None = None) -> None:
+        """Populate filename column dropdown with every primary-table column."""
+        if not hasattr(self, "filename_source_combo"):
+            return
+        current = self.filename_source_combo.currentText()
+        candidates = self._filename_source_candidates(df)
+        self.filename_source_combo.blockSignals(True)
+        self.filename_source_combo.clear()
+        self.filename_source_combo.addItem("Auto-detect")
+        for c in candidates:
+            self.filename_source_combo.addItem(str(c))
+        ix = self.filename_source_combo.findText(current)
+        if ix >= 0:
+            self.filename_source_combo.setCurrentIndex(ix)
+        elif candidates:
+            # Pick the most likely filename column by default, but keep every
+            # column visible for manual correction.
+            self.filename_source_combo.setCurrentIndex(1)
+        self.filename_source_combo.blockSignals(False)
 
     def _filename_tokens_from_stem(self, stem_value: object) -> list[str]:
-        return [t for t in re.split(r"[_\\-\\s]+", str(stem_value)) if t]
+        raw = str(stem_value).strip()
+        raw = re.split(r"[\\/]", raw)[-1]
+        # Strip one or more trailing file extensions so task tokens never retain file extensions.
+        while re.search(r"\.[A-Za-z0-9]{1,8}$", raw):
+            raw = re.sub(r"\.[A-Za-z0-9]{1,8}$", "", raw)
+        return [t for t in re.split(r"[_\-\s]+", raw) if t]
 
     def _filename_template_mapping(self) -> dict[str, int | None]:
         mapping: dict[str, int | None] = {}
@@ -1127,12 +1702,32 @@ class FeatureAnalysisGUI(QMainWindow):
         return any(v is not None for v in mapping.values())
 
     def _example_filename_value(self, df: pd.DataFrame | None = None) -> str | None:
+        """Pull one example directly from the user-selected filename column."""
         source_df = df if df is not None else self.feature_df
         if source_df is None or source_df.empty:
+            path = self.feature_picker.path if hasattr(self, "feature_picker") else ""
+            if path:
+                try:
+                    source_df = read_table(path)
+                    self.refresh_filename_source_combo(source_df)
+                except Exception:
+                    source_df = None
+        if source_df is None or source_df.empty:
             return None
-        source_col = self._file_source_column(source_df)
+
+        if hasattr(self, "filename_source_combo") and self.filename_source_combo.count() <= 1:
+            self.refresh_filename_source_combo(source_df)
+
+        source_col = None
+        if hasattr(self, "filename_source_combo"):
+            selected = self.filename_source_combo.currentText().strip()
+            if selected and selected != "Auto-detect" and selected in source_df.columns:
+                source_col = selected
+        if source_col is None:
+            source_col = self._file_source_column(source_df)
         if source_col is None or source_col not in source_df.columns:
             return None
+
         s = source_df[source_col].dropna().astype(str)
         if s.empty:
             return None
@@ -1152,8 +1747,8 @@ class FeatureAnalysisGUI(QMainWindow):
                 combo.addItem("Auto")
                 combo.blockSignals(False)
             return
-        stem = re.sub(r"\\.[A-Za-z0-9]+$", "", Path(str(example)).name)
-        tokens = self._filename_tokens_from_stem(stem)
+        stem = self._filename_tokens_from_stem(example)
+        tokens = stem
         token_text = " | ".join([f"{i}: {tok}" for i, tok in enumerate(tokens)])
         self.filename_example_label.setText(f"Example filename/stem: {example}\\nTokens: {token_text}")
         for role, combo in self.filename_token_combos.items():
@@ -1175,6 +1770,7 @@ class FeatureAnalysisGUI(QMainWindow):
             "parsed_subject_id": pd.NA,
             "parsed_protocol_id": pd.NA,
             "parsed_iteration": pd.NA,
+            "parsed_duration": pd.NA,
             "parsed_recording_date": pd.NaT,
             "parsed_task_code": pd.NA,
             "parsed_task": pd.NA,
@@ -1186,18 +1782,31 @@ class FeatureAnalysisGUI(QMainWindow):
             if idx is None or idx < 0 or idx >= len(tokens):
                 return None
             return tokens[idx]
+
         subj = token_at("subject_id")
         proto = token_at("protocol_id")
         iteration = token_at("iteration")
+        duration = token_at("duration")
         date = token_at("recording_date")
         task_code = token_at("task_code")
-        task = token_at("task")
+        task_start_idx = mapping.get("task")
+        task_end_idx = mapping.get("task_end")
+        task = None
+        if task_start_idx is not None and 0 <= task_start_idx < len(tokens):
+            if task_end_idx is not None and 0 <= task_end_idx < len(tokens):
+                lo, hi = sorted([task_start_idx, task_end_idx])
+                task = "_".join(tokens[lo:hi + 1])
+            else:
+                task = tokens[task_start_idx]
+
         if subj:
             result["parsed_subject_id"] = subj
         if proto:
             result["parsed_protocol_id"] = proto
         if iteration:
             result["parsed_iteration"] = iteration
+        if duration:
+            result["parsed_duration"] = duration
         if date:
             parsed_date = pd.to_datetime(date, format="%Y%m%d", errors="coerce")
             if pd.isna(parsed_date):
@@ -1207,7 +1816,7 @@ class FeatureAnalysisGUI(QMainWindow):
             result["parsed_task_code"] = task_code
         if task:
             result["parsed_task"] = str(task).upper()
-        if any(pd.notna(result.get(k)) for k in ["parsed_subject_id", "parsed_protocol_id", "parsed_iteration", "parsed_recording_date", "parsed_task_code", "parsed_task"]):
+        if any(pd.notna(result.get(k)) for k in ["parsed_subject_id", "parsed_protocol_id", "parsed_iteration", "parsed_duration", "parsed_recording_date", "parsed_task_code", "parsed_task"]):
             result["parsed_context_status"] = "parsed_by_user_template"
         return result
 
@@ -1239,6 +1848,7 @@ class FeatureAnalysisGUI(QMainWindow):
                 "parsed_subject_id": pd.NA,
                 "parsed_protocol_id": pd.NA,
                 "parsed_iteration": pd.NA,
+                "parsed_duration": pd.NA,
                 "parsed_recording_date": pd.NaT,
                 "parsed_task_code": pd.NA,
                 "parsed_task": pd.NA,
@@ -1291,26 +1901,32 @@ class FeatureAnalysisGUI(QMainWindow):
         mode = self._filename_parser_mode()
         out = df.copy()
         parsed = self._parse_filename_context_frame(out)
-        if parsed.empty or mode == "Off":
+        if parsed.empty or not self._filename_parsing_enabled():
             return out, parsed
 
         def fill_col(canonical: str, parsed_col: str) -> None:
             if parsed_col not in parsed.columns:
                 return
+            values = parsed[parsed_col].reindex(out.index)
             if canonical not in out.columns:
-                out[canonical] = parsed[parsed_col]
+                out[canonical] = values
                 return
             empty = self._is_effectively_empty(out[canonical])
             if mode == "Filename only when metadata is absent":
                 # Only fill if the whole field is unavailable/empty.
                 if empty.all():
-                    out.loc[:, canonical] = parsed[parsed_col]
+                    out[canonical] = values
                 return
-            out.loc[empty, canonical] = parsed.loc[empty, parsed_col]
+            # Use object dtype during partial fills so string filename tokens can
+            # safely fill columns that pandas initially inferred as numeric.
+            safe_existing = out[canonical].astype("object")
+            safe_existing.loc[empty] = values.loc[empty].astype("object")
+            out[canonical] = safe_existing
 
         fill_col("subject_id", "parsed_subject_id")
         fill_col("protocol_id", "parsed_protocol_id")
         fill_col("iteration", "parsed_iteration")
+        fill_col("duration", "parsed_duration")
         fill_col("recording_date", "parsed_recording_date")
         fill_col("task_code", "parsed_task_code")
         fill_col("task", "parsed_task")
@@ -1318,6 +1934,33 @@ class FeatureAnalysisGUI(QMainWindow):
             if c not in out.columns:
                 out[c] = parsed[c]
         return out, parsed
+
+
+    def _apply_metadata_mapping_to_table(self, meta_df: pd.DataFrame) -> pd.DataFrame:
+        """Rename user-mapped metadata columns to canonical context names.
+
+        Multiple columns mapped to the same canonical role are preserved by
+        prefixing later duplicates with metadata__.
+        """
+        if meta_df is None or meta_df.empty or self.metadata_mapping_df.empty:
+            return meta_df
+        out = meta_df.copy()
+        rename: dict[str, str] = {}
+        used = set(str(c) for c in out.columns)
+        for _, row in self.metadata_mapping_df.iterrows():
+            col = str(row.get("column", ""))
+            canon = str(row.get("canonical_field", "")).strip()
+            role = str(row.get("role", "Ignore"))
+            if not col or col not in out.columns or not canon or role == "Ignore":
+                continue
+            target = canon
+            if target in used and target != col:
+                target = f"metadata__{canon}"
+            rename[col] = target
+            used.add(target)
+        if rename:
+            out = out.rename(columns=rename)
+        return out
 
     def _standardize_metadata_table(self, meta_df: pd.DataFrame) -> pd.DataFrame:
         """Rename common metadata columns and add match helpers without discarding originals."""
@@ -1348,6 +1991,10 @@ class FeatureAnalysisGUI(QMainWindow):
             ["file_name"],
             ["_match_file_basename"],
             ["_match_file_stem"],
+            ["subject_id", "protocol_id", "iteration", "recording_date", "task_code"],
+            ["subject_id", "protocol_id", "iteration", "recording_date", "task"],
+            ["subject_id", "protocol_id", "iteration", "recording_date"],
+            ["subject_id", "protocol_id", "iteration"],
             ["subject_id", "session_id", "task"],
             ["subject_id", "visit_id", "task"],
             ["subject_id", "session_id"],
@@ -1383,6 +2030,11 @@ class FeatureAnalysisGUI(QMainWindow):
             return feature_df.copy(), feature_mapping.copy(), "feature_table_only"
 
         feature_base = self._standardize_feature_match_helpers(feature_df)
+        # Apply filename-derived context before metadata matching. This lets
+        # kinematic/video tables whose feature rows only contain a stem or ID
+        # match clinical metadata by parsed subject/protocol/iteration/date/task.
+        feature_base, pre_parsed_context = self._fill_empty_context_from_filename(feature_base)
+        self.filename_context_parse_df = pre_parsed_context
         meta_df = self._standardize_metadata_table(self.meta_df.copy())
         feature_lookup = self._normal_col_lookup(feature_base)
         meta_lookup = self._normal_col_lookup(meta_df)
@@ -1488,9 +2140,9 @@ class FeatureAnalysisGUI(QMainWindow):
                     merged.loc[empty_mask, canonical] = fill_values
 
         merged, parsed_context = self._fill_empty_context_from_filename(merged)
-        self.filename_context_parse_df = parsed_context
         if parsed_context is not None and not parsed_context.empty:
-            parsed_ok = int(parsed_context.get("parsed_context_status", pd.Series(dtype=str)).astype(str).eq("parsed").sum())
+            self.filename_context_parse_df = parsed_context
+            parsed_ok = int(parsed_context.get("parsed_context_status", pd.Series(dtype=str)).astype(str).isin(["parsed", "parsed_by_user_template"]).sum())
             strategy = strategy + f":filename_context_fallback_{parsed_ok}_rows"
 
         helper_cols = [c for c in ["_match_file_basename", "_match_file_stem"] if c in merged.columns]
@@ -1663,7 +2315,8 @@ class FeatureAnalysisGUI(QMainWindow):
         paths = {}
         active_df = self.analysis_df if self.analysis_df is not None else self.feature_df
         paths["overview_readiness_scorecard"] = str(plot_overview_readiness_scorecard(outputs.get("overview_readiness_summary", pd.DataFrame()), plots_dir / "overview_readiness_scorecard.png"))
-        paths["overview_design_tiles"] = str(plot_dataset_design_tiles(outputs.get("dataset_design_overview", pd.DataFrame()), plots_dir / "overview_design_tiles.png"))
+        robust_design = self._overview_context_detection_table(active_df)
+        paths["overview_design_tiles"] = str(plot_dataset_design_tiles(robust_design, plots_dir / "overview_design_tiles.png"))
         paths["role_counts"] = str(plot_role_counts(outputs.get("feature_role_summary", pd.DataFrame()), plots_dir / "overview_role_counts.png"))
         paths["group_counts"] = str(plot_group_counts(outputs.get("group_counts", pd.DataFrame()), plots_dir / "overview_group_counts.png"))
         paths["overview_subject_task_matrix"] = str(plot_subject_task_matrix(active_df, plots_dir / "overview_subject_task_matrix.png"))
@@ -1998,6 +2651,18 @@ class FeatureAnalysisGUI(QMainWindow):
         self.missing_task_combo.addItem("All tasks / not available")
         self.missing_task_combo.currentIndexChanged.connect(lambda _=0: self.preview_missingness_plot(self.missing_plot_combo.currentData() if hasattr(self, "missing_plot_combo") else "missingness_top_features"))
         scope_row.addWidget(self.missing_task_combo, 1)
+        scope_row.addWidget(QLabel("Context:"))
+        self.missing_context_combo = QComboBox()
+        self.missing_context_combo.setMinimumWidth(240)
+        self.missing_context_combo.addItem("All context / not available")
+        self.missing_context_combo.currentIndexChanged.connect(lambda _=0: (self._refresh_missingness_context_value_combo(self._active_analysis_table()), self.preview_missingness_plot(self.missing_plot_combo.currentData() if hasattr(self, "missing_plot_combo") else "missingness_top_features")))
+        scope_row.addWidget(self.missing_context_combo, 1)
+        scope_row.addWidget(QLabel("Value:"))
+        self.missing_context_value_combo = QComboBox()
+        self.missing_context_value_combo.setMinimumWidth(220)
+        self.missing_context_value_combo.addItem("All values")
+        self.missing_context_value_combo.currentIndexChanged.connect(lambda _=0: self.preview_missingness_plot(self.missing_plot_combo.currentData() if hasattr(self, "missing_plot_combo") else "missingness_top_features"))
+        scope_row.addWidget(self.missing_context_value_combo, 1)
         scope_row.addStretch(1)
         plot_panel_layout.addLayout(scope_row)
 
@@ -2012,7 +2677,7 @@ class FeatureAnalysisGUI(QMainWindow):
         # Side summary keeps availability metrics visible without occupying the top
         # of the page, matching the Overview page pattern.
         side_panel = QFrame()
-        side_panel.setStyleSheet(f"QFrame {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:12px; }}")
+        side_panel.setStyleSheet(f"QFrame {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:14px; }}")
         side_layout = QVBoxLayout(side_panel)
         side_layout.setContentsMargins(12, 12, 12, 12)
         side_layout.setSpacing(10)
@@ -2028,7 +2693,7 @@ class FeatureAnalysisGUI(QMainWindow):
         self.missing_metric_grid.setVerticalSpacing(8)
         side_layout.addLayout(self.missing_metric_grid)
         side_layout.addStretch(1)
-        side_panel.setFixedWidth(300)
+        side_panel.setFixedWidth(340)
         missing_split.addWidget(side_panel)
         card.layout.addLayout(missing_split)
 
@@ -2064,6 +2729,73 @@ class FeatureAnalysisGUI(QMainWindow):
         return self._wrap_scroll(body)
 
 
+
+    def _missingness_context_series(self, df: pd.DataFrame) -> tuple[pd.Series | None, str]:
+        if df is None or df.empty or not hasattr(self, "missing_context_combo"):
+            return None, "context"
+        label = self.missing_context_combo.currentText()
+        if label in {"", "All context / not available"}:
+            return None, "context"
+        role_map = {
+            "Diagnosis": "diagnosis",
+            "Severity score": "severity_score",
+            "Severity bin": "severity_bin",
+            "Sex or gender": "sex_or_gender",
+            "Session": "session",
+            "Subject": "subject",
+            "Task code": "task_code",
+            "Iteration": "iteration",
+        }
+        role = role_map.get(label)
+        col = self._first_context_column(df, role) if role else None
+        if not col:
+            return None, label
+        return df[col].astype("string"), label
+
+    def _refresh_missingness_context_controls(self, df: pd.DataFrame) -> None:
+        if not hasattr(self, "missing_context_combo"):
+            return
+        current = self.missing_context_combo.currentText()
+        options = ["All context / not available"]
+        for label, role in [
+            ("Diagnosis", "diagnosis"),
+            ("Severity score", "severity_score"),
+            ("Severity bin", "severity_bin"),
+            ("Sex or gender", "sex_or_gender"),
+            ("Session", "session"),
+            ("Subject", "subject"),
+            ("Task code", "task_code"),
+            ("Iteration", "iteration"),
+        ]:
+            if self._first_context_column(df, role):
+                options.append(label)
+        self.missing_context_combo.blockSignals(True)
+        self.missing_context_combo.clear()
+        for opt in options:
+            self.missing_context_combo.addItem(opt)
+        ix = self.missing_context_combo.findText(current)
+        if ix >= 0:
+            self.missing_context_combo.setCurrentIndex(ix)
+        self.missing_context_combo.blockSignals(False)
+        self._refresh_missingness_context_value_combo(df)
+
+    def _refresh_missingness_context_value_combo(self, df: pd.DataFrame) -> None:
+        if not hasattr(self, "missing_context_value_combo"):
+            return
+        current = self.missing_context_value_combo.currentText()
+        series, label = self._missingness_context_series(df)
+        self.missing_context_value_combo.blockSignals(True)
+        self.missing_context_value_combo.clear()
+        self.missing_context_value_combo.addItem("All values")
+        if series is not None:
+            vals = sorted([str(x) for x in series.dropna().astype(str).unique().tolist() if str(x).strip() and str(x).lower() not in {"nan", "none", "<na>"}])
+            for v in vals[:250]:
+                self.missing_context_value_combo.addItem(v)
+        ix = self.missing_context_value_combo.findText(current)
+        if ix >= 0:
+            self.missing_context_value_combo.setCurrentIndex(ix)
+        self.missing_context_value_combo.blockSignals(False)
+
     def _refresh_missingness_task_combo(self, df: pd.DataFrame) -> None:
         if not hasattr(self, "missing_task_combo"):
             return
@@ -2084,20 +2816,37 @@ class FeatureAnalysisGUI(QMainWindow):
         self.missing_task_combo.blockSignals(False)
 
     def _missingness_scope_table(self) -> tuple[pd.DataFrame, str]:
-        """Return task-scoped table for Missingness plots only.
+        """Return task/context-scoped table for Missingness plots only.
 
         This does not alter analysis outputs or tables. It is deliberately local
-        so missingness can be inspected per task without rerunning the whole GUI.
+        so missingness can be inspected by task and clinical/context variables
+        without rerunning the whole GUI.
         """
         df = self._active_analysis_table() if hasattr(self, "_active_analysis_table") else (self.analysis_df if self.analysis_df is not None else self.feature_df)
         if df is None:
-            return pd.DataFrame(), "All tasks"
-        task_col = self._task_col(df) if hasattr(self, "_task_col") else None
+            return pd.DataFrame(), "All tasks | all context"
+        scoped = df.copy()
+        parts = []
+        task_col = self._task_col(scoped) if hasattr(self, "_task_col") else None
         task_value = self.missing_task_combo.currentText() if hasattr(self, "missing_task_combo") else "All tasks"
-        if task_col and task_col in df.columns and task_value not in {"", "All tasks", "All tasks / not available"}:
-            scoped = df[df[task_col].astype(str).eq(str(task_value))].copy()
-            return scoped, f"Task = {task_value}"
-        return df.copy(), "All tasks"
+        if task_col and task_col in scoped.columns and task_value not in {"", "All tasks", "All tasks / not available"}:
+            scoped = scoped[scoped[task_col].astype(str).eq(str(task_value))].copy()
+            parts.append(f"Task = {task_value}")
+        else:
+            parts.append("All tasks")
+
+        series, label = self._missingness_context_series(scoped)
+        value = self.missing_context_value_combo.currentText() if hasattr(self, "missing_context_value_combo") else "All values"
+        if series is not None:
+            scoped["__local_missingness_context__"] = series.values
+            if value not in {"", "All values", "All context / not available"}:
+                scoped = scoped[scoped["__local_missingness_context__"].astype(str).eq(str(value))].copy()
+                parts.append(f"{label} = {value}")
+            else:
+                parts.append(f"{label} = all")
+        else:
+            parts.append("context = all/unavailable")
+        return scoped, " | ".join(parts)
 
     def _missingness_feature_cols(self, df: pd.DataFrame) -> list[str]:
         if getattr(self, "mapping_df", None) is not None and not self.mapping_df.empty:
@@ -2169,7 +2918,9 @@ class FeatureAnalysisGUI(QMainWindow):
         ]
         for idx, (title, value, subtitle) in enumerate(tiles):
             self.missing_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx, 0)
-        self._refresh_missingness_task_combo(self._active_analysis_table() if hasattr(self, "_active_analysis_table") else pd.DataFrame())
+        active_missing_scope = self._active_analysis_table() if hasattr(self, "_active_analysis_table") else pd.DataFrame()
+        self._refresh_missingness_task_combo(active_missing_scope)
+        self._refresh_missingness_context_controls(active_missing_scope)
         self._fill_table(self.missing_feature_table, outputs.get("missingness_by_feature", pd.DataFrame()))
         self._fill_table(self.missing_row_table, outputs.get("missingness_by_row", pd.DataFrame()))
         self._fill_table(self.missing_group_table, outputs.get("missingness_by_group", pd.DataFrame()))
@@ -2336,7 +3087,7 @@ class FeatureAnalysisGUI(QMainWindow):
         # Side summary keeps distribution metrics visible without occupying the
         # top of the page, matching Overview and Missingness.
         side_panel = QFrame()
-        side_panel.setStyleSheet(f"QFrame {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:12px; }}")
+        side_panel.setStyleSheet(f"QFrame {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:14px; }}")
         side_layout = QVBoxLayout(side_panel)
         side_layout.setContentsMargins(12, 12, 12, 12)
         side_layout.setSpacing(10)
@@ -2352,7 +3103,7 @@ class FeatureAnalysisGUI(QMainWindow):
         self.dist_metric_grid.setVerticalSpacing(8)
         side_layout.addLayout(self.dist_metric_grid)
         side_layout.addStretch(1)
-        side_panel.setFixedWidth(300)
+        side_panel.setFixedWidth(340)
         dist_split.addWidget(side_panel)
         card.layout.addLayout(dist_split)
 
@@ -2910,7 +3661,7 @@ class FeatureAnalysisGUI(QMainWindow):
         # Side summary keeps QC metrics visible without occupying the top of the
         # page, matching Overview, Missingness, and Distributions.
         side_panel = QFrame()
-        side_panel.setStyleSheet(f"QFrame {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:12px; }}")
+        side_panel.setStyleSheet(f"QFrame {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:14px; }}")
         side_layout = QVBoxLayout(side_panel)
         side_layout.setContentsMargins(12, 12, 12, 12)
         side_layout.setSpacing(10)
@@ -2926,7 +3677,7 @@ class FeatureAnalysisGUI(QMainWindow):
         self.qc_metric_grid.setVerticalSpacing(8)
         side_layout.addLayout(self.qc_metric_grid)
         side_layout.addStretch(1)
-        side_panel.setFixedWidth(300)
+        side_panel.setFixedWidth(340)
         qc_split.addWidget(side_panel)
         card.layout.addLayout(qc_split)
 
@@ -3392,7 +4143,7 @@ class FeatureAnalysisGUI(QMainWindow):
         rel_split.addWidget(plot_panel, 1)
 
         side_panel = QFrame()
-        side_panel.setStyleSheet(f"QFrame {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:12px; }}")
+        side_panel.setStyleSheet(f"QFrame {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:14px; }}")
         side_layout = QVBoxLayout(side_panel)
         side_layout.setContentsMargins(12, 12, 12, 12)
         side_layout.setSpacing(10)
@@ -3408,7 +4159,7 @@ class FeatureAnalysisGUI(QMainWindow):
         self.relationship_metric_grid.setVerticalSpacing(8)
         side_layout.addLayout(self.relationship_metric_grid)
         side_layout.addStretch(1)
-        side_panel.setFixedWidth(300)
+        side_panel.setFixedWidth(340)
         rel_split.addWidget(side_panel)
         card.layout.addLayout(rel_split)
 
@@ -3676,7 +4427,7 @@ class FeatureAnalysisGUI(QMainWindow):
         task_split.addWidget(plot_panel, 1)
 
         side_panel = QFrame()
-        side_panel.setStyleSheet(f"QFrame {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:12px; }}")
+        side_panel.setStyleSheet(f"QFrame {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:14px; }}")
         side_layout = QVBoxLayout(side_panel)
         side_layout.setContentsMargins(12, 12, 12, 12)
         side_layout.setSpacing(10)
@@ -3692,7 +4443,7 @@ class FeatureAnalysisGUI(QMainWindow):
         self.task_metric_grid.setVerticalSpacing(8)
         side_layout.addLayout(self.task_metric_grid)
         side_layout.addStretch(1)
-        side_panel.setFixedWidth(300)
+        side_panel.setFixedWidth(340)
         task_split.addWidget(side_panel)
         card.layout.addLayout(task_split)
 
@@ -3798,7 +4549,7 @@ class FeatureAnalysisGUI(QMainWindow):
         long_split.addWidget(plot_panel, 1)
 
         side_panel = QFrame()
-        side_panel.setStyleSheet(f"QFrame {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:12px; }}")
+        side_panel.setStyleSheet(f"QFrame {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:14px; }}")
         side_layout = QVBoxLayout(side_panel)
         side_layout.setContentsMargins(12, 12, 12, 12)
         side_layout.setSpacing(10)
@@ -3814,7 +4565,7 @@ class FeatureAnalysisGUI(QMainWindow):
         self.longitudinal_metric_grid.setVerticalSpacing(8)
         side_layout.addLayout(self.longitudinal_metric_grid)
         side_layout.addStretch(1)
-        side_panel.setFixedWidth(300)
+        side_panel.setFixedWidth(340)
         long_split.addWidget(side_panel)
         card.layout.addLayout(long_split)
 
@@ -5471,8 +6222,13 @@ Decision colors:
                 QMessageBox.warning(self, "Missing feature table", "Please select a primary feature table.")
                 return
             self.feature_df = read_table(self.feature_picker.path)
+            self.refresh_filename_source_combo(self.feature_df)
             self.qc_df = read_table(self.qc_picker.path) if self.qc_picker.path else None
             self.meta_df = read_table(self.meta_picker.path) if self.meta_picker.path else None
+            if self.meta_df is not None:
+                self.metadata_mapping_df = self._build_metadata_mapping_df()
+                self.metadata_mapping_accepted = False
+                self.refresh_metadata_mapping_table()
             self.registry_df = read_table(self.registry_picker.path) if self.registry_picker.path else None
             kind = infer_table_kind(self.feature_picker.path, explicit="feature")
             feature_mapping = classify_columns(self.feature_df, table_kind=kind, registry=self.registry_df)
@@ -5489,8 +6245,11 @@ Decision colors:
             if self.meta_df is not None:
                 self.log(f"Loaded metadata table: {self.meta_df.shape[0]} rows x {self.meta_df.shape[1]} columns")
                 self.log(f"Metadata context strategy: {self.metadata_join_strategy}")
+                self.log("Review Metadata Mapping if clinical/demographic columns need manual assignment.")
             else:
                 self.log("No metadata table loaded; filename context inference can provide subject/iteration/date/task when filenames follow a parsable pattern.")
+            selected_filename_col = self._file_source_column(self.feature_df) if self.feature_df is not None else None
+            self.log(f"Filename context source: {self._filename_parser_mode()} | filename column: {selected_filename_col or 'none'}")
             parsed_df = getattr(self, "filename_context_parse_df", pd.DataFrame())
             if parsed_df is not None and not parsed_df.empty and "parsed_context_status" in parsed_df.columns:
                 parsed_ok = int(parsed_df["parsed_context_status"].astype(str).isin(["parsed", "parsed_by_user_template"]).sum())

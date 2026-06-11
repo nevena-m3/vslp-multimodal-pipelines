@@ -390,16 +390,11 @@ def plot_overview_readiness_scorecard(readiness: pd.DataFrame, path: Path) -> Pa
 
 
 def plot_dataset_design_tiles(design: pd.DataFrame, path: Path) -> Path:
-    """Compact design-context overview.
-
-    This intentionally avoids large card tiles. It shows only whether each
-    design variable is usable, empty, or absent, with value counts when
-    available. The detailed metadata table remains below the plot in the GUI.
-    """
+    """Professional dataset-context status board for Overview."""
     required = {"variable_type", "column", "n_unique", "n_missing"}
     if design is None or design.empty or not required.issubset(design.columns):
         return _empty(path, "No dataset-design summary was available.", "Dataset design")
-    # Available means a detected column has at least one non-missing value.
+
     df = design.copy().head(12)
     for col in ["variable_type", "column", "status", "top_values"]:
         if col not in df.columns:
@@ -410,38 +405,54 @@ def plot_dataset_design_tiles(design: pd.DataFrame, path: Path) -> Path:
     if "status" not in df.columns or (df["status"].astype(str).str.len().sum() == 0):
         df["status"] = np.where(df["column"].eq("not_detected"), "missing", np.where(df["n_unique"].gt(0), "detected", "empty_column"))
 
-    label_map = {"detected": "Detected", "empty_column": "Empty column", "missing": "Not detected"}  # empty column
-    color_map = {"detected": TEAL, "empty_column": GOLD, "missing": RED}
-    y = np.arange(len(df))[::-1]
-    fig, ax = plt.subplots(figsize=(12, max(4.8, 0.62 * len(df) + 1.7)))
-    ax.set_xlim(0, 100)
-    ax.set_ylim(-0.8, len(df) - 0.2)
-    ax.axis("off")
-    ax.set_title("Dataset design context", fontsize=15, fontweight="bold", color=NAVY, pad=16)
+    status_label = {"detected": "Detected", "empty_column": "Empty", "missing": "Missing"}
+    status_color = {"detected": TEAL, "empty_column": GOLD, "missing": RED}
+    n = len(df)
 
-    headers = [(0, "Variable"), (22, "Detected column"), (52, "Status"), (72, "Values")]
+    fig, ax = plt.subplots(figsize=(13.8, max(5.4, 0.58 * n + 2.4)))
+    ax.set_xlim(0, 100)
+    ax.set_ylim(-1.0, n + 1.15)
+    ax.axis("off")
+
+    ax.text(0, n + 0.72, "Dataset design context", fontsize=17, fontweight="bold", color=NAVY, va="center")
+    ax.text(0, n + 0.20, "Detected recording, task, and clinical context used to interpret downstream feature views.", fontsize=10.2, color=MUTED, va="center")
+
+    headers = [(0, "Context"), (24, "Detected column"), (54, "Status"), (70, "Observed values")]
     for x, h in headers:
-        ax.text(x, len(df) - 0.1, h, fontsize=10, fontweight="bold", color=NAVY, va="bottom")
+        ax.text(x, n - 0.18, h, fontsize=9.5, fontweight="bold", color=NAVY, va="bottom")
+
     for i, (_, r) in enumerate(df.iterrows()):
-        yy = y[i]
-        if i % 2 == 0:
-            ax.add_patch(plt.Rectangle((0, yy - 0.36), 100, 0.72, color="#F7FAFD", ec="none", zorder=0))
-        status = str(r.get("status", "")) or ("detected" if str(r.get("column", "")) != "not_detected" and int(r.get("n_unique", 0)) > 0 else "missing")
-        status_label = label_map.get(status, status.replace("_", " ").title())
-        status_color = color_map.get(status, MUTED)
+        yy = n - 1 - i
+        bg = "#F7FAFD" if i % 2 == 0 else "#FFFFFF"
+        ax.add_patch(plt.Rectangle((0, yy - 0.42), 100, 0.82, color=bg, ec="#E4ECF4", lw=0.35, zorder=0))
+
+        stat = str(r.get("status", "")) or ("detected" if str(r.get("column", "")) != "not_detected" and int(r.get("n_unique", 0)) > 0 else "missing")
+        color = status_color.get(stat, MUTED)
+        label = status_label.get(stat, stat.replace("_", " ").title())
+
         variable = str(r.get("variable_type", "variable")).replace("_", " ").title()
         column = str(r.get("column", "not_detected"))
-        if len(column) > 36:
-            column = column[:33] + "..."
-        values = f"unique={int(r.get('n_unique', 0))}; missing={int(r.get('n_missing', 0))}"
+        if len(column) > 34:
+            column = column[:31] + "..."
+
+        values = f"{int(r.get('n_unique', 0))} unique · {int(r.get('n_missing', 0))} missing"
         top_values = str(r.get("top_values", ""))
-        if top_values and top_values.lower() != "nan":
-            top_values = top_values[:58] + ("..." if len(top_values) > 58 else "")
-            values = values + " | " + top_values
-        ax.text(0, yy, variable, fontsize=10, color=NAVY, va="center", fontweight="bold")
-        ax.text(22, yy, column, fontsize=9, color=MUTED if status == "missing" else TEAL, va="center")
-        ax.text(52, yy, status_label, fontsize=9, color=status_color, va="center", fontweight="bold")
-        ax.text(72, yy, values, fontsize=8.5, color=MUTED, va="center")
+        if top_values and top_values.lower() not in {"nan", "none", "<na>"}:
+            top_values = top_values[:70] + ("..." if len(top_values) > 70 else "")
+            values = values + " · " + top_values
+
+        ax.text(0, yy, variable, fontsize=10.2, color=NAVY, va="center", fontweight="bold")
+        ax.text(24, yy, column, fontsize=9.3, color=TEAL if stat == "detected" else MUTED, va="center")
+
+        # pill-style status marker
+        ax.add_patch(plt.Rectangle((54, yy - 0.22), 11.5, 0.44, color=color, alpha=0.14, ec=color, lw=0.8, zorder=1))
+        ax.text(59.75, yy, label, fontsize=8.6, color=color, va="center", ha="center", fontweight="bold")
+
+        ax.text(70, yy, values, fontsize=8.8, color=MUTED, va="center")
+
+    detected = int((df["status"].astype(str) == "detected").sum())
+    ax.text(0, -0.62, f"{detected}/{n} context fields detected. Missing clinical fields are acceptable when metadata is absent, but should be reviewed before disease/severity interpretation.",
+            fontsize=9.4, color=MUTED, va="center")
     return _save(fig, path)
 
 def plot_feature_quality_landscape(quality: pd.DataFrame, path: Path) -> Path:
