@@ -9,6 +9,7 @@ import sys
 import json
 import shutil
 import re
+import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -62,7 +63,9 @@ from vslp.analysis.features.plots import (
     plot_selected_feature_distribution, plot_selected_feature_diagnostic, plot_group_feature_boxplot, plot_distribution_grid, plot_outlier_counts,
     plot_distribution_shape_summary, plot_distribution_shape_landscape, plot_row_outlier_burden, plot_variance_screen,
     plot_overview_readiness_scorecard, plot_dataset_design_tiles,
+    plot_overview_dataset_structure, plot_role_mapping_summary,
     plot_feature_quality_landscape, plot_feature_family_quality, plot_subject_task_matrix,
+    plot_overview_design_from_tables, plot_subject_task_summary_bars,
     plot_qc_family_burden, plot_qc_metric_distributions, plot_qc_feature_association_heatmap,
     plot_qc_top_feature_associations, plot_qc_missingness_associations,
     plot_qc_row_burden, plot_selected_feature_qc_scatter, plot_qc_artifact_model,
@@ -85,7 +88,7 @@ from vslp.analysis.features.plots import (
     plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.89.0"
+APP_VERSION = "v0.98.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -1807,7 +1810,6 @@ class FeatureAnalysisGUI(QMainWindow):
         self.overview_plot_combo = QComboBox()
         self.overview_plot_combo.setMinimumWidth(360)
         self.overview_plot_combo.addItems([
-            "Readiness scorecard",
             "Design context",
             "Role mapping summary",
             "Feature-family coverage",
@@ -1815,6 +1817,15 @@ class FeatureAnalysisGUI(QMainWindow):
             "Subject x task coverage",
         ])
         plot_header.addWidget(self.overview_plot_combo, 1)
+
+        task_lab = QLabel("Task focus")
+        task_lab.setStyleSheet(f"font-weight:800; color:{NAVY}; border:none; background:transparent;")
+        plot_header.addWidget(task_lab)
+        self.overview_task_combo = QComboBox()
+        self.overview_task_combo.setMinimumWidth(220)
+        self.overview_task_combo.addItem("All tasks")
+        self.overview_task_combo.currentIndexChanged.connect(self.preview_selected_overview_plot)
+        plot_header.addWidget(self.overview_task_combo)
 
         show_btn = QPushButton("Show")
         show_btn.setProperty("secondary", True)
@@ -1833,7 +1844,7 @@ class FeatureAnalysisGUI(QMainWindow):
         plot_header.addWidget(open_current)
         plot_panel_layout.addLayout(plot_header)
 
-        self.overview_plot_caption = QLabel("Overview is the orientation layer: it verifies design context, feature-role mapping, feature-family coverage, and first-pass readiness before you interpret deeper task, missingness, distribution, QC, or export views.")
+        self.overview_plot_caption = QLabel("Overview is the dataset-orientation layer: use it to understand subject counts, task structure, diagnosis/sex balance, repeated-measures depth, mapped roles, feature-family coverage, and first-pass quality before opening deeper menus.")
         self.overview_plot_caption.setWordWrap(True)
         self.overview_plot_caption.setStyleSheet(f"color:{INK}; background:#FFFFFF; border:1px solid {LINE}; border-left:5px solid {TEAL}; border-radius:10px; padding:12px; font-size:12px;")
         plot_panel_layout.addWidget(self.overview_plot_caption)
@@ -1880,28 +1891,25 @@ class FeatureAnalysisGUI(QMainWindow):
             QTabBar::tab:hover {{ background:#F3FAF9; color:{NAVY}; }}
         """)
 
-        self.overview_readiness_table = QTableWidget(0, 0)
-        self.overview_inventory_table = QTableWidget(0, 0)
         self.overview_design_table = QTableWidget(0, 0)
         self.overview_roles_table = QTableWidget(0, 0)
         self.overview_family_table = QTableWidget(0, 0)
         self.overview_quality_table = QTableWidget(0, 0)
+        self.overview_subject_task_table = QTableWidget(0, 0)
         for t in [
-            self.overview_readiness_table, self.overview_inventory_table,
             self.overview_design_table, self.overview_roles_table,
-            self.overview_family_table, self.overview_quality_table,
+            self.overview_family_table, self.overview_quality_table, self.overview_subject_task_table,
         ]:
             t.setAlternatingRowColors(True)
             t.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
             t.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
             t.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
 
-        tabs.addTab(self.overview_readiness_table, "Readiness")
-        tabs.addTab(self.overview_inventory_table, "Inventory")
-        tabs.addTab(self.overview_roles_table, "Roles")
-        tabs.addTab(self.overview_design_table, "Design variables")
+        tabs.addTab(self.overview_design_table, "Design context")
+        tabs.addTab(self.overview_roles_table, "Role mapping")
         tabs.addTab(self.overview_family_table, "Feature families")
         tabs.addTab(self.overview_quality_table, "Feature quality")
+        tabs.addTab(self.overview_subject_task_table, "Subject x task")
         card.layout.addWidget(tabs)
 
         layout.addWidget(card)
@@ -1972,18 +1980,95 @@ class FeatureAnalysisGUI(QMainWindow):
         for idx, (title, value, subtitle) in enumerate(tiles):
             self.overview_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx // 2, idx % 2)
 
-        self._fill_table(self.overview_readiness_table, outputs.get("overview_readiness_summary", pd.DataFrame()))
-        self._fill_table(self.overview_inventory_table, outputs.get("dataset_inventory", pd.DataFrame()))
         self._fill_table(self.overview_roles_table, outputs.get("feature_role_summary", pd.DataFrame()))
-        active_for_context = self._active_analysis_table() if hasattr(self, "_active_analysis_table") else (self.analysis_df if self.analysis_df is not None else self.feature_df)
-        robust_design = self._overview_context_detection_table(active_for_context)
-        self._fill_table(self.overview_design_table, robust_design)
+        self._fill_table(self.overview_design_table, outputs.get("dataset_design_overview", pd.DataFrame()))
         self._fill_table(self.overview_family_table, outputs.get("feature_family_overview", pd.DataFrame()))
         self._fill_table(self.overview_quality_table, outputs.get("overview_feature_quality_landscape", pd.DataFrame()))
+        self._fill_table(self.overview_subject_task_table, outputs.get("overview_subject_task_coverage", pd.DataFrame()))
+        self._refresh_overview_task_focus_from_outputs(outputs)
         self.overview_note.setText(
-            "Overview generated. Use this page to verify design context, mapped feature coverage, available metadata/QC context, and major feature-quality risks before interpreting downstream modules or exporting to ML."
+            "Overview generated. Use this page to understand dataset structure: subjects, sex/gender balance, diagnosis balance, task coverage, repeated-measures depth, mapped roles, feature-family coverage, and feature-quality risk."
         )
 
+
+
+    def _refresh_overview_task_focus_from_outputs(self, outputs: dict[str, pd.DataFrame]) -> None:
+        if not hasattr(self, "overview_task_combo"):
+            return
+        current = self.overview_task_combo.currentText()
+        self.overview_task_combo.blockSignals(True)
+        self.overview_task_combo.clear()
+        self.overview_task_combo.addItem("All tasks")
+        subject_task = outputs.get("overview_subject_task_coverage", pd.DataFrame())
+        if subject_task is not None and not subject_task.empty and "task" in subject_task.columns:
+            for task in subject_task["task"].astype(str).tolist()[:300]:
+                if task.strip():
+                    self.overview_task_combo.addItem(task)
+        idx = self.overview_task_combo.findText(current)
+        self.overview_task_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.overview_task_combo.blockSignals(False)
+
+    def _refresh_overview_task_focus(self, df: pd.DataFrame) -> None:
+        if not hasattr(self, "overview_task_combo"):
+            return
+        current = self.overview_task_combo.currentText()
+        self.overview_task_combo.blockSignals(True)
+        self.overview_task_combo.clear()
+        self.overview_task_combo.addItem("All tasks")
+        task_col = self._first_context_column(df, "task") if df is not None else None
+        if task_col and task_col in df.columns:
+            vals = df[task_col].astype("string").fillna("").str.strip()
+            vals = vals.loc[vals.ne("") & ~vals.str.lower().isin(["nan", "none", "<na>"])]
+            for task in vals.value_counts().index.tolist():
+                self.overview_task_combo.addItem(str(task))
+        idx = self.overview_task_combo.findText(current)
+        self.overview_task_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.overview_task_combo.blockSignals(False)
+
+    def _overview_filtered_by_task(self) -> pd.DataFrame:
+        df = self._active_analysis_table() if hasattr(self, "_active_analysis_table") else (self.analysis_df if self.analysis_df is not None else self.feature_df)
+        if df is None:
+            return pd.DataFrame()
+        task_value = self.overview_task_combo.currentText() if hasattr(self, "overview_task_combo") else "All tasks"
+        if not task_value or task_value == "All tasks":
+            return df
+        task_col = self._first_context_column(df, "task")
+        if not task_col or task_col not in df.columns:
+            return df
+        mask = df[task_col].astype("string").fillna("").str.strip().eq(str(task_value))
+        return df.loc[mask].copy()
+
+    def _overview_subject_task_summary(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df is None or df.empty:
+            return pd.DataFrame(columns=["task", "records", "subjects", "repeated_subjects"])
+        subject_col = self._first_context_column(df, "subject")
+        task_col = self._first_context_column(df, "task")
+        iteration_col = self._first_context_column(df, "iteration")
+        if not subject_col or not task_col:
+            return pd.DataFrame(columns=["task", "records", "subjects", "repeated_subjects"])
+        cols = [subject_col, task_col] + ([iteration_col] if iteration_col else [])
+        work = df[cols].copy()
+        for c in cols:
+            work[c] = work[c].astype("string").fillna("").str.strip()
+        work = work.loc[work[subject_col].ne("") & work[task_col].ne("")]
+        if work.empty:
+            return pd.DataFrame(columns=["task", "records", "subjects", "repeated_subjects"])
+        records = work[task_col].value_counts()
+        subjects = work.groupby(task_col)[subject_col].nunique()
+        if iteration_col:
+            rep = work.loc[work[iteration_col].ne("")].groupby([subject_col, task_col])[iteration_col].nunique().reset_index(name="n_iterations")
+            repeated = rep.loc[rep["n_iterations"].ge(2)].groupby(task_col)[subject_col].nunique()
+        else:
+            rep = work.groupby([subject_col, task_col]).size().reset_index(name="n_records")
+            repeated = rep.loc[rep["n_records"].ge(2)].groupby(task_col)[subject_col].nunique()
+        out = pd.DataFrame({"task": records.index.astype(str), "records": records.values})
+        out["subjects"] = out["task"].map(subjects).fillna(0).astype(int)
+        out["repeated_subjects"] = out["task"].map(repeated).fillna(0).astype(int)
+        return out.sort_values(["subjects", "records"], ascending=False).reset_index(drop=True)
+
+    def _safe_task_slug(self, value: str) -> str:
+        text = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value).strip())
+        return text[:80] if text else "all_tasks"
 
     def _context_aliases(self) -> dict[str, list[str]]:
         return {
@@ -2049,6 +2134,29 @@ class FeatureAnalysisGUI(QMainWindow):
                 "top_values": "; ".join([f"{idx}: {int(val)}" for idx, val in vc.items()]),
             })
         return pd.DataFrame(rows)
+
+    def _align_context_series_to_frame(self, series: pd.Series | None, frame: pd.DataFrame) -> pd.Series | None:
+        """Return a context series safely aligned to a local/scoped frame index.
+
+        Several menus build task- or context-scoped DataFrames locally. If a
+        combo selection changes while a scoped table is being regenerated, a
+        context helper can return a Series from a different frame/index. Assigning
+        raw ``series.values`` then raises pandas length-mismatch errors. This
+        helper always returns a Series with exactly ``frame.index``.
+        """
+        if series is None or frame is None:
+            return None
+        if len(series) == len(frame) and series.index.equals(frame.index):
+            return series.astype("string")
+        try:
+            aligned = series.reindex(frame.index)
+            if len(aligned) == len(frame):
+                return aligned.astype("string")
+        except Exception:
+            pass
+        if len(series) == len(frame):
+            return pd.Series(series.to_numpy(), index=frame.index, dtype="string")
+        return pd.Series(pd.NA, index=frame.index, dtype="string")
 
     def _analysis_dirs(self) -> tuple[Path, Path, Path, Path]:
         if not getattr(self, "output_dir", None):
@@ -2626,6 +2734,83 @@ class FeatureAnalysisGUI(QMainWindow):
             extras.append(str(col))
         return extras
 
+    def _metadata_collision_rename_map(
+        self,
+        metadata_cols: list[str],
+        existing_cols: list[str] | set[str],
+    ) -> tuple[dict[str, str], list[tuple[str, str]]]:
+        """Rename metadata columns that collide with feature columns without creating duplicates.
+
+        Acoustic feature tables already carry context columns such as file_name,
+        subject_id, iteration, task, recording_date, diagnosis, severity_score,
+        and severity_bin. Metadata standardization can also create canonical
+        columns with those same names plus audit columns like metadata__diagnosis.
+        A naive collision rename from diagnosis -> metadata__diagnosis can collide
+        with an existing metadata__diagnosis column and later make pandas raise
+        "Setting with non-unique columns is not allowed". This helper chooses a
+        target name unique across the feature frame, the metadata frame, and all
+        planned renames.
+        """
+        existing = {str(c) for c in existing_cols}
+        metadata = [str(c) for c in metadata_cols]
+        used = set(existing) | set(metadata)
+        rename_map: dict[str, str] = {}
+        duplicate_canonical_cols: list[tuple[str, str]] = []
+        for c in metadata:
+            if c not in existing:
+                continue
+            base = f"metadata__{c}"
+            target = base if base not in used else self._unique_column_name(base, used)
+            rename_map[c] = target
+            used.add(target)
+            duplicate_canonical_cols.append((c, target))
+        return rename_map, duplicate_canonical_cols
+
+    def _metadata_priority_context_fields(self) -> list[str]:
+        """Canonical context fields where mapped metadata is authoritative."""
+        return [
+            "subject_id", "protocol_id", "iteration", "duration", "recording_date",
+            "task_code", "task", "session_id", "visit_id", "timepoint",
+            "diagnosis", "disease_group", "group_label", "sex_or_gender", "age",
+            "alsfrs_bulbar", "alsbdi_total", "alsfrs_total", "severity_score",
+            "severity_bin", "manual_audio_qc_flag", "manual_video_qc_flag",
+            "manual_face_visibility_qc_flag", "manual_acquisition_qc_flag",
+            "task_validity_flag", "parsing_needed_flag",
+        ]
+
+    def _promote_metadata_context_columns(self, merged: pd.DataFrame) -> pd.DataFrame:
+        """Promote joined metadata context into canonical columns safely.
+
+        When metadata is loaded, accepted Metadata Mapping is the source of truth
+        for clinical, demographic, date/session, task, and manual-QC context.
+        Filename-derived context is only a fallback in the no-metadata workflow.
+        """
+        if merged is None or merged.empty:
+            return merged
+        out = self._ensure_unique_columns(merged.copy(), "Analysis table before metadata context promotion")
+        for canonical in self._metadata_priority_context_fields():
+            candidates = [f"metadata__{canonical}"]
+            candidates.extend([str(c) for c in out.columns if str(c).startswith(f"metadata__{canonical}_")])
+            source_col = next((c for c in candidates if c in out.columns), None)
+            if source_col is None:
+                continue
+            source = out.loc[:, source_col]
+            if isinstance(source, pd.DataFrame):
+                source = source.iloc[:, 0]
+            source = source.reindex(out.index)
+            source_nonempty = ~self._is_effectively_empty(source)
+            if not bool(source_nonempty.any()):
+                continue
+            if canonical not in out.columns:
+                out[canonical] = pd.Series(pd.NA, index=out.index, dtype="object")
+            target = out.loc[:, canonical]
+            if isinstance(target, pd.DataFrame):
+                target = target.iloc[:, 0]
+            target = target.astype("object").reindex(out.index)
+            target.loc[source_nonempty] = source.loc[source_nonempty].astype("object")
+            out[canonical] = target
+        return self._ensure_unique_columns(out, "Analysis table after metadata context promotion")
+
     def _merge_metadata_context(self, feature_df: pd.DataFrame, feature_mapping: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, str]:
         """Return feature table enriched with safe metadata labels/covariates when available.
 
@@ -2645,11 +2830,10 @@ class FeatureAnalysisGUI(QMainWindow):
             return feature_base, feature_mapping.copy(), f"feature_table_only:filename_context_fallback_{parsed_ok}_rows"
 
         feature_base = self._standardize_feature_match_helpers(feature_df)
-        # Apply filename-derived context before metadata matching. This lets
-        # kinematic/video tables whose feature rows only contain a stem or ID
-        # match clinical metadata by parsed subject/protocol/iteration/date/task.
-        feature_base, pre_parsed_context = self._fill_empty_context_from_filename(feature_base)
-        self.filename_context_parse_df = pre_parsed_context
+        # Metadata is present, so filename parsing is audit-only here. File basename/stem
+        # helpers are still available for joining, but canonical context values should
+        # come from accepted Metadata Mapping after the metadata merge.
+        self.filename_context_parse_df = self._parse_filename_context_frame(feature_base)
         meta_df = self._standardize_metadata_table(self.meta_df.copy())
         feature_lookup = self._normal_col_lookup(feature_base)
         meta_lookup = self._normal_col_lookup(meta_df)
@@ -2710,15 +2894,14 @@ class FeatureAnalysisGUI(QMainWindow):
             left_keys = list(best_join["left_keys"])
             right = best_join["right"]
             extra_cols = self._metadata_extra_columns(merged, right, left_keys)
-            rename_map: dict[str, str] = {}
-            duplicate_canonical_cols = []
-            for c in extra_cols:
-                if c in merged.columns:
-                    new_name = f"metadata__{c}"
-                    rename_map[c] = new_name
-                    duplicate_canonical_cols.append((c, new_name))
+            rename_map, duplicate_canonical_cols = self._metadata_collision_rename_map(
+                extra_cols,
+                set(str(c) for c in merged.columns),
+            )
             right = right[left_keys + extra_cols].rename(columns=rename_map)
+            right = self._ensure_unique_columns(right, "Metadata table merge slice")
             merged = merged.merge(right, on=left_keys, how="left", validate="m:1")
+            merged = self._ensure_unique_columns(merged, "Analysis table after metadata merge")
             chosen_keys = left_keys
             strategy = (
                 "metadata_key_join:" + "+".join(left_keys)
@@ -2728,19 +2911,25 @@ class FeatureAnalysisGUI(QMainWindow):
 
         if not chosen_keys and len(meta_df) == len(feature_df):
             add = meta_df.reset_index(drop=True).copy()
-            rename_map: dict[str, str] = {}
-            duplicate_canonical_cols = []
-            for c in add.columns:
-                if c in {"_match_file_basename", "_match_file_stem"}:
-                    rename_map[c] = f"metadata__{c}"
-                    continue
-                if c in merged.columns:
-                    new_name = f"metadata__{c}"
-                    rename_map[c] = new_name
-                    duplicate_canonical_cols.append((c, new_name))
-            add = add.rename(columns=rename_map)
+            helper_renames: dict[str, str] = {}
+            helper_used = set(str(c) for c in merged.columns) | set(str(c) for c in add.columns)
+            for c in ["_match_file_basename", "_match_file_stem"]:
+                if c in add.columns:
+                    target = f"metadata__{c}"
+                    if target in helper_used:
+                        target = self._unique_column_name(target, helper_used)
+                    helper_renames[c] = target
+                    helper_used.add(target)
+            collision_cols = [str(c) for c in add.columns if str(c) not in helper_renames]
+            collision_map, duplicate_canonical_cols = self._metadata_collision_rename_map(
+                collision_cols,
+                set(str(c) for c in merged.columns) | set(helper_renames.values()),
+            )
+            rename_map = {**helper_renames, **collision_map}
+            add = self._ensure_unique_columns(add.rename(columns=rename_map), "Metadata row-order slice")
             add = add[[c for c in add.columns if c not in merged.columns]]
             merged = pd.concat([merged.reset_index(drop=True), add], axis=1)
+            merged = self._ensure_unique_columns(merged, "Analysis table after row-order metadata merge")
             strategy = "metadata_row_order_join:same_row_count"
 
         for canonical, metadata_col in duplicate_canonical_cols:
@@ -2751,14 +2940,15 @@ class FeatureAnalysisGUI(QMainWindow):
                 # so filling subject/session/task/diagnosis never raises a dtype error.
                 if bool(empty_mask.any()):
                     merged[canonical] = merged[canonical].astype("object")
-                    fill_values = merged.loc[empty_mask, metadata_col].astype("object")
-                    merged.loc[empty_mask, canonical] = fill_values
+                    fill_values = merged.loc[empty_mask, metadata_col]
+                    if isinstance(fill_values, pd.DataFrame):
+                        fill_values = fill_values.iloc[:, 0]
+                    merged.loc[empty_mask, canonical] = fill_values.astype("object")
 
-        merged, parsed_context = self._fill_empty_context_from_filename(merged)
-        if parsed_context is not None and not parsed_context.empty:
-            self.filename_context_parse_df = parsed_context
-            parsed_ok = int(parsed_context.get("parsed_context_status", pd.Series(dtype=str)).astype(str).isin(["parsed", "parsed_by_user_template"]).sum())
-            strategy = strategy + f":filename_context_fallback_{parsed_ok}_rows"
+        # With metadata loaded, promote accepted metadata roles into canonical context
+        # columns and do not use filename-derived context to fill/overwrite them.
+        # Filename fallback remains active only in the no-metadata branch above.
+        merged = self._promote_metadata_context_columns(merged)
 
         helper_cols = [c for c in ["_match_file_basename", "_match_file_stem"] if c in merged.columns]
         if helper_cols:
@@ -2927,105 +3117,654 @@ class FeatureAnalysisGUI(QMainWindow):
             df.to_csv(tables_dir / f"{name}.csv", index=False)
 
     def _generate_overview_plots(self, outputs: dict[str, pd.DataFrame], feature_cols: list[str], plots_dir: Path) -> dict[str, str]:
-        paths = {}
-        active_df = self.analysis_df if self.analysis_df is not None else self.feature_df
-        paths["overview_readiness_scorecard"] = str(plot_overview_readiness_scorecard(outputs.get("overview_readiness_summary", pd.DataFrame()), plots_dir / "overview_readiness_scorecard.png"))
-        robust_design = self._overview_context_detection_table(active_df)
-        paths["overview_design_tiles"] = str(plot_dataset_design_tiles(robust_design, plots_dir / "overview_design_tiles.png"))
-        paths["role_counts"] = str(plot_role_counts(outputs.get("feature_role_summary", pd.DataFrame()), plots_dir / "overview_role_counts.png"))
-        paths["group_counts"] = str(plot_group_counts(outputs.get("group_counts", pd.DataFrame()), plots_dir / "overview_group_counts.png"))
-        paths["overview_subject_task_matrix"] = str(plot_subject_task_matrix(active_df, plots_dir / "overview_subject_task_matrix.png"))
-        paths["feature_family_counts"] = str(plot_feature_family_counts(outputs.get("feature_family_overview", pd.DataFrame()), plots_dir / "overview_feature_family_counts.png"))
-        paths["overview_feature_family_quality"] = str(plot_feature_family_quality(outputs.get("feature_family_overview", pd.DataFrame()), plots_dir / "overview_feature_family_quality.png"))
-        paths["overview_feature_quality_landscape"] = str(plot_feature_quality_landscape(outputs.get("overview_feature_quality_landscape", pd.DataFrame()), plots_dir / "overview_feature_quality_landscape.png"))
-        paths["missingness_top_features"] = str(plot_missingness(outputs.get("feature_distribution_summary", pd.DataFrame()), plots_dir / "missingness_top_features.png"))
-        paths["feature_availability_heatmap"] = str(plot_feature_availability_heatmap(active_df, feature_cols, plots_dir / "feature_availability_heatmap.png"))
-        # Missingness-specific plots are generated at the same time so that the Missingness page is immediately usable.
-        paths["missingness_row_distribution"] = str(plot_row_missingness_distribution(outputs.get("missingness_by_row", pd.DataFrame()), plots_dir / "missingness_row_distribution.png"))
-        paths["missingness_by_group"] = str(plot_missingness_by_group(outputs.get("missingness_by_group", pd.DataFrame()), plots_dir / "missingness_by_group.png"))
-        paths["missingness_by_family"] = str(plot_missingness_family_summary(outputs.get("missingness_by_family", pd.DataFrame()), plots_dir / "missingness_by_family.png"))
-        paths["missingness_comissing_heatmap"] = str(plot_comissing_heatmap(active_df, feature_cols, plots_dir / "missingness_comissing_heatmap.png"))
-        paths["distribution_review_status"] = str(plot_distribution_review_summary(outputs.get("distribution_review_summary", pd.DataFrame()), plots_dir / "distribution_review_status.png"))
-        paths["distribution_shape_summary"] = str(plot_distribution_shape_summary(outputs.get("distribution_shape_audit", pd.DataFrame()), plots_dir / "distribution_shape_summary.png"))
-        paths["distribution_shape_landscape"] = str(plot_distribution_shape_landscape(outputs.get("distribution_shape_audit", pd.DataFrame()), plots_dir / "distribution_shape_landscape.png"))
-        paths["row_outlier_burden"] = str(plot_row_outlier_burden(outputs.get("row_outlier_burden_summary", pd.DataFrame()), plots_dir / "row_outlier_burden.png"))
-        paths["variance_screen"] = str(plot_variance_screen(outputs.get("feature_distribution_summary", pd.DataFrame()), plots_dir / "variance_screen.png"))
-        paths["expected_range_flags"] = str(plot_expected_range_flags(outputs.get("feature_expected_range_flags", pd.DataFrame()), plots_dir / "feature_expected_range_flags.png"))
-        paths["outlier_counts"] = str(plot_outlier_counts(outputs.get("robust_outlier_flags", pd.DataFrame()), plots_dir / "outlier_counts.png"))
-        focus_cols = list(feature_cols)
-        shape_for_grid = outputs.get("distribution_shape_audit", pd.DataFrame())
-        if shape_for_grid is not None and not shape_for_grid.empty and "feature" in shape_for_grid.columns:
-            focus_cols = [c for c in shape_for_grid["feature"].astype(str).tolist() if c in active_df.columns] or focus_cols
-        paths["feature_distribution_grid"] = str(plot_distribution_grid(active_df, focus_cols, plots_dir / "feature_distribution_grid.png"))
-        first_feature = feature_cols[0] if feature_cols else None
-        if first_feature:
-            paths["selected_feature_distribution"] = str(plot_selected_feature_diagnostic(active_df, first_feature, plots_dir / "selected_feature_distribution.png"))
-            paths["selected_feature_by_group"] = str(plot_group_feature_boxplot(active_df, first_feature, plots_dir / "selected_feature_by_group.png"))
-        paths["qc_artifact_model"] = str(plot_qc_artifact_model(plots_dir / "qc_artifact_model.png"))
-        paths["qc_family_burden"] = str(plot_qc_family_burden(outputs.get("qc_family_burden_summary", pd.DataFrame()), plots_dir / "qc_family_burden.png"))
-        paths["qc_metric_distributions"] = str(plot_qc_metric_distributions(self.qc_df, outputs.get("qc_metric_catalog", pd.DataFrame()), plots_dir / "qc_metric_distributions.png"))
-        paths["qc_feature_association_heatmap"] = str(plot_qc_feature_association_heatmap(outputs.get("feature_qc_family_association", pd.DataFrame()), plots_dir / "qc_feature_association_heatmap.png"))
-        paths["qc_top_feature_associations"] = str(plot_qc_top_feature_associations(outputs.get("feature_qc_spearman_correlation", pd.DataFrame()), plots_dir / "qc_top_feature_associations.png"))
-        paths["qc_missingness_associations"] = str(plot_qc_missingness_associations(outputs.get("qc_missingness_associations", pd.DataFrame()), plots_dir / "qc_missingness_associations.png"))
-        paths["qc_row_burden"] = str(plot_qc_row_burden(outputs.get("qc_row_burden_summary", pd.DataFrame()), plots_dir / "qc_row_burden.png"))
-        qcols = outputs.get("qc_metric_catalog", pd.DataFrame()).get("qc_variable", pd.Series(dtype=str)).astype(str).tolist()
-        if first_feature and qcols:
-            paths["selected_feature_qc_scatter"] = str(plot_selected_feature_qc_scatter(active_df, self.qc_df, first_feature, qcols[0], plots_dir / "selected_feature_qc_scatter.png"))
-        paths["relationship_correlation_heatmap"] = str(plot_relationship_correlation_heatmap(outputs.get("feature_correlation_long", pd.DataFrame()), plots_dir / "relationship_correlation_heatmap.png"))
-        paths["relationship_redundant_pairs"] = str(plot_relationship_redundant_pairs(outputs.get("feature_redundant_pairs", pd.DataFrame()), plots_dir / "relationship_redundant_pairs.png"))
-        paths["relationship_family_matrix"] = str(plot_relationship_family_matrix(outputs.get("feature_family_correlation_matrix", pd.DataFrame()), plots_dir / "relationship_family_matrix.png"))
-        paths["relationship_pca_scree"] = str(plot_relationship_pca_scree(outputs.get("feature_pca_summary", pd.DataFrame()), plots_dir / "relationship_pca_scree.png"))
-        paths["relationship_pca_scores"] = str(plot_relationship_pca_scores(outputs.get("feature_pca_scores", pd.DataFrame()), active_df, plots_dir / "relationship_pca_scores.png"))
-        paths["relationship_pca_loadings"] = str(plot_relationship_pca_loadings(outputs.get("feature_pca_loadings", pd.DataFrame()), plots_dir / "relationship_pca_loadings.png"))
-        if first_feature:
-            paths["selected_feature_correlations"] = str(plot_selected_feature_correlations(outputs.get("feature_correlation_long", pd.DataFrame()), first_feature, plots_dir / "selected_feature_correlations.png"))
-        paths["screening_group_balance"] = str(plot_screening_group_balance(outputs.get("screening_group_balance", pd.DataFrame()), plots_dir / "screening_group_balance.png"))
-        paths["screening_effect_ranking"] = str(plot_screening_effect_ranking(outputs.get("screening_continuous_outcome_associations", pd.DataFrame()), outputs.get("screening_categorical_group_associations", pd.DataFrame()), plots_dir / "screening_effect_ranking.png"))
-        paths["screening_continuous_heatmap"] = str(plot_screening_continuous_heatmap(outputs.get("screening_continuous_outcome_associations", pd.DataFrame()), plots_dir / "screening_continuous_heatmap.png"))
-        paths["screening_group_heatmap"] = str(plot_screening_group_heatmap(outputs.get("screening_categorical_group_associations", pd.DataFrame()), plots_dir / "screening_group_heatmap.png"))
-        paths["screening_effect_landscape"] = str(plot_screening_effect_landscape(outputs.get("screening_continuous_outcome_associations", pd.DataFrame()), outputs.get("screening_categorical_group_associations", pd.DataFrame()), plots_dir / "screening_effect_landscape.png"))
-        screen_vars = outputs.get("screening_variable_catalog", pd.DataFrame())
-        screen_var_list = screen_vars.get("variable", pd.Series(dtype=str)).astype(str).tolist() if screen_vars is not None and not screen_vars.empty else []
-        if first_feature and screen_var_list:
-            paths["selected_feature_outcome"] = str(plot_selected_feature_outcome(active_df, first_feature, screen_var_list[0], plots_dir / "selected_feature_outcome.png"))
-        paths["reliability_status_counts"] = str(plot_reliability_status_counts(outputs.get("feature_repeatability_summary", pd.DataFrame()), plots_dir / "reliability_status_counts.png"))
-        paths["reliability_icc_ranking"] = str(plot_reliability_icc_ranking(outputs.get("feature_repeatability_summary", pd.DataFrame()), plots_dir / "reliability_icc_ranking.png"))
-        paths["reliability_variance_landscape"] = str(plot_reliability_variance_landscape(outputs.get("feature_repeatability_summary", pd.DataFrame()), plots_dir / "reliability_variance_landscape.png"))
-        paths["reliability_family_summary"] = str(plot_reliability_family_summary(outputs.get("reliability_family_summary", pd.DataFrame()), plots_dir / "reliability_family_summary.png"))
-        paths["reliability_subject_counts"] = str(plot_reliability_subject_counts(outputs.get("reliability_subject_record_counts", pd.DataFrame()), plots_dir / "reliability_subject_counts.png"))
-        if first_feature:
-            paths["selected_feature_reliability"] = str(plot_selected_feature_reliability(active_df, first_feature, plots_dir / "selected_feature_reliability.png"))
-        paths["recommendation_counts"] = str(plot_recommendation_counts(outputs.get("feature_recommendations", pd.DataFrame()), plots_dir / "recommendation_counts.png"))
-        paths["recommendation_score_landscape"] = str(plot_recommendation_score_landscape(outputs.get("feature_recommendations", pd.DataFrame()), plots_dir / "recommendation_score_landscape.png"))
-        paths["recommendation_reason_counts"] = str(plot_recommendation_reason_counts(outputs.get("feature_recommendation_reason_counts", pd.DataFrame()), plots_dir / "recommendation_reason_counts.png"))
-        paths["recommendation_family_summary"] = str(plot_recommendation_family_summary(outputs.get("feature_recommendation_family_summary", pd.DataFrame()), plots_dir / "recommendation_family_summary.png"))
-        paths["ml_export_manifest_summary"] = str(plot_ml_export_manifest_summary(outputs.get("ml_export_manifest", pd.DataFrame()), plots_dir / "ml_export_manifest_summary.png"))
+        """Generate only Overview plots.
+
+        Earlier builds generated every downstream menu plot from the Overview
+        refresh path.  That made the dataset-orientation page fail when an
+        unrelated deep diagnostic, such as PCA/QC/screening, encountered a
+        row/feature dimension mismatch.  Overview should answer only: what is
+        in the dataset, what roles are mapped, what feature families are
+        covered, what first-pass quality looks like, and how subjects/tasks are
+        represented.
+        """
+        paths: dict[str, str] = {}
+        plot_jobs = [
+            ("overview_design_context", lambda: plot_overview_design_from_tables(
+                outputs.get("overview_design_metrics", pd.DataFrame()),
+                outputs.get("overview_design_counts", pd.DataFrame()),
+                plots_dir / "overview_design_context.png",
+            )),
+            ("overview_role_mapping_summary", lambda: plot_role_mapping_summary(outputs.get("feature_role_summary", pd.DataFrame()), plots_dir / "overview_role_mapping_summary.png")),
+            ("overview_subject_task_counts", lambda: plot_subject_task_summary_bars(outputs.get("overview_subject_task_coverage", pd.DataFrame()), plots_dir / "overview_subject_task_counts.png")),
+            ("overview_feature_family_quality", lambda: plot_feature_family_quality(outputs.get("feature_family_overview", pd.DataFrame()), plots_dir / "overview_feature_family_quality.png")),
+            ("overview_feature_quality_landscape", lambda: plot_feature_quality_landscape(outputs.get("overview_feature_quality_landscape", pd.DataFrame()), plots_dir / "overview_feature_quality_landscape.png")),
+        ]
+        for key, job in plot_jobs:
+            try:
+                paths[key] = str(job())
+            except Exception as exc:
+                self.log(f"WARN | Overview plot {key} failed: {exc}")
+                self.log(traceback.format_exc())
         return paths
 
     def preview_selected_overview_plot(self) -> None:
         label = self.overview_plot_combo.currentText() if hasattr(self, "overview_plot_combo") else ""
         key_map = {
-            "Readiness scorecard": "overview_readiness_scorecard",
-            "Design context": "overview_design_tiles",
-            "Role mapping summary": "role_counts",
+            "Design context": "overview_design_context",
+            "Role mapping summary": "overview_role_mapping_summary",
             "Feature-family coverage": "overview_feature_family_quality",
             "Feature-quality landscape": "overview_feature_quality_landscape",
-            "Subject x task coverage": "overview_subject_task_matrix",
+            "Subject x task coverage": "overview_subject_task_counts",
         }
-        self.preview_plot(key_map.get(label, "overview_readiness_scorecard"))
+        key = key_map.get(label, "overview_design_context")
+        if label in {"Feature-family coverage", "Feature-quality landscape"} and hasattr(self, "overview_task_combo") and self.overview_task_combo.currentText() != "All tasks":
+            key = self._generate_task_scoped_overview_plot(label)
+        self.preview_plot(key)
 
     def _overview_plot_caption_text(self, key: str) -> str:
         captions = {
-            "overview_readiness_scorecard": "Readiness scorecard: a compact orientation panel across completeness, numeric analyzability, metadata context, QC context, design richness, row depth, and feature breadth. This is an audit readiness view, not an ML performance score.",
-            "overview_design_tiles": "Design context: shows whether subject, session/visit, task, diagnosis/severity, sex/gender, and device/context variables are detected. Metadata-derived variables are included when metadata can be joined safely.",
-            "role_counts": "Role mapping summary: verifies that columns are classified as features, identifiers, targets, covariates, QC variables, audit/status fields, or ignored fields before downstream analysis.",
-            "overview_subject_task_matrix": "Subject x task coverage: shows repeated-measures and task coverage when subject/task fields are available. Empty blocks reveal missing task coverage or incomplete alignment.",
-            "overview_feature_family_quality": "Feature-family coverage: summarizes predictor coverage by subsystem/family. This is the high-level family view; detailed missingness and QC are handled in their own menus.",
-            "overview_feature_quality_landscape": "Feature-quality landscape: positions features by missingness and robust outlier burden. Use it only to identify features needing review; use the Distribution and QC menus for detailed diagnosis.",
+            "overview_design_context": "Design context: counts subjects, sex/gender balance, diagnosis balance, tasks, sessions per subject, and repeated-analysis subjects using accepted metadata and filename-derived context.",
+            "overview_design_tiles": "Legacy design-variable detection table retained for detailed context audit.",
+            "overview_role_mapping_summary": "Role mapping summary: shows how accepted mapping partitions columns into predictors, identifiers, outcomes, covariates, QC variables, and ignored fields.",
+            "overview_subject_task_counts": "Subject x task coverage: numeric bar view of records, subjects, and repeated-analysis subjects per task. This replaces the old heatmap.",
+            "overview_feature_family_quality": "Feature-family coverage: summarizes predictor coverage by subsystem/family. Use Task focus to inspect coverage for a selected task.",
+            "overview_feature_quality_landscape": "Feature-quality landscape: each point is a feature; x-axis is missingness and y-axis is robust outlier burden. Use Task focus to see whether quality issues are task-specific.",
         }
         return captions.get(key, "Overview plot.")
 
+
+    def _generate_task_scoped_overview_plot(self, label: str) -> str:
+        task = self.overview_task_combo.currentText() if hasattr(self, "overview_task_combo") else "All tasks"
+        base_key = "overview_feature_family_quality" if label == "Feature-family coverage" else "overview_feature_quality_landscape"
+        if not task or task == "All tasks":
+            return base_key
+        try:
+            self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
+            df = self._overview_context_source_frame()
+            task_series = self._overview_series_for_role(df, "task").astype("string").fillna("").str.strip()
+            scoped = df.loc[task_series.eq(str(task))].copy()
+            mapping = self.collect_mapping_from_table()
+            feature_cols = self._overview_safe_feature_cols(scoped, mapping)
+            slug = self._safe_task_slug(task)
+            if not hasattr(self, "plot_paths"):
+                self.plot_paths = {}
+            if label == "Feature-family coverage":
+                family = self._overview_feature_family_table(scoped, feature_cols)
+                key = f"overview_feature_family_quality__task__{slug}"
+                self.plot_paths[key] = str(plot_feature_family_quality(family, plots_dir / f"overview_feature_family_quality__task__{slug}.png"))
+            else:
+                quality = self._overview_quality_table(scoped, feature_cols)
+                key = f"overview_feature_quality_landscape__task__{slug}"
+                self.plot_paths[key] = str(plot_feature_quality_landscape(quality, plots_dir / f"overview_feature_quality_landscape__task__{slug}.png"))
+            return key
+        except Exception as exc:
+            self.log(f"Overview task-scoped plot failed for {task}: {exc}")
+            self.log(traceback.format_exc())
+            return base_key
+
+    def _safe_dashboard_update(self, label: str, updater, outputs: dict[str, pd.DataFrame]) -> bool:
+        """Update one dashboard without letting scoped-table bugs abort analysis.
+
+        Overview is the dataset-orientation page and must remain available even
+        if a deeper menu has a task/QC/context alignment issue.  Each dashboard
+        gets the same outputs object, but failures are isolated and logged with
+        traceback for the next menu-specific patch.
+        """
+        try:
+            updater(outputs)
+            return True
+        except Exception as exc:
+            self.log(f"WARN | {label} dashboard update skipped: {exc}")
+            self.log(traceback.format_exc())
+            return False
+
+    def _safe_refresh_analysis_dashboards(self, outputs: dict[str, pd.DataFrame]) -> None:
+        """Refresh dashboards in dependency order, isolating failures per menu."""
+        # Overview first: this is the top-level dataset inspection page and
+        # should not be blocked by Missingness/Distributions/QC/Task Review.
+        dashboard_updates = [
+            ("Overview", self.update_overview_dashboard),
+            ("Missingness", self.update_missingness_dashboard),
+            ("Distributions", self.update_distribution_dashboard),
+            ("QC Integration", self.update_qc_dashboard),
+            ("Feature Relationships", self.update_relationships_dashboard),
+            ("Task Review", self.update_task_review_dashboard),
+            ("Longitudinal / Iterations", self.update_longitudinal_dashboard),
+            ("Group / Outcome Screening", self.update_screening_dashboard),
+            ("Reliability", self.update_reliability_dashboard),
+            ("Recommendations", self.update_recommendations_dashboard),
+            ("ML Export", self.update_export_dashboard),
+        ]
+        failed = []
+        for label, updater in dashboard_updates:
+            if not self._safe_dashboard_update(label, updater, outputs):
+                failed.append(label)
+        if failed:
+            self.log("WARN | Some downstream dashboards need menu-specific review: " + "; ".join(failed))
+
+    def _overview_context_source_frame(self) -> pd.DataFrame:
+        """Return a duplicate-safe, metadata-first frame for Overview only.
+
+        Overview is a dataset-orientation menu. It must never depend on deep
+        diagnostics or feature-matrix side effects. If metadata is loaded,
+        canonical context columns already promoted from accepted Metadata Mapping
+        are the source of truth. Filename-derived fields are used only when no
+        metadata table exists.
+        """
+        base = self.analysis_df if getattr(self, "analysis_df", None) is not None and not self.analysis_df.empty else self.feature_df
+        if base is None:
+            return pd.DataFrame()
+        out = self._ensure_unique_columns(base.copy(), "Overview source table").reset_index(drop=True)
+        return out
+
+    def _overview_series_for_role(self, df: pd.DataFrame, role: str) -> pd.Series:
+        n = len(df) if df is not None else 0
+        if df is None or df.empty:
+            return pd.Series(pd.NA, index=range(n), dtype="object")
+        aliases = self._context_aliases().get(role, [])
+        # Metadata-loaded policy: metadata-derived canonical fields are preferred.
+        metadata_loaded = getattr(self, "meta_df", None) is not None and not self.meta_df.empty
+        preferred: list[str] = []
+        canonical_by_role = {
+            "subject": "subject_id", "session": "session_id", "task": "task", "task_code": "task_code",
+            "diagnosis": "diagnosis", "severity_score": "severity_score", "severity_bin": "severity_bin",
+            "sex_or_gender": "sex_or_gender", "recording_date": "recording_date", "iteration": "iteration", "device": "device",
+        }
+        canonical = canonical_by_role.get(role)
+        if metadata_loaded and canonical:
+            preferred.extend([f"metadata__{canonical}", canonical])
+        elif canonical:
+            preferred.extend([canonical, f"metadata__{canonical}"])
+        preferred.extend(aliases)
+        lookup: dict[str, str] = {}
+        for c in df.columns:
+            lookup.setdefault(normalize_name(c), str(c))
+        for name in preferred:
+            col = lookup.get(normalize_name(name))
+            if col is None or col not in df.columns:
+                continue
+            values = df.loc[:, col]
+            if isinstance(values, pd.DataFrame):
+                values = values.iloc[:, 0]
+            values = values.reindex(df.index)
+            empty = self._is_effectively_empty(values)
+            if not bool((~empty).any()):
+                continue
+            return values.astype("object")
+        return pd.Series(pd.NA, index=df.index, dtype="object")
+
+    def _overview_clean_series(self, series: pd.Series) -> pd.Series:
+        if series is None:
+            return pd.Series(dtype="object")
+        s = series.astype("string").fillna("").str.strip()
+        return s.loc[s.ne("") & ~s.str.lower().isin(["nan", "none", "<na>", "nat", "null"])]
+
+    def _overview_safe_feature_cols(self, df: pd.DataFrame, mapping: pd.DataFrame) -> list[str]:
+        roles = role_lists(mapping) if mapping is not None and not mapping.empty else {}
+        candidates = [str(c) for c in roles.get("Feature", []) if str(c) in df.columns]
+        seen: set[str] = set()
+        out: list[str] = []
+        for c in candidates:
+            if c in seen:
+                continue
+            values = df.loc[:, c]
+            if isinstance(values, pd.DataFrame):
+                values = values.iloc[:, 0]
+            if pd.api.types.is_numeric_dtype(values):
+                out.append(c)
+                seen.add(c)
+        return out
+
+    def _overview_feature_family_table(self, df: pd.DataFrame, feature_cols: list[str]) -> pd.DataFrame:
+        registry = self.registry_df if getattr(self, "registry_df", None) is not None else None
+        subsystem_lookup: dict[str, str] = {}
+        if registry is not None and not registry.empty:
+            fcol = next((c for c in ["feature", "feature_name", "name", "column"] if c in registry.columns), None)
+            scol = next((c for c in ["subsystem", "family", "feature_family", "group", "domain"] if c in registry.columns), None)
+            if fcol and scol:
+                for _, r in registry[[fcol, scol]].dropna().iterrows():
+                    subsystem_lookup[str(r[fcol])] = str(r[scol])
+        rows = []
+        for c in feature_cols:
+            values = df.loc[:, c]
+            if isinstance(values, pd.DataFrame):
+                values = values.iloc[:, 0]
+            x = pd.to_numeric(values, errors="coerce")
+            rows.append({
+                "feature": c,
+                "family_or_subsystem": subsystem_lookup.get(c, "unclassified"),
+                "n_features": 1,
+                "n_numeric_features": 1,
+                "missing_fraction": float(x.isna().mean()) if len(x) else 0.0,
+                "n_nonmissing": int(x.notna().sum()),
+            })
+        if not rows:
+            return pd.DataFrame(columns=["family_or_subsystem", "n_features", "n_numeric_features", "mean_missing_fraction", "median_nonmissing"])
+        detail = pd.DataFrame(rows)
+        return detail.groupby("family_or_subsystem", dropna=False).agg(
+            n_features=("feature", "count"),
+            n_numeric_features=("n_numeric_features", "sum"),
+            mean_missing_fraction=("missing_fraction", "mean"),
+            median_nonmissing=("n_nonmissing", "median"),
+        ).reset_index().sort_values("n_features", ascending=False)
+
+    def _overview_quality_table(self, df: pd.DataFrame, feature_cols: list[str]) -> pd.DataFrame:
+        registry = self.registry_df if getattr(self, "registry_df", None) is not None else None
+        subsystem_lookup: dict[str, str] = {}
+        if registry is not None and not registry.empty:
+            fcol = next((c for c in ["feature", "feature_name", "name", "column"] if c in registry.columns), None)
+            scol = next((c for c in ["subsystem", "family", "feature_family", "group", "domain"] if c in registry.columns), None)
+            if fcol and scol:
+                for _, r in registry[[fcol, scol]].dropna().iterrows():
+                    subsystem_lookup[str(r[fcol])] = str(r[scol])
+        rows = []
+        for c in feature_cols:
+            values = df.loc[:, c]
+            if isinstance(values, pd.DataFrame):
+                values = values.iloc[:, 0]
+            x = pd.to_numeric(values, errors="coerce")
+            non = x.dropna()
+            miss = float(x.isna().mean()) if len(x) else 1.0
+            out_frac = 0.0
+            zero = True
+            if len(non) >= 3:
+                zero = bool(non.nunique(dropna=True) <= 1)
+                med = float(non.median())
+                mad = float((non - med).abs().median())
+                if mad > 0:
+                    rz = 0.6745 * (non - med) / mad
+                    out_frac = float((rz.abs() > 3.5).mean())
+            n_valid = int(non.size)
+            score = max(0.0, min(100.0, 100.0 - 70.0 * miss - 125.0 * out_frac - (40.0 if zero else 0.0) - (30.0 if n_valid < 3 else 0.0)))
+            status = "review" if zero or n_valid < 3 or miss >= 0.50 or out_frac >= 0.20 else ("monitor" if miss >= 0.20 or out_frac >= 0.05 else "ok")
+            rows.append({
+                "feature": c,
+                "family_or_subsystem": subsystem_lookup.get(c, "unclassified"),
+                "missing_fraction": miss,
+                "robust_outlier_fraction": out_frac,
+                "n_valid": n_valid,
+                "zero_variance": zero,
+                "quality_status": status,
+                "quality_score": round(score, 1),
+            })
+        return pd.DataFrame(rows).sort_values(["quality_status", "quality_score", "feature"], ascending=[False, True, True]) if rows else pd.DataFrame(columns=["feature", "family_or_subsystem", "missing_fraction", "robust_outlier_fraction", "n_valid", "quality_status", "quality_score"])
+
+    def _overview_design_tables(self, df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+        n_rows = len(df) if df is not None else 0
+        subject = self._overview_clean_series(self._overview_series_for_role(df, "subject"))
+        task = self._overview_clean_series(self._overview_series_for_role(df, "task"))
+        sex = self._overview_clean_series(self._overview_series_for_role(df, "sex_or_gender"))
+        diagnosis = self._overview_clean_series(self._overview_series_for_role(df, "diagnosis"))
+        session = self._overview_clean_series(self._overview_series_for_role(df, "session"))
+        if session.empty:
+            session = self._overview_clean_series(self._overview_series_for_role(df, "recording_date"))
+        iteration = self._overview_clean_series(self._overview_series_for_role(df, "iteration"))
+        subj_raw = self._overview_series_for_role(df, "subject").astype("string").fillna("").str.strip()
+        task_raw = self._overview_series_for_role(df, "task").astype("string").fillna("").str.strip()
+        iter_raw = self._overview_series_for_role(df, "iteration").astype("string").fillna("").str.strip()
+        repeated_subjects = 0
+        tmp = pd.DataFrame({"subject": subj_raw, "task": task_raw, "iteration": iter_raw}, index=df.index if df is not None else None)
+        tmp = tmp.loc[tmp["subject"].ne("") & tmp["task"].ne("")]
+        if not tmp.empty:
+            if tmp["iteration"].ne("").any():
+                rep = tmp.loc[tmp["iteration"].ne("")].groupby(["subject", "task"])["iteration"].nunique().reset_index(name="n_iterations")
+                repeated_subjects = int(rep.loc[rep["n_iterations"].ge(2), "subject"].nunique())
+            else:
+                rep = tmp.groupby(["subject", "task"]).size().reset_index(name="n_records")
+                repeated_subjects = int(rep.loc[rep["n_records"].ge(2), "subject"].nunique())
+        metrics = pd.DataFrame([
+            {"metric": "rows/files", "value": n_rows},
+            {"metric": "subjects", "value": int(subject.nunique()) if len(subject) else 0},
+            {"metric": "sex/gender levels", "value": int(sex.nunique()) if len(sex) else 0},
+            {"metric": "diagnosis levels", "value": int(diagnosis.nunique()) if len(diagnosis) else 0},
+            {"metric": "tasks", "value": int(task.nunique()) if len(task) else 0},
+            {"metric": "subjects eligible for repeated analysis", "value": repeated_subjects},
+        ])
+        rows = []
+        for section, ser in [("sex_or_gender", sex), ("diagnosis", diagnosis), ("task", task)]:
+            vc = ser.value_counts().head(40) if len(ser) else pd.Series(dtype=int)
+            for level, count in vc.items():
+                rows.append({"section": section, "level": str(level), "count": int(count)})
+        if len(subject):
+            if len(session):
+                stmp = pd.DataFrame({"subject": subj_raw, "session": self._overview_series_for_role(df, "session").astype("string").fillna("").str.strip()})
+                stmp = stmp.loc[stmp["subject"].ne("") & stmp["session"].ne("")]
+                sessions_per_subject = stmp.groupby("subject")["session"].nunique() if not stmp.empty else subj_raw.value_counts()
+            else:
+                sessions_per_subject = subj_raw.loc[subj_raw.ne("")].value_counts()
+            for level, count in sessions_per_subject.value_counts().sort_index().items():
+                rows.append({"section": "sessions_per_subject", "level": str(level), "count": int(count)})
+        counts = pd.DataFrame(rows, columns=["section", "level", "count"])
+        return metrics, counts
+
+    def _overview_subject_task_table(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df is None or df.empty:
+            return pd.DataFrame(columns=["task", "records", "subjects", "repeated_subjects"])
+        subject = self._overview_series_for_role(df, "subject").astype("string").fillna("").str.strip()
+        task = self._overview_series_for_role(df, "task").astype("string").fillna("").str.strip()
+        iteration = self._overview_series_for_role(df, "iteration").astype("string").fillna("").str.strip()
+        work = pd.DataFrame({"subject": subject, "task": task, "iteration": iteration}, index=df.index)
+        work = work.loc[work["subject"].ne("") & work["task"].ne("")]
+        if work.empty:
+            return pd.DataFrame(columns=["task", "records", "subjects", "repeated_subjects"])
+        records = work["task"].value_counts()
+        subjects = work.groupby("task")["subject"].nunique()
+        if work["iteration"].ne("").any():
+            rep = work.loc[work["iteration"].ne("")].groupby(["subject", "task"])["iteration"].nunique().reset_index(name="n_iterations")
+            repeated = rep.loc[rep["n_iterations"].ge(2)].groupby("task")["subject"].nunique()
+        else:
+            rep = work.groupby(["subject", "task"]).size().reset_index(name="n_records")
+            repeated = rep.loc[rep["n_records"].ge(2)].groupby("task")["subject"].nunique()
+        out = pd.DataFrame({"task": records.index.astype(str), "records": records.astype(int).values})
+        out["subjects"] = out["task"].map(subjects).fillna(0).astype(int)
+        out["repeated_subjects"] = out["task"].map(repeated).fillna(0).astype(int)
+        return out.sort_values(["subjects", "records"], ascending=False).reset_index(drop=True)
+
+    def _build_overview_outputs(self) -> tuple[dict[str, pd.DataFrame], list[str]]:
+        """Build Overview tables only, without deep feature diagnostics.
+
+        This path is intentionally row-safe and metadata-first. It does not call
+        PCA, QC integration, screening, reliability, or generic distribution
+        audit functions, because those may mix row-indexed and feature-indexed
+        vectors in menu-specific code.
+        """
+        if self.feature_df is None:
+            self.load_and_map()
+        if self.feature_df is None:
+            raise RuntimeError("Load a primary feature table first.")
+        mapping = self.collect_mapping_from_table()
+        active_df = self._overview_context_source_frame()
+        feature_cols = self._overview_safe_feature_cols(active_df, mapping)
+        design_metrics, design_counts = self._overview_design_tables(active_df)
+        subject_task = self._overview_subject_task_table(active_df)
+        family = self._overview_feature_family_table(active_df, feature_cols)
+        quality = self._overview_quality_table(active_df, feature_cols)
+        role_sum = role_summary(mapping)
+        inventory = pd.DataFrame([
+            {"metric": "feature_table_rows", "value": len(active_df)},
+            {"metric": "detected_feature_columns", "value": len(feature_cols)},
+            {"metric": "unique_subjects", "value": int(design_metrics.loc[design_metrics["metric"].eq("subjects"), "value"].iloc[0]) if not design_metrics.empty else 0},
+            {"metric": "unique_tasks", "value": int(design_metrics.loc[design_metrics["metric"].eq("tasks"), "value"].iloc[0]) if not design_metrics.empty else 0},
+            {"metric": "qc_table_loaded", "value": bool(getattr(self, "qc_df", None) is not None and not self.qc_df.empty)},
+            {"metric": "metadata_table_loaded", "value": bool(getattr(self, "meta_df", None) is not None and not self.meta_df.empty)},
+        ])
+        outputs = {
+            "dataset_inventory": inventory,
+            "feature_role_summary": role_sum,
+            "overview_design_metrics": design_metrics,
+            "overview_design_counts": design_counts,
+            "dataset_design_overview": pd.concat([
+                design_metrics.assign(section="metrics", level=design_metrics["metric"], count=design_metrics["value"])[["section", "level", "count"]],
+                design_counts
+            ], ignore_index=True),
+            "metadata_context": pd.DataFrame([{"strategy": getattr(self, "metadata_join_strategy", "feature_table_only"), "filename_parser_mode": self._filename_parser_mode()}]),
+            "filename_context_parse": getattr(self, "filename_context_parse_df", pd.DataFrame()),
+            "feature_family_overview": family,
+            "feature_distribution_summary": pd.DataFrame(),
+            "overview_feature_quality_landscape": quality,
+            "overview_subject_task_coverage": subject_task,
+            "overview_readiness_summary": pd.DataFrame(),
+            "group_counts": pd.DataFrame(),
+            "feature_column_mapping": mapping,
+            "missingness_by_feature": pd.DataFrame(),
+            "missingness_by_row": pd.DataFrame(),
+            "missingness_by_group": pd.DataFrame(),
+            "missingness_by_family": pd.DataFrame(),
+        }
+        return outputs, feature_cols
+
+    def _overview_emergency_outputs(self) -> tuple[dict[str, pd.DataFrame], list[str]]:
+        """Last-resort Overview builder that cannot assign feature-length values to row tables.
+
+        This is intentionally simple and metadata-first.  It uses only scalar
+        counts and already existing columns in the current analysis table.  When
+        a metadata table is present, metadata/promoted metadata columns are
+        preferred for clinical/context fields; filename-derived columns are not
+        used unless metadata is absent.
+        """
+        src = None
+        if getattr(self, "analysis_df", None) is not None and not self.analysis_df.empty:
+            src = self.analysis_df.copy()
+        elif getattr(self, "feature_df", None) is not None and not self.feature_df.empty:
+            src = self.feature_df.copy()
+        else:
+            src = pd.DataFrame()
+        if src is None:
+            src = pd.DataFrame()
+        src = self._ensure_unique_columns(src.copy(), "Overview emergency source").reset_index(drop=True)
+        metadata_loaded = bool(getattr(self, "meta_df", None) is not None and not self.meta_df.empty)
+
+        def pick(role: str) -> pd.Series:
+            n = len(src)
+            if n == 0:
+                return pd.Series(dtype="object")
+            aliases = self._context_aliases().get(role, []) if hasattr(self, "_context_aliases") else []
+            canonical = {
+                "subject": "subject_id", "session": "session_id", "task": "task", "task_code": "task_code",
+                "diagnosis": "diagnosis", "severity_score": "severity_score", "severity_bin": "severity_bin",
+                "sex_or_gender": "sex_or_gender", "recording_date": "recording_date", "iteration": "iteration", "device": "device",
+            }.get(role, role)
+            names: list[str] = []
+            if metadata_loaded:
+                names.extend([f"metadata__{canonical}", canonical])
+                names.extend([a for a in aliases if str(a).startswith("metadata__")])
+                names.extend([a for a in aliases if not str(a).startswith("metadata__")])
+            else:
+                names.extend([canonical, f"metadata__{canonical}"] + aliases)
+            lookup: dict[str, str] = {}
+            for c in src.columns:
+                lookup.setdefault(normalize_name(c), str(c))
+            for name in names:
+                col = lookup.get(normalize_name(name))
+                if not col or col not in src.columns:
+                    continue
+                ser = src.loc[:, col]
+                if isinstance(ser, pd.DataFrame):
+                    ser = ser.iloc[:, 0]
+                ser = pd.Series(ser.to_numpy(dtype=object), index=src.index, dtype="object")
+                nonempty = ser.astype("string").fillna("").str.strip()
+                nonempty = nonempty.loc[nonempty.ne("") & ~nonempty.str.lower().isin(["nan", "none", "<na>", "nat", "null"])]
+                if len(nonempty):
+                    return ser
+            return pd.Series(pd.NA, index=src.index, dtype="object")
+
+        def clean(ser: pd.Series) -> pd.Series:
+            if ser is None or len(ser) == 0:
+                return pd.Series(dtype="object")
+            x = ser.astype("string").fillna("").str.strip()
+            return x.loc[x.ne("") & ~x.str.lower().isin(["nan", "none", "<na>", "nat", "null"])]
+
+        subject = clean(pick("subject"))
+        task = clean(pick("task"))
+        sex = clean(pick("sex_or_gender"))
+        diagnosis = clean(pick("diagnosis"))
+        session = clean(pick("session"))
+        if session.empty:
+            session = clean(pick("recording_date"))
+        subj_raw = pick("subject").astype("string").fillna("").str.strip()
+        task_raw = pick("task").astype("string").fillna("").str.strip()
+        iter_raw = pick("iteration").astype("string").fillna("").str.strip()
+        repeated_subjects = 0
+        if len(src):
+            tmp = pd.DataFrame({"subject": subj_raw.to_numpy(), "task": task_raw.to_numpy(), "iteration": iter_raw.to_numpy()})
+            tmp = tmp.loc[tmp["subject"].ne("") & tmp["task"].ne("")]
+            if not tmp.empty:
+                if tmp["iteration"].ne("").any():
+                    rep = tmp.loc[tmp["iteration"].ne("")].groupby(["subject", "task"])["iteration"].nunique().reset_index(name="n_iterations")
+                    repeated_subjects = int(rep.loc[rep["n_iterations"].ge(2), "subject"].nunique())
+                else:
+                    rep = tmp.groupby(["subject", "task"]).size().reset_index(name="n_records")
+                    repeated_subjects = int(rep.loc[rep["n_records"].ge(2), "subject"].nunique())
+
+        design_metrics = pd.DataFrame([
+            {"metric": "rows/files", "value": int(len(src))},
+            {"metric": "subjects", "value": int(subject.nunique()) if len(subject) else 0},
+            {"metric": "sex/gender levels", "value": int(sex.nunique()) if len(sex) else 0},
+            {"metric": "diagnosis levels", "value": int(diagnosis.nunique()) if len(diagnosis) else 0},
+            {"metric": "tasks", "value": int(task.nunique()) if len(task) else 0},
+            {"metric": "subjects eligible for repeated analysis", "value": int(repeated_subjects)},
+        ])
+        count_rows = []
+        for section, ser in [("sex_or_gender", sex), ("diagnosis", diagnosis), ("task", task)]:
+            for level, count in ser.value_counts().head(40).items() if len(ser) else []:
+                count_rows.append({"section": section, "level": str(level), "count": int(count)})
+        if len(subject):
+            subj_full = subj_raw.loc[subj_raw.ne("")]
+            sess_full = pick("session").astype("string").fillna("").str.strip()
+            if sess_full.ne("").any():
+                stmp = pd.DataFrame({"subject": subj_raw.to_numpy(), "session": sess_full.to_numpy()})
+                stmp = stmp.loc[stmp["subject"].ne("") & stmp["session"].ne("")]
+                sessions_per_subject = stmp.groupby("subject")["session"].nunique() if not stmp.empty else subj_full.value_counts()
+            else:
+                sessions_per_subject = subj_full.value_counts()
+            for level, count in sessions_per_subject.value_counts().sort_index().items():
+                count_rows.append({"section": "sessions_per_subject", "level": str(level), "count": int(count)})
+        design_counts = pd.DataFrame(count_rows, columns=["section", "level", "count"])
+
+        if len(src):
+            work = pd.DataFrame({"subject": subj_raw.to_numpy(), "task": task_raw.to_numpy(), "iteration": iter_raw.to_numpy()})
+            work = work.loc[work["subject"].ne("") & work["task"].ne("")]
+        else:
+            work = pd.DataFrame()
+        if work.empty:
+            subject_task = pd.DataFrame(columns=["task", "records", "subjects", "repeated_subjects"])
+        else:
+            records = work["task"].value_counts()
+            subjects = work.groupby("task")["subject"].nunique()
+            if work["iteration"].ne("").any():
+                rep = work.loc[work["iteration"].ne("")].groupby(["subject", "task"])["iteration"].nunique().reset_index(name="n_iterations")
+                repeated = rep.loc[rep["n_iterations"].ge(2)].groupby("task")["subject"].nunique()
+            else:
+                rep = work.groupby(["subject", "task"]).size().reset_index(name="n_records")
+                repeated = rep.loc[rep["n_records"].ge(2)].groupby("task")["subject"].nunique()
+            subject_task = pd.DataFrame({"task": records.index.astype(str), "records": records.astype(int).to_numpy()})
+            subject_task["subjects"] = subject_task["task"].map(subjects).fillna(0).astype(int)
+            subject_task["repeated_subjects"] = subject_task["task"].map(repeated).fillna(0).astype(int)
+            subject_task = subject_task.sort_values(["subjects", "records"], ascending=False).reset_index(drop=True)
+
+        mapping = self.collect_mapping_from_table() if hasattr(self, "collect_mapping_from_table") else pd.DataFrame()
+        try:
+            role_sum = role_summary(mapping)
+        except Exception:
+            role_sum = summarize_roles(mapping) if mapping is not None and not mapping.empty else pd.DataFrame()
+        try:
+            feature_cols = self._overview_safe_feature_cols(src, mapping) if hasattr(self, "_overview_safe_feature_cols") else []
+        except Exception:
+            feature_cols = []
+        if not feature_cols:
+            context_norms = {normalize_name(x) for x in ["file_name", "source_file_path", "subject_id", "session_id", "iteration", "task", "recording_date", "diagnosis", "severity_score", "severity_bin", "record_key"]}
+            for c in src.columns:
+                if normalize_name(c) in context_norms or str(c).startswith("metadata__"):
+                    continue
+                ser = src.loc[:, c]
+                if isinstance(ser, pd.DataFrame):
+                    ser = ser.iloc[:, 0]
+                if pd.to_numeric(ser, errors="coerce").notna().any():
+                    feature_cols.append(str(c))
+
+        family_rows = []
+        quality_rows = []
+        registry = getattr(self, "registry_df", None)
+        fam_lookup: dict[str, str] = {}
+        if registry is not None and not registry.empty:
+            fcol = next((c for c in ["feature", "feature_name", "name", "column"] if c in registry.columns), None)
+            scol = next((c for c in ["subsystem", "family", "feature_family", "group", "domain"] if c in registry.columns), None)
+            if fcol and scol:
+                fam_lookup = dict(zip(registry[fcol].astype(str), registry[scol].astype(str)))
+        for c in feature_cols:
+            ser = src.loc[:, c]
+            if isinstance(ser, pd.DataFrame):
+                ser = ser.iloc[:, 0]
+            x = pd.to_numeric(ser, errors="coerce")
+            non = x.dropna()
+            miss = float(x.isna().mean()) if len(x) else 1.0
+            out_frac = 0.0
+            zero = bool(non.nunique(dropna=True) <= 1) if len(non) else True
+            if len(non) >= 3:
+                med = float(non.median()); mad = float((non - med).abs().median())
+                if mad > 0:
+                    rz = 0.6745 * (non - med) / mad
+                    out_frac = float((rz.abs() > 3.5).mean())
+            fam = fam_lookup.get(str(c), "unclassified")
+            family_rows.append({"feature": str(c), "family_or_subsystem": fam, "n_features": 1, "n_numeric_features": 1, "missing_fraction": miss, "n_nonmissing": int(non.size)})
+            score = max(0.0, min(100.0, 100.0 - 70.0 * miss - 125.0 * out_frac - (40.0 if zero else 0.0) - (30.0 if len(non) < 3 else 0.0)))
+            status = "review" if zero or len(non) < 3 or miss >= 0.50 or out_frac >= 0.20 else ("monitor" if miss >= 0.20 or out_frac >= 0.05 else "ok")
+            quality_rows.append({"feature": str(c), "family_or_subsystem": fam, "missing_fraction": miss, "robust_outlier_fraction": out_frac, "n_valid": int(non.size), "zero_variance": zero, "quality_status": status, "quality_score": round(score, 1)})
+        family_detail = pd.DataFrame(family_rows)
+        if family_detail.empty:
+            family = pd.DataFrame(columns=["family_or_subsystem", "n_features", "n_numeric_features", "mean_missing_fraction", "median_nonmissing"])
+        else:
+            family = family_detail.groupby("family_or_subsystem", dropna=False).agg(n_features=("feature", "count"), n_numeric_features=("n_numeric_features", "sum"), mean_missing_fraction=("missing_fraction", "mean"), median_nonmissing=("n_nonmissing", "median")).reset_index().sort_values("n_features", ascending=False)
+        quality = pd.DataFrame(quality_rows, columns=["feature", "family_or_subsystem", "missing_fraction", "robust_outlier_fraction", "n_valid", "zero_variance", "quality_status", "quality_score"])
+        inventory = pd.DataFrame([
+            {"metric": "feature_table_rows", "value": int(len(src))},
+            {"metric": "detected_feature_columns", "value": int(len(feature_cols))},
+            {"metric": "unique_subjects", "value": int(subject.nunique()) if len(subject) else 0},
+            {"metric": "unique_tasks", "value": int(task.nunique()) if len(task) else 0},
+            {"metric": "qc_table_loaded", "value": bool(getattr(self, "qc_df", None) is not None and not self.qc_df.empty)},
+            {"metric": "metadata_table_loaded", "value": metadata_loaded},
+        ])
+        dataset_design = pd.concat([
+            design_metrics.assign(section="metrics", level=design_metrics["metric"], count=design_metrics["value"])[["section", "level", "count"]],
+            design_counts,
+        ], ignore_index=True)
+        outputs = {
+            "dataset_inventory": inventory,
+            "feature_role_summary": role_sum,
+            "overview_design_metrics": design_metrics,
+            "overview_design_counts": design_counts,
+            "dataset_design_overview": dataset_design,
+            "metadata_context": pd.DataFrame([{"strategy": getattr(self, "metadata_join_strategy", "feature_table_only"), "metadata_first": metadata_loaded, "filename_parser_mode": self._filename_parser_mode()}]),
+            "filename_context_parse": getattr(self, "filename_context_parse_df", pd.DataFrame()),
+            "feature_family_overview": family,
+            "overview_feature_quality_landscape": quality,
+            "overview_subject_task_coverage": subject_task,
+            "overview_readiness_summary": pd.DataFrame(),
+            "group_counts": pd.DataFrame(),
+            "feature_column_mapping": mapping,
+        }
+        return outputs, feature_cols
+
+    def _write_overview_placeholder_plot(self, path: Path, title: str, message: str) -> Path:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fig, ax = plt.subplots(figsize=(10, 5.5))
+        ax.text(0.5, 0.58, title, ha="center", va="center", fontsize=16, fontweight="bold", color="#071A33")
+        ax.text(0.5, 0.42, message, ha="center", va="center", fontsize=10.5, color="#607089", wrap=True)
+        ax.axis("off")
+        fig.tight_layout()
+        fig.savefig(path, dpi=180, bbox_inches="tight", facecolor="white")
+        plt.close(fig)
+        return path
+
+    def _generate_overview_plots_guaranteed(self, outputs: dict[str, pd.DataFrame], plots_dir: Path) -> dict[str, str]:
+        jobs = [
+            ("overview_design_context", "Dataset design context", lambda p: plot_overview_design_from_tables(outputs.get("overview_design_metrics", pd.DataFrame()), outputs.get("overview_design_counts", pd.DataFrame()), p)),
+            ("overview_role_mapping_summary", "Role mapping summary", lambda p: plot_role_mapping_summary(outputs.get("feature_role_summary", pd.DataFrame()), p)),
+            ("overview_subject_task_counts", "Subject x task coverage", lambda p: plot_subject_task_summary_bars(outputs.get("overview_subject_task_coverage", pd.DataFrame()), p)),
+            ("overview_feature_family_quality", "Feature-family coverage", lambda p: plot_feature_family_quality(outputs.get("feature_family_overview", pd.DataFrame()), p)),
+            ("overview_feature_quality_landscape", "Feature-quality landscape", lambda p: plot_feature_quality_landscape(outputs.get("overview_feature_quality_landscape", pd.DataFrame()), p)),
+        ]
+        paths: dict[str, str] = {}
+        for key, title, fn in jobs:
+            path = plots_dir / f"{key}.png"
+            try:
+                paths[key] = str(fn(path))
+            except Exception as exc:
+                self.log(f"WARN | Overview safe plot {key} failed and was replaced by placeholder: {exc}")
+                self.log(traceback.format_exc())
+                paths[key] = str(self._write_overview_placeholder_plot(path, title, str(exc)))
+        return paths
+
     def regenerate_overview_plots(self) -> None:
+        """Regenerate the Overview page through a guaranteed row-safe path.
+
+        This callback must never run deep feature diagnostics. If metadata is
+        loaded, metadata/promoted metadata columns are used first. Filename
+        context is only a no-metadata fallback configured in Metadata Mapping.
+        """
         try:
             if self.feature_df is None:
                 self.load_and_map()
@@ -3035,26 +3774,31 @@ class FeatureAnalysisGUI(QMainWindow):
                 QMessageBox.warning(self, "Missing output folder", "Please select an output folder before generating plots.")
                 return
             self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
-            outputs, feature_cols = self._build_analysis_outputs()
+            try:
+                outputs, feature_cols = self._overview_emergency_outputs()
+            except Exception as exc:
+                self.log(f"ERROR | Emergency Overview builder failed: {exc}")
+                self.log(traceback.format_exc())
+                outputs, feature_cols = {"dataset_inventory": pd.DataFrame(), "feature_role_summary": pd.DataFrame(), "overview_design_metrics": pd.DataFrame(), "overview_design_counts": pd.DataFrame(), "dataset_design_overview": pd.DataFrame(), "feature_family_overview": pd.DataFrame(), "overview_feature_quality_landscape": pd.DataFrame(), "overview_subject_task_coverage": pd.DataFrame()}, []
             self.outputs = outputs
-            self._write_outputs(outputs, tables_dir)
-            self.plot_paths = self._generate_overview_plots(outputs, feature_cols, plots_dir)
-            self.populate_output_tables(outputs)
-            self.update_overview_dashboard(outputs)
-            self.update_missingness_dashboard(outputs)
-            self.update_distribution_dashboard(outputs)
-            self.update_qc_dashboard(outputs)
-            self.update_relationships_dashboard(outputs)
-            self.update_task_review_dashboard(outputs)
-            self.update_longitudinal_dashboard(outputs)
-            self.update_screening_dashboard(outputs)
-            self.update_reliability_dashboard(outputs)
-            self.update_recommendations_dashboard(outputs)
-            self.update_export_dashboard(outputs)
-            self.log(f"Overview/missingness plots generated in: {plots_dir}")
-            self.preview_plot("overview_readiness_scorecard", generate_if_missing=False)
+            try:
+                self._write_outputs(outputs, tables_dir)
+            except Exception as exc:
+                self.log(f"WARN | Could not write some Overview tables: {exc}")
+            self.plot_paths = self._generate_overview_plots_guaranteed(outputs, plots_dir)
+            try:
+                self.update_overview_dashboard(outputs)
+            except Exception as exc:
+                self.log(f"WARN | Overview dashboard table update failed but plots were generated: {exc}")
+                self.log(traceback.format_exc())
+            self.log(f"Overview plots generated in safe metadata-first mode: {plots_dir}")
+            self.preview_plot("overview_design_context", generate_if_missing=False)
         except Exception as exc:
-            QMessageBox.critical(self, "Could not generate overview plots", str(exc))
+            self.log_error("Could not generate overview plots", exc)
+            try:
+                QMessageBox.critical(self, "Could not generate overview plots", str(exc))
+            except Exception:
+                pass
 
     def preview_plot(self, key: str, generate_if_missing: bool = True) -> None:
         if generate_if_missing and (not hasattr(self, "plot_paths") or key not in self.plot_paths or not Path(self.plot_paths.get(key, "")).exists()):
@@ -3453,7 +4197,8 @@ class FeatureAnalysisGUI(QMainWindow):
         series, label = self._missingness_context_series(scoped)
         value = self.missing_context_value_combo.currentText() if hasattr(self, "missing_context_value_combo") else "All values"
         if series is not None:
-            scoped["__local_missingness_context__"] = series.values
+            aligned_series = self._align_context_series_to_frame(series, scoped) if hasattr(self, "_align_context_series_to_frame") else pd.Series(series.to_numpy() if len(series) == len(scoped) else pd.NA, index=scoped.index)
+            scoped["__local_missingness_context__"] = aligned_series
             if value not in {"", "All values", "All context / not available"}:
                 scoped = scoped[scoped["__local_missingness_context__"].astype(str).eq(str(value))].copy()
                 parts.append(f"{label} = {value}")
@@ -3868,7 +4613,8 @@ class FeatureAnalysisGUI(QMainWindow):
         series, label = self._dist_context_series(out)
         value = self.dist_context_value_combo.currentText() if hasattr(self, "dist_context_value_combo") else "All values"
         if series is not None:
-            out["__local_clinical_context__"] = series.values
+            aligned_series = self._align_context_series_to_frame(series, out) if hasattr(self, "_align_context_series_to_frame") else pd.Series(series.to_numpy() if len(series) == len(out) else pd.NA, index=out.index)
+            out["__local_clinical_context__"] = aligned_series
             if value not in {"", "All values", "Auto / not available"}:
                 out = out[out["__local_clinical_context__"].astype(str).eq(str(value))].copy()
                 parts.append(f"{label} = {value}")
@@ -5539,7 +6285,8 @@ class FeatureAnalysisGUI(QMainWindow):
         if clinical_series is not None:
             df = df.copy()
             label_col = "__local_clinical_context__"
-            df[label_col] = clinical_series.values
+            aligned_series = self._align_context_series_to_frame(clinical_series, df) if hasattr(self, "_align_context_series_to_frame") else pd.Series(clinical_series.to_numpy() if len(clinical_series) == len(df) else pd.NA, index=df.index)
+            df[label_col] = aligned_series
         support = pd.DataFrame()
         if hasattr(self, "task_feature_support_table"):
             # Prefer the table just filled in the GUI when available.
@@ -6888,14 +7635,17 @@ Decision colors:
         df = self.mapping_df.copy()
         self.mapping_table.setRowCount(len(df))
         self.mapping_table.setColumnCount(7)
-        for i, r in df.iterrows():
-            self.mapping_table.setItem(i, 0, QTableWidgetItem(str(r["column"])))
+        for visual_i, source_i in enumerate(df.index.tolist()):
+            r = df.loc[source_i]
+            self.mapping_table.setItem(visual_i, 0, QTableWidgetItem(str(r["column"])))
             combo = NoWheelComboBox()
             combo.setStyleSheet("QComboBox { min-width: 128px; max-width: 145px; padding: 4px 6px; }")
             combo.addItems(ROLE_OPTIONS)
             combo.setCurrentText(str(r["role"]))
+            combo.setProperty("source_index", int(source_i) if isinstance(source_i, int) or str(type(source_i)).endswith("int64'>") else str(source_i))
+            combo.setProperty("source_column", str(r["column"]))
             combo.currentTextChanged.connect(self.mark_mapping_modified)
-            self.mapping_table.setCellWidget(i, 1, combo)
+            self.mapping_table.setCellWidget(visual_i, 1, combo)
             for col_idx, value in [
                 (2, f"{float(r['confidence']):.2f}"),
                 (3, str(r["reason"])),
@@ -6905,21 +7655,70 @@ Decision colors:
             ]:
                 item = QTableWidgetItem(value)
                 item.setToolTip(value)
-                self.mapping_table.setItem(i, col_idx, item)
+                self.mapping_table.setItem(visual_i, col_idx, item)
         self.mapping_table.resizeRowsToContents()
         for row in range(self.mapping_table.rowCount()):
             self.mapping_table.setRowHeight(row, min(max(self.mapping_table.rowHeight(row), 28), 38))
         self.update_mapping_summary()
 
     def collect_mapping_from_table(self) -> pd.DataFrame:
+        """Collect Feature Mapping roles without assuming table rows equal mapping rows.
+
+        The mapping table can be rebuilt or partially visible after metadata joins,
+        and the underlying mapping_df can include feature + metadata columns. Older
+        code assigned a raw roles list to df["role"], which fails whenever the
+        widget row count differs from mapping_df length, e.g. 275 visible rows vs
+        451 mapped columns. Update by stored source_index/source_column instead.
+        """
         if self.mapping_df.empty:
             return self.mapping_df
         df = self.mapping_df.copy()
-        roles = []
-        for i in range(self.mapping_table.rowCount()):
-            widget = self.mapping_table.cellWidget(i, 1)
-            roles.append(widget.currentText() if isinstance(widget, QComboBox) else df.iloc[i]["role"])
-        df["role"] = roles
+        if not hasattr(self, "mapping_table"):
+            return df
+        if "role" not in df.columns:
+            df["role"] = ROLE_IGNORE
+        if "column" not in df.columns:
+            self.mapping_df = df
+            return df
+
+        table_rows = int(self.mapping_table.rowCount())
+        if table_rows != len(df) and hasattr(self, "log"):
+            self.log(f"WARN | Feature Mapping table has {table_rows} visible rows but mapping has {len(df)} rows; syncing roles by source index/column.")
+
+        # Track duplicate column labels so fallback column-name matching is only
+        # used when unambiguous. Source-index matching is preferred.
+        col_counts = df["column"].astype(str).value_counts().to_dict()
+        for visual_i in range(table_rows):
+            widget = self.mapping_table.cellWidget(visual_i, 1)
+            if not isinstance(widget, QComboBox):
+                continue
+            role = widget.currentText()
+            source_i = widget.property("source_index")
+            updated = False
+            if source_i is not None:
+                try:
+                    if source_i in df.index:
+                        df.loc[source_i, "role"] = role
+                        updated = True
+                    else:
+                        source_i_int = int(source_i)
+                        if source_i_int in df.index:
+                            df.loc[source_i_int, "role"] = role
+                            updated = True
+                except Exception:
+                    updated = False
+            if updated:
+                continue
+            source_col = widget.property("source_column")
+            if source_col is None:
+                item = self.mapping_table.item(visual_i, 0)
+                source_col = item.text() if item is not None else None
+            if source_col is None:
+                continue
+            source_col = str(source_col)
+            if col_counts.get(source_col, 0) == 1:
+                df.loc[df["column"].astype(str).eq(source_col), "role"] = role
+
         self.mapping_df = df
         self.update_mapping_summary()
         return df
@@ -7005,25 +7804,25 @@ Decision colors:
             reports_dir.mkdir(parents=True, exist_ok=True)
             plots_dir.mkdir(parents=True, exist_ok=True)
 
-            outputs, feature_cols = self._build_analysis_outputs()
+            try:
+                outputs, feature_cols = self._build_analysis_outputs()
+                full_analysis_ok = True
+            except Exception as exc:
+                self.log_error("Full feature analysis tables failed; falling back to Overview-only outputs", exc)
+                outputs, feature_cols = self._build_overview_outputs()
+                full_analysis_ok = False
             self.outputs = outputs
             self._write_outputs(outputs, tables_dir)
             self.plot_paths = self._generate_overview_plots(outputs, feature_cols, plots_dir)
 
-            self.write_report(reports_dir / "vslp_feature_analysis_report.html", outputs)
-            self.populate_output_tables(outputs)
-            self.update_overview_dashboard(outputs)
-            self.update_missingness_dashboard(outputs)
-            self.update_distribution_dashboard(outputs)
-            self.update_qc_dashboard(outputs)
-            self.update_relationships_dashboard(outputs)
-            self.update_task_review_dashboard(outputs)
-            self.update_longitudinal_dashboard(outputs)
-            self.update_screening_dashboard(outputs)
-            self.update_reliability_dashboard(outputs)
-            self.update_recommendations_dashboard(outputs)
-            self.update_export_dashboard(outputs)
-            self.log(f"Analysis complete. Outputs written to: {self.output_dir}")
+            if full_analysis_ok:
+                self.write_report(reports_dir / "vslp_feature_analysis_report.html", outputs)
+                self.populate_output_tables(outputs)
+                self._safe_refresh_analysis_dashboards(outputs)
+                self.log(f"Analysis complete. Outputs written to: {self.output_dir}")
+            else:
+                self.update_overview_dashboard(outputs)
+                self.log(f"Overview-only analysis complete. Deep menu tables were skipped after a dimension mismatch; Overview outputs written to: {self.output_dir}")
             self.show_page("overview")
         except Exception as exc:
             self.log_error("Analysis failed", exc)
