@@ -88,7 +88,7 @@ from vslp.analysis.features.plots import (
     plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.98.0"
+APP_VERSION = "v0.99.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -1493,13 +1493,7 @@ class FeatureAnalysisGUI(QMainWindow):
         if hasattr(self, "filename_source_combo") and self.filename_source_combo.count() <= 1:
             self.refresh_filename_source_combo(self.feature_df)
 
-        selected_col = None
-        if hasattr(self, "filename_source_combo"):
-            candidate = self.filename_source_combo.currentText().strip()
-            if candidate and candidate != "Auto-detect" and candidate in self.feature_df.columns:
-                selected_col = candidate
-        if selected_col is None:
-            selected_col = self._file_source_column(self.feature_df)
+        selected_col = self._selected_filename_source_column(self.feature_df)
         if selected_col is None or selected_col not in self.feature_df.columns:
             msg = "No usable filename/source column is selected. Choose the feature-table column containing filenames or stems."
             if hasattr(self, "filename_fallback_status_label"):
@@ -1514,7 +1508,7 @@ class FeatureAnalysisGUI(QMainWindow):
             first_example = str(sample.iloc[0])
 
         base_df = self._standardize_feature_match_helpers(self.feature_df)
-        parsed_context = self._parse_filename_context_frame(base_df)
+        parsed_context = self._parse_filename_context_frame(base_df, source_col=selected_col)
         self.filename_context_parse_df = parsed_context
 
         out = base_df.copy()
@@ -2383,13 +2377,41 @@ class FeatureAnalysisGUI(QMainWindow):
             self.filename_source_combo.setCurrentIndex(1)
         self.filename_source_combo.blockSignals(False)
 
+    def _selected_filename_source_column(self, df: pd.DataFrame | None = None) -> str | None:
+        """Return the exact filename/source column selected by the user, if usable.
+
+        The filename fallback page must honor the dropdown selection. Earlier
+        versions could silently fall back to the auto-detected column during
+        Apply, which made the button appear to do nothing when Auto-detect
+        chose the wrong field.
+        """
+        source_df = df if df is not None else self.feature_df
+        if source_df is None or source_df.empty:
+            return None
+        if hasattr(self, "filename_source_combo") and self.filename_source_combo.count() <= 1:
+            self.refresh_filename_source_combo(source_df)
+        if hasattr(self, "filename_source_combo"):
+            selected = self.filename_source_combo.currentText().strip()
+            if selected and selected != "Auto-detect" and selected in source_df.columns:
+                return selected
+        detected = self._file_source_column(source_df)
+        return detected if detected in source_df.columns else None
+
     def _filename_tokens_from_stem(self, stem_value: object) -> list[str]:
         raw = str(stem_value).strip()
         raw = re.split(r"[\\/]", raw)[-1]
         # Strip one or more trailing file extensions so task tokens never retain file extensions.
         while re.search(r"\.[A-Za-z0-9]{1,8}$", raw):
             raw = re.sub(r"\.[A-Za-z0-9]{1,8}$", "", raw)
-        return [t for t in re.split(r"[_\-\s]+", raw) if t]
+        # Preserve token text exactly apart from surrounding punctuation. Task
+        # reconstruction joins inclusive token spans, so multi-word task names
+        # such as NSM_PUFF or DDK_PA_TA_KA remain complete.
+        cleaned = []
+        for tok in re.split(r"[_\-\s]+", raw):
+            tok = tok.strip().strip("'\".,;:()[]{}")
+            if tok:
+                cleaned.append(tok)
+        return cleaned
 
     def _filename_template_mapping(self) -> dict[str, int | None]:
         mapping: dict[str, int | None] = {}
@@ -2400,7 +2422,11 @@ class FeatureAnalysisGUI(QMainWindow):
                 mapping[role] = None
                 continue
             m = re.match(r"Token\s+(\d+)\b", val)
-            mapping[role] = int(m.group(1)) if m else None
+            if m:
+                mapping[role] = int(m.group(1))
+                continue
+            m_final = re.match(r"Final token:\s+(\d+)\b", val)
+            mapping[role] = int(m_final.group(1)) if m_final else None
         return mapping
 
     def _filename_template_is_active(self) -> bool:
@@ -2424,13 +2450,7 @@ class FeatureAnalysisGUI(QMainWindow):
         if hasattr(self, "filename_source_combo") and self.filename_source_combo.count() <= 1:
             self.refresh_filename_source_combo(source_df)
 
-        source_col = None
-        if hasattr(self, "filename_source_combo"):
-            selected = self.filename_source_combo.currentText().strip()
-            if selected and selected != "Auto-detect" and selected in source_df.columns:
-                source_col = selected
-        if source_col is None:
-            source_col = self._file_source_column(source_df)
+        source_col = self._selected_filename_source_column(source_df)
         if source_col is None or source_col not in source_df.columns:
             return None
 
@@ -2464,6 +2484,8 @@ class FeatureAnalysisGUI(QMainWindow):
             combo.addItem("Auto")
             for i, tok in enumerate(tokens):
                 combo.addItem(f"Token {i}: {tok}")
+            if role == "task_end" and tokens:
+                combo.addItem(f"Final token: {len(tokens) - 1}: {tokens[-1]}")
             ix = combo.findText(current)
             if ix >= 0:
                 combo.setCurrentIndex(ix)
@@ -2526,7 +2548,7 @@ class FeatureAnalysisGUI(QMainWindow):
             result["parsed_context_status"] = "parsed_by_user_template"
         return result
 
-    def _parse_filename_context_frame(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _parse_filename_context_frame(self, df: pd.DataFrame, source_col: str | None = None) -> pd.DataFrame:
         """Parse common VSLP filename context without requiring metadata.
 
         Expected robust pattern:
@@ -2536,12 +2558,13 @@ class FeatureAnalysisGUI(QMainWindow):
         """
         if df is None or df.empty:
             return pd.DataFrame(index=df.index if df is not None else None)
-        source = self._file_source_column(df)
+        source = source_col if source_col in df.columns else self._selected_filename_source_column(df)
         out = pd.DataFrame(index=df.index)
-        if source is None:
+        if source is None or source not in df.columns:
+            out["parsed_context_status"] = "no_filename_column"
             return out
         base = self._basename_series(df[source])
-        stem = base.str.replace(r"\.[a-z0-9]+$", "", regex=True)
+        stem = base.apply(lambda x: "_".join(self._filename_tokens_from_stem(x)))
         out["parsed_file_stem"] = stem
 
         use_template = self._filename_template_is_active()
@@ -2549,7 +2572,7 @@ class FeatureAnalysisGUI(QMainWindow):
         def parse_one(s: str) -> dict[str, object]:
             if use_template:
                 return self._parse_filename_context_by_template(s)
-            tokens = [t for t in re.split(r"[_\\-\\s]+", str(s)) if t]
+            tokens = self._filename_tokens_from_stem(s)
             result: dict[str, object] = {
                 "parsed_subject_id": pd.NA,
                 "parsed_protocol_id": pd.NA,
