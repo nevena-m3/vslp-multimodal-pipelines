@@ -3,7 +3,7 @@ from pathlib import Path
 
 def test_feature_gui_v083_filename_tokens_strip_extensions():
     text = Path("src/vslp/gui/features/app.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "v0.84.0"' in text
+    assert 'APP_VERSION = "v0.85.0"' in text
     assert 'Strip one or more trailing file extensions' in text
     assert 'PUFF.wav' not in text[text.index('def _filename_tokens_from_stem'):text.index('def _filename_template_mapping')]
     assert 'while re.search(r"\\.[A-Za-z0-9]{1,8}$", raw)' in text
