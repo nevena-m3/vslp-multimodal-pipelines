@@ -65,7 +65,7 @@ from vslp.analysis.features.plots import (
     plot_feature_quality_landscape, plot_feature_family_quality, plot_subject_task_matrix,
     plot_qc_family_burden, plot_qc_metric_distributions, plot_qc_feature_association_heatmap,
     plot_qc_top_feature_associations, plot_qc_missingness_associations,
-    plot_qc_row_burden, plot_selected_feature_qc_scatter, plot_qc_artifact_model, plot_qc_framework_selection,
+    plot_qc_row_burden, plot_selected_feature_qc_scatter, plot_qc_artifact_model,
     plot_relationship_correlation_heatmap, plot_relationship_redundant_pairs,
     plot_relationship_family_matrix, plot_relationship_pca_scree,
     plot_relationship_pca_scores, plot_relationship_pca_loadings,
@@ -85,7 +85,7 @@ from vslp.analysis.features.plots import (
     plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.75.0"
+APP_VERSION = "v0.76.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -2717,13 +2717,13 @@ class FeatureAnalysisGUI(QMainWindow):
         self.qc_task_combo = QComboBox()
         self.qc_task_combo.setMinimumWidth(280)
         self.qc_task_combo.addItem("All tasks / not available")
-        self.qc_task_combo.currentIndexChanged.connect(lambda _=0: self.preview_qc_plot(self.qc_plot_combo.currentData() if hasattr(self, "qc_plot_combo") else "qc_artifact_model"))
+        self.qc_task_combo.currentIndexChanged.connect(lambda _=0: (self._refresh_qc_selector_combos(), self.preview_qc_plot(self.qc_plot_combo.currentData() if hasattr(self, "qc_plot_combo") else "qc_artifact_model")))
         scope_row.addWidget(self.qc_task_combo, 1)
         scope_row.addWidget(QLabel("QC framework:"))
         self.qc_framework_combo = QComboBox()
         self.qc_framework_combo.setMinimumWidth(240)
         self.qc_framework_combo.addItems(["Auto / all QC", "Acoustic QC", "Kinematic QC"])
-        self.qc_framework_combo.currentIndexChanged.connect(lambda _=0: self.preview_qc_plot(self.qc_plot_combo.currentData() if hasattr(self, "qc_plot_combo") else "qc_artifact_model"))
+        self.qc_framework_combo.currentIndexChanged.connect(lambda _=0: (self._refresh_qc_selector_combos(), self.preview_qc_plot(self.qc_plot_combo.currentData() if hasattr(self, "qc_plot_combo") else "qc_artifact_model")))
         scope_row.addWidget(self.qc_framework_combo, 1)
         plot_panel_layout.addLayout(scope_row)
 
@@ -2732,10 +2732,12 @@ class FeatureAnalysisGUI(QMainWindow):
         selectors.addWidget(QLabel("Feature:"))
         self.qc_feature_combo = QComboBox()
         self.qc_feature_combo.setMinimumWidth(320)
+        self.qc_feature_combo.currentIndexChanged.connect(lambda _=0: self.preview_qc_plot("selected_feature_qc_scatter") if hasattr(self, "qc_plot_combo") and self.qc_plot_combo.currentData() == "selected_feature_qc_scatter" else None)
         selectors.addWidget(self.qc_feature_combo, 1)
         selectors.addWidget(QLabel("QC metric:"))
         self.qc_metric_combo = QComboBox()
         self.qc_metric_combo.setMinimumWidth(220)
+        self.qc_metric_combo.currentIndexChanged.connect(lambda _=0: self.preview_qc_plot("selected_feature_qc_scatter") if hasattr(self, "qc_plot_combo") and self.qc_plot_combo.currentData() == "selected_feature_qc_scatter" else None)
         selectors.addWidget(self.qc_metric_combo)
         plot_panel_layout.addLayout(selectors)
 
@@ -2926,6 +2928,36 @@ class FeatureAnalysisGUI(QMainWindow):
             self.qc_framework_combo.setCurrentIndex(ix)
         self.qc_framework_combo.blockSignals(False)
 
+
+    def _refresh_qc_selector_combos(self) -> None:
+        """Populate Feature and QC metric selectors from current local QC scope."""
+        if not hasattr(self, "qc_feature_combo") or not hasattr(self, "qc_metric_combo"):
+            return
+        feature_df, qc_df, _scope_label = self._qc_scope_tables()
+        feature_cols = self._qc_feature_cols(feature_df)
+        current_feature = self.qc_feature_combo.currentText()
+        current_metric = self.qc_metric_combo.currentText()
+
+        self.qc_feature_combo.blockSignals(True)
+        self.qc_feature_combo.clear()
+        for c in feature_cols:
+            self.qc_feature_combo.addItem(str(c))
+        ix = self.qc_feature_combo.findText(current_feature)
+        if ix >= 0:
+            self.qc_feature_combo.setCurrentIndex(ix)
+        self.qc_feature_combo.blockSignals(False)
+
+        catalog = qc_metric_catalog(qc_df)
+        self.qc_metric_combo.blockSignals(True)
+        self.qc_metric_combo.clear()
+        if catalog is not None and not catalog.empty and "qc_variable" in catalog.columns:
+            for q in catalog["qc_variable"].astype(str).tolist():
+                self.qc_metric_combo.addItem(q)
+        ix = self.qc_metric_combo.findText(current_metric)
+        if ix >= 0:
+            self.qc_metric_combo.setCurrentIndex(ix)
+        self.qc_metric_combo.blockSignals(False)
+
     def generate_qc_scope_plots(self) -> None:
         feature_df, qc_df, scope_label = self._qc_scope_tables()
         self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
@@ -2940,7 +2972,7 @@ class FeatureAnalysisGUI(QMainWindow):
         missing_assoc = qc_missingness_associations(feature_df, qc_df, feature_cols)
         row_burden = qc_row_burden_summary(qc_df)
 
-        self.plot_paths["qc_artifact_model"] = str(plot_qc_framework_selection(self._qc_framework_table(qc_df), self._qc_framework_mode(), plots_dir / f"qc_framework_{safe_scope}.png"))
+        self.plot_paths["qc_artifact_model"] = str(plot_qc_artifact_model(plots_dir / f"qc_artifact_model_{safe_scope}.png", self._qc_framework_mode()))
         self.plot_paths["qc_family_burden"] = str(plot_qc_family_burden(family, plots_dir / f"qc_family_burden_{safe_scope}.png"))
         self.plot_paths["qc_metric_distributions"] = str(plot_qc_metric_distributions(qc_df, catalog, plots_dir / f"qc_metric_distributions_{safe_scope}.png", max_metrics=18))
         self.plot_paths["qc_feature_association_heatmap"] = str(plot_qc_feature_association_heatmap(family_assoc, plots_dir / f"qc_feature_association_heatmap_{safe_scope}.png", top_features=80))
@@ -2997,15 +3029,7 @@ class FeatureAnalysisGUI(QMainWindow):
             _f_scope, _q_scope, _scope_label = self._qc_scope_tables()
             self._fill_table(self.qc_framework_table, self._qc_framework_table(_q_scope))
 
-        self.qc_feature_combo.clear()
-        dist = outputs.get("feature_distribution_summary", pd.DataFrame())
-        if dist is not None and not dist.empty and "feature" in dist.columns:
-            self.qc_feature_combo.addItems(dist["feature"].astype(str).tolist())
-        self.qc_metric_combo.clear()
-        _f_scope, _q_scope, _scope_label = self._qc_scope_tables()
-        catalog = qc_metric_catalog(_q_scope)
-        if catalog is not None and not catalog.empty and "qc_variable" in catalog.columns:
-            self.qc_metric_combo.addItems(catalog["qc_variable"].astype(str).tolist())
+        self._refresh_qc_selector_combos()
         if self.qc_df is None or self.qc_df.empty:
             self.qc_note.setText("No QC table is loaded. This menu will become active when Project includes an optional QC table with qadd/qgain/qrev/qchan/qdist/qtemp/qdrop metrics or equivalent QC indicators.")
         else:
@@ -3013,12 +3037,14 @@ class FeatureAnalysisGUI(QMainWindow):
 
     def _selected_qc_feature(self) -> str | None:
         if hasattr(self, "qc_feature_combo") and self.qc_feature_combo.count() > 0:
-            return self.qc_feature_combo.currentText()
+            val = self.qc_feature_combo.currentText().strip()
+            return val or None
         return None
 
     def _selected_qc_metric(self) -> str | None:
         if hasattr(self, "qc_metric_combo") and self.qc_metric_combo.count() > 0:
-            return self.qc_metric_combo.currentText()
+            val = self.qc_metric_combo.currentText().strip()
+            return val or None
         return None
 
     def generate_selected_qc_scatter(self) -> None:
@@ -3034,8 +3060,8 @@ class FeatureAnalysisGUI(QMainWindow):
             if not hasattr(self, "plot_paths"):
                 self.plot_paths = {}
             self.plot_paths["selected_feature_qc_scatter"] = str(path)
-        except Exception:
-            pass
+        except Exception as exc:
+            QMessageBox.warning(self, "Selected QC scatter failed", str(exc))
 
     def preview_qc_plot(self, key: str, regenerate: bool = True) -> None:
         if key == "selected_feature_qc_scatter":
