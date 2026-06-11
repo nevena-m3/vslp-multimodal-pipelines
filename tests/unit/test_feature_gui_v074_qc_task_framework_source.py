@@ -3,7 +3,7 @@ from pathlib import Path
 
 def test_feature_gui_v074_qc_has_local_task_and_framework_controls():
     text = Path("src/vslp/gui/features/app.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "v0.77.0"' in text
+    assert 'APP_VERSION = "v0.84.0"' in text
     assert 'self.qc_task_combo' in text
     assert 'self.qc_framework_combo' in text
     assert 'Auto / all QC' in text
