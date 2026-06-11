@@ -81,7 +81,7 @@ from vslp.analysis.features.plots import (
     plot_ml_export_manifest_summary
 )
 
-APP_VERSION = "v0.67.0"
+APP_VERSION = "v0.68.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -437,6 +437,8 @@ class Sidebar(QFrame):
             ("dist", "o  Distributions"),
             ("qc", "o  QC Integration"),
             ("relationships", "o  Feature Relationships"),
+            ("task_review", "o  Task Review"),
+            ("longitudinal", "o  Longitudinal / Iterations"),
             ("screening", "o  Group / Outcome Screening"),
             ("reliability", "o  Reliability"),
             ("recommendations", "o  Recommendations"),
@@ -534,7 +536,7 @@ class FeatureAnalysisGUI(QMainWindow):
         self.mapping_accepted = False
         self.outputs: dict[str, pd.DataFrame] = {}
         self.output_dir: Optional[Path] = None
-        self.page_keys = ["project", "mapping", "overview", "missing", "dist", "qc", "relationships", "screening", "reliability", "recommendations", "ml_export", "export"]
+        self.page_keys = ["project", "mapping", "overview", "missing", "dist", "qc", "relationships", "task_review", "longitudinal", "screening", "reliability", "recommendations", "ml_export", "export"]
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -572,6 +574,8 @@ class FeatureAnalysisGUI(QMainWindow):
             "dist": self._distributions_page(),
             "qc": self._qc_page(),
             "relationships": self._relationships_page(),
+            "task_review": self._task_review_page(),
+            "longitudinal": self._longitudinal_page(),
             "screening": self._screening_page(),
             "reliability": self._reliability_page(),
             "recommendations": self._recommendations_page(),
@@ -1435,6 +1439,8 @@ class FeatureAnalysisGUI(QMainWindow):
             self.update_distribution_dashboard(outputs)
             self.update_qc_dashboard(outputs)
             self.update_relationships_dashboard(outputs)
+            self.update_task_review_dashboard(outputs)
+            self.update_longitudinal_dashboard(outputs)
             self.update_screening_dashboard(outputs)
             self.update_reliability_dashboard(outputs)
             self.update_recommendations_dashboard(outputs)
@@ -2486,27 +2492,127 @@ class FeatureAnalysisGUI(QMainWindow):
         layout = QVBoxLayout(body)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(16)
+
         card = Card(
             "Feature Relationships",
             "Correlation, redundancy, family structure, and exploratory PCA. This screen asks whether features form interpretable subsystems or redundant blocks before any ML work."
         )
-        self.relationship_metric_grid = QGridLayout()
-        card.layout.addLayout(self.relationship_metric_grid)
 
-        controls = QHBoxLayout()
-        self.relationship_feature_combo = QComboBox()
-        self.relationship_feature_combo.setMinimumWidth(360)
-        self.relationship_feature_combo.currentIndexChanged.connect(lambda _=0: self.preview_relationship_plot("selected_feature_correlations"))
-        controls.addWidget(QLabel("Selected feature:"))
-        controls.addWidget(self.relationship_feature_combo)
-        controls.addStretch(1)
+        self.relationship_note = QLabel("Run Feature Analysis to populate relationship plots and tables. Use this menu for feature-feature structure only; outcome screening, task review, and QC sensitivity are handled separately.")
+        self.relationship_note.setWordWrap(True)
+        self.relationship_note.setStyleSheet(f"color:{MUTED}; background:#F7FAFD; border:1px solid {LINE}; border-radius:8px; padding:10px;")
+        card.layout.addWidget(self.relationship_note)
+
+        rel_split = QHBoxLayout()
+        rel_split.setSpacing(14)
+
+        plot_panel = QFrame()
+        plot_panel.setStyleSheet(f"QFrame {{ background:#F8FBFE; border:1px solid {LINE}; border-radius:12px; }}")
+        plot_panel_layout = QVBoxLayout(plot_panel)
+        plot_panel_layout.setContentsMargins(14, 14, 14, 14)
+        plot_panel_layout.setSpacing(10)
+
+        plot_header = QHBoxLayout()
+        plot_header.setSpacing(10)
+        plot_title = QLabel("Relationship plot")
+        plot_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
+        plot_header.addWidget(plot_title)
+
+        self.relationship_plot_combo = QComboBox()
+        self.relationship_plot_combo.setMinimumWidth(360)
+        self.relationship_plot_combo.addItem("Correlation heatmap", "relationship_correlation_heatmap")
+        self.relationship_plot_combo.addItem("Top redundant pairs", "relationship_redundant_pairs")
+        self.relationship_plot_combo.addItem("Family/block matrix", "relationship_family_matrix")
+        self.relationship_plot_combo.addItem("PCA scree", "relationship_pca_scree")
+        self.relationship_plot_combo.addItem("PCA recording map", "relationship_pca_scores")
+        self.relationship_plot_combo.addItem("PCA top loadings", "relationship_pca_loadings")
+        self.relationship_plot_combo.addItem("Selected feature links", "selected_feature_correlations")
+        plot_header.addWidget(self.relationship_plot_combo, 1)
+
+        show_btn = QPushButton("Show")
+        show_btn.setProperty("secondary", True)
+        show_btn.clicked.connect(lambda: self.preview_relationship_plot(self.relationship_plot_combo.currentData()))
+        plot_header.addWidget(show_btn)
+
+        regen = QPushButton("Regenerate")
+        regen.clicked.connect(self.regenerate_overview_plots)
+        plot_header.addWidget(regen)
+
+        plot_header.addStretch(1)
         open_btn = QPushButton("Open current plot")
         open_btn.setProperty("secondary", True)
         open_btn.clicked.connect(self.open_current_relationship_plot)
-        controls.addWidget(open_btn)
-        card.layout.addLayout(controls)
+        plot_header.addWidget(open_btn)
+        plot_panel_layout.addLayout(plot_header)
+
+        self.relationship_plot_caption = QLabel(
+            "Feature Relationships uses only feature-feature structure plots: correlation heatmap, redundant pairs, family/block structure, PCA summaries, and one selected-feature link plot. It does not duplicate Task Review, Outcome Screening, QC Integration, Missingness, or ML Export."
+        )
+        self.relationship_plot_caption.setWordWrap(True)
+        self.relationship_plot_caption.setStyleSheet(f"color:{MUTED}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:9px;")
+        plot_panel_layout.addWidget(self.relationship_plot_caption)
+
+        selectors = QHBoxLayout()
+        selectors.setSpacing(10)
+        selectors.addWidget(QLabel("Selected feature:"))
+        self.relationship_feature_combo = QComboBox()
+        self.relationship_feature_combo.setMinimumWidth(320)
+        self.relationship_feature_combo.currentIndexChanged.connect(lambda _=0: self.preview_relationship_plot("selected_feature_correlations"))
+        selectors.addWidget(self.relationship_feature_combo, 1)
+        selectors.addWidget(QLabel("Task focus:"))
+        self.relationship_task_combo = QComboBox()
+        self.relationship_task_combo.setMinimumWidth(220)
+        self.relationship_task_combo.addItem("All tasks / not available")
+        selectors.addWidget(self.relationship_task_combo)
+        plot_panel_layout.addLayout(selectors)
+
+        self.relationship_plot_preview = QLabel("Run Feature Analysis, then choose one relationship plot.")
+        self.relationship_plot_preview.setAlignment(Qt.AlignCenter)
+        self.relationship_plot_preview.setMinimumHeight(520)
+        self.relationship_plot_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.relationship_plot_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
+        plot_panel_layout.addWidget(self.relationship_plot_preview, 1)
+
+        self.relationship_interpretation_label = QLabel("Select a plot to see structured interpretation guidance.")
+        self.relationship_interpretation_label.setWordWrap(True)
+        self.relationship_interpretation_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.relationship_interpretation_label.setStyleSheet(f"QLabel {{ background:#FFFFFF; color:{INK}; border:1px solid {LINE}; border-radius:10px; padding:12px; font-size:12px; line-height:140%; }}")
+        plot_panel_layout.addWidget(self.relationship_interpretation_label)
+
+        rel_split.addWidget(plot_panel, 1)
+
+        side_panel = QFrame()
+        side_panel.setStyleSheet(f"QFrame {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:12px; }}")
+        side_layout = QVBoxLayout(side_panel)
+        side_layout.setContentsMargins(12, 12, 12, 12)
+        side_layout.setSpacing(10)
+        side_title = QLabel("Relationship snapshot")
+        side_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
+        side_layout.addWidget(side_title)
+        side_note = QLabel("Compact redundancy and PCA metrics. Use these as navigation cues; detailed correlation, module, family-matrix, PCA, and loading tables remain below the plot.")
+        side_note.setWordWrap(True)
+        side_note.setStyleSheet(f"color:{MUTED}; border:none; background:transparent; font-size:12px;")
+        side_layout.addWidget(side_note)
+        self.relationship_metric_grid = QGridLayout()
+        self.relationship_metric_grid.setHorizontalSpacing(8)
+        self.relationship_metric_grid.setVerticalSpacing(8)
+        side_layout.addLayout(self.relationship_metric_grid)
+        side_layout.addStretch(1)
+        side_panel.setFixedWidth(300)
+        rel_split.addWidget(side_panel)
+        card.layout.addLayout(rel_split)
+
+        tables_header = QLabel("Detailed relationship tables")
+        tables_header.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; padding-top:8px;")
+        card.layout.addWidget(tables_header)
 
         tabs = QTabWidget()
+        tabs.setStyleSheet(f"""
+            QTabWidget::pane {{ border: 1px solid {LINE}; border-radius: 8px; background: #FFFFFF; }}
+            QTabBar::tab {{ background:#F7FAFD; color:{NAVY}; border:1px solid {LINE}; border-bottom:none; padding:8px 14px; min-height:22px; }}
+            QTabBar::tab:selected {{ background:#FFFFFF; color:{NAVY}; border-top:2px solid {TEAL}; font-weight:700; }}
+            QTabBar::tab:hover {{ background:#F3FAF9; color:{NAVY}; }}
+        """)
         self.relationship_summary_table = self._simple_table()
         self.relationship_redundant_table = self._simple_table()
         self.relationship_modules_table = self._simple_table()
@@ -2522,31 +2628,8 @@ class FeatureAnalysisGUI(QMainWindow):
             ("PCA loadings", self.relationship_loadings_table),
         ]:
             tabs.addTab(tbl, title)
-        card.layout.addWidget(tabs, 1)
+        card.layout.addWidget(tabs)
 
-        plot_card = Card("Relationship plots", "Each plot includes interpretation guidance. Use these to distinguish useful feature blocks from avoidable redundancy.")
-        self._add_standard_plot_gallery(
-            plot_card.layout,
-            "Relationship plot",
-            "Feature Relationships keeps redundancy, family/block structure, PCA summaries, and one selected-feature link plot. Outcome screening and QC sensitivity are handled in separate menus.",
-            "relationship_plot_combo",
-            [
-                ("Correlation heatmap", "relationship_correlation_heatmap"),
-                ("Top redundant pairs", "relationship_redundant_pairs"),
-                ("Family/block matrix", "relationship_family_matrix"),
-                ("PCA scree", "relationship_pca_scree"),
-                ("PCA recording map", "relationship_pca_scores"),
-                ("PCA top loadings", "relationship_pca_loadings"),
-                ("Selected feature links", "selected_feature_correlations"),
-            ],
-            "relationship_plot_preview",
-            "relationship_interpretation_label",
-            self.preview_relationship_plot,
-            self.open_current_relationship_plot,
-            "Run Feature Analysis, then choose one relationship plot.",
-            520,
-        )
-        layout.addWidget(plot_card, 1)
         layout.addWidget(card)
         return self._wrap_scroll(body)
 
@@ -2572,7 +2655,7 @@ class FeatureAnalysisGUI(QMainWindow):
             ("PC1-PC3", metric("pc1_pc3_cumulative_percent"), "cumulative variance"),
         ]
         for idx, (title, value, subtitle) in enumerate(tiles):
-            self.relationship_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx // 3, idx % 3)
+            self.relationship_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx, 0)
         self._fill_table(self.relationship_summary_table, summary)
         self._fill_table(self.relationship_redundant_table, outputs.get("feature_redundant_pairs", pd.DataFrame()))
         self._fill_table(self.relationship_modules_table, outputs.get("feature_relationship_modules", pd.DataFrame()))
@@ -2687,6 +2770,486 @@ class FeatureAnalysisGUI(QMainWindow):
             QMessageBox.information(self, "No current plot", "Preview a relationship plot first, then open the full-resolution file.")
             return
         self.open_file(Path(path))
+
+
+    def _task_review_page(self) -> QWidget:
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
+
+        card = Card(
+            "Task Review",
+            "Task-aware dataset inspection. This menu summarizes task availability, task x subject coverage, task x diagnosis/severity context, and task-specific feature support when task metadata is available."
+        )
+
+        self.task_note = QLabel("Run Feature Analysis with task metadata available. If no task column can be detected or merged, this menu will report that task analysis is not available.")
+        self.task_note.setWordWrap(True)
+        self.task_note.setStyleSheet(f"color:{MUTED}; background:#F7FAFD; border:1px solid {LINE}; border-radius:8px; padding:10px;")
+        card.layout.addWidget(self.task_note)
+
+        task_split = QHBoxLayout()
+        task_split.setSpacing(14)
+
+        plot_panel = QFrame()
+        plot_panel.setStyleSheet(f"QFrame {{ background:#F8FBFE; border:1px solid {LINE}; border-radius:12px; }}")
+        plot_panel_layout = QVBoxLayout(plot_panel)
+        plot_panel_layout.setContentsMargins(14, 14, 14, 14)
+        plot_panel_layout.setSpacing(10)
+
+        plot_header = QHBoxLayout()
+        plot_header.setSpacing(10)
+        plot_title = QLabel("Task review")
+        plot_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
+        plot_header.addWidget(plot_title)
+        self.task_review_combo = QComboBox()
+        self.task_review_combo.setMinimumWidth(360)
+        self.task_review_combo.addItems(["Task coverage", "Task x subject coverage", "Task x diagnosis/severity", "Task feature support"])
+        plot_header.addWidget(self.task_review_combo, 1)
+        show_btn = QPushButton("Show")
+        show_btn.setProperty("secondary", True)
+        show_btn.clicked.connect(self.update_task_review_preview)
+        plot_header.addWidget(show_btn)
+        regen = QPushButton("Regenerate")
+        regen.clicked.connect(lambda: self.update_task_review_dashboard(getattr(self, "outputs", {})))
+        plot_header.addWidget(regen)
+        plot_header.addStretch(1)
+        plot_panel_layout.addLayout(plot_header)
+
+        self.task_review_caption = QLabel("Task Review is the dedicated place for task axes and task selection. Downstream menus can use task focus controls, but detailed task interpretation belongs here.")
+        self.task_review_caption.setWordWrap(True)
+        self.task_review_caption.setStyleSheet(f"color:{MUTED}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:9px;")
+        plot_panel_layout.addWidget(self.task_review_caption)
+
+        selectors = QHBoxLayout()
+        selectors.addWidget(QLabel("Task focus:"))
+        self.task_focus_combo = QComboBox()
+        self.task_focus_combo.setMinimumWidth(320)
+        self.task_focus_combo.addItem("All tasks / not available")
+        self.task_focus_combo.currentIndexChanged.connect(lambda _=0: self.update_task_review_preview())
+        selectors.addWidget(self.task_focus_combo, 1)
+        selectors.addStretch(1)
+        plot_panel_layout.addLayout(selectors)
+
+        self.task_review_preview = QLabel("Run Feature Analysis to inspect task coverage.")
+        self.task_review_preview.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.task_review_preview.setMinimumHeight(520)
+        self.task_review_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.task_review_preview.setWordWrap(True)
+        self.task_review_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{INK}; padding:18px; font-size:13px; line-height:145%; }}")
+        plot_panel_layout.addWidget(self.task_review_preview, 1)
+        task_split.addWidget(plot_panel, 1)
+
+        side_panel = QFrame()
+        side_panel.setStyleSheet(f"QFrame {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:12px; }}")
+        side_layout = QVBoxLayout(side_panel)
+        side_layout.setContentsMargins(12, 12, 12, 12)
+        side_layout.setSpacing(10)
+        side_title = QLabel("Task snapshot")
+        side_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
+        side_layout.addWidget(side_title)
+        side_note = QLabel("Compact task-context metrics. If task metadata is unavailable, this panel reports that explicitly.")
+        side_note.setWordWrap(True)
+        side_note.setStyleSheet(f"color:{MUTED}; border:none; background:transparent; font-size:12px;")
+        side_layout.addWidget(side_note)
+        self.task_metric_grid = QGridLayout()
+        self.task_metric_grid.setHorizontalSpacing(8)
+        self.task_metric_grid.setVerticalSpacing(8)
+        side_layout.addLayout(self.task_metric_grid)
+        side_layout.addStretch(1)
+        side_panel.setFixedWidth(300)
+        task_split.addWidget(side_panel)
+        card.layout.addLayout(task_split)
+
+        tables_header = QLabel("Detailed task tables")
+        tables_header.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; padding-top:8px;")
+        card.layout.addWidget(tables_header)
+
+        tabs = QTabWidget()
+        self.task_summary_table = self._simple_table()
+        self.task_subject_table = self._simple_table()
+        self.task_diagnosis_table = self._simple_table()
+        self.task_feature_support_table = self._simple_table()
+        tabs.addTab(self.task_summary_table, "Task summary")
+        tabs.addTab(self.task_subject_table, "Task x subject")
+        tabs.addTab(self.task_diagnosis_table, "Task x diagnosis")
+        tabs.addTab(self.task_feature_support_table, "Task feature support")
+        card.layout.addWidget(tabs)
+
+        layout.addWidget(card)
+        return self._wrap_scroll(body)
+
+    def _longitudinal_page(self) -> QWidget:
+        body = QWidget()
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(16)
+
+        card = Card(
+            "Longitudinal / Iterations",
+            "Repeated-measure and visit-context inspection. This menu checks whether subjects have multiple sessions, visits, iterations, or recording dates that can support longitudinal or within-subject comparisons."
+        )
+
+        self.longitudinal_note = QLabel("Run Feature Analysis. If subject, session/visit, iteration, or date fields are unavailable, this menu reports what is missing instead of guessing.")
+        self.longitudinal_note.setWordWrap(True)
+        self.longitudinal_note.setStyleSheet(f"color:{MUTED}; background:#F7FAFD; border:1px solid {LINE}; border-radius:8px; padding:10px;")
+        card.layout.addWidget(self.longitudinal_note)
+
+        long_split = QHBoxLayout()
+        long_split.setSpacing(14)
+
+        plot_panel = QFrame()
+        plot_panel.setStyleSheet(f"QFrame {{ background:#F8FBFE; border:1px solid {LINE}; border-radius:12px; }}")
+        plot_panel_layout = QVBoxLayout(plot_panel)
+        plot_panel_layout.setContentsMargins(14, 14, 14, 14)
+        plot_panel_layout.setSpacing(10)
+
+        plot_header = QHBoxLayout()
+        plot_title = QLabel("Longitudinal review")
+        plot_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
+        plot_header.addWidget(plot_title)
+        self.longitudinal_view_combo = QComboBox()
+        self.longitudinal_view_combo.setMinimumWidth(360)
+        self.longitudinal_view_combo.addItems(["Subject repeats", "Session / visit structure", "Iteration coverage", "Visit-date coverage"])
+        plot_header.addWidget(self.longitudinal_view_combo, 1)
+        show_btn = QPushButton("Show")
+        show_btn.setProperty("secondary", True)
+        show_btn.clicked.connect(self.update_longitudinal_preview)
+        plot_header.addWidget(show_btn)
+        regen = QPushButton("Regenerate")
+        regen.clicked.connect(lambda: self.update_longitudinal_dashboard(getattr(self, "outputs", {})))
+        plot_header.addWidget(regen)
+        plot_header.addStretch(1)
+        plot_panel_layout.addLayout(plot_header)
+
+        self.longitudinal_caption = QLabel("This menu separates repeated iterations, visits/sessions, and dates from generic reliability. It is a readiness screen for future longitudinal models, not a model fitting page.")
+        self.longitudinal_caption.setWordWrap(True)
+        self.longitudinal_caption.setStyleSheet(f"color:{MUTED}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:9px;")
+        plot_panel_layout.addWidget(self.longitudinal_caption)
+
+        selectors = QHBoxLayout()
+        selectors.addWidget(QLabel("Subject focus:"))
+        self.subject_focus_combo = QComboBox()
+        self.subject_focus_combo.setMinimumWidth(320)
+        self.subject_focus_combo.addItem("All subjects / not available")
+        self.subject_focus_combo.currentIndexChanged.connect(lambda _=0: self.update_longitudinal_preview())
+        selectors.addWidget(self.subject_focus_combo, 1)
+        selectors.addStretch(1)
+        plot_panel_layout.addLayout(selectors)
+
+        self.longitudinal_preview = QLabel("Run Feature Analysis to inspect repeated-subject, iteration, and visit-date structure.")
+        self.longitudinal_preview.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.longitudinal_preview.setMinimumHeight(520)
+        self.longitudinal_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.longitudinal_preview.setWordWrap(True)
+        self.longitudinal_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{INK}; padding:18px; font-size:13px; line-height:145%; }}")
+        plot_panel_layout.addWidget(self.longitudinal_preview, 1)
+        long_split.addWidget(plot_panel, 1)
+
+        side_panel = QFrame()
+        side_panel.setStyleSheet(f"QFrame {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:12px; }}")
+        side_layout = QVBoxLayout(side_panel)
+        side_layout.setContentsMargins(12, 12, 12, 12)
+        side_layout.setSpacing(10)
+        side_title = QLabel("Longitudinal snapshot")
+        side_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
+        side_layout.addWidget(side_title)
+        side_note = QLabel("Compact repeated-measure metrics. If dates, visits, sessions, or iterations are unavailable, this panel reports that explicitly.")
+        side_note.setWordWrap(True)
+        side_note.setStyleSheet(f"color:{MUTED}; border:none; background:transparent; font-size:12px;")
+        side_layout.addWidget(side_note)
+        self.longitudinal_metric_grid = QGridLayout()
+        self.longitudinal_metric_grid.setHorizontalSpacing(8)
+        self.longitudinal_metric_grid.setVerticalSpacing(8)
+        side_layout.addLayout(self.longitudinal_metric_grid)
+        side_layout.addStretch(1)
+        side_panel.setFixedWidth(300)
+        long_split.addWidget(side_panel)
+        card.layout.addLayout(long_split)
+
+        tables_header = QLabel("Detailed longitudinal / iteration tables")
+        tables_header.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; padding-top:8px;")
+        card.layout.addWidget(tables_header)
+
+        tabs = QTabWidget()
+        self.long_subject_table = self._simple_table()
+        self.long_session_table = self._simple_table()
+        self.long_iteration_table = self._simple_table()
+        self.long_date_table = self._simple_table()
+        tabs.addTab(self.long_subject_table, "Subject repeats")
+        tabs.addTab(self.long_session_table, "Session / visit")
+        tabs.addTab(self.long_iteration_table, "Iterations")
+        tabs.addTab(self.long_date_table, "Dates")
+        card.layout.addWidget(tabs)
+
+        layout.addWidget(card)
+        return self._wrap_scroll(body)
+
+
+    def _active_analysis_table(self) -> pd.DataFrame:
+        if getattr(self, "analysis_df", None) is not None and not self.analysis_df.empty:
+            return self.analysis_df
+        if getattr(self, "feature_df", None) is not None:
+            return self.feature_df
+        return pd.DataFrame()
+
+    def _first_existing_col(self, df: pd.DataFrame, candidates: list[str]) -> str | None:
+        if df is None or df.empty:
+            return None
+        lookup = {str(c).lower(): str(c) for c in df.columns}
+        for c in candidates:
+            if c in df.columns:
+                return c
+            if c.lower() in lookup:
+                return lookup[c.lower()]
+        return None
+
+    def _task_col(self, df: pd.DataFrame) -> str | None:
+        return self._first_existing_col(df, ["task", "task_name", "metadata__task", "metadata__task_name"])
+
+    def _subject_col(self, df: pd.DataFrame) -> str | None:
+        return self._first_existing_col(df, ["subject_id", "SubjectID", "subject", "participant_id", "metadata__subject_id", "metadata__SubjectID"])
+
+    def _session_col(self, df: pd.DataFrame) -> str | None:
+        return self._first_existing_col(df, ["session_id", "visit_id", "Clinical Visit ID", "metadata__session_id", "metadata__visit_id", "metadata__Clinical Visit ID"])
+
+    def _iteration_col(self, df: pd.DataFrame) -> str | None:
+        return self._first_existing_col(df, ["iteration", "Iteration", "metadata__iteration", "metadata__Iteration"])
+
+    def _date_col(self, df: pd.DataFrame) -> str | None:
+        return self._first_existing_col(df, ["recording_date", "visit_date", "assessment_date", "Recording date", "metadata__recording_date", "metadata__Recording date"])
+
+    def _refresh_focus_combos(self) -> None:
+        df = self._active_analysis_table()
+        task_col = self._task_col(df)
+        task_values = []
+        if task_col:
+            task_values = sorted([str(x) for x in df[task_col].dropna().unique().tolist() if str(x).strip()])
+        for attr in ["task_focus_combo", "relationship_task_combo"]:
+            combo = getattr(self, attr, None)
+            if combo is None:
+                continue
+            current = combo.currentText()
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem("All tasks" if task_values else "All tasks / not available")
+            for v in task_values[:300]:
+                combo.addItem(v)
+            if current:
+                ix = combo.findText(current)
+                if ix >= 0:
+                    combo.setCurrentIndex(ix)
+            combo.blockSignals(False)
+
+        subj_col = self._subject_col(df)
+        subj_values = []
+        if subj_col:
+            subj_values = sorted([str(x) for x in df[subj_col].dropna().unique().tolist() if str(x).strip()])
+        combo = getattr(self, "subject_focus_combo", None)
+        if combo is not None:
+            current = combo.currentText()
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem("All subjects" if subj_values else "All subjects / not available")
+            for v in subj_values[:300]:
+                combo.addItem(v)
+            if current:
+                ix = combo.findText(current)
+                if ix >= 0:
+                    combo.setCurrentIndex(ix)
+            combo.blockSignals(False)
+
+    def update_task_review_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
+        if not hasattr(self, "task_metric_grid"):
+            return
+        while self.task_metric_grid.count():
+            item = self.task_metric_grid.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        df = self._active_analysis_table()
+        task_col = self._task_col(df)
+        subj_col = self._subject_col(df)
+        diag_col = self._first_existing_col(df, ["diagnosis", "metadata__diagnosis", "Diagnosis"])
+        sev_col = self._first_existing_col(df, ["severity_score", "ALSFRS total score", "metadata__severity_score", "metadata__ALSFRS total score"])
+        if df.empty or not task_col:
+            tiles = [
+                ("Task column", "not available", "load metadata or infer tasks"),
+                ("Tasks", 0, "detected task values"),
+                ("Subjects", 0, "with task context"),
+                ("Rows", len(df), "records / files"),
+            ]
+            for idx, (title, value, subtitle) in enumerate(tiles):
+                self.task_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx, 0)
+            empty = pd.DataFrame([{"status": "task metadata not available", "next_step": "load metadata with task labels or run filename/task inference"}])
+            self._fill_table(self.task_summary_table, empty)
+            self._fill_table(self.task_subject_table, pd.DataFrame())
+            self._fill_table(self.task_diagnosis_table, pd.DataFrame())
+            self._fill_table(self.task_feature_support_table, pd.DataFrame())
+            self.task_note.setText("Task metadata is not available. Load metadata with a task column, or use the planned task/session parser when metadata cannot be supplied.")
+            self.update_task_review_preview()
+            return
+
+        task_series = df[task_col].astype(str).replace({"nan": ""})
+        task_summary = (
+            df.assign(_task=task_series)
+              .loc[lambda x: x["_task"].str.len() > 0]
+              .groupby("_task", dropna=False)
+              .size()
+              .reset_index(name="n_rows")
+              .rename(columns={"_task": "task"})
+              .sort_values("n_rows", ascending=False)
+        )
+        if subj_col:
+            task_subject = pd.crosstab(df[subj_col].astype(str), task_series).reset_index().rename(columns={subj_col: "subject_id"})
+        else:
+            task_subject = pd.DataFrame([{"status": "subject_id not available; task x subject matrix cannot be built"}])
+        if diag_col:
+            task_diag = pd.crosstab(task_series, df[diag_col].astype(str)).reset_index().rename(columns={"row_0": "task"})
+        elif sev_col:
+            task_diag = df.assign(_task=task_series).groupby("_task")[sev_col].agg(["count", "mean", "median"]).reset_index().rename(columns={"_task": "task"})
+        else:
+            task_diag = pd.DataFrame([{"status": "diagnosis/severity not available for task context"}])
+
+        feature_cols = []
+        if getattr(self, "mapping_df", None) is not None and not self.mapping_df.empty:
+            feature_cols = self.mapping_df.loc[self.mapping_df["role"].astype(str).str.contains("Feature", case=False, na=False), "column"].astype(str).tolist()
+        feature_cols = [c for c in feature_cols if c in df.columns]
+        rows = []
+        for task, subdf in df.groupby(task_series):
+            if not str(task).strip():
+                continue
+            n_feats = len(feature_cols)
+            mean_missing = float(subdf[feature_cols].isna().mean().mean()) if feature_cols else float("nan")
+            rows.append({"task": task, "n_rows": len(subdf), "n_features": n_feats, "mean_feature_missingness": mean_missing})
+        task_feature_support = pd.DataFrame(rows).sort_values("n_rows", ascending=False) if rows else pd.DataFrame()
+
+        tiles = [
+            ("Tasks", int(task_summary["task"].nunique()), "detected task values"),
+            ("Rows", len(df), "records / files"),
+            ("Subjects", int(df[subj_col].nunique()) if subj_col else "-", "with task context"),
+            ("Largest task", task_summary.iloc[0]["n_rows"] if not task_summary.empty else "-", task_summary.iloc[0]["task"] if not task_summary.empty else "not available"),
+            ("Diagnosis", "yes" if diag_col else "no", "task x label context"),
+            ("Severity", "yes" if sev_col else "no", "task x score context"),
+        ]
+        for idx, (title, value, subtitle) in enumerate(tiles):
+            self.task_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx, 0)
+        self._fill_table(self.task_summary_table, task_summary)
+        self._fill_table(self.task_subject_table, task_subject)
+        self._fill_table(self.task_diagnosis_table, task_diag)
+        self._fill_table(self.task_feature_support_table, task_feature_support)
+        self.task_note.setText("Task review generated. Use this menu to decide whether downstream plots should be interpreted task-specifically or pooled across tasks.")
+        self._refresh_focus_combos()
+        self.update_task_review_preview()
+
+    def update_task_review_preview(self) -> None:
+        if not hasattr(self, "task_review_preview"):
+            return
+        df = self._active_analysis_table()
+        task_col = self._task_col(df)
+        selected = self.task_focus_combo.currentText() if hasattr(self, "task_focus_combo") else "All tasks"
+        if df.empty or not task_col:
+            self.task_review_preview.setText("<b>Task metadata not available.</b><br><br>Load metadata containing task labels, or use a future filename/task parser for datasets where task is encoded in the file name.")
+            return
+        subset = df
+        if selected and selected not in ["All tasks", "All tasks / not available"]:
+            subset = df[df[task_col].astype(str).eq(selected)]
+        n_rows = len(subset)
+        subj_col = self._subject_col(subset)
+        n_subjects = subset[subj_col].nunique() if subj_col else "not available"
+        tasks = sorted([str(x) for x in df[task_col].dropna().unique().tolist()])[:30]
+        self.task_review_preview.setText(
+            f"<b>Task focus:</b> {selected}<br>"
+            f"<b>Rows in focus:</b> {n_rows}<br>"
+            f"<b>Subjects in focus:</b> {n_subjects}<br><br>"
+            f"<b>Detected tasks:</b><br>{'<br>'.join(tasks) if tasks else 'none'}<br><br>"
+            "Use the detailed tables below to inspect task balance, subject-task coverage, and whether labels/severity are available within tasks."
+        )
+
+    def update_longitudinal_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
+        if not hasattr(self, "longitudinal_metric_grid"):
+            return
+        while self.longitudinal_metric_grid.count():
+            item = self.longitudinal_metric_grid.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        df = self._active_analysis_table()
+        subj_col = self._subject_col(df)
+        session_col = self._session_col(df)
+        iter_col = self._iteration_col(df)
+        date_col = self._date_col(df)
+
+        if df.empty or not subj_col:
+            tiles = [
+                ("Subject ID", "not available", "required for repeats"),
+                ("Repeated subjects", 0, "cannot evaluate"),
+                ("Session / visit", "not available", "load or infer"),
+                ("Dates", "not available", "load or infer"),
+            ]
+            for idx, (title, value, subtitle) in enumerate(tiles):
+                self.longitudinal_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx, 0)
+            self._fill_table(self.long_subject_table, pd.DataFrame([{"status": "subject_id not available; longitudinal review cannot be built"}]))
+            self._fill_table(self.long_session_table, pd.DataFrame())
+            self._fill_table(self.long_iteration_table, pd.DataFrame())
+            self._fill_table(self.long_date_table, pd.DataFrame())
+            self.update_longitudinal_preview()
+            return
+
+        subj_counts = df.groupby(subj_col).size().reset_index(name="n_records").sort_values("n_records", ascending=False)
+        repeated = int((subj_counts["n_records"] > 1).sum())
+        if session_col:
+            session_table = df.groupby([subj_col, session_col]).size().reset_index(name="n_records").sort_values([subj_col, session_col])
+        else:
+            session_table = pd.DataFrame([{"status": "session_id/visit_id not available"}])
+        if iter_col:
+            iter_table = df.groupby([subj_col, iter_col]).size().reset_index(name="n_records").sort_values([subj_col, iter_col])
+        else:
+            iter_table = pd.DataFrame([{"status": "iteration not available"}])
+        if date_col:
+            date_table = df[[subj_col, date_col]].dropna().drop_duplicates().sort_values([subj_col, date_col])
+        else:
+            date_table = pd.DataFrame([{"status": "recording_date/visit_date not available"}])
+
+        tiles = [
+            ("Subjects", int(df[subj_col].nunique()), "detected IDs"),
+            ("Repeated subjects", repeated, "n_records > 1"),
+            ("Session / visit", "yes" if session_col else "no", "available field"),
+            ("Iterations", "yes" if iter_col else "no", "available field"),
+            ("Dates", "yes" if date_col else "no", "visit/date field"),
+            ("Rows", len(df), "records / files"),
+        ]
+        for idx, (title, value, subtitle) in enumerate(tiles):
+            self.longitudinal_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx, 0)
+        self._fill_table(self.long_subject_table, subj_counts)
+        self._fill_table(self.long_session_table, session_table)
+        self._fill_table(self.long_iteration_table, iter_table)
+        self._fill_table(self.long_date_table, date_table)
+        self.longitudinal_note.setText("Longitudinal / iteration review generated. Use this menu to decide whether repeated-measure, iteration-specific, or date-aware analysis is supported.")
+        self._refresh_focus_combos()
+        self.update_longitudinal_preview()
+
+    def update_longitudinal_preview(self) -> None:
+        if not hasattr(self, "longitudinal_preview"):
+            return
+        df = self._active_analysis_table()
+        subj_col = self._subject_col(df)
+        selected = self.subject_focus_combo.currentText() if hasattr(self, "subject_focus_combo") else "All subjects"
+        if df.empty or not subj_col:
+            self.longitudinal_preview.setText("<b>Subject ID not available.</b><br><br>Longitudinal or repeated-iteration review requires subject identifiers. Load metadata or use the planned filename/parser workflow.")
+            return
+        subset = df
+        if selected and selected not in ["All subjects", "All subjects / not available"]:
+            subset = df[df[subj_col].astype(str).eq(selected)]
+        session_col = self._session_col(subset)
+        iter_col = self._iteration_col(subset)
+        date_col = self._date_col(subset)
+        self.longitudinal_preview.setText(
+            f"<b>Subject focus:</b> {selected}<br>"
+            f"<b>Rows in focus:</b> {len(subset)}<br>"
+            f"<b>Session / visit field:</b> {session_col or 'not available'}<br>"
+            f"<b>Iteration field:</b> {iter_col or 'not available'}<br>"
+            f"<b>Date field:</b> {date_col or 'not available'}<br><br>"
+            "Use the detailed tables below to inspect repeated records, visit/session structure, iteration coverage, and recording/visit dates."
+        )
 
     def _screening_page(self) -> QWidget:
         body = QWidget()
@@ -3982,6 +4545,8 @@ Decision colors:
             self.update_distribution_dashboard(outputs)
             self.update_qc_dashboard(outputs)
             self.update_relationships_dashboard(outputs)
+            self.update_task_review_dashboard(outputs)
+            self.update_longitudinal_dashboard(outputs)
             self.update_screening_dashboard(outputs)
             self.update_reliability_dashboard(outputs)
             self.update_recommendations_dashboard(outputs)
