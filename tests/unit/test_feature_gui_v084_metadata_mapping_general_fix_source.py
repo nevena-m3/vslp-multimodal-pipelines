@@ -3,7 +3,7 @@ from pathlib import Path
 
 def test_feature_gui_v084_filename_fill_is_dtype_safe():
     text = Path("src/vslp/gui/features/app.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "v0.85.0"' in text
+    assert 'APP_VERSION = "v0.86.0"' in text
     assert 'Use object dtype during partial fills' in text
     assert 'safe_existing = out[canonical].astype("object")' in text
     assert 'values = parsed[parsed_col].reindex(out.index)' in text

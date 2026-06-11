@@ -3,7 +3,7 @@ from pathlib import Path
 
 def test_feature_gui_v070_safe_local_context_no_global_or_analysis_mutation():
     text = Path("src/vslp/gui/features/app.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "v0.85.0"' in text
+    assert 'APP_VERSION = "v0.86.0"' in text
     assert '_build_global_context_bar' not in text
     assert 'Apply context + regenerate' not in text
     assert 'derive_clinical_context' not in text
