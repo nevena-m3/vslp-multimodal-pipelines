@@ -1605,3 +1605,32 @@ def plot_task_clinical_filtered_counts(
     for i, v in enumerate(counts.values):
         ax.text(v + max(0.2, counts.max() * 0.01), i, str(int(v)), va="center", fontsize=9, color=MUTED)
     return _save(fig, path)
+
+
+def plot_qc_framework_selection(framework_table: pd.DataFrame, selected_framework: str, path: Path) -> Path:
+    """Readable QC-framework selector plot.
+
+    This plot explains which QC metric family is being used for the current local
+    QC scope. It is intentionally descriptive and works when no QC table exists.
+    """
+    if framework_table is None or framework_table.empty:
+        return _empty(path, "No QC framework information was available.", "QC framework")
+    ft = framework_table.copy()
+    if "framework" not in ft.columns:
+        return _empty(path, "QC framework table did not include a framework column.", "QC framework")
+    ft["selected"] = ft["framework"].astype(str).eq(str(selected_framework))
+    if "n_numeric_qc" not in ft.columns:
+        ft["n_numeric_qc"] = 0
+    ft["n_numeric_qc"] = pd.to_numeric(ft["n_numeric_qc"], errors="coerce").fillna(0)
+    fig, ax = plt.subplots(figsize=(10.5, max(4.5, 1.0 + 0.8 * len(ft))))
+    colors = [TEAL if x else "#CFDAE6" for x in ft["selected"]]
+    ax.barh(ft["framework"].astype(str), ft["n_numeric_qc"], color=colors)
+    ax.invert_yaxis()
+    ax.set_xlabel("Detected numeric QC metrics", color=MUTED)
+    _style(ax, f"QC framework selection: {selected_framework}")
+    for i, row in ft.reset_index(drop=True).iterrows():
+        ax.text(float(row["n_numeric_qc"]) + max(0.1, float(ft["n_numeric_qc"].max()) * 0.02 + 0.1), i,
+                str(int(row["n_numeric_qc"])), va="center", fontsize=9, color=MUTED)
+    footer = "Auto uses all numeric QC metrics. Acoustic/Kinematic modes use conservative column-name heuristics and keep identifiers for alignment."
+    ax.text(0, -0.85, footer, fontsize=9, color=MUTED)
+    return _save(fig, path)

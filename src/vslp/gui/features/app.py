@@ -29,7 +29,7 @@ except Exception as exc:  # pragma: no cover
     raise RuntimeError("Feature Analysis GUI requires PySide6. Install with pip install -e '.[gui]'.") from exc
 
 from vslp.analysis.features.column_mapping import (
-    ROLE_OPTIONS, ROLE_FEATURE, ROLE_TARGET, ROLE_IDENTIFIER, ROLE_QC, ROLE_COVARIATE, ROLE_IGNORE, classify_columns, infer_table_kind, role_lists, summarize_roles
+    ROLE_OPTIONS, ROLE_FEATURE, ROLE_TARGET, ROLE_IDENTIFIER, ROLE_QC, ROLE_COVARIATE, ROLE_IGNORE, classify_columns, infer_table_kind, role_lists, summarize_roles, normalize_name
 )
 from vslp.analysis.features.audit import (
     read_table, dataset_inventory, role_summary, design_overview,
@@ -65,7 +65,7 @@ from vslp.analysis.features.plots import (
     plot_feature_quality_landscape, plot_feature_family_quality, plot_subject_task_matrix,
     plot_qc_family_burden, plot_qc_metric_distributions, plot_qc_feature_association_heatmap,
     plot_qc_top_feature_associations, plot_qc_missingness_associations,
-    plot_qc_row_burden, plot_selected_feature_qc_scatter, plot_qc_artifact_model,
+    plot_qc_row_burden, plot_selected_feature_qc_scatter, plot_qc_artifact_model, plot_qc_framework_selection,
     plot_relationship_correlation_heatmap, plot_relationship_redundant_pairs,
     plot_relationship_family_matrix, plot_relationship_pca_scree,
     plot_relationship_pca_scores, plot_relationship_pca_loadings,
@@ -85,7 +85,7 @@ from vslp.analysis.features.plots import (
     plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.73.0"
+APP_VERSION = "v0.74.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -2511,7 +2511,7 @@ class FeatureAnalysisGUI(QMainWindow):
         plot_header.addWidget(show_btn)
 
         regen = QPushButton("Regenerate")
-        regen.clicked.connect(self.regenerate_overview_plots)
+        regen.clicked.connect(self.regenerate_qc_scope_plots)
         plot_header.addWidget(regen)
 
         plot_header.addStretch(1)
@@ -2527,6 +2527,22 @@ class FeatureAnalysisGUI(QMainWindow):
         self.qc_plot_caption.setWordWrap(True)
         self.qc_plot_caption.setStyleSheet(f"color:{MUTED}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:9px;")
         plot_panel_layout.addWidget(self.qc_plot_caption)
+
+        scope_row = QHBoxLayout()
+        scope_row.setSpacing(10)
+        scope_row.addWidget(QLabel("Task focus:"))
+        self.qc_task_combo = QComboBox()
+        self.qc_task_combo.setMinimumWidth(280)
+        self.qc_task_combo.addItem("All tasks / not available")
+        self.qc_task_combo.currentIndexChanged.connect(lambda _=0: self.preview_qc_plot(self.qc_plot_combo.currentData() if hasattr(self, "qc_plot_combo") else "qc_artifact_model"))
+        scope_row.addWidget(self.qc_task_combo, 1)
+        scope_row.addWidget(QLabel("QC framework:"))
+        self.qc_framework_combo = QComboBox()
+        self.qc_framework_combo.setMinimumWidth(240)
+        self.qc_framework_combo.addItems(["Auto / all QC", "Acoustic QC", "Kinematic QC"])
+        self.qc_framework_combo.currentIndexChanged.connect(lambda _=0: self.preview_qc_plot(self.qc_plot_combo.currentData() if hasattr(self, "qc_plot_combo") else "qc_artifact_model"))
+        scope_row.addWidget(self.qc_framework_combo, 1)
+        plot_panel_layout.addLayout(scope_row)
 
         selectors = QHBoxLayout()
         selectors.setSpacing(10)
@@ -2597,7 +2613,9 @@ class FeatureAnalysisGUI(QMainWindow):
         self.qc_missing_table = self._simple_table()
         self.qc_outlier_table = self._simple_table()
         self.qc_row_table = self._simple_table()
+        self.qc_framework_table = self._simple_table()
         tabs.addTab(self.qc_summary_table, "Summary")
+        tabs.addTab(self.qc_framework_table, "QC framework")
         tabs.addTab(self.qc_catalog_table, "QC metrics")
         tabs.addTab(self.qc_family_table, "Family burden")
         tabs.addTab(self.qc_assoc_table, "Feature x QC")
@@ -2609,6 +2627,153 @@ class FeatureAnalysisGUI(QMainWindow):
 
         layout.addWidget(card)
         return self._wrap_scroll(body)
+
+
+    def _qc_framework_mode(self) -> str:
+        if not hasattr(self, "qc_framework_combo"):
+            return "Auto / all QC"
+        return self.qc_framework_combo.currentText().strip() or "Auto / all QC"
+
+    def _qc_framework_keep_column(self, col: str, mode: str) -> bool:
+        name = normalize_name(col)
+        if mode in {"", "Auto / all QC"}:
+            return True
+        if mode == "Acoustic QC":
+            acoustic_markers = [
+                "qadd", "qgain", "qrev", "qchan", "qdist", "qtemp", "qdrop",
+                "snr", "noise", "pause", "speech", "audio", "clip", "clipping",
+                "reverb", "echo", "gain", "level", "rms", "codec", "channel",
+                "jitter", "shimmer", "hnr", "cpp",
+            ]
+            return any(m in name for m in acoustic_markers)
+        if mode == "Kinematic QC":
+            kinematic_markers = [
+                "kin", "video", "frame", "landmark", "pose", "face", "hand",
+                "visibility", "tracking", "mediapipe", "pixel", "motion", "fps",
+                "detection", "occlusion", "mouth", "jaw", "lip", "head",
+            ]
+            return any(m in name for m in kinematic_markers)
+        return True
+
+    def _qc_framework_table(self, qc_df: pd.DataFrame | None) -> pd.DataFrame:
+        if qc_df is None or qc_df.empty:
+            return pd.DataFrame([{"framework": self._qc_framework_mode(), "status": "no_qc_table", "n_columns": 0, "n_numeric_qc": 0}])
+        rows = []
+        for mode in ["Auto / all QC", "Acoustic QC", "Kinematic QC"]:
+            numeric_cols = [c for c in qc_df.columns if pd.api.types.is_numeric_dtype(qc_df[c]) or pd.to_numeric(qc_df[c], errors="coerce").notna().any()]
+            kept = [c for c in numeric_cols if self._qc_framework_keep_column(c, mode)]
+            rows.append({
+                "framework": mode,
+                "n_numeric_qc": len(kept),
+                "example_columns": "; ".join(map(str, kept[:8])),
+                "interpretation": (
+                    "Uses all detected numeric QC variables." if mode == "Auto / all QC"
+                    else "Uses QC variables whose names look acoustic/audio-related." if mode == "Acoustic QC"
+                    else "Uses QC variables whose names look kinematic/video/landmark-related."
+                ),
+            })
+        return pd.DataFrame(rows)
+
+    def _qc_scope_tables(self) -> tuple[pd.DataFrame, pd.DataFrame | None, str]:
+        feature_df = self._active_analysis_table() if hasattr(self, "_active_analysis_table") else (self.analysis_df if self.analysis_df is not None else self.feature_df)
+        qc_df = self.qc_df
+        if feature_df is None:
+            return pd.DataFrame(), qc_df, "All tasks | " + self._qc_framework_mode()
+        f = feature_df.copy()
+        q = qc_df.copy() if qc_df is not None else None
+        parts = []
+        task_col = self._task_col(f) if hasattr(self, "_task_col") else None
+        task_value = self.qc_task_combo.currentText() if hasattr(self, "qc_task_combo") else "All tasks"
+        if task_col and task_col in f.columns and task_value not in {"", "All tasks", "All tasks / not available"}:
+            mask = f[task_col].astype(str).eq(str(task_value))
+            f = f[mask].copy()
+            if q is not None and len(q) == len(mask):
+                q = q[mask.values].copy()
+            parts.append(f"Task = {task_value}")
+        else:
+            parts.append("All tasks")
+
+        mode = self._qc_framework_mode()
+        if q is not None and not q.empty and mode not in {"", "Auto / all QC"}:
+            keep = [c for c in q.columns if not (pd.api.types.is_numeric_dtype(q[c]) or pd.to_numeric(q[c], errors="coerce").notna().any())]
+            keep += [c for c in q.columns if c not in keep and self._qc_framework_keep_column(c, mode)]
+            # Preserve possible alignment keys/identifiers even if not numeric.
+            for c in ["record_key", "file_name", "filename", "source_file", "subject_id", "participant_id", "task", "task_name"]:
+                if c in q.columns and c not in keep:
+                    keep.append(c)
+            q = q.loc[:, [c for c in keep if c in q.columns]].copy()
+        parts.append(mode)
+        return f, q, " | ".join(parts)
+
+    def _refresh_qc_task_combo(self, df: pd.DataFrame) -> None:
+        if not hasattr(self, "qc_task_combo"):
+            return
+        task_col = self._task_col(df) if hasattr(self, "_task_col") else None
+        current = self.qc_task_combo.currentText()
+        self.qc_task_combo.blockSignals(True)
+        self.qc_task_combo.clear()
+        if task_col and task_col in df.columns:
+            values = sorted([str(x) for x in df[task_col].dropna().unique().tolist() if str(x).strip()])
+            self.qc_task_combo.addItem("All tasks")
+            for v in values[:500]:
+                self.qc_task_combo.addItem(v)
+        else:
+            self.qc_task_combo.addItem("All tasks / not available")
+        ix = self.qc_task_combo.findText(current)
+        if ix >= 0:
+            self.qc_task_combo.setCurrentIndex(ix)
+        self.qc_task_combo.blockSignals(False)
+
+    def _qc_feature_cols(self, df: pd.DataFrame) -> list[str]:
+        if getattr(self, "mapping_df", None) is not None and not self.mapping_df.empty:
+            roles = role_lists(self.mapping_df)
+            return [c for c in roles.get("Feature", []) if c in df.columns]
+        return [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+
+    def _refresh_qc_framework_combo(self) -> None:
+        if not hasattr(self, "qc_framework_combo"):
+            return
+        current = self.qc_framework_combo.currentText()
+        self.qc_framework_combo.blockSignals(True)
+        self.qc_framework_combo.clear()
+        for item in ["Auto / all QC", "Acoustic QC", "Kinematic QC"]:
+            self.qc_framework_combo.addItem(item)
+        ix = self.qc_framework_combo.findText(current)
+        if ix >= 0:
+            self.qc_framework_combo.setCurrentIndex(ix)
+        self.qc_framework_combo.blockSignals(False)
+
+    def generate_qc_scope_plots(self) -> None:
+        feature_df, qc_df, scope_label = self._qc_scope_tables()
+        self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
+        feature_cols = self._qc_feature_cols(feature_df)
+        safe_scope = re.sub(r"[^A-Za-z0-9_.-]+", "_", scope_label).strip("_")[:90] or "qc_scope"
+        if not hasattr(self, "plot_paths"):
+            self.plot_paths = {}
+        catalog = qc_metric_catalog(qc_df)
+        family = qc_family_burden_summary(qc_df)
+        qc_corr = feature_qc_correlations(feature_df, qc_df, feature_cols)
+        family_assoc = feature_qc_family_association(qc_corr)
+        missing_assoc = qc_missingness_associations(feature_df, qc_df, feature_cols)
+        row_burden = qc_row_burden_summary(qc_df)
+
+        self.plot_paths["qc_artifact_model"] = str(plot_qc_framework_selection(self._qc_framework_table(qc_df), self._qc_framework_mode(), plots_dir / f"qc_framework_{safe_scope}.png"))
+        self.plot_paths["qc_family_burden"] = str(plot_qc_family_burden(family, plots_dir / f"qc_family_burden_{safe_scope}.png"))
+        self.plot_paths["qc_metric_distributions"] = str(plot_qc_metric_distributions(qc_df, catalog, plots_dir / f"qc_metric_distributions_{safe_scope}.png", max_metrics=18))
+        self.plot_paths["qc_feature_association_heatmap"] = str(plot_qc_feature_association_heatmap(family_assoc, plots_dir / f"qc_feature_association_heatmap_{safe_scope}.png", top_features=80))
+        self.plot_paths["qc_top_feature_associations"] = str(plot_qc_top_feature_associations(qc_corr, plots_dir / f"qc_top_feature_associations_{safe_scope}.png", top_n=35))
+        self.plot_paths["qc_missingness_associations"] = str(plot_qc_missingness_associations(missing_assoc, plots_dir / f"qc_missingness_associations_{safe_scope}.png", top_n=35))
+        self.plot_paths["qc_row_burden"] = str(plot_qc_row_burden(row_burden, plots_dir / f"qc_row_burden_{safe_scope}.png", top_n=50))
+        if hasattr(self, "qc_plot_caption"):
+            n_qc = len(catalog) if catalog is not None else 0
+            self.qc_plot_caption.setText(
+                f"QC Integration is scoped locally. Current scope: {scope_label}. "
+                f"Detected QC metrics in this framework: {n_qc}. Base analysis outputs are not modified."
+            )
+
+    def regenerate_qc_scope_plots(self) -> None:
+        self.generate_qc_scope_plots()
+        self.preview_qc_plot(self.qc_plot_combo.currentData() if hasattr(self, "qc_plot_combo") else "qc_artifact_model", regenerate=False)
 
     def update_qc_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
         if not hasattr(self, "qc_metric_grid"):
@@ -2634,6 +2799,9 @@ class FeatureAnalysisGUI(QMainWindow):
         for idx, (title, value, subtitle) in enumerate(tiles):
             self.qc_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx, 0)
 
+        active_for_qc_scope = self._active_analysis_table() if hasattr(self, "_active_analysis_table") else (self.analysis_df if self.analysis_df is not None else self.feature_df)
+        self._refresh_qc_task_combo(active_for_qc_scope)
+        self._refresh_qc_framework_combo()
         self._fill_table(self.qc_summary_table, summary)
         self._fill_table(self.qc_catalog_table, outputs.get("qc_metric_catalog", pd.DataFrame()))
         self._fill_table(self.qc_family_table, outputs.get("qc_family_burden_summary", pd.DataFrame()))
@@ -2642,13 +2810,17 @@ class FeatureAnalysisGUI(QMainWindow):
         self._fill_table(self.qc_missing_table, outputs.get("qc_missingness_associations", pd.DataFrame()))
         self._fill_table(self.qc_outlier_table, outputs.get("qc_outlier_associations", pd.DataFrame()))
         self._fill_table(self.qc_row_table, outputs.get("qc_row_burden_summary", pd.DataFrame()))
+        if hasattr(self, "qc_framework_table"):
+            _f_scope, _q_scope, _scope_label = self._qc_scope_tables()
+            self._fill_table(self.qc_framework_table, self._qc_framework_table(_q_scope))
 
         self.qc_feature_combo.clear()
         dist = outputs.get("feature_distribution_summary", pd.DataFrame())
         if dist is not None and not dist.empty and "feature" in dist.columns:
             self.qc_feature_combo.addItems(dist["feature"].astype(str).tolist())
         self.qc_metric_combo.clear()
-        catalog = outputs.get("qc_metric_catalog", pd.DataFrame())
+        _f_scope, _q_scope, _scope_label = self._qc_scope_tables()
+        catalog = qc_metric_catalog(_q_scope)
         if catalog is not None and not catalog.empty and "qc_variable" in catalog.columns:
             self.qc_metric_combo.addItems(catalog["qc_variable"].astype(str).tolist())
         if self.qc_df is None or self.qc_df.empty:
@@ -2672,20 +2844,23 @@ class FeatureAnalysisGUI(QMainWindow):
         if not feature or not metric:
             return
         try:
-            active_df = self.analysis_df if self.analysis_df is not None else self.feature_df
+            active_df, qc_df, scope_label = self._qc_scope_tables()
             self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
-            path = plot_selected_feature_qc_scatter(active_df, self.qc_df, feature, metric, plots_dir / "selected_feature_qc_scatter.png")
+            safe_scope = re.sub(r"[^A-Za-z0-9_.-]+", "_", scope_label).strip("_")[:90] or "qc_scope"
+            path = plot_selected_feature_qc_scatter(active_df, qc_df, feature, metric, plots_dir / f"selected_feature_qc_scatter_{safe_scope}.png")
             if not hasattr(self, "plot_paths"):
                 self.plot_paths = {}
             self.plot_paths["selected_feature_qc_scatter"] = str(path)
         except Exception:
             pass
 
-    def preview_qc_plot(self, key: str) -> None:
+    def preview_qc_plot(self, key: str, regenerate: bool = True) -> None:
         if key == "selected_feature_qc_scatter":
             self.generate_selected_qc_scatter()
-        if not hasattr(self, "plot_paths") or key not in self.plot_paths or not Path(self.plot_paths.get(key, "")).exists():
-            self.regenerate_overview_plots()
+        if key != "selected_feature_qc_scatter" and regenerate:
+            self.generate_qc_scope_plots()
+        elif not hasattr(self, "plot_paths") or key not in self.plot_paths or not Path(self.plot_paths.get(key, "")).exists():
+            self.generate_qc_scope_plots()
         if not hasattr(self, "plot_paths") or key not in self.plot_paths:
             QMessageBox.information(self, "Plot unavailable", "Run Feature Analysis first, or this QC plot could not be generated for the current dataset.")
             return
@@ -2695,12 +2870,7 @@ class FeatureAnalysisGUI(QMainWindow):
             return
         self.current_qc_plot = path
         self.update_qc_interpretation(key)
-        pix = QPixmap(str(path))
-        if pix.isNull():
-            self.qc_plot_preview.setText(f"Could not load plot:\n{path}")
-            return
-        self.qc_plot_preview.setPixmap(pix.scaled(self.qc_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        self.qc_plot_preview.setToolTip(str(path))
+        self._display_plot_image(self.qc_plot_preview, path)
 
     def update_qc_interpretation(self, key: str) -> None:
         if not hasattr(self, "qc_interpretation_label"):
