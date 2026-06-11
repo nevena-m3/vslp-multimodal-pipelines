@@ -85,7 +85,7 @@ from vslp.analysis.features.plots import (
     plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.86.0"
+APP_VERSION = "v0.87.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -1214,11 +1214,14 @@ class FeatureAnalysisGUI(QMainWindow):
     def _metadata_mapping_page(self) -> QWidget:
         body = QWidget()
         layout = QVBoxLayout(body)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(10)
+        layout.setContentsMargins(10, 8, 10, 10)
+        layout.setSpacing(8)
+        layout.setAlignment(Qt.AlignTop)
 
         card = Card("Metadata Mapping", "Assign clinical, demographic, manual-QC, and administrative roles. If no metadata table is provided, derive basic recording context from a filename column.")
-        card.layout.setSpacing(10)
+        card.layout.setContentsMargins(14, 10, 14, 12)
+        card.layout.setSpacing(8)
+        card.layout.setAlignment(Qt.AlignTop)
 
         self.metadata_toolbar_widget = QWidget()
         toolbar = QHBoxLayout(self.metadata_toolbar_widget)
@@ -1240,13 +1243,17 @@ class FeatureAnalysisGUI(QMainWindow):
         card.layout.addWidget(self.metadata_toolbar_widget)
 
         self.filename_metadata_fallback_frame = QFrame()
+        self.filename_metadata_fallback_frame.setObjectName("FilenameFallbackFrame")
+        self.filename_metadata_fallback_frame.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         self.filename_metadata_fallback_frame.setStyleSheet(
-            f"QFrame {{ background:#F8FBFE; border:1px solid {LINE}; border-radius:14px; }}"
+            f"QFrame#FilenameFallbackFrame {{ background:#F8FBFE; border:1px solid {LINE}; border-radius:14px; }}"
+            f"QFrame#FilenameFallbackFrame QLabel {{ color:{INK}; background:transparent; border:none; padding:0px; }}"
             f"QLabel#ExampleBox {{ color:{INK}; background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; padding:10px; font-family:Consolas, 'Courier New'; font-size:11px; }}"
         )
         fallback_layout = QVBoxLayout(self.filename_metadata_fallback_frame)
-        fallback_layout.setContentsMargins(14, 12, 14, 14)
-        fallback_layout.setSpacing(10)
+        fallback_layout.setContentsMargins(14, 10, 14, 12)
+        fallback_layout.setSpacing(8)
+        fallback_layout.setAlignment(Qt.AlignTop)
         fallback_title = QLabel("Filename-derived metadata fallback")
         fallback_title.setStyleSheet(f"color:{NAVY}; font-size:14px; font-weight:900; border:none; background:transparent;")
         fallback_layout.addWidget(fallback_title)
@@ -1258,8 +1265,12 @@ class FeatureAnalysisGUI(QMainWindow):
         source_row = QGridLayout()
         source_row.setHorizontalSpacing(12)
         source_row.setVerticalSpacing(6)
-        source_row.addWidget(QLabel("Context source"), 0, 0)
-        source_row.addWidget(QLabel("Filename column"), 0, 1)
+        context_source_label = QLabel("Context source")
+        context_source_label.setStyleSheet(f"color:{MUTED}; font-size:11px; font-weight:800; background:transparent; border:none; padding:0px;")
+        filename_column_label = QLabel("Filename column")
+        filename_column_label.setStyleSheet(f"color:{MUTED}; font-size:11px; font-weight:800; background:transparent; border:none; padding:0px;")
+        source_row.addWidget(context_source_label, 0, 0)
+        source_row.addWidget(filename_column_label, 0, 1)
         self.filename_parser_combo = QComboBox()
         self.filename_parser_combo.addItems([
             "Selected filename column + metadata fallback",
@@ -1375,7 +1386,8 @@ class FeatureAnalysisGUI(QMainWindow):
         self.metadata_mapping_summary_label.setStyleSheet(f"color:{MUTED}; background:#F7FAFD; border:1px solid {LINE}; border-radius:8px; padding:8px;")
         card.layout.addWidget(self.metadata_mapping_summary_label)
 
-        layout.addWidget(card, 1)
+        layout.addWidget(card, 0, Qt.AlignTop)
+        layout.addStretch(1)
         self.update_metadata_mapping_mode_visibility()
         return self._wrap_scroll(body)
 
