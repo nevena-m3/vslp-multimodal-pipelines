@@ -3,7 +3,7 @@ from pathlib import Path
 
 def test_feature_gui_v067_qc_matches_overview_style_layout():
     text = Path("src/vslp/gui/features/app.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "v0.69.0"' in text
+    assert 'APP_VERSION = "v0.72.0"' in text
     block = text[text.index('def _qc_page'):text.index('def update_qc_dashboard')]
     assert 'QC snapshot' in block
     assert 'Detailed QC integration tables' in block

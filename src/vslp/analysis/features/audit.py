@@ -31,6 +31,21 @@ def read_table(path: str | Path | None) -> pd.DataFrame | None:
     raise ValueError(f"Unsupported table format: {suffix}")
 
 
+
+def _safe_spearman(a: pd.Series, b: pd.Series) -> float:
+    pair = pd.DataFrame({"a": pd.to_numeric(a, errors="coerce"), "b": pd.to_numeric(b, errors="coerce")}).dropna()
+    if len(pair) < 4 or pair["a"].nunique() <= 1 or pair["b"].nunique() <= 1:
+        return float("nan")
+    try:
+        import warnings as _warnings
+        with _warnings.catch_warnings():
+            _warnings.filterwarnings("ignore", message=".*ConstantInputWarning.*")
+            _warnings.filterwarnings("ignore", message=".*input array is constant.*")
+            return float(pair["a"].corr(pair["b"], method="spearman"))
+    except Exception:
+        return float("nan")
+
+
 def numeric_columns(df: pd.DataFrame, cols: list[str]) -> list[str]:
     return [c for c in cols if c in df.columns and pd.api.types.is_numeric_dtype(df[c])]
 
@@ -274,7 +289,7 @@ def feature_qc_correlations(feature_df: pd.DataFrame, qc_df: pd.DataFrame | None
             if len(pair) < 4 or pair[f].nunique() <= 1 or pair[q].nunique() <= 1:
                 rho = np.nan
             else:
-                rho = float(pair[f].corr(pair[q], method="spearman"))
+                rho = _safe_spearman(pair[f], pair[q])
             rows.append({"feature": f, "qc_variable": q.replace("__qc", ""), "spearman_rho": rho, "n_pairwise": int(len(pair))})
     return pd.DataFrame(rows)
 
@@ -538,7 +553,7 @@ def qc_missingness_associations(feature_df: pd.DataFrame, qc_df: pd.DataFrame | 
             pair = pd.DataFrame({"missing": miss, "qc": pd.to_numeric(aligned[q], errors="coerce")}).dropna()
             if len(pair) < 8 or pair["qc"].nunique() <= 1:
                 continue
-            rho = float(pair["missing"].corr(pair["qc"], method="spearman"))
+            rho = _safe_spearman(pair["missing"], pair["qc"])
             rows.append({"feature": f, "qc_variable": q_orig, "artifact_family": qc_family_from_name(q_orig), "spearman_rho": rho, "abs_spearman": abs(rho), "n_pairwise": int(len(pair)), "alignment_note": note})
     out = pd.DataFrame(rows)
     return out.sort_values("abs_spearman", ascending=False) if not out.empty else out
@@ -556,7 +571,7 @@ def qc_outlier_associations(outlier_flags: pd.DataFrame, qc_df: pd.DataFrame | N
         pair = pd.DataFrame({"outliers": tmp["feature_outlier_count"], "qc": pd.to_numeric(qc_df[q], errors="coerce")}).dropna()
         if len(pair) < 8 or pair["outliers"].nunique() <= 1 or pair["qc"].nunique() <= 1:
             continue
-        rho = float(pair["outliers"].corr(pair["qc"], method="spearman"))
+        rho = _safe_spearman(pair["outliers"], pair["qc"])
         rows.append({"qc_variable": q, "artifact_family": qc_family_from_name(q), "spearman_rho": rho, "abs_spearman": abs(rho), "n_pairwise": int(len(pair)), "interpretation": "Positive values indicate rows with higher QC burden also tend to accumulate more feature outlier flags."})
     out = pd.DataFrame(rows)
     return out.sort_values("abs_spearman", ascending=False) if not out.empty else out
@@ -1296,7 +1311,14 @@ def feature_correlation_long_table(feature_df: pd.DataFrame, feature_cols: list[
     if feature_df is None or feature_df.empty or len(cols) < 2:
         return pd.DataFrame(columns=["feature_1", "feature_2", "spearman_rho", "abs_spearman", "n_pairwise", "direction", "relationship_strength"])
     x = feature_df[cols].apply(pd.to_numeric, errors="coerce")
-    corr = x.corr(method="spearman", min_periods=8)
+    x = x.loc[:, [c for c in x.columns if x[c].dropna().nunique() > 1]]
+    if x.shape[1] < 2:
+        return pd.DataFrame(columns=["feature_1", "feature_2", "spearman_rho", "abs_spearman", "n_pairwise", "direction", "relationship_strength"])
+    cols = list(x.columns)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=".*ConstantInputWarning.*")
+        warnings.filterwarnings("ignore", message=".*input array is constant.*")
+        corr = x.corr(method="spearman", min_periods=8)
     rows = []
     for i, f1 in enumerate(cols):
         for f2 in cols[i+1:]:

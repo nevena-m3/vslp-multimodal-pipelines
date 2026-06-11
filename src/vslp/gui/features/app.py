@@ -9,6 +9,7 @@ import sys
 import json
 import shutil
 import re
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -82,10 +83,10 @@ from vslp.analysis.features.plots import (
     plot_task_counts, plot_task_subject_matrix, plot_task_label_context,
     plot_task_feature_support, plot_longitudinal_subject_records,
     plot_longitudinal_session_matrix, plot_longitudinal_iteration_counts,
-    plot_longitudinal_date_timeline
+    plot_longitudinal_date_timeline, plot_longitudinal_feature_trajectory
 )
 
-APP_VERSION = "v0.69.0"
+APP_VERSION = "v0.72.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -548,6 +549,8 @@ class FeatureAnalysisGUI(QMainWindow):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
         outer.addWidget(LogoBar())
+        self.context_bar = self._build_global_context_bar()
+        outer.addWidget(self.context_bar)
 
         main_splitter = QSplitter(Qt.Vertical)
         main_splitter.setChildrenCollapsible(False)
@@ -593,6 +596,190 @@ class FeatureAnalysisGUI(QMainWindow):
     def show_page(self, key: str) -> None:
         self.stack.setCurrentIndex(self.page_keys.index(key))
         self.sidebar.set_active(key)
+
+
+    def _build_global_context_bar(self) -> QFrame:
+        """Persistent task/group context controls used by all review menus."""
+        bar = QFrame()
+        bar.setStyleSheet(f"""
+        QFrame {{ background:#FFFFFF; border-bottom:1px solid {LINE}; }}
+        QLabel#ContextTitle {{ color:{NAVY}; font-size:12px; font-weight:900; border:none; }}
+        QLabel#ContextHint {{ color:{MUTED}; font-size:11px; border:none; }}
+        """)
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(16, 8, 16, 8)
+        layout.setSpacing(10)
+
+        title = QLabel("Analysis context")
+        title.setObjectName("ContextTitle")
+        layout.addWidget(title)
+
+        layout.addWidget(QLabel("Task:"))
+        self.global_task_combo = QComboBox()
+        self.global_task_combo.setMinimumWidth(210)
+        self.global_task_combo.addItem("All tasks / not available")
+        layout.addWidget(self.global_task_combo)
+
+        layout.addWidget(QLabel("Group:"))
+        self.global_group_var_combo = QComboBox()
+        self.global_group_var_combo.setMinimumWidth(190)
+        self.global_group_var_combo.addItem("No group filter")
+        self.global_group_var_combo.currentIndexChanged.connect(lambda _=0: self._refresh_global_group_values())
+        layout.addWidget(self.global_group_var_combo)
+
+        layout.addWidget(QLabel("Value:"))
+        self.global_group_value_combo = QComboBox()
+        self.global_group_value_combo.setMinimumWidth(190)
+        self.global_group_value_combo.addItem("All values")
+        layout.addWidget(self.global_group_value_combo)
+
+        apply_btn = QPushButton("Apply context + regenerate")
+        apply_btn.setProperty("secondary", True)
+        apply_btn.clicked.connect(self.apply_global_context)
+        layout.addWidget(apply_btn)
+
+        clear_btn = QPushButton("Clear context")
+        clear_btn.setProperty("secondary", True)
+        clear_btn.clicked.connect(self.clear_global_context)
+        layout.addWidget(clear_btn)
+
+        layout.addStretch(1)
+        hint = QLabel("All plots/tables use this scope after regeneration. Pooled views are labelled as All tasks / No group filter.")
+        hint.setObjectName("ContextHint")
+        layout.addWidget(hint)
+        return bar
+
+    def _base_analysis_table(self) -> pd.DataFrame:
+        if getattr(self, "analysis_df", None) is not None and not self.analysis_df.empty:
+            return self.analysis_df
+        if getattr(self, "feature_df", None) is not None:
+            return self.feature_df
+        return pd.DataFrame()
+
+    def _nonempty_unique_values(self, df: pd.DataFrame, column: str, limit: int = 500) -> list[str]:
+        if df is None or df.empty or column not in df.columns:
+            return []
+        vals = []
+        for v in df[column].dropna().unique().tolist():
+            s = str(v).strip()
+            if s and s.lower() not in {"nan", "none", "null"}:
+                vals.append(s)
+        return sorted(vals)[:limit]
+
+    def _refresh_global_context_options(self) -> None:
+        if not hasattr(self, "global_task_combo"):
+            return
+        df = self._base_analysis_table()
+        current_task = self.global_task_combo.currentText()
+        current_group = self.global_group_var_combo.currentText()
+        current_value = self.global_group_value_combo.currentText()
+
+        task_col = self._task_col(df) if hasattr(self, "_task_col") else None
+        task_values = self._nonempty_unique_values(df, task_col) if task_col else []
+        self.global_task_combo.blockSignals(True)
+        self.global_task_combo.clear()
+        self.global_task_combo.addItem("All tasks" if task_values else "All tasks / not available")
+        for v in task_values:
+            self.global_task_combo.addItem(v)
+        ix = self.global_task_combo.findText(current_task)
+        if ix >= 0:
+            self.global_task_combo.setCurrentIndex(ix)
+        self.global_task_combo.blockSignals(False)
+
+        candidate_cols = []
+        preferred = [
+            "diagnosis", "severity_bin", "severity_score", "sex_or_gender", "sex", "gender",
+            "site", "device", "modality", "session_id", "visit_id", "iteration",
+            "metadata__diagnosis", "metadata__severity_bin", "metadata__severity_score",
+            "metadata__sex", "metadata__gender", "metadata__site", "metadata__device",
+            "metadata__session_id", "metadata__visit_id", "metadata__iteration",
+        ]
+        for c in preferred:
+            if c in df.columns and c not in candidate_cols:
+                candidate_cols.append(c)
+        # Include any compact categorical columns likely useful for grouping.
+        for c in df.columns:
+            if c in candidate_cols:
+                continue
+            if str(c).lower() in {"task", "subject_id", "file_name", "source_file_path"}:
+                continue
+            nunique = df[c].nunique(dropna=True)
+            if 1 < nunique <= 20 and not pd.api.types.is_numeric_dtype(df[c]):
+                candidate_cols.append(str(c))
+
+        self.global_group_var_combo.blockSignals(True)
+        self.global_group_var_combo.clear()
+        self.global_group_var_combo.addItem("No group filter")
+        for c in candidate_cols[:80]:
+            self.global_group_var_combo.addItem(str(c))
+        ix = self.global_group_var_combo.findText(current_group)
+        if ix >= 0:
+            self.global_group_var_combo.setCurrentIndex(ix)
+        self.global_group_var_combo.blockSignals(False)
+        self._refresh_global_group_values(preferred_value=current_value)
+
+    def _refresh_global_group_values(self, preferred_value: str | None = None) -> None:
+        if not hasattr(self, "global_group_value_combo"):
+            return
+        df = self._base_analysis_table()
+        group_col = self.global_group_var_combo.currentText() if hasattr(self, "global_group_var_combo") else "No group filter"
+        current = preferred_value if preferred_value is not None else self.global_group_value_combo.currentText()
+        self.global_group_value_combo.blockSignals(True)
+        self.global_group_value_combo.clear()
+        self.global_group_value_combo.addItem("All values")
+        if group_col and group_col != "No group filter" and group_col in df.columns:
+            for v in self._nonempty_unique_values(df, group_col):
+                self.global_group_value_combo.addItem(v)
+        ix = self.global_group_value_combo.findText(current)
+        if ix >= 0:
+            self.global_group_value_combo.setCurrentIndex(ix)
+        self.global_group_value_combo.blockSignals(False)
+
+    def _context_filtered_df(self) -> pd.DataFrame:
+        df = self._base_analysis_table()
+        if df is None or df.empty:
+            return pd.DataFrame()
+        out = df.copy()
+        task_col = self._task_col(out) if hasattr(self, "_task_col") else None
+        task_value = self.global_task_combo.currentText() if hasattr(self, "global_task_combo") else "All tasks"
+        if task_col and task_value not in {"", "All tasks", "All tasks / not available"}:
+            out = out[out[task_col].astype(str).eq(str(task_value))].copy()
+        group_col = self.global_group_var_combo.currentText() if hasattr(self, "global_group_var_combo") else "No group filter"
+        group_value = self.global_group_value_combo.currentText() if hasattr(self, "global_group_value_combo") else "All values"
+        if group_col and group_col != "No group filter" and group_col in out.columns and group_value not in {"", "All values"}:
+            out = out[out[group_col].astype(str).eq(str(group_value))].copy()
+        return out
+
+    def _context_label(self) -> str:
+        task_value = self.global_task_combo.currentText() if hasattr(self, "global_task_combo") else "All tasks"
+        group_col = self.global_group_var_combo.currentText() if hasattr(self, "global_group_var_combo") else "No group filter"
+        group_value = self.global_group_value_combo.currentText() if hasattr(self, "global_group_value_combo") else "All values"
+        parts = [f"task={task_value}"]
+        if group_col and group_col != "No group filter":
+            parts.append(f"{group_col}={group_value}")
+        else:
+            parts.append("group=all")
+        return "; ".join(parts)
+
+    def apply_global_context(self) -> None:
+        self._refresh_global_context_options()
+        scoped = self._context_filtered_df()
+        if scoped.empty:
+            QMessageBox.warning(self, "Empty analysis context", "The selected task/group context contains no rows. Choose a different task or group value.")
+            self.log(f"Context rejected because it has no rows: {self._context_label()}")
+            return
+        self.log(f"Applying analysis context: {self._context_label()} | rows={len(scoped)}")
+        self.regenerate_overview_plots()
+
+    def clear_global_context(self) -> None:
+        if hasattr(self, "global_task_combo"):
+            self.global_task_combo.setCurrentIndex(0)
+        if hasattr(self, "global_group_var_combo"):
+            self.global_group_var_combo.setCurrentIndex(0)
+        if hasattr(self, "global_group_value_combo"):
+            self.global_group_value_combo.setCurrentIndex(0)
+        self.log("Cleared analysis context: using all tasks and all groups.")
+        self.regenerate_overview_plots()
 
     def _build_run_log_panel(self) -> QFrame:
         panel = QFrame()
@@ -824,6 +1011,7 @@ class FeatureAnalysisGUI(QMainWindow):
         self.overview_plot_preview = QLabel("Run Feature Analysis, then choose one overview plot.")
         self.overview_plot_preview.setAlignment(Qt.AlignCenter)
         self.overview_plot_preview.setMinimumHeight(520)
+        self.overview_plot_preview.setMaximumHeight(640)
         self.overview_plot_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.overview_plot_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
         plot_panel_layout.addWidget(self.overview_plot_preview, 1)
@@ -1209,7 +1397,9 @@ class FeatureAnalysisGUI(QMainWindow):
         if self.feature_df is None:
             raise RuntimeError("Load a primary feature table first.")
         mapping = self.collect_mapping_from_table()
-        active_df = self.analysis_df if self.analysis_df is not None else self.feature_df
+        active_df = self._context_filtered_df()
+        if active_df.empty:
+            active_df = self._context_filtered_df() if hasattr(self, '_context_filtered_df') else (self.analysis_df if self.analysis_df is not None else self.feature_df)
         roles = role_lists(mapping)
         feature_cols = [c for c in roles.get("Feature", []) if c in active_df.columns]
         inventory = dataset_inventory(active_df, self.qc_df, self.meta_df, mapping)
@@ -1238,8 +1428,11 @@ class FeatureAnalysisGUI(QMainWindow):
         qc_missing_assoc = qc_missingness_associations(active_df, self.qc_df, feature_cols)
         qc_outlier_assoc = qc_outlier_associations(outlier_flags, self.qc_df)
         qc_summary = qc_integration_summary(self.qc_df, qc_corr, qc_family, qc_missing_assoc, qc_outlier_assoc)
-        rel_summary = feature_relationship_summary(active_df, feature_cols, self.registry_df)
-        rel_corr_long = feature_correlation_long_table(active_df, feature_cols)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*ConstantInputWarning.*")
+            warnings.filterwarnings("ignore", message=".*input array is constant.*")
+            rel_summary = feature_relationship_summary(active_df, feature_cols, self.registry_df)
+            rel_corr_long = feature_correlation_long_table(active_df, feature_cols)
         rel_redundant = redundant_feature_pairs(rel_corr_long, self.registry_df)
         rel_modules = feature_relationship_modules(rel_corr_long, self.registry_df)
         rel_family_matrix = feature_family_correlation_matrix(rel_corr_long, self.registry_df)
@@ -1270,7 +1463,7 @@ class FeatureAnalysisGUI(QMainWindow):
             "dataset_inventory": inventory,
             "feature_role_summary": role_sum,
             "dataset_design_overview": design,
-            "metadata_context": pd.DataFrame([{"strategy": getattr(self, "metadata_join_strategy", "feature_table_only")}]),
+            "metadata_context": pd.DataFrame([{"strategy": getattr(self, "metadata_join_strategy", "feature_table_only"), "analysis_context": self._context_label() if hasattr(self, "global_task_combo") else "all"}]),
             "feature_family_overview": family,
             "overview_readiness_summary": readiness,
             "overview_feature_quality_landscape": quality_landscape,
@@ -1327,7 +1520,9 @@ class FeatureAnalysisGUI(QMainWindow):
 
     def _generate_overview_plots(self, outputs: dict[str, pd.DataFrame], feature_cols: list[str], plots_dir: Path) -> dict[str, str]:
         paths = {}
-        active_df = self.analysis_df if self.analysis_df is not None else self.feature_df
+        active_df = self._context_filtered_df()
+        if active_df.empty:
+            active_df = self._context_filtered_df() if hasattr(self, '_context_filtered_df') else (self.analysis_df if self.analysis_df is not None else self.feature_df)
         paths["overview_readiness_scorecard"] = str(plot_overview_readiness_scorecard(outputs.get("overview_readiness_summary", pd.DataFrame()), plots_dir / "overview_readiness_scorecard.png"))
         paths["overview_design_tiles"] = str(plot_dataset_design_tiles(outputs.get("dataset_design_overview", pd.DataFrame()), plots_dir / "overview_design_tiles.png"))
         paths["role_counts"] = str(plot_role_counts(outputs.get("feature_role_summary", pd.DataFrame()), plots_dir / "overview_role_counts.png"))
@@ -1433,6 +1628,7 @@ class FeatureAnalysisGUI(QMainWindow):
                 QMessageBox.warning(self, "Missing output folder", "Please select an output folder before generating plots.")
                 return
             self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
+            self._refresh_global_context_options()
             outputs, feature_cols = self._build_analysis_outputs()
             self.outputs = outputs
             self._write_outputs(outputs, tables_dir)
@@ -1449,10 +1645,27 @@ class FeatureAnalysisGUI(QMainWindow):
             self.update_reliability_dashboard(outputs)
             self.update_recommendations_dashboard(outputs)
             self.update_export_dashboard(outputs)
-            self.log(f"Overview/missingness plots generated in: {plots_dir}")
+            self.log(f"Plots/tables regenerated for context [{self._context_label()}] in: {plots_dir}")
             self.preview_plot("overview_readiness_scorecard", generate_if_missing=False)
         except Exception as exc:
             QMessageBox.critical(self, "Could not generate overview plots", str(exc))
+
+
+    def _display_plot_image(self, label: QLabel, path: Path) -> bool:
+        """Display a plot without letting repeated clicks grow the QLabel/pixmap."""
+        pix = QPixmap(str(path))
+        if pix.isNull():
+            label.clear()
+            label.setText(f"Could not load plot:\n{path}")
+            return False
+        target = label.contentsRect().size()
+        if target.width() < 240 or target.height() < 240:
+            target = QSize(980, 560)
+        scaled = pix.scaled(target, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        label.clear()
+        label.setPixmap(scaled)
+        label.setToolTip(str(path))
+        return True
 
     def preview_plot(self, key: str, generate_if_missing: bool = True) -> None:
         if generate_if_missing and (not hasattr(self, "plot_paths") or key not in self.plot_paths or not Path(self.plot_paths.get(key, "")).exists()):
@@ -1472,14 +1685,7 @@ class FeatureAnalysisGUI(QMainWindow):
     def _show_overview_plot(self, path: Path) -> None:
         if not hasattr(self, "overview_plot_preview"):
             return
-        pix = QPixmap(str(path))
-        if pix.isNull():
-            self.overview_plot_preview.setText(f"Could not load plot:\n{path}")
-            return
-        target_size = self.overview_plot_preview.size()
-        scaled = pix.scaled(target_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        self.overview_plot_preview.setPixmap(scaled)
-        self.overview_plot_preview.setToolTip(str(path))
+        self._display_plot_image(self.overview_plot_preview, path)
 
     def open_current_overview_plot(self) -> None:
         path = getattr(self, "current_overview_plot", None)
@@ -1565,6 +1771,7 @@ class FeatureAnalysisGUI(QMainWindow):
         preview = QLabel(placeholder)
         preview.setAlignment(Qt.AlignCenter)
         preview.setMinimumHeight(min_height)
+        preview.setMaximumHeight(max(620, min_height + 120))
         preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
         setattr(self, preview_attr, preview)
@@ -1649,6 +1856,7 @@ class FeatureAnalysisGUI(QMainWindow):
         self.missing_plot_preview = QLabel("Run Feature Analysis, then choose one missingness plot.")
         self.missing_plot_preview.setAlignment(Qt.AlignCenter)
         self.missing_plot_preview.setMinimumHeight(520)
+        self.missing_plot_preview.setMaximumHeight(640)
         self.missing_plot_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.missing_plot_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
         plot_panel_layout.addWidget(self.missing_plot_preview, 1)
@@ -1772,13 +1980,7 @@ class FeatureAnalysisGUI(QMainWindow):
         self.current_missingness_plot = path
         if hasattr(self, "missing_plot_caption"):
             self.missing_plot_caption.setText(self._missingness_plot_caption_text(key))
-        pix = QPixmap(str(path))
-        if pix.isNull():
-            self.missing_plot_preview.setText(f"Could not load plot:\n{path}")
-            return
-        scaled = pix.scaled(self.missing_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        self.missing_plot_preview.setPixmap(scaled)
-        self.missing_plot_preview.setToolTip(str(path))
+        self._display_plot_image(self.missing_plot_preview, path)
 
     def open_current_missingness_plot(self) -> None:
         path = getattr(self, "current_missingness_plot", None)
@@ -1874,6 +2076,7 @@ class FeatureAnalysisGUI(QMainWindow):
         self.dist_plot_preview = QLabel("Run Feature Analysis, then choose one distribution plot.")
         self.dist_plot_preview.setAlignment(Qt.AlignCenter)
         self.dist_plot_preview.setMinimumHeight(520)
+        self.dist_plot_preview.setMaximumHeight(640)
         self.dist_plot_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.dist_plot_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
         plot_panel_layout.addWidget(self.dist_plot_preview, 1)
@@ -1994,7 +2197,7 @@ class FeatureAnalysisGUI(QMainWindow):
                     self.dist_feature_combo.setCurrentIndex(ix)
             self.dist_feature_combo.blockSignals(False)
         if hasattr(self, "dist_group_combo"):
-            active_df = self.analysis_df if self.analysis_df is not None else self.feature_df
+            active_df = self._context_filtered_df() if hasattr(self, '_context_filtered_df') else (self.analysis_df if self.analysis_df is not None else self.feature_df)
             current = self.dist_group_combo.currentText()
             self.dist_group_combo.blockSignals(True)
             self.dist_group_combo.clear()
@@ -2042,7 +2245,7 @@ class FeatureAnalysisGUI(QMainWindow):
         if not feature:
             return
         try:
-            active_df = self.analysis_df if self.analysis_df is not None else self.feature_df
+            active_df = self._context_filtered_df() if hasattr(self, '_context_filtered_df') else (self.analysis_df if self.analysis_df is not None else self.feature_df)
             self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
             low, high = self._selected_expected_bounds(feature)
             path = plot_selected_feature_diagnostic(active_df, feature, plots_dir / "selected_feature_distribution.png", low, high, self._selected_distribution_group())
@@ -2059,7 +2262,7 @@ class FeatureAnalysisGUI(QMainWindow):
         if not feature:
             return
         try:
-            active_df = self.analysis_df if self.analysis_df is not None else self.feature_df
+            active_df = self._context_filtered_df() if hasattr(self, '_context_filtered_df') else (self.analysis_df if self.analysis_df is not None else self.feature_df)
             self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
             path = plot_group_feature_boxplot(active_df, feature, plots_dir / "selected_feature_by_group.png", self._selected_distribution_group())
             if not hasattr(self, "plot_paths"):
@@ -2084,13 +2287,7 @@ class FeatureAnalysisGUI(QMainWindow):
             return
         self.current_distribution_plot = path
         self.update_distribution_interpretation(key)
-        pix = QPixmap(str(path))
-        if pix.isNull():
-            self.dist_plot_preview.setText(f"Could not load plot:\n{path}")
-            return
-        scaled = pix.scaled(self.dist_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        self.dist_plot_preview.setPixmap(scaled)
-        self.dist_plot_preview.setToolTip(str(path))
+        self._display_plot_image(self.dist_plot_preview, path)
 
     def update_distribution_interpretation(self, key: str) -> None:
         if not hasattr(self, "dist_interpretation_label"):
@@ -2267,6 +2464,7 @@ class FeatureAnalysisGUI(QMainWindow):
         self.qc_plot_preview = QLabel("Run Feature Analysis, then choose one QC plot.")
         self.qc_plot_preview.setAlignment(Qt.AlignCenter)
         self.qc_plot_preview.setMinimumHeight(520)
+        self.qc_plot_preview.setMaximumHeight(640)
         self.qc_plot_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.qc_plot_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
         plot_panel_layout.addWidget(self.qc_plot_preview, 1)
@@ -2396,7 +2594,7 @@ class FeatureAnalysisGUI(QMainWindow):
         if not feature or not metric:
             return
         try:
-            active_df = self.analysis_df if self.analysis_df is not None else self.feature_df
+            active_df = self._context_filtered_df() if hasattr(self, '_context_filtered_df') else (self.analysis_df if self.analysis_df is not None else self.feature_df)
             self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
             path = plot_selected_feature_qc_scatter(active_df, self.qc_df, feature, metric, plots_dir / "selected_feature_qc_scatter.png")
             if not hasattr(self, "plot_paths"):
@@ -2423,8 +2621,7 @@ class FeatureAnalysisGUI(QMainWindow):
         if pix.isNull():
             self.qc_plot_preview.setText(f"Could not load plot:\n{path}")
             return
-        self.qc_plot_preview.setPixmap(pix.scaled(self.qc_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        self.qc_plot_preview.setToolTip(str(path))
+        self._display_plot_image(self.qc_plot_preview, path)
 
     def update_qc_interpretation(self, key: str) -> None:
         if not hasattr(self, "qc_interpretation_label"):
@@ -2573,6 +2770,7 @@ class FeatureAnalysisGUI(QMainWindow):
         self.relationship_plot_preview = QLabel("Run Feature Analysis, then choose one relationship plot.")
         self.relationship_plot_preview.setAlignment(Qt.AlignCenter)
         self.relationship_plot_preview.setMinimumHeight(520)
+        self.relationship_plot_preview.setMaximumHeight(640)
         self.relationship_plot_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.relationship_plot_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
         plot_panel_layout.addWidget(self.relationship_plot_preview, 1)
@@ -2715,8 +2913,7 @@ class FeatureAnalysisGUI(QMainWindow):
         if pix.isNull():
             self.relationship_plot_preview.setText(f"Could not load plot:\n{path}")
             return
-        self.relationship_plot_preview.setPixmap(pix.scaled(self.relationship_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        self.relationship_plot_preview.setToolTip(str(path))
+        self._display_plot_image(self.relationship_plot_preview, path)
 
     def update_relationship_interpretation(self, key: str) -> None:
         if not hasattr(self, "relationship_interpretation_label"):
@@ -2845,6 +3042,7 @@ class FeatureAnalysisGUI(QMainWindow):
         self.task_review_preview = QLabel("Run Feature Analysis, then choose one task review plot.")
         self.task_review_preview.setAlignment(Qt.AlignCenter)
         self.task_review_preview.setMinimumHeight(520)
+        self.task_review_preview.setMaximumHeight(640)
         self.task_review_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.task_review_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
         plot_panel_layout.addWidget(self.task_review_preview, 1)
@@ -2930,6 +3128,7 @@ class FeatureAnalysisGUI(QMainWindow):
         self.longitudinal_view_combo.addItem("Session / visit structure", "long_session_matrix")
         self.longitudinal_view_combo.addItem("Iteration coverage", "long_iteration_counts")
         self.longitudinal_view_combo.addItem("Visit-date coverage", "long_date_timeline")
+        self.longitudinal_view_combo.addItem("Selected feature trajectory", "long_feature_trajectory")
         plot_header.addWidget(self.longitudinal_view_combo, 1)
         show_btn = QPushButton("Show")
         show_btn.setProperty("secondary", True)
@@ -2955,14 +3154,20 @@ class FeatureAnalysisGUI(QMainWindow):
         self.subject_focus_combo = QComboBox()
         self.subject_focus_combo.setMinimumWidth(320)
         self.subject_focus_combo.addItem("All subjects / not available")
-        self.subject_focus_combo.currentIndexChanged.connect(lambda _=0: self.preview_longitudinal_plot(self.longitudinal_view_combo.currentData() if hasattr(self, 'longitudinal_view_combo') else 'long_subject_records'))
+        self.subject_focus_combo.currentIndexChanged.connect(lambda _=0: self.preview_longitudinal_plot("long_feature_trajectory"))
         selectors.addWidget(self.subject_focus_combo, 1)
+        selectors.addWidget(QLabel("Feature:"))
+        self.longitudinal_feature_combo = QComboBox()
+        self.longitudinal_feature_combo.setMinimumWidth(260)
+        self.longitudinal_feature_combo.currentIndexChanged.connect(lambda _=0: self.preview_longitudinal_plot("long_feature_trajectory"))
+        selectors.addWidget(self.longitudinal_feature_combo, 1)
         selectors.addStretch(1)
         plot_panel_layout.addLayout(selectors)
 
         self.longitudinal_preview = QLabel("Run Feature Analysis, then choose one longitudinal review plot.")
         self.longitudinal_preview.setAlignment(Qt.AlignCenter)
         self.longitudinal_preview.setMinimumHeight(520)
+        self.longitudinal_preview.setMaximumHeight(640)
         self.longitudinal_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.longitudinal_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
         plot_panel_layout.addWidget(self.longitudinal_preview, 1)
@@ -3015,6 +3220,10 @@ class FeatureAnalysisGUI(QMainWindow):
 
 
     def _active_analysis_table(self) -> pd.DataFrame:
+        """Return the current task/group-filtered table for plot pages."""
+        scoped = self._context_filtered_df() if hasattr(self, "_context_filtered_df") else pd.DataFrame()
+        if scoped is not None and not scoped.empty:
+            return scoped
         if getattr(self, "analysis_df", None) is not None and not self.analysis_df.empty:
             return self.analysis_df
         if getattr(self, "feature_df", None) is not None:
@@ -3212,13 +3421,7 @@ class FeatureAnalysisGUI(QMainWindow):
         }
         if hasattr(self, "task_review_interpretation"):
             self.task_review_interpretation.setText(captions.get(key, "Task review plot."))
-        pix = QPixmap(str(path))
-        if pix.isNull():
-            self.task_review_preview.setText(f"Could not load plot:\n{path}")
-            return
-        scaled = pix.scaled(self.task_review_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        self.task_review_preview.setPixmap(scaled)
-        self.task_review_preview.setToolTip(str(path))
+        self._display_plot_image(self.task_review_preview, path)
 
     def open_current_task_review_plot(self) -> None:
         path = getattr(self, "current_task_review_plot", None)
@@ -3239,6 +3442,10 @@ class FeatureAnalysisGUI(QMainWindow):
         session_col = self._session_col(df)
         iter_col = self._iteration_col(df)
         date_col = self._date_col(df)
+
+        roles = role_lists(self.mapping_df) if getattr(self, "mapping_df", None) is not None and not self.mapping_df.empty else {}
+        feature_cols_for_longitudinal = [c for c in roles.get("Feature", []) if c in df.columns]
+        self._refresh_longitudinal_feature_combo(feature_cols_for_longitudinal)
 
         if df.empty or not subj_col:
             tiles = [
@@ -3291,6 +3498,26 @@ class FeatureAnalysisGUI(QMainWindow):
         self.generate_longitudinal_plots()
         self.preview_longitudinal_plot(self.longitudinal_view_combo.currentData() if hasattr(self, "longitudinal_view_combo") else "long_subject_records")
 
+    def _selected_longitudinal_feature(self) -> str | None:
+        if hasattr(self, "longitudinal_feature_combo") and self.longitudinal_feature_combo.count() > 0:
+            val = self.longitudinal_feature_combo.currentText().strip()
+            return val or None
+        return None
+
+    def _refresh_longitudinal_feature_combo(self, feature_cols: list[str]) -> None:
+        if not hasattr(self, "longitudinal_feature_combo"):
+            return
+        current = self.longitudinal_feature_combo.currentText()
+        self.longitudinal_feature_combo.blockSignals(True)
+        self.longitudinal_feature_combo.clear()
+        for c in feature_cols[:500]:
+            self.longitudinal_feature_combo.addItem(str(c))
+        if current:
+            ix = self.longitudinal_feature_combo.findText(current)
+            if ix >= 0:
+                self.longitudinal_feature_combo.setCurrentIndex(ix)
+        self.longitudinal_feature_combo.blockSignals(False)
+
     def generate_longitudinal_plots(self) -> None:
         df = self._active_analysis_table()
         self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
@@ -3304,6 +3531,9 @@ class FeatureAnalysisGUI(QMainWindow):
         self.plot_paths["long_session_matrix"] = str(plot_longitudinal_session_matrix(df, subj_col, session_col, plots_dir / "long_session_matrix.png"))
         self.plot_paths["long_iteration_counts"] = str(plot_longitudinal_iteration_counts(df, subj_col, iter_col, plots_dir / "long_iteration_counts.png"))
         self.plot_paths["long_date_timeline"] = str(plot_longitudinal_date_timeline(df, subj_col, date_col, plots_dir / "long_date_timeline.png"))
+        feature = self._selected_longitudinal_feature()
+        subject_value = self.subject_focus_combo.currentText() if hasattr(self, "subject_focus_combo") else None
+        self.plot_paths["long_feature_trajectory"] = str(plot_longitudinal_feature_trajectory(df, subj_col, feature, plots_dir / "long_feature_trajectory.png", date_col, session_col, iter_col, subject_value))
 
     def preview_longitudinal_plot(self, key: str | None = None) -> None:
         key = key or (self.longitudinal_view_combo.currentData() if hasattr(self, "longitudinal_view_combo") else "long_subject_records")
@@ -3322,16 +3552,11 @@ class FeatureAnalysisGUI(QMainWindow):
             "long_session_matrix": "Subject x session/visit coverage. Sparse coverage indicates uneven visit structure and limits direct longitudinal comparisons.",
             "long_iteration_counts": "Subject x iteration counts. Use this to inspect repeated attempts or iterations within subjects.",
             "long_date_timeline": "Visit or recording dates by subject. This is the most direct visual check for longitudinal timing when dates are available.",
+            "long_feature_trajectory": "Selected feature trajectory. Use this to inspect how one feature changes across visits/sessions/iterations for a selected subject, or across subjects when All subjects is selected.",
         }
         if hasattr(self, "longitudinal_interpretation"):
             self.longitudinal_interpretation.setText(captions.get(key, "Longitudinal review plot."))
-        pix = QPixmap(str(path))
-        if pix.isNull():
-            self.longitudinal_preview.setText(f"Could not load plot:\n{path}")
-            return
-        scaled = pix.scaled(self.longitudinal_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        self.longitudinal_preview.setPixmap(scaled)
-        self.longitudinal_preview.setToolTip(str(path))
+        self._display_plot_image(self.longitudinal_preview, path)
 
     def open_current_longitudinal_plot(self) -> None:
         path = getattr(self, "current_longitudinal_plot", None)
@@ -3464,7 +3689,7 @@ class FeatureAnalysisGUI(QMainWindow):
         if not feature or not variable:
             return
         try:
-            active_df = self.analysis_df if self.analysis_df is not None else self.feature_df
+            active_df = self._context_filtered_df() if hasattr(self, '_context_filtered_df') else (self.analysis_df if self.analysis_df is not None else self.feature_df)
             self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
             path = plot_selected_feature_outcome(active_df, feature, variable, plots_dir / "selected_feature_outcome.png")
             if not hasattr(self, "plot_paths"):
@@ -3491,8 +3716,7 @@ class FeatureAnalysisGUI(QMainWindow):
         if pix.isNull():
             self.screening_plot_preview.setText(f"Could not load plot:\n{path}")
             return
-        self.screening_plot_preview.setPixmap(pix.scaled(self.screening_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        self.screening_plot_preview.setToolTip(str(path))
+        self._display_plot_image(self.screening_plot_preview, path)
 
     def update_screening_interpretation(self, key: str) -> None:
         if not hasattr(self, "screening_interpretation_label"):
@@ -3668,7 +3892,7 @@ class FeatureAnalysisGUI(QMainWindow):
         if not feature:
             return
         try:
-            active_df = self.analysis_df if self.analysis_df is not None else self.feature_df
+            active_df = self._context_filtered_df() if hasattr(self, '_context_filtered_df') else (self.analysis_df if self.analysis_df is not None else self.feature_df)
             self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
             path = plot_selected_feature_reliability(active_df, feature, plots_dir / "selected_feature_reliability.png")
             if not hasattr(self, "plot_paths"):
@@ -3695,8 +3919,7 @@ class FeatureAnalysisGUI(QMainWindow):
         if pix.isNull():
             self.reliability_plot_preview.setText(f"Could not load plot:\n{path}")
             return
-        self.reliability_plot_preview.setPixmap(pix.scaled(self.reliability_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        self.reliability_plot_preview.setToolTip(str(path))
+        self._display_plot_image(self.reliability_plot_preview, path)
 
     def update_reliability_interpretation(self, key: str) -> None:
         if not hasattr(self, "reliability_interpretation_label"):
@@ -3871,8 +4094,7 @@ class FeatureAnalysisGUI(QMainWindow):
         if pix.isNull():
             self.recommendation_plot_preview.setText(f"Could not load plot:\n{path}")
             return
-        self.recommendation_plot_preview.setPixmap(pix.scaled(self.recommendation_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        self.recommendation_plot_preview.setToolTip(str(path))
+        self._display_plot_image(self.recommendation_plot_preview, path)
 
     def update_recommendation_interpretation(self, key: str) -> None:
         if not hasattr(self, "recommendation_interpretation_label"):
@@ -4291,8 +4513,7 @@ class FeatureAnalysisGUI(QMainWindow):
             self.current_export_plot = Path(path)
             pix = QPixmap(str(path))
             if not pix.isNull():
-                self.export_plot_preview.setPixmap(pix.scaled(self.export_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-                self.export_plot_preview.setToolTip(str(path))
+                self._display_plot_image(self.export_plot_preview, Path(path))
 
     def _export_interpretation_html(self, included: int, held: int, total: int) -> str:
         profile = self._export_profile_label(self._export_profile_key())
@@ -4339,7 +4560,7 @@ class FeatureAnalysisGUI(QMainWindow):
             outputs, feature_cols = self._build_analysis_outputs()
             self.outputs = outputs
         outputs = self.outputs
-        active_df = self.analysis_df if self.analysis_df is not None else self.feature_df
+        active_df = self._context_filtered_df() if hasattr(self, '_context_filtered_df') else (self.analysis_df if self.analysis_df is not None else self.feature_df)
         profile = self._export_profile_key()
         profile_slug = profile.replace("_", "-")
         base_dir = (self.output_dir if getattr(self, "output_dir", None) else Path(self.output_edit.text().strip()) / "feature_analysis")
@@ -4480,6 +4701,7 @@ Decision colors:
             kind = infer_table_kind(self.feature_picker.path, explicit="feature")
             feature_mapping = classify_columns(self.feature_df, table_kind=kind, registry=self.registry_df)
             self.analysis_df, self.mapping_df, self.metadata_join_strategy = self._merge_metadata_context(self.feature_df, feature_mapping)
+            self._refresh_global_context_options()
             self.proposed_mapping_df = self.mapping_df.copy()
             self.mapping_modified = False
             self.mapping_accepted = False
@@ -4640,7 +4862,7 @@ Decision colors:
             self.update_reliability_dashboard(outputs)
             self.update_recommendations_dashboard(outputs)
             self.update_export_dashboard(outputs)
-            self.log(f"Analysis complete. Outputs written to: {self.output_dir}")
+            self.log(f"Analysis complete for context [{self._context_label()}]. Outputs written to: {self.output_dir}")
             self.show_page("overview")
         except Exception as exc:
             self.log_error("Analysis failed", exc)
@@ -4682,49 +4904,24 @@ Decision colors:
 
     def resizeEvent(self, event):  # noqa: N802 - Qt override
         super().resizeEvent(event)
-        path = getattr(self, "current_overview_plot", None)
-        if path and hasattr(self, "overview_plot_preview"):
-            self._show_overview_plot(Path(path))
-        mpath = getattr(self, "current_missingness_plot", None)
-        if mpath and hasattr(self, "missing_plot_preview"):
-            pix = QPixmap(str(mpath))
-            if not pix.isNull():
-                self.missing_plot_preview.setPixmap(pix.scaled(self.missing_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        dpath = getattr(self, "current_distribution_plot", None)
-        if dpath and hasattr(self, "dist_plot_preview"):
-            pix = QPixmap(str(dpath))
-            if not pix.isNull():
-                self.dist_plot_preview.setPixmap(pix.scaled(self.dist_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        qpath = getattr(self, "current_qc_plot", None)
-        if qpath and hasattr(self, "qc_plot_preview"):
-            pix = QPixmap(str(qpath))
-            if not pix.isNull():
-                self.qc_plot_preview.setPixmap(pix.scaled(self.qc_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        rpath = getattr(self, "current_relationship_plot", None)
-        if rpath and hasattr(self, "relationship_plot_preview"):
-            pix = QPixmap(str(rpath))
-            if not pix.isNull():
-                self.relationship_plot_preview.setPixmap(pix.scaled(self.relationship_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        spath = getattr(self, "current_screening_plot", None)
-        if spath and hasattr(self, "screening_plot_preview"):
-            pix = QPixmap(str(spath))
-            if not pix.isNull():
-                self.screening_plot_preview.setPixmap(pix.scaled(self.screening_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        relpath = getattr(self, "current_reliability_plot", None)
-        if relpath and hasattr(self, "reliability_plot_preview"):
-            pix = QPixmap(str(relpath))
-            if not pix.isNull():
-                self.reliability_plot_preview.setPixmap(pix.scaled(self.reliability_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        recpath = getattr(self, "current_recommendation_plot", None)
-        if recpath and hasattr(self, "recommendation_plot_preview"):
-            pix = QPixmap(str(recpath))
-            if not pix.isNull():
-                self.recommendation_plot_preview.setPixmap(pix.scaled(self.recommendation_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        epath = getattr(self, "current_export_plot", None)
-        if epath and hasattr(self, "export_plot_preview"):
-            pix = QPixmap(str(epath))
-            if not pix.isNull():
-                self.export_plot_preview.setPixmap(pix.scaled(self.export_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        pairs = [
+            ("current_overview_plot", "overview_plot_preview"),
+            ("current_missingness_plot", "missing_plot_preview"),
+            ("current_distribution_plot", "dist_plot_preview"),
+            ("current_qc_plot", "qc_plot_preview"),
+            ("current_relationship_plot", "relationship_plot_preview"),
+            ("current_task_review_plot", "task_review_preview"),
+            ("current_longitudinal_plot", "longitudinal_preview"),
+            ("current_screening_plot", "screening_plot_preview"),
+            ("current_reliability_plot", "reliability_plot_preview"),
+            ("current_recommendation_plot", "recommendation_plot_preview"),
+            ("current_export_plot", "export_plot_preview"),
+        ]
+        for path_attr, label_attr in pairs:
+            path = getattr(self, path_attr, None)
+            label = getattr(self, label_attr, None)
+            if path and label is not None:
+                self._display_plot_image(label, Path(path))
 
     def write_report(self, path: Path, outputs: dict[str, pd.DataFrame], export_manifest: pd.DataFrame | None = None, export_profile: str = "Default export") -> None:
         inv = outputs.get("dataset_inventory", pd.DataFrame()).to_html(index=False, escape=False)
