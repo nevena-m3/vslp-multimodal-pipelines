@@ -3,7 +3,7 @@ from pathlib import Path
 
 def test_feature_gui_v066_distributions_matches_overview_missingness_layout():
     text = Path("src/vslp/gui/features/app.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "v0.66.0"' in text
+    assert 'APP_VERSION = "v0.67.0"' in text
     block = text[text.index('def _distributions_page'):text.index('def update_distribution_dashboard')]
     assert 'Distribution snapshot' in block
     assert 'Detailed distribution tables' in block
