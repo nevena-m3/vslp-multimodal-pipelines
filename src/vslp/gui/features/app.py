@@ -85,7 +85,7 @@ from vslp.analysis.features.plots import (
     plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.71.0"
+APP_VERSION = "v0.72.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -1934,7 +1934,7 @@ class FeatureAnalysisGUI(QMainWindow):
         plot_header.addWidget(show_btn)
 
         regen = QPushButton("Regenerate")
-        regen.clicked.connect(self.regenerate_overview_plots)
+        regen.clicked.connect(self.regenerate_distribution_scope_plots)
         plot_header.addWidget(regen)
 
         plot_header.addStretch(1)
@@ -1950,6 +1950,28 @@ class FeatureAnalysisGUI(QMainWindow):
         self.dist_plot_caption.setWordWrap(True)
         self.dist_plot_caption.setStyleSheet(f"color:{MUTED}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:9px;")
         plot_panel_layout.addWidget(self.dist_plot_caption)
+
+        scope_row = QHBoxLayout()
+        scope_row.setSpacing(10)
+        scope_row.addWidget(QLabel("Task focus:"))
+        self.dist_task_combo = QComboBox()
+        self.dist_task_combo.setMinimumWidth(260)
+        self.dist_task_combo.addItem("All tasks / not available")
+        self.dist_task_combo.currentIndexChanged.connect(lambda _=0: self.preview_distribution_plot(self.dist_plot_combo.currentData() if hasattr(self, "dist_plot_combo") else "distribution_review_status"))
+        scope_row.addWidget(self.dist_task_combo, 1)
+        scope_row.addWidget(QLabel("Clinical context:"))
+        self.dist_context_combo = QComboBox()
+        self.dist_context_combo.setMinimumWidth(250)
+        self.dist_context_combo.addItem("Auto / not available")
+        self.dist_context_combo.currentIndexChanged.connect(lambda _=0: self._refresh_dist_context_value_combo(self._active_analysis_table()))
+        scope_row.addWidget(self.dist_context_combo, 1)
+        scope_row.addWidget(QLabel("Value:"))
+        self.dist_context_value_combo = QComboBox()
+        self.dist_context_value_combo.setMinimumWidth(220)
+        self.dist_context_value_combo.addItem("All values")
+        self.dist_context_value_combo.currentIndexChanged.connect(lambda _=0: self.preview_distribution_plot(self.dist_plot_combo.currentData() if hasattr(self, "dist_plot_combo") else "distribution_review_status"))
+        scope_row.addWidget(self.dist_context_value_combo, 1)
+        plot_panel_layout.addLayout(scope_row)
 
         selectors = QHBoxLayout()
         selectors.setSpacing(10)
@@ -2036,6 +2058,173 @@ class FeatureAnalysisGUI(QMainWindow):
         layout.addWidget(card)
         return self._wrap_scroll(body)
 
+
+    def _refresh_dist_task_combo(self, df: pd.DataFrame) -> None:
+        if not hasattr(self, "dist_task_combo"):
+            return
+        task_col = self._task_col(df) if hasattr(self, "_task_col") else None
+        current = self.dist_task_combo.currentText()
+        self.dist_task_combo.blockSignals(True)
+        self.dist_task_combo.clear()
+        if task_col and task_col in df.columns:
+            values = sorted([str(x) for x in df[task_col].dropna().unique().tolist() if str(x).strip()])
+            self.dist_task_combo.addItem("All tasks")
+            for v in values[:500]:
+                self.dist_task_combo.addItem(v)
+        else:
+            self.dist_task_combo.addItem("All tasks / not available")
+        ix = self.dist_task_combo.findText(current)
+        if ix >= 0:
+            self.dist_task_combo.setCurrentIndex(ix)
+        self.dist_task_combo.blockSignals(False)
+
+    def _dist_context_series(self, df: pd.DataFrame) -> tuple[pd.Series | None, str]:
+        if df is None or df.empty or not hasattr(self, "dist_context_combo"):
+            return None, "clinical context"
+        label = self.dist_context_combo.currentText()
+        candidates = self._safe_context_candidates(df) if hasattr(self, "_safe_context_candidates") else {}
+        if label in {"", "Auto / not available"}:
+            if "Diagnosis" in candidates:
+                label = "Diagnosis"
+            elif "ALSFRS bulbar" in candidates:
+                label = "ALSFRS bulbar severity"
+            else:
+                return None, "clinical context"
+        if label == "ALSFRS bulbar severity":
+            col = candidates.get("ALSFRS bulbar")
+            if not col:
+                return None, label
+            return df[col].map(self._bulbar_severity_local).astype("string"), label
+        if label == "ALSFRS total severity":
+            col = candidates.get("ALSFRS total")
+            if not col:
+                return None, label
+            return df[col].map(self._alsfrs_total_severity_local).astype("string"), label
+        if label == "ALSBDI severity":
+            col = candidates.get("ALSBDI")
+            if not col:
+                return None, label
+            score = pd.to_numeric(df[col], errors="coerce")
+            out = pd.Series("score_detected_cutoffs_pending", index=df.index, dtype="string")
+            out[score.isna()] = "no_score_or_control"
+            return out, label
+        col = candidates.get(label)
+        if col:
+            return df[col].astype("string"), label
+        return None, label
+
+    def _refresh_dist_context_controls(self, df: pd.DataFrame) -> None:
+        if not hasattr(self, "dist_context_combo"):
+            return
+        current = self.dist_context_combo.currentText()
+        candidates = self._safe_context_candidates(df) if hasattr(self, "_safe_context_candidates") else {}
+        options = ["Auto / not available"]
+        for label in ["Diagnosis", "ALSFRS bulbar severity", "ALSFRS total severity", "ALSBDI severity", "Sex / gender", "Session / visit", "Iteration"]:
+            if label == "ALSFRS bulbar severity" and "ALSFRS bulbar" not in candidates:
+                continue
+            if label == "ALSFRS total severity" and "ALSFRS total" not in candidates:
+                continue
+            if label == "ALSBDI severity" and "ALSBDI" not in candidates:
+                continue
+            if label in {"Diagnosis", "Sex / gender", "Session / visit", "Iteration"} and label not in candidates:
+                continue
+            options.append(label)
+        self.dist_context_combo.blockSignals(True)
+        self.dist_context_combo.clear()
+        for opt in options:
+            self.dist_context_combo.addItem(opt)
+        ix = self.dist_context_combo.findText(current)
+        if ix >= 0:
+            self.dist_context_combo.setCurrentIndex(ix)
+        self.dist_context_combo.blockSignals(False)
+        self._refresh_dist_context_value_combo(df)
+
+    def _refresh_dist_context_value_combo(self, df: pd.DataFrame) -> None:
+        if not hasattr(self, "dist_context_value_combo"):
+            return
+        current = self.dist_context_value_combo.currentText()
+        series, label = self._dist_context_series(df)
+        self.dist_context_value_combo.blockSignals(True)
+        self.dist_context_value_combo.clear()
+        self.dist_context_value_combo.addItem("All values")
+        if series is not None:
+            for v in sorted([str(x) for x in series.dropna().unique().tolist() if str(x).strip()])[:200]:
+                self.dist_context_value_combo.addItem(v)
+        ix = self.dist_context_value_combo.findText(current)
+        if ix >= 0:
+            self.dist_context_value_combo.setCurrentIndex(ix)
+        self.dist_context_value_combo.blockSignals(False)
+
+    def _distribution_scope_table(self) -> tuple[pd.DataFrame, str]:
+        df = self._active_analysis_table() if hasattr(self, "_active_analysis_table") else (self.analysis_df if self.analysis_df is not None else self.feature_df)
+        if df is None:
+            return pd.DataFrame(), "All tasks / all clinical context"
+        out = df.copy()
+        parts = []
+        task_col = self._task_col(out) if hasattr(self, "_task_col") else None
+        task_value = self.dist_task_combo.currentText() if hasattr(self, "dist_task_combo") else "All tasks"
+        if task_col and task_col in out.columns and task_value not in {"", "All tasks", "All tasks / not available"}:
+            out = out[out[task_col].astype(str).eq(str(task_value))].copy()
+            parts.append(f"Task = {task_value}")
+        else:
+            parts.append("All tasks")
+        series, label = self._dist_context_series(out)
+        value = self.dist_context_value_combo.currentText() if hasattr(self, "dist_context_value_combo") else "All values"
+        if series is not None:
+            out["__local_clinical_context__"] = series.values
+            if value not in {"", "All values", "Auto / not available"}:
+                out = out[out["__local_clinical_context__"].astype(str).eq(str(value))].copy()
+                parts.append(f"{label} = {value}")
+            else:
+                parts.append(f"{label} = all")
+        else:
+            parts.append("clinical context = unavailable")
+        return out, " | ".join(parts)
+
+    def _distribution_feature_cols(self, df: pd.DataFrame) -> list[str]:
+        if getattr(self, "mapping_df", None) is not None and not self.mapping_df.empty:
+            roles = role_lists(self.mapping_df)
+            return [c for c in roles.get("Feature", []) if c in df.columns]
+        return [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+
+    def generate_distribution_scope_plots(self) -> None:
+        df, scope_label = self._distribution_scope_table()
+        self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
+        feature_cols = self._distribution_feature_cols(df)
+        safe_scope = re.sub(r"[^A-Za-z0-9_.-]+", "_", scope_label).strip("_")[:90] or "distribution_scope"
+        if not hasattr(self, "plot_paths"):
+            self.plot_paths = {}
+        if df.empty or not feature_cols:
+            dist = pd.DataFrame()
+            expected = pd.DataFrame()
+            review = pd.DataFrame()
+            shape = pd.DataFrame()
+            outliers = pd.DataFrame()
+            row_burden = pd.DataFrame()
+        else:
+            dist = feature_distribution_summary(df, feature_cols)
+            expected = expected_range_flags(df, feature_cols, self.registry_df)
+            review = distribution_review_summary(dist, expected)
+            shape = distribution_shape_audit(dist, expected)
+            outliers = robust_outlier_flags(df, feature_cols, self.registry_df)
+            row_burden = row_outlier_burden_summary(outliers, len(feature_cols))
+        self.plot_paths["distribution_review_status"] = str(plot_distribution_review_summary(review, plots_dir / f"distribution_review_status_{safe_scope}.png"))
+        self.plot_paths["distribution_shape_summary"] = str(plot_distribution_shape_summary(shape, plots_dir / f"distribution_shape_summary_{safe_scope}.png"))
+        self.plot_paths["distribution_shape_landscape"] = str(plot_distribution_shape_landscape(shape, plots_dir / f"distribution_shape_landscape_{safe_scope}.png"))
+        self.plot_paths["expected_range_flags"] = str(plot_expected_range_flags(expected, plots_dir / f"feature_expected_range_flags_{safe_scope}.png"))
+        self.plot_paths["outlier_counts"] = str(plot_outlier_counts(outliers, plots_dir / f"outlier_counts_{safe_scope}.png"))
+        self.plot_paths["row_outlier_burden"] = str(plot_row_outlier_burden(row_burden, plots_dir / f"row_outlier_burden_{safe_scope}.png"))
+        self.plot_paths["variance_screen"] = str(plot_variance_screen(dist, plots_dir / f"variance_screen_{safe_scope}.png"))
+        if hasattr(self, "dist_plot_caption"):
+            self.dist_plot_caption.setText(
+                "Distributions uses value-shape and plausibility plots only. Current scope: "
+                f"{scope_label}. The base analysis table is not modified."
+            )
+
+    def regenerate_distribution_scope_plots(self) -> None:
+        self.generate_distribution_scope_plots()
+        self.preview_distribution_plot(self.dist_plot_combo.currentData() if hasattr(self, "dist_plot_combo") else "distribution_review_status", regenerate=False)
+
     def update_distribution_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
         if not hasattr(self, "dist_metric_grid"):
             return
@@ -2070,6 +2259,9 @@ class FeatureAnalysisGUI(QMainWindow):
         ]
         for idx, (title, value, subtitle) in enumerate(tiles):
             self.dist_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx, 0)
+        active_for_scope = self._active_analysis_table() if hasattr(self, "_active_analysis_table") else (self.analysis_df if self.analysis_df is not None else self.feature_df)
+        self._refresh_dist_task_combo(active_for_scope)
+        self._refresh_dist_context_controls(active_for_scope)
         self._fill_table(self.dist_summary_table, dist)
         self._fill_table(self.dist_review_table, review)
         self._fill_table(self.dist_outlier_table, outliers)
@@ -2093,8 +2285,10 @@ class FeatureAnalysisGUI(QMainWindow):
             self.dist_group_combo.blockSignals(True)
             self.dist_group_combo.clear()
             self.dist_group_combo.addItem("Auto")
+            if hasattr(self, "dist_context_combo") and self.dist_context_combo.currentText() not in {"", "Auto / not available"}:
+                self.dist_group_combo.addItem("Clinical context")
             if self.feature_df is not None:
-                for c in ["task", "diagnosis", "severity_bin", "modality", "sex", "gender", "session_id", "subject_id"]:
+                for c in ["task", "diagnosis", "severity_bin", "modality", "sex", "gender", "session_id", "subject_id", "__local_clinical_context__"]:
                     if c in active_df.columns:
                         self.dist_group_combo.addItem(c)
             if current:
@@ -2114,7 +2308,11 @@ class FeatureAnalysisGUI(QMainWindow):
         if not hasattr(self, "dist_group_combo"):
             return None
         val = self.dist_group_combo.currentText().strip()
-        return None if val in ["", "Auto"] else val
+        if val in ["", "Auto"]:
+            return None
+        if val == "Clinical context":
+            return "__local_clinical_context__"
+        return val
 
     def _selected_expected_bounds(self, feature: str | None) -> tuple[float | None, float | None]:
         if not feature or not getattr(self, "outputs", None):
@@ -2136,10 +2334,11 @@ class FeatureAnalysisGUI(QMainWindow):
         if not feature:
             return
         try:
-            active_df = self.analysis_df if self.analysis_df is not None else self.feature_df
+            active_df, scope_label = self._distribution_scope_table()
             self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
             low, high = self._selected_expected_bounds(feature)
-            path = plot_selected_feature_diagnostic(active_df, feature, plots_dir / "selected_feature_distribution.png", low, high, self._selected_distribution_group())
+            safe_scope = re.sub(r"[^A-Za-z0-9_.-]+", "_", scope_label).strip("_")[:90] or "distribution_scope"
+            path = plot_selected_feature_diagnostic(active_df, feature, plots_dir / f"selected_feature_distribution_{safe_scope}.png", low, high, self._selected_distribution_group())
             if not hasattr(self, "plot_paths"):
                 self.plot_paths = {}
             self.plot_paths["selected_feature_distribution"] = str(path)
@@ -2153,22 +2352,25 @@ class FeatureAnalysisGUI(QMainWindow):
         if not feature:
             return
         try:
-            active_df = self.analysis_df if self.analysis_df is not None else self.feature_df
+            active_df, scope_label = self._distribution_scope_table()
             self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
-            path = plot_group_feature_boxplot(active_df, feature, plots_dir / "selected_feature_by_group.png", self._selected_distribution_group())
+            safe_scope = re.sub(r"[^A-Za-z0-9_.-]+", "_", scope_label).strip("_")[:90] or "distribution_scope"
+            path = plot_group_feature_boxplot(active_df, feature, plots_dir / f"selected_feature_by_group_{safe_scope}.png", self._selected_distribution_group())
             if not hasattr(self, "plot_paths"):
                 self.plot_paths = {}
             self.plot_paths["selected_feature_by_group"] = str(path)
         except Exception:
             pass
 
-    def preview_distribution_plot(self, key: str) -> None:
+    def preview_distribution_plot(self, key: str, regenerate: bool = True) -> None:
         if key == "selected_feature_distribution":
             self.generate_selected_distribution_plot()
         elif key == "selected_feature_by_group":
             self.generate_selected_group_plot()
+        elif regenerate:
+            self.generate_distribution_scope_plots()
         elif not hasattr(self, "plot_paths") or key not in self.plot_paths or not Path(self.plot_paths.get(key, "")).exists():
-            self.regenerate_overview_plots()
+            self.generate_distribution_scope_plots()
         if not hasattr(self, "plot_paths") or key not in self.plot_paths:
             QMessageBox.information(self, "Plot unavailable", "Run Feature Analysis first, or this plot was not generated for the current dataset.")
             return
@@ -2178,13 +2380,7 @@ class FeatureAnalysisGUI(QMainWindow):
             return
         self.current_distribution_plot = path
         self.update_distribution_interpretation(key)
-        pix = QPixmap(str(path))
-        if pix.isNull():
-            self.dist_plot_preview.setText(f"Could not load plot:\n{path}")
-            return
-        scaled = pix.scaled(self.dist_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        self.dist_plot_preview.setPixmap(scaled)
-        self.dist_plot_preview.setToolTip(str(path))
+        self._display_plot_image(self.dist_plot_preview, path)
 
     def update_distribution_interpretation(self, key: str) -> None:
         if not hasattr(self, "dist_interpretation_label"):
