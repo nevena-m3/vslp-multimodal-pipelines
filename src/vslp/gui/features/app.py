@@ -78,10 +78,14 @@ from vslp.analysis.features.plots import (
     plot_reliability_subject_counts, plot_selected_feature_reliability,
     plot_recommendation_counts, plot_recommendation_score_landscape,
     plot_recommendation_reason_counts, plot_recommendation_family_summary,
-    plot_ml_export_manifest_summary
+    plot_ml_export_manifest_summary,
+    plot_task_counts, plot_task_subject_matrix, plot_task_label_context,
+    plot_task_feature_support, plot_longitudinal_subject_records,
+    plot_longitudinal_session_matrix, plot_longitudinal_iteration_counts,
+    plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.68.0"
+APP_VERSION = "v0.69.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -2804,16 +2808,23 @@ class FeatureAnalysisGUI(QMainWindow):
         plot_header.addWidget(plot_title)
         self.task_review_combo = QComboBox()
         self.task_review_combo.setMinimumWidth(360)
-        self.task_review_combo.addItems(["Task coverage", "Task x subject coverage", "Task x diagnosis/severity", "Task feature support"])
+        self.task_review_combo.addItem("Task coverage", "task_counts")
+        self.task_review_combo.addItem("Task x subject coverage", "task_subject_matrix")
+        self.task_review_combo.addItem("Task x diagnosis/severity", "task_label_context")
+        self.task_review_combo.addItem("Task feature support", "task_feature_support")
         plot_header.addWidget(self.task_review_combo, 1)
         show_btn = QPushButton("Show")
         show_btn.setProperty("secondary", True)
-        show_btn.clicked.connect(self.update_task_review_preview)
+        show_btn.clicked.connect(lambda: self.preview_task_review_plot(self.task_review_combo.currentData()))
         plot_header.addWidget(show_btn)
         regen = QPushButton("Regenerate")
         regen.clicked.connect(lambda: self.update_task_review_dashboard(getattr(self, "outputs", {})))
         plot_header.addWidget(regen)
         plot_header.addStretch(1)
+        open_btn = QPushButton("Open current plot")
+        open_btn.setProperty("secondary", True)
+        open_btn.clicked.connect(self.open_current_task_review_plot)
+        plot_header.addWidget(open_btn)
         plot_panel_layout.addLayout(plot_header)
 
         self.task_review_caption = QLabel("Task Review is the dedicated place for task axes and task selection. Downstream menus can use task focus controls, but detailed task interpretation belongs here.")
@@ -2826,18 +2837,23 @@ class FeatureAnalysisGUI(QMainWindow):
         self.task_focus_combo = QComboBox()
         self.task_focus_combo.setMinimumWidth(320)
         self.task_focus_combo.addItem("All tasks / not available")
-        self.task_focus_combo.currentIndexChanged.connect(lambda _=0: self.update_task_review_preview())
+        self.task_focus_combo.currentIndexChanged.connect(lambda _=0: self.preview_task_review_plot(self.task_review_combo.currentData() if hasattr(self, 'task_review_combo') else 'task_counts'))
         selectors.addWidget(self.task_focus_combo, 1)
         selectors.addStretch(1)
         plot_panel_layout.addLayout(selectors)
 
-        self.task_review_preview = QLabel("Run Feature Analysis to inspect task coverage.")
-        self.task_review_preview.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.task_review_preview = QLabel("Run Feature Analysis, then choose one task review plot.")
+        self.task_review_preview.setAlignment(Qt.AlignCenter)
         self.task_review_preview.setMinimumHeight(520)
         self.task_review_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.task_review_preview.setWordWrap(True)
-        self.task_review_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{INK}; padding:18px; font-size:13px; line-height:145%; }}")
+        self.task_review_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
         plot_panel_layout.addWidget(self.task_review_preview, 1)
+
+        self.task_review_interpretation = QLabel("Select a task plot to see interpretation guidance.")
+        self.task_review_interpretation.setWordWrap(True)
+        self.task_review_interpretation.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.task_review_interpretation.setStyleSheet(f"QLabel {{ background:#FFFFFF; color:{INK}; border:1px solid {LINE}; border-radius:10px; padding:12px; font-size:12px; line-height:140%; }}")
+        plot_panel_layout.addWidget(self.task_review_interpretation)
         task_split.addWidget(plot_panel, 1)
 
         side_panel = QFrame()
@@ -2910,16 +2926,23 @@ class FeatureAnalysisGUI(QMainWindow):
         plot_header.addWidget(plot_title)
         self.longitudinal_view_combo = QComboBox()
         self.longitudinal_view_combo.setMinimumWidth(360)
-        self.longitudinal_view_combo.addItems(["Subject repeats", "Session / visit structure", "Iteration coverage", "Visit-date coverage"])
+        self.longitudinal_view_combo.addItem("Subject repeats", "long_subject_records")
+        self.longitudinal_view_combo.addItem("Session / visit structure", "long_session_matrix")
+        self.longitudinal_view_combo.addItem("Iteration coverage", "long_iteration_counts")
+        self.longitudinal_view_combo.addItem("Visit-date coverage", "long_date_timeline")
         plot_header.addWidget(self.longitudinal_view_combo, 1)
         show_btn = QPushButton("Show")
         show_btn.setProperty("secondary", True)
-        show_btn.clicked.connect(self.update_longitudinal_preview)
+        show_btn.clicked.connect(lambda: self.preview_longitudinal_plot(self.longitudinal_view_combo.currentData()))
         plot_header.addWidget(show_btn)
         regen = QPushButton("Regenerate")
         regen.clicked.connect(lambda: self.update_longitudinal_dashboard(getattr(self, "outputs", {})))
         plot_header.addWidget(regen)
         plot_header.addStretch(1)
+        open_btn = QPushButton("Open current plot")
+        open_btn.setProperty("secondary", True)
+        open_btn.clicked.connect(self.open_current_longitudinal_plot)
+        plot_header.addWidget(open_btn)
         plot_panel_layout.addLayout(plot_header)
 
         self.longitudinal_caption = QLabel("This menu separates repeated iterations, visits/sessions, and dates from generic reliability. It is a readiness screen for future longitudinal models, not a model fitting page.")
@@ -2932,18 +2955,23 @@ class FeatureAnalysisGUI(QMainWindow):
         self.subject_focus_combo = QComboBox()
         self.subject_focus_combo.setMinimumWidth(320)
         self.subject_focus_combo.addItem("All subjects / not available")
-        self.subject_focus_combo.currentIndexChanged.connect(lambda _=0: self.update_longitudinal_preview())
+        self.subject_focus_combo.currentIndexChanged.connect(lambda _=0: self.preview_longitudinal_plot(self.longitudinal_view_combo.currentData() if hasattr(self, 'longitudinal_view_combo') else 'long_subject_records'))
         selectors.addWidget(self.subject_focus_combo, 1)
         selectors.addStretch(1)
         plot_panel_layout.addLayout(selectors)
 
-        self.longitudinal_preview = QLabel("Run Feature Analysis to inspect repeated-subject, iteration, and visit-date structure.")
-        self.longitudinal_preview.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.longitudinal_preview = QLabel("Run Feature Analysis, then choose one longitudinal review plot.")
+        self.longitudinal_preview.setAlignment(Qt.AlignCenter)
         self.longitudinal_preview.setMinimumHeight(520)
         self.longitudinal_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.longitudinal_preview.setWordWrap(True)
-        self.longitudinal_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{INK}; padding:18px; font-size:13px; line-height:145%; }}")
+        self.longitudinal_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
         plot_panel_layout.addWidget(self.longitudinal_preview, 1)
+
+        self.longitudinal_interpretation = QLabel("Select a longitudinal plot to see interpretation guidance.")
+        self.longitudinal_interpretation.setWordWrap(True)
+        self.longitudinal_interpretation.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.longitudinal_interpretation.setStyleSheet(f"QLabel {{ background:#FFFFFF; color:{INK}; border:1px solid {LINE}; border-radius:10px; padding:12px; font-size:12px; line-height:140%; }}")
+        plot_panel_layout.addWidget(self.longitudinal_interpretation)
         long_split.addWidget(plot_panel, 1)
 
         side_panel = QFrame()
@@ -3086,7 +3114,9 @@ class FeatureAnalysisGUI(QMainWindow):
             self._fill_table(self.task_diagnosis_table, pd.DataFrame())
             self._fill_table(self.task_feature_support_table, pd.DataFrame())
             self.task_note.setText("Task metadata is not available. Load metadata with a task column, or use the planned task/session parser when metadata cannot be supplied.")
-            self.update_task_review_preview()
+            self._task_feature_support_df = pd.DataFrame()
+            self.generate_task_review_plots()
+            self.preview_task_review_plot("task_counts")
             return
 
         task_series = df[task_col].astype(str).replace({"nan": ""})
@@ -3133,37 +3163,69 @@ class FeatureAnalysisGUI(QMainWindow):
         ]
         for idx, (title, value, subtitle) in enumerate(tiles):
             self.task_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx, 0)
+        self._task_feature_support_df = task_feature_support
         self._fill_table(self.task_summary_table, task_summary)
         self._fill_table(self.task_subject_table, task_subject)
         self._fill_table(self.task_diagnosis_table, task_diag)
         self._fill_table(self.task_feature_support_table, task_feature_support)
         self.task_note.setText("Task review generated. Use this menu to decide whether downstream plots should be interpreted task-specifically or pooled across tasks.")
         self._refresh_focus_combos()
-        self.update_task_review_preview()
+        self.generate_task_review_plots()
+        self.preview_task_review_plot(self.task_review_combo.currentData() if hasattr(self, "task_review_combo") else "task_counts")
 
-    def update_task_review_preview(self) -> None:
-        if not hasattr(self, "task_review_preview"):
-            return
+    def generate_task_review_plots(self) -> None:
         df = self._active_analysis_table()
+        self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
         task_col = self._task_col(df)
-        selected = self.task_focus_combo.currentText() if hasattr(self, "task_focus_combo") else "All tasks"
-        if df.empty or not task_col:
-            self.task_review_preview.setText("<b>Task metadata not available.</b><br><br>Load metadata containing task labels, or use a future filename/task parser for datasets where task is encoded in the file name.")
+        subj_col = self._subject_col(df)
+        diag_col = self._first_existing_col(df, ["diagnosis", "metadata__diagnosis", "Diagnosis"])
+        sev_col = self._first_existing_col(df, ["severity_score", "ALSFRS total score", "metadata__severity_score", "metadata__ALSFRS total score"])
+        label_col = diag_col or sev_col
+        support = pd.DataFrame()
+        if hasattr(self, "task_feature_support_table"):
+            # Prefer the table just filled in the GUI when available.
+            support = getattr(self, "_task_feature_support_df", pd.DataFrame())
+        if not hasattr(self, "plot_paths"):
+            self.plot_paths = {}
+        self.plot_paths["task_counts"] = str(plot_task_counts(df, task_col, plots_dir / "task_counts.png"))
+        self.plot_paths["task_subject_matrix"] = str(plot_task_subject_matrix(df, task_col, subj_col, plots_dir / "task_subject_matrix.png"))
+        self.plot_paths["task_label_context"] = str(plot_task_label_context(df, task_col, label_col, plots_dir / "task_label_context.png"))
+        self.plot_paths["task_feature_support"] = str(plot_task_feature_support(support, plots_dir / "task_feature_support.png"))
+
+    def preview_task_review_plot(self, key: str | None = None) -> None:
+        key = key or (self.task_review_combo.currentData() if hasattr(self, "task_review_combo") else "task_counts")
+        if not hasattr(self, "plot_paths") or key not in self.plot_paths or not Path(self.plot_paths.get(key, "")).exists():
+            self.generate_task_review_plots()
+        if not hasattr(self, "plot_paths") or key not in self.plot_paths:
+            QMessageBox.information(self, "Plot unavailable", "Run Feature Analysis first, or this task plot could not be generated.")
             return
-        subset = df
-        if selected and selected not in ["All tasks", "All tasks / not available"]:
-            subset = df[df[task_col].astype(str).eq(selected)]
-        n_rows = len(subset)
-        subj_col = self._subject_col(subset)
-        n_subjects = subset[subj_col].nunique() if subj_col else "not available"
-        tasks = sorted([str(x) for x in df[task_col].dropna().unique().tolist()])[:30]
-        self.task_review_preview.setText(
-            f"<b>Task focus:</b> {selected}<br>"
-            f"<b>Rows in focus:</b> {n_rows}<br>"
-            f"<b>Subjects in focus:</b> {n_subjects}<br><br>"
-            f"<b>Detected tasks:</b><br>{'<br>'.join(tasks) if tasks else 'none'}<br><br>"
-            "Use the detailed tables below to inspect task balance, subject-task coverage, and whether labels/severity are available within tasks."
-        )
+        path = Path(self.plot_paths[key])
+        if not path.exists():
+            QMessageBox.information(self, "Plot unavailable", f"Plot file not found:\n{path}")
+            return
+        self.current_task_review_plot = path
+        captions = {
+            "task_counts": "Rows by task. Use this to decide whether pooled analysis is dominated by one task or whether task-specific review is required.",
+            "task_subject_matrix": "Task x subject coverage. Sparse blocks indicate that task comparisons may be confounded by subject availability.",
+            "task_label_context": "Task x diagnosis/severity context. Use this to check whether labels are balanced across tasks before screening or ML.",
+            "task_feature_support": "Task-level feature support. High missingness in one task suggests task-specific feature incompatibility or acquisition issues.",
+        }
+        if hasattr(self, "task_review_interpretation"):
+            self.task_review_interpretation.setText(captions.get(key, "Task review plot."))
+        pix = QPixmap(str(path))
+        if pix.isNull():
+            self.task_review_preview.setText(f"Could not load plot:\n{path}")
+            return
+        scaled = pix.scaled(self.task_review_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.task_review_preview.setPixmap(scaled)
+        self.task_review_preview.setToolTip(str(path))
+
+    def open_current_task_review_plot(self) -> None:
+        path = getattr(self, "current_task_review_plot", None)
+        if not path:
+            QMessageBox.information(self, "No current plot", "Preview a task plot first, then open the full-resolution file.")
+            return
+        self.open_file(Path(path))
 
     def update_longitudinal_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
         if not hasattr(self, "longitudinal_metric_grid"):
@@ -3191,7 +3253,8 @@ class FeatureAnalysisGUI(QMainWindow):
             self._fill_table(self.long_session_table, pd.DataFrame())
             self._fill_table(self.long_iteration_table, pd.DataFrame())
             self._fill_table(self.long_date_table, pd.DataFrame())
-            self.update_longitudinal_preview()
+            self.generate_longitudinal_plots()
+            self.preview_longitudinal_plot("long_subject_records")
             return
 
         subj_counts = df.groupby(subj_col).size().reset_index(name="n_records").sort_values("n_records", ascending=False)
@@ -3225,31 +3288,57 @@ class FeatureAnalysisGUI(QMainWindow):
         self._fill_table(self.long_date_table, date_table)
         self.longitudinal_note.setText("Longitudinal / iteration review generated. Use this menu to decide whether repeated-measure, iteration-specific, or date-aware analysis is supported.")
         self._refresh_focus_combos()
-        self.update_longitudinal_preview()
+        self.generate_longitudinal_plots()
+        self.preview_longitudinal_plot(self.longitudinal_view_combo.currentData() if hasattr(self, "longitudinal_view_combo") else "long_subject_records")
 
-    def update_longitudinal_preview(self) -> None:
-        if not hasattr(self, "longitudinal_preview"):
-            return
+    def generate_longitudinal_plots(self) -> None:
         df = self._active_analysis_table()
+        self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
         subj_col = self._subject_col(df)
-        selected = self.subject_focus_combo.currentText() if hasattr(self, "subject_focus_combo") else "All subjects"
-        if df.empty or not subj_col:
-            self.longitudinal_preview.setText("<b>Subject ID not available.</b><br><br>Longitudinal or repeated-iteration review requires subject identifiers. Load metadata or use the planned filename/parser workflow.")
+        session_col = self._session_col(df)
+        iter_col = self._iteration_col(df)
+        date_col = self._date_col(df)
+        if not hasattr(self, "plot_paths"):
+            self.plot_paths = {}
+        self.plot_paths["long_subject_records"] = str(plot_longitudinal_subject_records(df, subj_col, plots_dir / "long_subject_records.png"))
+        self.plot_paths["long_session_matrix"] = str(plot_longitudinal_session_matrix(df, subj_col, session_col, plots_dir / "long_session_matrix.png"))
+        self.plot_paths["long_iteration_counts"] = str(plot_longitudinal_iteration_counts(df, subj_col, iter_col, plots_dir / "long_iteration_counts.png"))
+        self.plot_paths["long_date_timeline"] = str(plot_longitudinal_date_timeline(df, subj_col, date_col, plots_dir / "long_date_timeline.png"))
+
+    def preview_longitudinal_plot(self, key: str | None = None) -> None:
+        key = key or (self.longitudinal_view_combo.currentData() if hasattr(self, "longitudinal_view_combo") else "long_subject_records")
+        if not hasattr(self, "plot_paths") or key not in self.plot_paths or not Path(self.plot_paths.get(key, "")).exists():
+            self.generate_longitudinal_plots()
+        if not hasattr(self, "plot_paths") or key not in self.plot_paths:
+            QMessageBox.information(self, "Plot unavailable", "Run Feature Analysis first, or this longitudinal plot could not be generated.")
             return
-        subset = df
-        if selected and selected not in ["All subjects", "All subjects / not available"]:
-            subset = df[df[subj_col].astype(str).eq(selected)]
-        session_col = self._session_col(subset)
-        iter_col = self._iteration_col(subset)
-        date_col = self._date_col(subset)
-        self.longitudinal_preview.setText(
-            f"<b>Subject focus:</b> {selected}<br>"
-            f"<b>Rows in focus:</b> {len(subset)}<br>"
-            f"<b>Session / visit field:</b> {session_col or 'not available'}<br>"
-            f"<b>Iteration field:</b> {iter_col or 'not available'}<br>"
-            f"<b>Date field:</b> {date_col or 'not available'}<br><br>"
-            "Use the detailed tables below to inspect repeated records, visit/session structure, iteration coverage, and recording/visit dates."
-        )
+        path = Path(self.plot_paths[key])
+        if not path.exists():
+            QMessageBox.information(self, "Plot unavailable", f"Plot file not found:\n{path}")
+            return
+        self.current_longitudinal_plot = path
+        captions = {
+            "long_subject_records": "Records per subject. Subjects with more than one row can support repeated-measure review, but dates/sessions are still needed for true longitudinal interpretation.",
+            "long_session_matrix": "Subject x session/visit coverage. Sparse coverage indicates uneven visit structure and limits direct longitudinal comparisons.",
+            "long_iteration_counts": "Subject x iteration counts. Use this to inspect repeated attempts or iterations within subjects.",
+            "long_date_timeline": "Visit or recording dates by subject. This is the most direct visual check for longitudinal timing when dates are available.",
+        }
+        if hasattr(self, "longitudinal_interpretation"):
+            self.longitudinal_interpretation.setText(captions.get(key, "Longitudinal review plot."))
+        pix = QPixmap(str(path))
+        if pix.isNull():
+            self.longitudinal_preview.setText(f"Could not load plot:\n{path}")
+            return
+        scaled = pix.scaled(self.longitudinal_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.longitudinal_preview.setPixmap(scaled)
+        self.longitudinal_preview.setToolTip(str(path))
+
+    def open_current_longitudinal_plot(self) -> None:
+        path = getattr(self, "current_longitudinal_plot", None)
+        if not path:
+            QMessageBox.information(self, "No current plot", "Preview a longitudinal plot first, then open the full-resolution file.")
+            return
+        self.open_file(Path(path))
 
     def _screening_page(self) -> QWidget:
         body = QWidget()

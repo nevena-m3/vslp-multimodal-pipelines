@@ -71,11 +71,14 @@ def plot_missingness(summary: pd.DataFrame, path: Path, top_n: int = 30) -> Path
     return _save(fig, path)
 
 
-def plot_feature_availability_heatmap(df: pd.DataFrame, feature_cols: Sequence[str], path: Path, max_features: int = 80, max_rows: int = 300) -> Path:
-    cols = list(feature_cols)[:max_features]
+def plot_feature_availability_heatmap(df: pd.DataFrame, feature_cols: Sequence[str], path: Path, max_features: int | None = None, max_rows: int | None = None) -> Path:
+    # Prefer full-dataset display when feasible. Earlier versions capped this plot
+    # aggressively, which could hide task- or feature-specific missingness blocks.
+    cols_all = list(feature_cols)
+    cols = cols_all if max_features is None else cols_all[:max_features]
     if df is None or df.empty or not cols:
         return _empty(path, "No feature columns were detected for the availability matrix.", "Feature availability")
-    show = df.loc[:, cols].head(max_rows)
+    show = df.loc[:, cols] if max_rows is None else df.loc[:, cols].head(max_rows)
     mat = (~show.isna()).astype(int).to_numpy()
     fig, ax = plt.subplots(figsize=(12, max(5, min(12, 0.055 * len(show) + 3.5))))
     im = ax.imshow(mat, aspect="auto", interpolation="nearest", cmap="viridis", vmin=0, vmax=1)
@@ -1340,4 +1343,183 @@ def plot_ml_export_manifest_summary(recs: pd.DataFrame, path: Path) -> Path:
     for i, v in enumerate([included, excluded]):
         ax.text(i, v + max(1, len(df) * .02), str(v), ha="center", color=NAVY, fontweight="bold")
     ax.text(.5, -.20, "Export labels are review defaults, not final ML feature selection.", transform=ax.transAxes, ha="center", color=MUTED, fontsize=9)
+    return _save(fig, path)
+
+
+def plot_task_counts(df: pd.DataFrame, task_col: str | None, path: Path) -> Path:
+    if df is None or df.empty or not task_col or task_col not in df.columns:
+        return _empty(path, "No task metadata were available. Load metadata or infer tasks before task review.", "Task coverage")
+    s = df[task_col].astype(str).replace({"nan": ""})
+    counts = s[s.str.len() > 0].value_counts().sort_values(ascending=True)
+    if counts.empty:
+        return _empty(path, "Task column was detected, but no usable task values were found.", "Task coverage")
+    fig, ax = plt.subplots(figsize=(10, max(4.8, 0.38 * len(counts))))
+    ax.barh(counts.index.astype(str), counts.values, color=TEAL)
+    ax.set_xlabel("Rows / recordings", color=MUTED)
+    _style(ax, "Rows by task")
+    for i, v in enumerate(counts.values):
+        ax.text(v + max(0.2, counts.max() * 0.01), i, str(int(v)), va="center", fontsize=9, color=MUTED)
+    return _save(fig, path)
+
+
+def plot_task_subject_matrix(df: pd.DataFrame, task_col: str | None, subject_col: str | None, path: Path) -> Path:
+    if df is None or df.empty or not task_col or task_col not in df.columns:
+        return _empty(path, "No task metadata were available for task x subject coverage.", "Task x subject")
+    if not subject_col or subject_col not in df.columns:
+        return _empty(path, "No subject_id column was available for task x subject coverage.", "Task x subject")
+    mat = pd.crosstab(df[subject_col].astype(str), df[task_col].astype(str))
+    mat = mat.loc[mat.index.astype(str) != "", mat.columns.astype(str) != ""]
+    if mat.empty:
+        return _empty(path, "No usable task x subject matrix could be built.", "Task x subject")
+    fig, ax = plt.subplots(figsize=(max(9, 0.34 * len(mat.columns) + 4), max(5, min(16, 0.16 * len(mat.index) + 3))))
+    im = ax.imshow((mat > 0).astype(int).to_numpy(), aspect="auto", interpolation="nearest", cmap="viridis", vmin=0, vmax=1)
+    ax.set_title("Task x subject coverage", fontsize=14, fontweight="bold", color=NAVY, pad=12)
+    ax.set_xlabel(f"Tasks shown: {mat.shape[1]}", color=MUTED)
+    ax.set_ylabel(f"Subjects shown: {mat.shape[0]}", color=MUTED)
+    ax.set_xticks(range(mat.shape[1]))
+    ax.set_xticklabels(mat.columns.astype(str), rotation=45, ha="right", fontsize=8, color=MUTED)
+    y_step = max(1, mat.shape[0] // 35)
+    yticks = list(range(0, mat.shape[0], y_step))
+    ax.set_yticks(yticks)
+    ax.set_yticklabels([mat.index[i] for i in yticks], fontsize=7, color=MUTED)
+    cbar = fig.colorbar(im, ax=ax, fraction=0.025, pad=0.02)
+    cbar.set_ticks([0, 1]); cbar.set_ticklabels(["absent", "present"])
+    cbar.ax.tick_params(labelsize=8, colors=MUTED)
+    return _save(fig, path)
+
+
+def plot_task_label_context(df: pd.DataFrame, task_col: str | None, label_col: str | None, path: Path) -> Path:
+    if df is None or df.empty or not task_col or task_col not in df.columns:
+        return _empty(path, "No task metadata were available for task x label context.", "Task x label")
+    if not label_col or label_col not in df.columns:
+        return _empty(path, "No diagnosis or severity column was available for task context.", "Task x label")
+    task = df[task_col].astype(str).replace({"nan": ""})
+    vals = df[label_col]
+    numeric = pd.to_numeric(vals, errors="coerce")
+    if numeric.notna().sum() >= max(3, len(df) * 0.3):
+        g = df.assign(_task=task, _value=numeric).dropna(subset=["_value"])
+        if g.empty:
+            return _empty(path, "No numeric label/severity values were available.", "Task x severity")
+        order = g.groupby("_task")["_value"].median().sort_values().index.tolist()
+        data = [g.loc[g["_task"].eq(t), "_value"].dropna().to_numpy() for t in order if str(t)]
+        fig, ax = plt.subplots(figsize=(max(9, 0.45 * len(data) + 4), 5.6))
+        ax.boxplot(data, labels=[t for t in order if str(t)], vert=True, patch_artist=True)
+        ax.set_ylabel(str(label_col), color=MUTED)
+        ax.tick_params(axis="x", rotation=45)
+        _style(ax, f"{label_col} by task")
+        return _save(fig, path)
+    tab = pd.crosstab(task, vals.astype(str)).loc[lambda x: x.index.astype(str) != ""]
+    if tab.empty:
+        return _empty(path, "No categorical label values were available by task.", "Task x diagnosis")
+    fig, ax = plt.subplots(figsize=(max(9, 0.45 * tab.shape[1] + 0.3 * tab.shape[0] + 4), max(5, 0.35 * tab.shape[0] + 3)))
+    im = ax.imshow(tab.to_numpy(dtype=float), aspect="auto", cmap="Blues")
+    ax.set_title(f"{label_col} counts by task", fontsize=14, fontweight="bold", color=NAVY, pad=12)
+    ax.set_xticks(range(tab.shape[1])); ax.set_xticklabels(tab.columns.astype(str), rotation=45, ha="right", fontsize=8, color=MUTED)
+    ax.set_yticks(range(tab.shape[0])); ax.set_yticklabels(tab.index.astype(str), fontsize=8, color=MUTED)
+    for i in range(tab.shape[0]):
+        for j in range(tab.shape[1]):
+            ax.text(j, i, str(int(tab.iat[i, j])), ha="center", va="center", fontsize=8, color=NAVY)
+    fig.colorbar(im, ax=ax, fraction=0.025, pad=0.02)
+    return _save(fig, path)
+
+
+def plot_task_feature_support(task_feature_support: pd.DataFrame, path: Path) -> Path:
+    if task_feature_support is None or task_feature_support.empty or "task" not in task_feature_support.columns:
+        return _empty(path, "No task feature-support table was available.", "Task feature support")
+    df = task_feature_support.copy()
+    if "mean_feature_missingness" not in df.columns:
+        return _empty(path, "Task feature-support table did not include mean_feature_missingness.", "Task feature support")
+    df["mean_feature_missingness"] = pd.to_numeric(df["mean_feature_missingness"], errors="coerce")
+    df = df.dropna(subset=["mean_feature_missingness"]).sort_values("mean_feature_missingness", ascending=True)
+    if df.empty:
+        return _empty(path, "No task-level feature missingness values were available.", "Task feature support")
+    fig, ax = plt.subplots(figsize=(10, max(4.8, 0.38 * len(df))))
+    colors = [RED if v >= .40 else GOLD if v >= .15 else TEAL for v in df["mean_feature_missingness"]]
+    ax.barh(df["task"].astype(str), df["mean_feature_missingness"], color=colors)
+    ax.set_xlabel("Mean feature missingness", color=MUTED)
+    ax.set_xlim(0, 1)
+    _style(ax, "Task-level feature support")
+    return _save(fig, path)
+
+
+def plot_longitudinal_subject_records(df: pd.DataFrame, subject_col: str | None, path: Path) -> Path:
+    if df is None or df.empty or not subject_col or subject_col not in df.columns:
+        return _empty(path, "No subject_id column was available for repeated-subject review.", "Subject repeats")
+    counts = df[subject_col].astype(str).replace({"nan": ""})
+    counts = counts[counts.str.len() > 0].value_counts().sort_values(ascending=True)
+    if counts.empty:
+        return _empty(path, "No usable subject IDs were found.", "Subject repeats")
+    fig, ax = plt.subplots(figsize=(10, max(5, min(16, 0.18 * len(counts) + 3))))
+    colors = [TEAL if v > 1 else MUTED for v in counts.values]
+    ax.barh(counts.index.astype(str), counts.values, color=colors)
+    ax.set_xlabel("Records / rows", color=MUTED)
+    _style(ax, "Records per subject")
+    y_step = max(1, len(counts) // 45)
+    for label in ax.get_yticklabels():
+        label.set_visible(False)
+    ax.set_yticks(range(0, len(counts), y_step))
+    ax.set_yticklabels([counts.index[i] for i in range(0, len(counts), y_step)], fontsize=7, color=MUTED)
+    return _save(fig, path)
+
+
+def plot_longitudinal_session_matrix(df: pd.DataFrame, subject_col: str | None, session_col: str | None, path: Path) -> Path:
+    if df is None or df.empty or not subject_col or subject_col not in df.columns:
+        return _empty(path, "No subject_id column was available for session/visit review.", "Session / visit")
+    if not session_col or session_col not in df.columns:
+        return _empty(path, "No session_id or visit_id column was available.", "Session / visit")
+    mat = pd.crosstab(df[subject_col].astype(str), df[session_col].astype(str))
+    mat = mat.loc[mat.index.astype(str) != "", mat.columns.astype(str) != ""]
+    if mat.empty:
+        return _empty(path, "No usable subject x session matrix could be built.", "Session / visit")
+    fig, ax = plt.subplots(figsize=(max(9, 0.34 * mat.shape[1] + 4), max(5, min(16, 0.16 * mat.shape[0] + 3))))
+    im = ax.imshow((mat > 0).astype(int).to_numpy(), aspect="auto", interpolation="nearest", cmap="viridis", vmin=0, vmax=1)
+    ax.set_title("Subject x session/visit coverage", fontsize=14, fontweight="bold", color=NAVY, pad=12)
+    ax.set_xlabel("Session / visit", color=MUTED)
+    ax.set_ylabel("Subject", color=MUTED)
+    ax.set_xticks(range(mat.shape[1])); ax.set_xticklabels(mat.columns.astype(str), rotation=45, ha="right", fontsize=8, color=MUTED)
+    y_step = max(1, mat.shape[0] // 35)
+    ax.set_yticks(range(0, mat.shape[0], y_step)); ax.set_yticklabels([mat.index[i] for i in range(0, mat.shape[0], y_step)], fontsize=7, color=MUTED)
+    fig.colorbar(im, ax=ax, fraction=0.025, pad=0.02)
+    return _save(fig, path)
+
+
+def plot_longitudinal_iteration_counts(df: pd.DataFrame, subject_col: str | None, iteration_col: str | None, path: Path) -> Path:
+    if df is None or df.empty or not subject_col or subject_col not in df.columns:
+        return _empty(path, "No subject_id column was available for iteration review.", "Iterations")
+    if not iteration_col or iteration_col not in df.columns:
+        return _empty(path, "No iteration column was available.", "Iterations")
+    tab = pd.crosstab(df[subject_col].astype(str), df[iteration_col].astype(str))
+    tab = tab.loc[tab.index.astype(str) != "", tab.columns.astype(str) != ""]
+    if tab.empty:
+        return _empty(path, "No usable subject x iteration table could be built.", "Iterations")
+    fig, ax = plt.subplots(figsize=(max(9, 0.4 * tab.shape[1] + 4), max(5, min(16, 0.16 * tab.shape[0] + 3))))
+    im = ax.imshow(tab.to_numpy(dtype=float), aspect="auto", interpolation="nearest", cmap="Blues")
+    ax.set_title("Subject x iteration counts", fontsize=14, fontweight="bold", color=NAVY, pad=12)
+    ax.set_xlabel("Iteration", color=MUTED); ax.set_ylabel("Subject", color=MUTED)
+    ax.set_xticks(range(tab.shape[1])); ax.set_xticklabels(tab.columns.astype(str), rotation=45, ha="right", fontsize=8, color=MUTED)
+    y_step = max(1, tab.shape[0] // 35)
+    ax.set_yticks(range(0, tab.shape[0], y_step)); ax.set_yticklabels([tab.index[i] for i in range(0, tab.shape[0], y_step)], fontsize=7, color=MUTED)
+    fig.colorbar(im, ax=ax, fraction=0.025, pad=0.02)
+    return _save(fig, path)
+
+
+def plot_longitudinal_date_timeline(df: pd.DataFrame, subject_col: str | None, date_col: str | None, path: Path) -> Path:
+    if df is None or df.empty or not subject_col or subject_col not in df.columns:
+        return _empty(path, "No subject_id column was available for visit-date review.", "Visit dates")
+    if not date_col or date_col not in df.columns:
+        return _empty(path, "No recording_date or visit_date column was available.", "Visit dates")
+    d = df[[subject_col, date_col]].copy()
+    d["_date"] = pd.to_datetime(d[date_col], errors="coerce")
+    d = d.dropna(subset=["_date"])
+    if d.empty:
+        return _empty(path, "Visit/date field was detected, but no parseable dates were found.", "Visit dates")
+    subjects = sorted(d[subject_col].astype(str).unique().tolist())
+    ymap = {s: i for i, s in enumerate(subjects)}
+    fig, ax = plt.subplots(figsize=(11, max(5, min(16, 0.18 * len(subjects) + 3))))
+    ax.scatter(d["_date"], d[subject_col].astype(str).map(ymap), s=34, color=TEAL, alpha=0.85)
+    ax.set_title("Visit / recording dates by subject", fontsize=14, fontweight="bold", color=NAVY, pad=12)
+    ax.set_xlabel("Date", color=MUTED); ax.set_ylabel("Subject", color=MUTED)
+    y_step = max(1, len(subjects) // 35)
+    ax.set_yticks(range(0, len(subjects), y_step)); ax.set_yticklabels([subjects[i] for i in range(0, len(subjects), y_step)], fontsize=7, color=MUTED)
+    _style(ax)
     return _save(fig, path)
