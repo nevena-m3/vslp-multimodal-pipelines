@@ -85,7 +85,7 @@ from vslp.analysis.features.plots import (
     plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.76.0"
+APP_VERSION = "v0.77.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -680,6 +680,44 @@ class FeatureAnalysisGUI(QMainWindow):
         infer_row.addWidget(self.filename_parser_combo)
         infer_row.addStretch(1)
         infer_layout.addLayout(infer_row)
+
+        template_note = QLabel(
+            "Optional naming-template parser: after loading a table, the GUI shows one example filename/stem. "
+            "Assign token positions if your files follow a fixed convention. Leave fields as Auto to use the built-in safe parser."
+        )
+        template_note.setWordWrap(True)
+        template_note.setStyleSheet(f"color:{MUTED};")
+        infer_layout.addWidget(template_note)
+
+        self.filename_example_label = QLabel("Example filename: load a feature table to inspect naming tokens.")
+        self.filename_example_label.setWordWrap(True)
+        self.filename_example_label.setStyleSheet(f"color:{INK}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:8px;")
+        infer_layout.addWidget(self.filename_example_label)
+
+        token_grid = QGridLayout()
+        self.filename_token_combos = {}
+        token_roles = [
+            ("subject_id", "Subject ID"),
+            ("protocol_id", "Protocol ID"),
+            ("iteration", "Iteration"),
+            ("recording_date", "Recording date"),
+            ("task_code", "Task code"),
+            ("task", "Task name"),
+        ]
+        for row_i, (role_key, role_label) in enumerate(token_roles):
+            token_grid.addWidget(QLabel(role_label + ":"), row_i // 3, (row_i % 3) * 2)
+            combo = QComboBox()
+            combo.addItem("Auto")
+            combo.setMinimumWidth(210)
+            self.filename_token_combos[role_key] = combo
+            token_grid.addWidget(combo, row_i // 3, (row_i % 3) * 2 + 1)
+        infer_layout.addLayout(token_grid)
+
+        refresh_tokens_btn = QPushButton("Inspect filename example")
+        refresh_tokens_btn.setProperty("secondary", True)
+        refresh_tokens_btn.clicked.connect(self.refresh_filename_template_ui)
+        infer_layout.addWidget(refresh_tokens_btn)
+
         intro.layout.addWidget(infer_box)
 
         row = QHBoxLayout()
@@ -1068,6 +1106,111 @@ class FeatureAnalysisGUI(QMainWindow):
             return self.filename_parser_combo.currentText()
         return "Auto fallback: metadata first, then filename"
 
+
+    def _filename_tokens_from_stem(self, stem_value: object) -> list[str]:
+        return [t for t in re.split(r"[_\\-\\s]+", str(stem_value)) if t]
+
+    def _filename_template_mapping(self) -> dict[str, int | None]:
+        mapping: dict[str, int | None] = {}
+        combos = getattr(self, "filename_token_combos", {})
+        for role, combo in combos.items():
+            val = combo.currentText().strip() if combo is not None else "Auto"
+            if not val or val == "Auto":
+                mapping[role] = None
+                continue
+            m = re.match(r"Token\\s+(\\d+)\\b", val)
+            mapping[role] = int(m.group(1)) if m else None
+        return mapping
+
+    def _filename_template_is_active(self) -> bool:
+        mapping = self._filename_template_mapping()
+        return any(v is not None for v in mapping.values())
+
+    def _example_filename_value(self, df: pd.DataFrame | None = None) -> str | None:
+        source_df = df if df is not None else self.feature_df
+        if source_df is None or source_df.empty:
+            return None
+        source_col = self._file_source_column(source_df)
+        if source_col is None or source_col not in source_df.columns:
+            return None
+        s = source_df[source_col].dropna().astype(str)
+        if s.empty:
+            return None
+        return str(s.iloc[0])
+
+    def refresh_filename_template_ui(self) -> None:
+        """Show one real example filename and populate token-position dropdowns."""
+        if not hasattr(self, "filename_example_label") or not hasattr(self, "filename_token_combos"):
+            return
+        example = self._example_filename_value()
+        if not example:
+            self.filename_example_label.setText("Example filename: no filename-like column detected yet.")
+            for combo in self.filename_token_combos.values():
+                current = combo.currentText()
+                combo.blockSignals(True)
+                combo.clear()
+                combo.addItem("Auto")
+                combo.blockSignals(False)
+            return
+        stem = re.sub(r"\\.[A-Za-z0-9]+$", "", Path(str(example)).name)
+        tokens = self._filename_tokens_from_stem(stem)
+        token_text = " | ".join([f"{i}: {tok}" for i, tok in enumerate(tokens)])
+        self.filename_example_label.setText(f"Example filename/stem: {example}\\nTokens: {token_text}")
+        for role, combo in self.filename_token_combos.items():
+            current = combo.currentText()
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem("Auto")
+            for i, tok in enumerate(tokens):
+                combo.addItem(f"Token {i}: {tok}")
+            ix = combo.findText(current)
+            if ix >= 0:
+                combo.setCurrentIndex(ix)
+            combo.blockSignals(False)
+
+    def _parse_filename_context_by_template(self, stem_value: object) -> dict[str, object]:
+        tokens = self._filename_tokens_from_stem(stem_value)
+        mapping = self._filename_template_mapping()
+        result: dict[str, object] = {
+            "parsed_subject_id": pd.NA,
+            "parsed_protocol_id": pd.NA,
+            "parsed_iteration": pd.NA,
+            "parsed_recording_date": pd.NaT,
+            "parsed_task_code": pd.NA,
+            "parsed_task": pd.NA,
+            "parsed_context_status": "unparsed",
+            "parsed_template_mode": "user_template",
+        }
+        def token_at(role: str) -> str | None:
+            idx = mapping.get(role)
+            if idx is None or idx < 0 or idx >= len(tokens):
+                return None
+            return tokens[idx]
+        subj = token_at("subject_id")
+        proto = token_at("protocol_id")
+        iteration = token_at("iteration")
+        date = token_at("recording_date")
+        task_code = token_at("task_code")
+        task = token_at("task")
+        if subj:
+            result["parsed_subject_id"] = subj
+        if proto:
+            result["parsed_protocol_id"] = proto
+        if iteration:
+            result["parsed_iteration"] = iteration
+        if date:
+            parsed_date = pd.to_datetime(date, format="%Y%m%d", errors="coerce")
+            if pd.isna(parsed_date):
+                parsed_date = pd.to_datetime(date, errors="coerce")
+            result["parsed_recording_date"] = parsed_date
+        if task_code:
+            result["parsed_task_code"] = task_code
+        if task:
+            result["parsed_task"] = str(task).upper()
+        if any(pd.notna(result.get(k)) for k in ["parsed_subject_id", "parsed_protocol_id", "parsed_iteration", "parsed_recording_date", "parsed_task_code", "parsed_task"]):
+            result["parsed_context_status"] = "parsed_by_user_template"
+        return result
+
     def _parse_filename_context_frame(self, df: pd.DataFrame) -> pd.DataFrame:
         """Parse common VSLP filename context without requiring metadata.
 
@@ -1086,15 +1229,21 @@ class FeatureAnalysisGUI(QMainWindow):
         stem = base.str.replace(r"\.[a-z0-9]+$", "", regex=True)
         out["parsed_file_stem"] = stem
 
+        use_template = self._filename_template_is_active()
+
         def parse_one(s: str) -> dict[str, object]:
+            if use_template:
+                return self._parse_filename_context_by_template(s)
             tokens = [t for t in re.split(r"[_\\-\\s]+", str(s)) if t]
             result: dict[str, object] = {
                 "parsed_subject_id": pd.NA,
                 "parsed_protocol_id": pd.NA,
                 "parsed_iteration": pd.NA,
                 "parsed_recording_date": pd.NaT,
+                "parsed_task_code": pd.NA,
                 "parsed_task": pd.NA,
                 "parsed_context_status": "unparsed",
+                "parsed_template_mode": "auto",
             }
             if not tokens:
                 return result
@@ -1116,6 +1265,7 @@ class FeatureAnalysisGUI(QMainWindow):
             if date_idx is not None:
                 tail = tokens[date_idx + 1:]
                 if tail and re.fullmatch(r"\d+", tail[0]):
+                    result["parsed_task_code"] = tail[0]
                     tail = tail[1:]
                 task_tokens = [t for t in tail if re.search(r"[A-Za-z]", t)]
             if not task_tokens:
@@ -1162,6 +1312,7 @@ class FeatureAnalysisGUI(QMainWindow):
         fill_col("protocol_id", "parsed_protocol_id")
         fill_col("iteration", "parsed_iteration")
         fill_col("recording_date", "parsed_recording_date")
+        fill_col("task_code", "parsed_task_code")
         fill_col("task", "parsed_task")
         for c in parsed.columns:
             if c not in out.columns:
@@ -5325,6 +5476,7 @@ Decision colors:
             self.registry_df = read_table(self.registry_picker.path) if self.registry_picker.path else None
             kind = infer_table_kind(self.feature_picker.path, explicit="feature")
             feature_mapping = classify_columns(self.feature_df, table_kind=kind, registry=self.registry_df)
+            self.refresh_filename_template_ui()
             self.analysis_df, self.mapping_df, self.metadata_join_strategy = self._merge_metadata_context(self.feature_df, feature_mapping)
             self.proposed_mapping_df = self.mapping_df.copy()
             self.mapping_modified = False
@@ -5341,7 +5493,7 @@ Decision colors:
                 self.log("No metadata table loaded; filename context inference can provide subject/iteration/date/task when filenames follow a parsable pattern.")
             parsed_df = getattr(self, "filename_context_parse_df", pd.DataFrame())
             if parsed_df is not None and not parsed_df.empty and "parsed_context_status" in parsed_df.columns:
-                parsed_ok = int(parsed_df["parsed_context_status"].astype(str).eq("parsed").sum())
+                parsed_ok = int(parsed_df["parsed_context_status"].astype(str).isin(["parsed", "parsed_by_user_template"]).sum())
                 self.log(f"Filename context parser mode: {self._filename_parser_mode()} | parsed task context rows: {parsed_ok} / {len(parsed_df)}")
             if self.registry_df is not None:
                 self.log(f"Loaded registry/policy table: {self.registry_df.shape[0]} rows x {self.registry_df.shape[1]} columns")
@@ -5411,6 +5563,7 @@ Decision colors:
             QMessageBox.information(self, "No table loaded", "Load a primary feature table first.")
             return
         feature_mapping = classify_columns(self.feature_df, table_kind="feature", registry=self.registry_df)
+        self.refresh_filename_template_ui()
         self.analysis_df, self.mapping_df, self.metadata_join_strategy = self._merge_metadata_context(self.feature_df, feature_mapping)
         self.proposed_mapping_df = self.mapping_df.copy()
         self.mapping_modified = False
