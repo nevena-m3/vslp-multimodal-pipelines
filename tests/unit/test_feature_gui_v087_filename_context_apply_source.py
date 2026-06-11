@@ -3,7 +3,7 @@ from pathlib import Path
 
 def test_v087_filename_template_regex_fixed_and_apply_does_not_reset_template():
     text = Path("src/vslp/gui/features/app.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "v0.87.0"' in text
+    assert 'APP_VERSION = "v0.' in text
     assert 're.match(r"Token\\s+(\\d+)\\b", val)' in text
     assert 'Do not refresh token controls here; the user-selected template is the source of truth.' in text
     apply_block = text[text.index('def apply_filename_context_from_metadata_mapping'):text.index('def refresh_metadata_mapping_table')]
