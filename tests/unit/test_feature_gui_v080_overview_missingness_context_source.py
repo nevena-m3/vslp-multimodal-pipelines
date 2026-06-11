@@ -3,7 +3,7 @@ from pathlib import Path
 
 def test_feature_gui_v080_overview_uses_robust_context_detection():
     text = Path("src/vslp/gui/features/app.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "v0.85.0"' in text
+    assert 'APP_VERSION = "v0.86.0"' in text
     assert 'def _context_aliases' in text
     assert 'def _first_context_column' in text
     assert 'def _overview_context_detection_table' in text

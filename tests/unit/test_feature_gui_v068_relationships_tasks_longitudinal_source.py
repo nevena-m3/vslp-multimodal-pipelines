@@ -3,7 +3,7 @@ from pathlib import Path
 
 def test_feature_gui_v068_relationships_visual_parity():
     text = Path("src/vslp/gui/features/app.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "v0.85.0"' in text
+    assert 'APP_VERSION = "v0.86.0"' in text
     block = text[text.index('def _relationships_page'):text.index('def update_relationships_dashboard')]
     assert 'Relationship snapshot' in block
     assert 'Detailed relationship tables' in block

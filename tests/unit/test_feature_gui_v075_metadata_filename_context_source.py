@@ -3,7 +3,7 @@ from pathlib import Path
 
 def test_feature_gui_v075_project_has_filename_context_controls():
     text = Path("src/vslp/gui/features/app.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "v0.85.0"' in text
+    assert 'APP_VERSION = "v0.86.0"' in text
     assert 'Filename context inference' in text
     assert 'self.filename_parser_combo' in text
     assert 'Auto fallback: metadata first, then filename' in text

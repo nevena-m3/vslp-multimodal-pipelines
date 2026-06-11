@@ -3,7 +3,7 @@ from pathlib import Path
 
 def test_feature_gui_v064_missingness_matches_overview_layout():
     text = Path("src/vslp/gui/features/app.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "v0.85.0"' in text
+    assert 'APP_VERSION = "v0.86.0"' in text
     block = text[text.index('def _missingness_page'):text.index('def update_missingness_dashboard')]
     assert 'Availability snapshot' in block
     assert 'Detailed missingness tables' in block
