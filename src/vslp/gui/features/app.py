@@ -81,7 +81,7 @@ from vslp.analysis.features.plots import (
     plot_ml_export_manifest_summary
 )
 
-APP_VERSION = "v0.66.0"
+APP_VERSION = "v0.67.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -2181,10 +2181,6 @@ class FeatureAnalysisGUI(QMainWindow):
             "QC Integration",
             "Artifact-aware interpretation layer. This screen asks whether feature values, missingness, or outliers may be explained by acquisition quality rather than physiology."
         )
-        self.qc_metric_grid = QGridLayout()
-        self.qc_metric_grid.setHorizontalSpacing(12)
-        self.qc_metric_grid.setVerticalSpacing(12)
-        card.layout.addLayout(self.qc_metric_grid)
 
         self.qc_note = QLabel(
             "Load an optional QC table in Project, accept Column Mapping, and run Feature Analysis. QC is interpreted as a multidimensional profile: additive interference, gain/level dynamics, reverberation/echo, channel/device/platform, nonlinear distortion, and temporal discontinuities."
@@ -2193,7 +2189,120 @@ class FeatureAnalysisGUI(QMainWindow):
         self.qc_note.setStyleSheet(f"color:{INK}; background:#F7FAFD; border:1px solid {LINE}; border-radius:10px; padding:10px;")
         card.layout.addWidget(self.qc_note)
 
+        qc_split = QHBoxLayout()
+        qc_split.setSpacing(14)
+
+        # Main visual area matches Overview, Missingness, and Distributions:
+        # one large plot panel, one compact toolbar, selected controls inside the
+        # plot context, and detailed tables below.
+        plot_panel = QFrame()
+        plot_panel.setStyleSheet(f"QFrame {{ background:#F8FBFE; border:1px solid {LINE}; border-radius:12px; }}")
+        plot_panel_layout = QVBoxLayout(plot_panel)
+        plot_panel_layout.setContentsMargins(14, 14, 14, 14)
+        plot_panel_layout.setSpacing(10)
+
+        plot_header = QHBoxLayout()
+        plot_header.setSpacing(10)
+        plot_title = QLabel("QC plot")
+        plot_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
+        plot_header.addWidget(plot_title)
+
+        self.qc_plot_combo = QComboBox()
+        self.qc_plot_combo.setMinimumWidth(360)
+        self.qc_plot_combo.addItem("QC framework", "qc_artifact_model")
+        self.qc_plot_combo.addItem("Family burden", "qc_family_burden")
+        self.qc_plot_combo.addItem("QC metric distributions", "qc_metric_distributions")
+        self.qc_plot_combo.addItem("Feature x QC-family heatmap", "qc_feature_association_heatmap")
+        self.qc_plot_combo.addItem("Top feature-QC associations", "qc_top_feature_associations")
+        self.qc_plot_combo.addItem("Missingness linked to QC", "qc_missingness_associations")
+        self.qc_plot_combo.addItem("Row QC burden", "qc_row_burden")
+        self.qc_plot_combo.addItem("Selected feature x selected QC", "selected_feature_qc_scatter")
+        plot_header.addWidget(self.qc_plot_combo, 1)
+
+        show_btn = QPushButton("Show")
+        show_btn.setProperty("secondary", True)
+        show_btn.clicked.connect(lambda: self.preview_qc_plot(self.qc_plot_combo.currentData()))
+        plot_header.addWidget(show_btn)
+
+        regen = QPushButton("Regenerate")
+        regen.clicked.connect(self.regenerate_overview_plots)
+        plot_header.addWidget(regen)
+
+        plot_header.addStretch(1)
+        open_btn = QPushButton("Open current plot")
+        open_btn.setProperty("secondary", True)
+        open_btn.clicked.connect(self.open_current_qc_plot)
+        plot_header.addWidget(open_btn)
+        plot_panel_layout.addLayout(plot_header)
+
+        self.qc_plot_caption = QLabel(
+            "QC Integration uses only acquisition-sensitivity plots: artifact framework, QC burden, feature-QC associations, missingness-QC links, row burden, and one selected feature x QC metric scatter. It does not duplicate Missingness, Distributions, Relationships, Screening, or ML Export."
+        )
+        self.qc_plot_caption.setWordWrap(True)
+        self.qc_plot_caption.setStyleSheet(f"color:{MUTED}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:9px;")
+        plot_panel_layout.addWidget(self.qc_plot_caption)
+
+        selectors = QHBoxLayout()
+        selectors.setSpacing(10)
+        selectors.addWidget(QLabel("Feature:"))
+        self.qc_feature_combo = QComboBox()
+        self.qc_feature_combo.setMinimumWidth(320)
+        selectors.addWidget(self.qc_feature_combo, 1)
+        selectors.addWidget(QLabel("QC metric:"))
+        self.qc_metric_combo = QComboBox()
+        self.qc_metric_combo.setMinimumWidth(220)
+        selectors.addWidget(self.qc_metric_combo)
+        plot_panel_layout.addLayout(selectors)
+
+        self.qc_plot_preview = QLabel("Run Feature Analysis, then choose one QC plot.")
+        self.qc_plot_preview.setAlignment(Qt.AlignCenter)
+        self.qc_plot_preview.setMinimumHeight(520)
+        self.qc_plot_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.qc_plot_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
+        plot_panel_layout.addWidget(self.qc_plot_preview, 1)
+
+        self.qc_interpretation_label = QLabel("Select a plot to see structured interpretation guidance.")
+        self.qc_interpretation_label.setWordWrap(True)
+        self.qc_interpretation_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.qc_interpretation_label.setStyleSheet(f"QLabel {{ background:#FFFFFF; color:{INK}; border:1px solid {LINE}; border-radius:10px; padding:12px; font-size:12px; line-height:140%; }}")
+        plot_panel_layout.addWidget(self.qc_interpretation_label)
+
+        qc_split.addWidget(plot_panel, 1)
+
+        # Side summary keeps QC metrics visible without occupying the top of the
+        # page, matching Overview, Missingness, and Distributions.
+        side_panel = QFrame()
+        side_panel.setStyleSheet(f"QFrame {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:12px; }}")
+        side_layout = QVBoxLayout(side_panel)
+        side_layout.setContentsMargins(12, 12, 12, 12)
+        side_layout.setSpacing(10)
+        side_title = QLabel("QC snapshot")
+        side_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
+        side_layout.addWidget(side_title)
+        side_note = QLabel("Compact acquisition-context metrics. Use these as navigation cues; detailed QC summary, metric catalog, feature-QC associations, missingness-QC links, and row-burden tables remain below the plot.")
+        side_note.setWordWrap(True)
+        side_note.setStyleSheet(f"color:{MUTED}; border:none; background:transparent; font-size:12px;")
+        side_layout.addWidget(side_note)
+        self.qc_metric_grid = QGridLayout()
+        self.qc_metric_grid.setHorizontalSpacing(8)
+        self.qc_metric_grid.setVerticalSpacing(8)
+        side_layout.addLayout(self.qc_metric_grid)
+        side_layout.addStretch(1)
+        side_panel.setFixedWidth(300)
+        qc_split.addWidget(side_panel)
+        card.layout.addLayout(qc_split)
+
+        tables_header = QLabel("Detailed QC integration tables")
+        tables_header.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; padding-top:8px;")
+        card.layout.addWidget(tables_header)
+
         tabs = QTabWidget()
+        tabs.setStyleSheet(f"""
+            QTabWidget::pane {{ border: 1px solid {LINE}; border-radius: 8px; background: #FFFFFF; }}
+            QTabBar::tab {{ background:#F7FAFD; color:{NAVY}; border:1px solid {LINE}; border-bottom:none; padding:8px 14px; min-height:22px; }}
+            QTabBar::tab:selected {{ background:#FFFFFF; color:{NAVY}; border-top:2px solid {TEAL}; font-weight:700; }}
+            QTabBar::tab:hover {{ background:#F3FAF9; color:{NAVY}; }}
+        """)
         self.qc_summary_table = self._simple_table()
         self.qc_catalog_table = self._simple_table()
         self.qc_family_table = self._simple_table()
@@ -2212,44 +2321,6 @@ class FeatureAnalysisGUI(QMainWindow):
         tabs.addTab(self.qc_row_table, "Row QC burden")
         card.layout.addWidget(tabs)
 
-        plot_card = Card(
-            "QC plot board",
-            "Use these plots to decide whether acoustic feature behavior may be acquisition-sensitive. Every plot is descriptive and should be interpreted with task, clinical, segmentation, and raw-audio context."
-        )
-        controls = QHBoxLayout()
-        self.qc_feature_combo = QComboBox()
-        self.qc_feature_combo.setMinimumWidth(270)
-        self.qc_metric_combo = QComboBox()
-        self.qc_metric_combo.setMinimumWidth(270)
-        controls.addWidget(QLabel("Feature:")); controls.addWidget(self.qc_feature_combo)
-        controls.addSpacing(12)
-        controls.addWidget(QLabel("QC metric:")); controls.addWidget(self.qc_metric_combo)
-        controls.addStretch(1)
-        plot_card.layout.addLayout(controls)
-
-        self._add_standard_plot_gallery(
-            plot_card.layout,
-            "QC plot",
-            "QC Integration keeps only acquisition-sensitivity plots: artifact framework, QC burden, feature-QC associations, missingness-QC links, row burden, and one selected feature x QC metric scatter.",
-            "qc_plot_combo",
-            [
-                ("QC framework", "qc_artifact_model"),
-                ("Family burden", "qc_family_burden"),
-                ("QC metric distributions", "qc_metric_distributions"),
-                ("Feature x QC-family heatmap", "qc_feature_association_heatmap"),
-                ("Top feature-QC associations", "qc_top_feature_associations"),
-                ("Missingness linked to QC", "qc_missingness_associations"),
-                ("Row QC burden", "qc_row_burden"),
-                ("Selected feature x selected QC", "selected_feature_qc_scatter"),
-            ],
-            "qc_plot_preview",
-            "qc_interpretation_label",
-            self.preview_qc_plot,
-            self.open_current_qc_plot,
-            "Run Feature Analysis, then choose one QC plot.",
-            520,
-        )
-        layout.addWidget(plot_card)
         layout.addWidget(card)
         return self._wrap_scroll(body)
 
@@ -2267,15 +2338,15 @@ class FeatureAnalysisGUI(QMainWindow):
             hit = summary[summary["metric"].astype(str).eq(name)]
             return hit["value"].iloc[0] if not hit.empty else default
         tiles = [
-            ("QC table", "yes" if str(metric_value("qc_table_loaded", False)).lower() == "true" else "no", "artifact context supplied"),
-            ("QC rows", metric_value("qc_rows"), "recordings with QC data"),
-            ("QC metrics", metric_value("numeric_qc_metrics"), "numeric artifact indicators"),
-            ("Families", metric_value("artifact_families_detected"), "recognized QC domains"),
-            ("Feature-QC pairs >= .30", metric_value("feature_qc_pairs_abs_rho_ge_0_30", 0), "monitor associations"),
-            ("Feature-QC pairs >= .50", metric_value("feature_qc_pairs_abs_rho_ge_0_50", 0), "review associations"),
+            ("QC table", "yes" if str(metric_value("qc_table_loaded", False)).lower() == "true" else "no", "artifact context"),
+            ("QC rows", metric_value("qc_rows"), "recordings with QC"),
+            ("QC metrics", metric_value("numeric_qc_metrics"), "numeric indicators"),
+            ("Families", metric_value("artifact_families_detected"), "artifact domains"),
+            ("Monitor pairs", metric_value("feature_qc_pairs_abs_rho_ge_0_30", 0), "abs rho >= .30"),
+            ("Review pairs", metric_value("feature_qc_pairs_abs_rho_ge_0_50", 0), "abs rho >= .50"),
         ]
         for idx, (title, value, subtitle) in enumerate(tiles):
-            self.qc_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx // 3, idx % 3)
+            self.qc_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx, 0)
 
         self._fill_table(self.qc_summary_table, summary)
         self._fill_table(self.qc_catalog_table, outputs.get("qc_metric_catalog", pd.DataFrame()))
