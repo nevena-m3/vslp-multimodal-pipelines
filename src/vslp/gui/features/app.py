@@ -85,7 +85,7 @@ from vslp.analysis.features.plots import (
     plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.88.0"
+APP_VERSION = "v0.89.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -1036,26 +1036,33 @@ class FeatureAnalysisGUI(QMainWindow):
         role_map = self._accepted_metadata_role_map()
         if not role_map:
             return meta_df
-        out = meta_df.copy()
+        out = self._ensure_unique_columns(meta_df.copy(), "Metadata table")
         exact_lookup = {str(c): str(c) for c in out.columns}
-        norm_lookup = {normalize_name(c): str(c) for c in out.columns}
+        norm_lookup: dict[str, str] = {}
+        for c in out.columns:
+            norm_lookup.setdefault(normalize_name(c), str(c))
         for source, canonical in role_map.items():
             source_col = exact_lookup.get(source) or norm_lookup.get(normalize_name(source))
             if source_col is None or source_col not in out.columns:
                 continue
             if canonical == source_col:
                 continue
-            values = out[source_col]
+            values = out.loc[:, source_col]
+            if isinstance(values, pd.DataFrame):
+                values = values.iloc[:, 0]
             if canonical not in out.columns:
                 out[canonical] = values
                 exact_lookup[canonical] = canonical
-                norm_lookup[normalize_name(canonical)] = canonical
+                norm_lookup.setdefault(normalize_name(canonical), canonical)
             else:
-                empty = self._is_effectively_empty(out[canonical])
+                existing = out.loc[:, canonical]
+                if isinstance(existing, pd.DataFrame):
+                    existing = existing.iloc[:, 0]
+                empty = self._is_effectively_empty(existing)
                 if bool(empty.any()):
-                    out[canonical] = out[canonical].astype("object")
+                    out[canonical] = existing.astype("object")
                     out.loc[empty, canonical] = values.loc[empty].astype("object")
-        return out
+        return self._ensure_unique_columns(out, "Metadata table")
 
     def _infer_metadata_role(self, column: str) -> tuple[str, str]:
         n = normalize_name(column)
@@ -2055,7 +2062,56 @@ class FeatureAnalysisGUI(QMainWindow):
 
     def _normal_col_lookup(self, df: pd.DataFrame) -> dict[str, str]:
         from vslp.analysis.features.column_mapping import normalize_name
-        return {normalize_name(c): str(c) for c in df.columns}
+        lookup: dict[str, str] = {}
+        for c in df.columns:
+            key = normalize_name(c)
+            if key and key not in lookup:
+                lookup[key] = str(c)
+        return lookup
+
+    def _unique_column_name(self, base: str, used: set[str]) -> str:
+        """Return a stable unique column name without disturbing the first occurrence."""
+        name = str(base)
+        if name not in used:
+            return name
+        i = 2
+        while f"{name}__dup{i}" in used:
+            i += 1
+        return f"{name}__dup{i}"
+
+    def _ensure_unique_columns(self, df: pd.DataFrame, table_label: str = "table") -> pd.DataFrame:
+        """Guarantee unique DataFrame columns before pandas assignment/merge operations.
+
+        Acoustic metadata exports can contain repeated REDCap/blank-derived fields, and
+        canonical role propagation can map several source fields to the same stable
+        context name. Pandas raises "Setting with non-unique columns is not allowed"
+        when later assigning into such a frame, so keep the first name and suffix later
+        duplicates deterministically.
+        """
+        if df is None or df.empty:
+            return df
+        cols = [str(c) for c in df.columns]
+        if len(cols) == len(set(cols)):
+            return df
+        used: set[str] = set()
+        new_cols: list[str] = []
+        renamed: list[str] = []
+        for c in cols:
+            if c in used:
+                unique = self._unique_column_name(c, used)
+                new_cols.append(unique)
+                used.add(unique)
+                renamed.append(f"{c}->{unique}")
+            else:
+                new_cols.append(c)
+                used.add(c)
+        out = df.copy()
+        out.columns = new_cols
+        try:
+            self.log(f"{table_label}: renamed duplicate columns: " + "; ".join(renamed[:12]) + (" ..." if len(renamed) > 12 else ""))
+        except Exception:
+            pass
+        return out
 
     def _canonical_metadata_name(self, column: str) -> str:
         """Map common REDCap/export names to the Feature GUI's canonical field names."""
@@ -2190,7 +2246,7 @@ class FeatureAnalysisGUI(QMainWindow):
             score = 0.0
             score += 20.0 if any(x in cname for x in ["file", "filename", "path", "media", "raw", "source"]) else 0.0
             score += 14.0 if any(x in cname for x in ["video", "audio", "record", "recording", "wav", "webm"]) else 0.0
-            score += float(sample.str.contains(r"\.(wav|webm|mp4|avi|mov|csv)$", case=False, regex=True).mean()) * 8.0
+            score += float(sample.str.contains(r"\.(?:wav|webm|mp4|avi|mov|csv)$", case=False, regex=True).mean()) * 8.0
             score += float(sample.str.contains(r"[_\-]", regex=True).mean()) * 4.0
             score += float(sample.str.contains(r"[A-Za-z]", regex=True).mean()) * 2.0
             score += float(sample.str.contains(r"\d", regex=True).mean()) * 2.0
@@ -2481,12 +2537,12 @@ class FeatureAnalysisGUI(QMainWindow):
     def _apply_metadata_mapping_to_table(self, meta_df: pd.DataFrame) -> pd.DataFrame:
         """Rename user-mapped metadata columns to canonical context names.
 
-        Multiple columns mapped to the same canonical role are preserved by
-        prefixing later duplicates with metadata__.
+        Multiple columns mapped to the same canonical role are preserved with
+        deterministic suffixes; no duplicate DataFrame columns are allowed.
         """
         if meta_df is None or meta_df.empty or self.metadata_mapping_df.empty:
             return meta_df
-        out = meta_df.copy()
+        out = self._ensure_unique_columns(meta_df.copy(), "Metadata table")
         rename: dict[str, str] = {}
         used = set(str(c) for c in out.columns)
         for _, row in self.metadata_mapping_df.iterrows():
@@ -2495,20 +2551,20 @@ class FeatureAnalysisGUI(QMainWindow):
             role = str(row.get("role", "Ignore"))
             if not col or col not in out.columns or not canon or role == "Ignore":
                 continue
-            target = canon
-            if target in used and target != col:
-                target = f"metadata__{canon}"
+            if canon == col:
+                continue
+            target = canon if canon not in used else self._unique_column_name(f"metadata__{canon}", used)
             rename[col] = target
             used.add(target)
         if rename:
             out = out.rename(columns=rename)
-        return out
+        return self._ensure_unique_columns(out, "Metadata table")
 
     def _standardize_metadata_table(self, meta_df: pd.DataFrame) -> pd.DataFrame:
         """Rename/map metadata columns and add match helpers without discarding originals."""
         if meta_df is None or meta_df.empty:
             return meta_df
-        out = meta_df.copy()
+        out = self._ensure_unique_columns(meta_df.copy(), "Metadata table")
         # First honor explicit user role assignments from Metadata Mapping. This
         # is more reliable than column-name heuristics for clinical scores,
         # diagnosis, demographics, manual QC flags, dates, and iterations.
@@ -2516,19 +2572,23 @@ class FeatureAnalysisGUI(QMainWindow):
         rename: dict[str, str] = {}
         used = set(str(c) for c in out.columns)
         for col in out.columns:
-            canon = self._canonical_metadata_name(str(col))
-            if canon != str(col):
+            col_s = str(col)
+            canon = self._canonical_metadata_name(col_s)
+            if canon != col_s:
                 if canon not in used:
-                    rename[str(col)] = canon
-                    used.add(canon)
+                    target = canon
                 else:
-                    rename[str(col)] = f"metadata__{canon}"
+                    target = self._unique_column_name(f"metadata__{canon}", used)
+                rename[col_s] = target
+                used.add(target)
         if rename:
             out = out.rename(columns=rename)
+        out = self._ensure_unique_columns(out, "Metadata table")
         # Apply explicit roles again after heuristic renaming, so a mapped source
         # column still wins if a rename changed the source-column spelling.
         out = self._apply_accepted_metadata_roles_to_columns(out)
-        return self._add_file_match_helpers(out)
+        out = self._add_file_match_helpers(out)
+        return self._ensure_unique_columns(out, "Metadata table")
 
     def _standardize_feature_match_helpers(self, feature_df: pd.DataFrame) -> pd.DataFrame:
         return self._add_file_match_helpers(feature_df)
@@ -6776,10 +6836,10 @@ Decision colors:
             if not self.feature_picker.path:
                 QMessageBox.warning(self, "Missing feature table", "Please select a primary feature table.")
                 return
-            self.feature_df = read_table(self.feature_picker.path)
+            self.feature_df = self._ensure_unique_columns(read_table(self.feature_picker.path), "Primary feature table")
             self.refresh_filename_source_combo(self.feature_df)
-            self.qc_df = read_table(self.qc_picker.path) if self.qc_picker.path else None
-            self.meta_df = read_table(self.meta_picker.path) if self.meta_picker.path else None
+            self.qc_df = self._ensure_unique_columns(read_table(self.qc_picker.path), "QC table") if self.qc_picker.path else None
+            self.meta_df = self._ensure_unique_columns(read_table(self.meta_picker.path), "Metadata table") if self.meta_picker.path else None
             if self.meta_df is not None:
                 self.metadata_mapping_df = self._build_metadata_mapping_df()
                 self.metadata_mapping_accepted = False
@@ -6788,7 +6848,7 @@ Decision colors:
                 self.metadata_mapping_df = pd.DataFrame()
                 self.metadata_mapping_accepted = False
                 self.refresh_metadata_mapping_table()
-            self.registry_df = read_table(self.registry_picker.path) if self.registry_picker.path else None
+            self.registry_df = self._ensure_unique_columns(read_table(self.registry_picker.path), "Feature registry") if self.registry_picker.path else None
             kind = infer_table_kind(self.feature_picker.path, explicit="feature")
             feature_mapping = classify_columns(self.feature_df, table_kind=kind, registry=self.registry_df)
             self.refresh_filename_template_ui()
