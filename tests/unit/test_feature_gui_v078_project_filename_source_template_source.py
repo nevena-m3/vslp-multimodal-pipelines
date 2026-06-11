@@ -3,7 +3,7 @@ from pathlib import Path
 
 def test_feature_gui_v078_project_filename_source_column_controls():
     text = Path("src/vslp/gui/features/app.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "v0.84.0"' in text
+    assert 'APP_VERSION = "v0.85.0"' in text
     assert 'self.filename_source_combo' in text
     assert 'Context source:' in text
     assert 'Filename column:' in text

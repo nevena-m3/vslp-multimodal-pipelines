@@ -3,7 +3,7 @@ from pathlib import Path
 
 def test_feature_gui_v079_filename_column_dropdown_shows_all_columns():
     text = Path("src/vslp/gui/features/app.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "v0.84.0"' in text
+    assert 'APP_VERSION = "v0.85.0"' in text
     assert 'Filename column' in text
     assert 'Return all primary-table columns as user-selectable filename sources.' in text
     assert 'for _score, c in scored' in text

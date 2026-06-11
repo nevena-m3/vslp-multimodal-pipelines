@@ -85,7 +85,7 @@ from vslp.analysis.features.plots import (
     plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.84.0"
+APP_VERSION = "v0.85.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -894,7 +894,10 @@ class FeatureAnalysisGUI(QMainWindow):
     def _metadata_mapping_roles(self) -> list[str]:
         return [
             "Ignore",
+
+            "-- File / recording identity --",
             "File name",
+            "File extension",
             "Subject ID",
             "Protocol ID",
             "Iteration",
@@ -903,9 +906,34 @@ class FeatureAnalysisGUI(QMainWindow):
             "Task name",
             "Visit/session ID",
             "Timepoint",
+
+            "-- Core clinical grouping --",
             "Diagnosis",
             "Disease group",
             "Group label",
+
+            "-- Priority clinical scores --",
+            "ALSFRS bulbar score",
+            "ALSBDI total score",
+            "ALSFRS total score",
+            "Functional score",
+            "Functional total score",
+            "Bulbar score",
+            "Bulbar total score",
+            "Disease severity score",
+            "Severity class/bin",
+
+            "-- Other clinical outcomes / scores --",
+            "Speech intelligibility outcome",
+            "Speaking rate outcome",
+            "Swallowing score",
+            "Sialorrhea score",
+            "Cognitive score",
+            "Behavioral score",
+            "Mood / depression score",
+            "Clinical score 1",
+            "Clinical score 2",
+            "Clinical score 3",
             "Primary target",
             "Secondary target",
             "Target 1",
@@ -914,25 +942,61 @@ class FeatureAnalysisGUI(QMainWindow):
             "Outcome 1",
             "Outcome 2",
             "Outcome 3",
-            "Severity score",
-            "Severity class/bin",
-            "Clinical score 1",
-            "Clinical score 2",
-            "Clinical score 3",
-            "Functional score",
-            "Bulbar score",
-            "Demographic covariate",
-            "Clinical covariate",
+
+            "-- Demographics --",
             "Sex / gender",
             "Age",
+            "Date of birth",
+            "Race / ethnicity",
+            "Education",
+            "Language background",
+            "Demographic covariate",
+
+            "-- Disease history / clinical covariates --",
+            "Onset presentation",
+            "Date of first symptom",
+            "Date of diagnosis",
+            "Site of onset",
+            "Disease duration source",
+            "Hearing status",
+            "Vision status",
+            "Clinical covariate",
+
+            "-- Media / acquisition context --",
+            "Duration",
+            "Frame rate",
+            "Sampling rate",
+            "Frame width",
+            "Frame height",
             "Site / batch",
             "Device",
+            "Media technical metadata",
+
+            "-- Manual metadata QC / validity flags --",
+            "Task validity flag",
+            "Parsing-needed flag",
+            "Manual audio QC flag",
+            "Manual video QC flag",
+            "Manual face/visibility QC flag",
+            "Manual acquisition QC flag",
+            "Appearance/accessory flag",
+
+            "-- Administrative / governance --",
+            "Governance / sharing flag",
+            "Data-use permission",
+            "Administrative metadata",
+
+            "-- Fallback --",
             "Other covariate",
+            "Unlabeled / malformed metadata column",
         ]
 
     def _metadata_role_to_canonical(self, role: str) -> str | None:
+        if role.startswith("--"):
+            return None
         return {
             "File name": "file_name",
+            "File extension": "file_extension",
             "Subject ID": "subject_id",
             "Protocol ID": "protocol_id",
             "Iteration": "iteration",
@@ -941,9 +1005,31 @@ class FeatureAnalysisGUI(QMainWindow):
             "Task name": "task",
             "Visit/session ID": "visit_id",
             "Timepoint": "timepoint",
+
             "Diagnosis": "diagnosis",
             "Disease group": "diagnosis",
             "Group label": "group_label",
+
+            "ALSFRS bulbar score": "alsfrs_bulbar",
+            "ALSBDI total score": "alsbdi_total",
+            "ALSFRS total score": "alsfrs_total",
+            "Functional score": "functional_score",
+            "Functional total score": "functional_score",
+            "Bulbar score": "bulbar_score",
+            "Bulbar total score": "bulbar_total_score",
+            "Disease severity score": "severity_score",
+            "Severity class/bin": "severity_bin",
+
+            "Speech intelligibility outcome": "speech_intelligibility",
+            "Speaking rate outcome": "speaking_rate",
+            "Swallowing score": "swallowing_score",
+            "Sialorrhea score": "sialorrhea_score",
+            "Cognitive score": "cognitive_score",
+            "Behavioral score": "behavioral_score",
+            "Mood / depression score": "mood_score",
+            "Clinical score 1": "clinical_score_1",
+            "Clinical score 2": "clinical_score_2",
+            "Clinical score 3": "clinical_score_3",
             "Primary target": "target_primary",
             "Secondary target": "target_secondary",
             "Target 1": "target_1",
@@ -952,31 +1038,63 @@ class FeatureAnalysisGUI(QMainWindow):
             "Outcome 1": "outcome_1",
             "Outcome 2": "outcome_2",
             "Outcome 3": "outcome_3",
-            "Severity score": "severity_score",
-            "Severity class/bin": "severity_bin",
-            "Clinical score 1": "clinical_score_1",
-            "Clinical score 2": "clinical_score_2",
-            "Clinical score 3": "clinical_score_3",
-            "Functional score": "functional_score",
-            "Bulbar score": "bulbar_score",
-            "Demographic covariate": None,
-            "Clinical covariate": None,
+
             "Sex / gender": "sex_or_gender",
             "Age": "age",
+            "Date of birth": "date_of_birth",
+            "Race / ethnicity": "race_ethnicity",
+            "Education": "education",
+            "Language background": "language_background",
+            "Demographic covariate": None,
+
+            "Onset presentation": "onset_presentation",
+            "Date of first symptom": "date_first_symptom",
+            "Date of diagnosis": "date_diagnosis",
+            "Site of onset": "site_of_onset",
+            "Disease duration source": "disease_duration_source",
+            "Hearing status": "hearing_status",
+            "Vision status": "vision_status",
+            "Clinical covariate": None,
+
+            "Duration": "duration",
+            "Frame rate": "frame_rate",
+            "Sampling rate": "sampling_rate",
+            "Frame width": "frame_width",
+            "Frame height": "frame_height",
             "Site / batch": "site",
             "Device": "device",
+            "Media technical metadata": None,
+
+            "Task validity flag": "task_validity_flag",
+            "Parsing-needed flag": "parsing_needed_flag",
+            "Manual audio QC flag": "manual_audio_qc_flag",
+            "Manual video QC flag": "manual_video_qc_flag",
+            "Manual face/visibility QC flag": "manual_face_visibility_qc_flag",
+            "Manual acquisition QC flag": "manual_acquisition_qc_flag",
+            "Appearance/accessory flag": "appearance_accessory_flag",
+
+            "Governance / sharing flag": "governance_flag",
+            "Data-use permission": "data_use_permission",
+            "Administrative metadata": None,
+
             "Other covariate": None,
+            "Unlabeled / malformed metadata column": None,
             "Ignore": None,
         }.get(role)
 
     def _infer_metadata_role(self, column: str) -> tuple[str, str]:
         n = normalize_name(column)
+        raw = str(column).strip()
+        if raw.lower().startswith("unnamed"):
+            return "Unlabeled / malformed metadata column", "Column has no usable header; inspect examples before mapping."
+
         alias = {
             "raw_media_file_name": "File name",
             "media_file_name": "File name",
             "filename": "File name",
             "file_name": "File name",
             "file": "File name",
+            "extension": "File extension",
             "subjectid": "Subject ID",
             "subject_id": "Subject ID",
             "participant_id": "Subject ID",
@@ -993,64 +1111,169 @@ class FeatureAnalysisGUI(QMainWindow):
             "visit_id": "Visit/session ID",
             "session_id": "Visit/session ID",
             "timepoint": "Timepoint",
+
             "diagnosis": "Diagnosis",
             "dx": "Diagnosis",
             "diagnostic_group": "Disease group",
             "disease_group": "Disease group",
             "group": "Group label",
             "group_label": "Group label",
-            "target": "Primary target",
-            "label": "Primary target",
-            "outcome": "Outcome 1",
-            "primary_outcome": "Outcome 1",
-            "secondary_outcome": "Outcome 2",
-            "severity_score": "Severity score",
-            "severity": "Severity score",
+
+            "alsfrs_bulbar_subscore": "ALSFRS bulbar score",
+            "alsfrs_r_bulbar_subscore": "ALSFRS bulbar score",
+            "alsfrs_bulbar": "ALSFRS bulbar score",
+            "alsbdi_total_score": "ALSBDI total score",
+            "alsbdi": "ALSBDI total score",
+            "alsfrs_total_score": "ALSFRS total score",
+            "alsfrs_r_total_score": "ALSFRS total score",
+            "alsfrs_total": "ALSFRS total score",
+            "plsfrs_total_score": "Functional total score",
+            "plsfrs_bulbar_subscore": "Bulbar score",
+            "sbmafrs_total_score": "Functional total score",
+            "sbmafrs_bulbar_score": "Bulbar score",
+            "mg_ii_total_score": "Disease severity score",
+            "mg_ii_bulbar_subscore": "Bulbar score",
+            "eat10_total_score": "Swallowing score",
+            "cnsbfs_sialorrhea_subscore": "Sialorrhea score",
+            "cnsbfs_speech_subscore": "Bulbar score",
+            "cnsbfs_swallowing_subscore": "Swallowing score",
+            "moca_total_score": "Cognitive score",
+            "alstcbs_total_score": "Behavioral score",
+            "alscbs_total_score": "Behavioral score",
+            "ecas_total_score": "Cognitive score",
+            "beck_depression_inventory_total_score": "Mood / depression score",
+            "sentence_intelligibility_percent": "Speech intelligibility outcome",
+            "speaking_rate": "Speaking rate outcome",
+            "severity_score": "Disease severity score",
+            "severity": "Disease severity score",
             "severity_bin": "Severity class/bin",
             "severity_class": "Severity class/bin",
-            "alsfrs_total_score": "Functional score",
-            "alsfrs_r_total_score": "Functional score",
-            "alsfrs_total": "Functional score",
-            "alsfrsr_total": "Functional score",
-            "alsfrs_bulbar": "Bulbar score",
-            "alsfrs_r_bulbar": "Bulbar score",
-            "bulbar_score": "Bulbar score",
-            "alsbdi": "Clinical score 1",
-            "alsbdi_score": "Clinical score 1",
-            "clinical_score": "Clinical score 1",
-            "score": "Clinical score 1",
+
+            "date_of_birth": "Date of birth",
             "sex": "Sex / gender",
             "gender": "Sex / gender",
-            "sex_or_gender": "Sex / gender",
-            "age": "Age",
-            "site": "Site / batch",
+            "race_ethnicity": "Race / ethnicity",
+            "level_of_education": "Education",
+            "is_english_the_first_language": "Language background",
+            "other_languages_spoken": "Language background",
+
+            "presentation_at_onset": "Onset presentation",
+            "date_of_first_symptom": "Date of first symptom",
+            "date_of_diagnosis": "Date of diagnosis",
+            "site_of_disease_onset": "Site of onset",
+            "hearing_status": "Hearing status",
+            "vision_status": "Vision status",
+
             "organization_name": "Site / batch",
+            "site": "Site / batch",
             "batch": "Site / batch",
             "device": "Device",
             "microphone": "Device",
             "platform": "Device",
+            "frame_rate": "Frame rate",
+            "sampling_rate": "Sampling rate",
+            "frame_width": "Frame width",
+            "frame_height": "Frame height",
+            "duration_s": "Duration",
+            "duration": "Duration",
+
+            "task_completed_as_instructed": "Task validity flag",
+            "needs_parsing": "Parsing-needed flag",
+            "another_person_in_frame": "Manual video QC flag",
+            "another_person_speaks": "Manual audio QC flag",
+            "background_noise": "Manual audio QC flag",
+            "volume_is_unstable": "Manual audio QC flag",
+            "poor_audio_quality": "Manual audio QC flag",
+            "frozen_video": "Manual video QC flag",
+            "video_is_unstable": "Manual video QC flag",
+            "subject_looks_away": "Manual face/visibility QC flag",
+            "poor_light": "Manual acquisition QC flag",
+            "blurry_image": "Manual acquisition QC flag",
+            "wearing_glasses": "Appearance/accessory flag",
+            "facial_hair_present": "Appearance/accessory flag",
+
+            "shared_externally": "Governance / sharing flag",
+            "type_of_data_to_be_shared": "Data-use permission",
+            "audio_for_academic_purposes": "Data-use permission",
+            "video_for_academic_purposes": "Data-use permission",
         }
         role = alias.get(n)
         if role is None:
             if any(x in n for x in ["diagnosis", "disease", "dx"]):
                 role = "Diagnosis"
+            elif any(x in n for x in ["bulbar"]):
+                role = "Bulbar score"
+            elif any(x in n for x in ["alsbdi"]):
+                role = "ALSBDI total score"
+            elif any(x in n for x in ["alsfrs"]):
+                role = "Functional total score"
+            elif any(x in n for x in ["intelligibility"]):
+                role = "Speech intelligibility outcome"
+            elif any(x in n for x in ["speaking_rate", "speech_rate"]):
+                role = "Speaking rate outcome"
             elif any(x in n for x in ["target", "label", "outcome"]):
                 role = "Primary target"
             elif any(x in n for x in ["severity", "stage"]):
-                role = "Severity score"
-            elif any(x in n for x in ["score", "clinical", "scale", "rating"]):
+                role = "Disease severity score"
+            elif any(x in n for x in ["score", "scale", "rating"]):
                 role = "Clinical score 1"
-            elif any(x in n for x in ["sex", "gender", "age", "demographic"]):
+            elif any(x in n for x in ["sex", "gender"]):
+                role = "Sex / gender"
+            elif any(x in n for x in ["age", "birth", "race", "education", "language"]):
                 role = "Demographic covariate"
+            elif any(x in n for x in ["noise", "quality", "unstable", "blurry", "frozen", "light", "glasses", "facial_hair"]):
+                role = "Manual acquisition QC flag"
+            elif any(x in n for x in ["shared", "consent", "academic", "permission"]):
+                role = "Administrative metadata"
             elif any(x in n for x in ["visit", "session", "timepoint"]):
                 role = "Visit/session ID"
             else:
                 role = "Ignore"
         return role, "Matched metadata naming pattern." if role != "Ignore" else "No clinical/demographic role inferred."
 
+
+    def _metadata_role_group(self, role: str) -> str:
+        if role.startswith("--"):
+            return "Group heading"
+        if role in {"File name", "File extension", "Subject ID", "Protocol ID", "Iteration", "Recording date", "Task code", "Task name", "Visit/session ID", "Timepoint"}:
+            return "File / recording identity"
+        if role in {"Diagnosis", "Disease group", "Group label"}:
+            return "Core clinical grouping"
+        if role in {"ALSFRS bulbar score", "ALSBDI total score", "ALSFRS total score", "Functional score", "Functional total score", "Bulbar score", "Bulbar total score", "Disease severity score", "Severity class/bin"}:
+            return "Priority clinical scores"
+        if role in {"Speech intelligibility outcome", "Speaking rate outcome", "Swallowing score", "Sialorrhea score", "Cognitive score", "Behavioral score", "Mood / depression score", "Clinical score 1", "Clinical score 2", "Clinical score 3", "Primary target", "Secondary target", "Target 1", "Target 2", "Target 3", "Outcome 1", "Outcome 2", "Outcome 3"}:
+            return "Other outcomes / scores"
+        if role in {"Sex / gender", "Age", "Date of birth", "Race / ethnicity", "Education", "Language background", "Demographic covariate"}:
+            return "Demographics"
+        if role in {"Onset presentation", "Date of first symptom", "Date of diagnosis", "Site of onset", "Disease duration source", "Hearing status", "Vision status", "Clinical covariate"}:
+            return "Disease history / covariates"
+        if role in {"Duration", "Frame rate", "Sampling rate", "Frame width", "Frame height", "Site / batch", "Device", "Media technical metadata"}:
+            return "Media / acquisition context"
+        if role in {"Task validity flag", "Parsing-needed flag", "Manual audio QC flag", "Manual video QC flag", "Manual face/visibility QC flag", "Manual acquisition QC flag", "Appearance/accessory flag"}:
+            return "Manual metadata QC / validity"
+        if role in {"Governance / sharing flag", "Data-use permission", "Administrative metadata"}:
+            return "Administrative / governance"
+        if role in {"Other covariate", "Unlabeled / malformed metadata column", "Ignore"}:
+            return "Fallback / ignored"
+        return "Other"
+
+    def _metadata_example_values(self, series: pd.Series, max_values: int = 4) -> str:
+        if series is None:
+            return ""
+        vals = []
+        for v in series.dropna().astype(str).tolist():
+            v = v.strip()
+            if not v or v.lower() in {"nan", "none", "<na>", "nat"}:
+                continue
+            if v not in vals:
+                vals.append(v)
+            if len(vals) >= max_values:
+                break
+        return "; ".join(vals)
+
     def _build_metadata_mapping_df(self) -> pd.DataFrame:
         if self.meta_df is None or self.meta_df.empty:
-            return pd.DataFrame(columns=["column", "role", "canonical_field", "confidence", "reason", "dtype", "missing", "unique"])
+            return pd.DataFrame(columns=["column", "role_group", "role", "canonical_field", "confidence", "reason", "dtype", "missing", "unique", "examples"])
         rows = []
         for c in self.meta_df.columns:
             role, reason = self._infer_metadata_role(str(c))
@@ -1058,24 +1281,46 @@ class FeatureAnalysisGUI(QMainWindow):
             s = self.meta_df[c]
             rows.append({
                 "column": str(c),
+                "role_group": self._metadata_role_group(role),
                 "role": role,
                 "canonical_field": canon or "",
-                "confidence": 0.9 if role != "Ignore" else 0.4,
+                "confidence": 0.9 if role != "Ignore" and not role.startswith("--") else 0.4,
                 "reason": reason,
                 "dtype": str(s.dtype),
                 "missing": int(s.isna().sum()),
                 "unique": int(s.nunique(dropna=True)),
+                "examples": self._metadata_example_values(s),
             })
         return pd.DataFrame(rows)
 
     def _metadata_mapping_page(self) -> QWidget:
         body = QWidget()
         layout = QVBoxLayout(body)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(14)
-        card = Card("Metadata Mapping", "Map metadata columns explicitly. Use general roles such as targets, outcomes, severity, clinical scores, demographics, and covariates; specific instruments can be interpreted later in analysis.")
-        self.metadata_mapping_table = QTableWidget(0, 8)
-        self.metadata_mapping_table.setHorizontalHeaderLabels(["Column", "Role", "Canonical field", "Confidence", "Reason", "dtype", "Missing", "Unique"])
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(10)
+
+        card = Card("Metadata Mapping", "Assign clinical, demographic, manual-QC, and administrative roles. Manual yes/no QC flags remain metadata context; QC Integration uses numeric QC feature tables.")
+        card.layout.setSpacing(10)
+
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(8)
+        toolbar.addWidget(QLabel("Show:"))
+        self.metadata_mapping_filter_combo = QComboBox()
+        self.metadata_mapping_filter_combo.addItems(["All roles", "Mapped only", "Unmapped / ignored", "Priority clinical scores", "Manual metadata QC", "Unlabeled columns"])
+        self.metadata_mapping_filter_combo.currentIndexChanged.connect(lambda _=0: self.refresh_metadata_mapping_table(rebuild=False))
+        toolbar.addWidget(self.metadata_mapping_filter_combo)
+        toolbar.addStretch(1)
+        refresh = QPushButton("Refresh")
+        refresh.setProperty("secondary", True)
+        refresh.clicked.connect(self.refresh_metadata_mapping_table)
+        accept = QPushButton("Accept Metadata Mapping")
+        accept.clicked.connect(self.accept_metadata_mapping)
+        toolbar.addWidget(refresh)
+        toolbar.addWidget(accept)
+        card.layout.addLayout(toolbar)
+
+        self.metadata_mapping_table = QTableWidget(0, 10)
+        self.metadata_mapping_table.setHorizontalHeaderLabels(["Column", "Role group", "Assigned role", "Canonical field", "Confidence", "Missing", "Unique", "Examples", "Reason", "dtype"])
         self.metadata_mapping_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.metadata_mapping_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.metadata_mapping_table.setAlternatingRowColors(True)
@@ -1083,31 +1328,30 @@ class FeatureAnalysisGUI(QMainWindow):
         self.metadata_mapping_table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.metadata_mapping_table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.metadata_mapping_table.verticalHeader().setDefaultSectionSize(30)
+        self.metadata_mapping_table.setMinimumHeight(620)
         header = self.metadata_mapping_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
-        self.metadata_mapping_table.setColumnWidth(0, 270)
-        self.metadata_mapping_table.setColumnWidth(1, 180)
-        self.metadata_mapping_table.setColumnWidth(2, 155)
-        self.metadata_mapping_table.setColumnWidth(3, 85)
-        self.metadata_mapping_table.setColumnWidth(4, 420)
-        self.metadata_mapping_table.setColumnWidth(5, 110)
-        self.metadata_mapping_table.setColumnWidth(6, 85)
-        self.metadata_mapping_table.setColumnWidth(7, 85)
-        card.layout.addWidget(self.metadata_mapping_table)
-
-        self.metadata_mapping_summary_label = QLabel("Load a metadata table to inspect clinical/demographic roles.")
-        self.metadata_mapping_summary_label.setWordWrap(True)
-        self.metadata_mapping_summary_label.setStyleSheet(f"color:{MUTED}; background:#F7FAFD; border:1px solid {LINE}; border-radius:8px; padding:9px;")
-        card.layout.addWidget(self.metadata_mapping_summary_label)
+        self.metadata_mapping_table.setColumnWidth(0, 260)
+        self.metadata_mapping_table.setColumnWidth(1, 190)
+        self.metadata_mapping_table.setColumnWidth(2, 230)
+        self.metadata_mapping_table.setColumnWidth(3, 160)
+        self.metadata_mapping_table.setColumnWidth(4, 80)
+        self.metadata_mapping_table.setColumnWidth(5, 75)
+        self.metadata_mapping_table.setColumnWidth(6, 75)
+        self.metadata_mapping_table.setColumnWidth(7, 320)
+        self.metadata_mapping_table.setColumnWidth(8, 320)
+        self.metadata_mapping_table.setColumnWidth(9, 110)
+        card.layout.addWidget(self.metadata_mapping_table, 1)
 
         quick = QHBoxLayout()
         for label, role in [
             ("Diagnosis", "Diagnosis"),
-            ("Target 1", "Target 1"),
-            ("Outcome 1", "Outcome 1"),
-            ("Severity", "Severity score"),
-            ("Clinical score", "Clinical score 1"),
-            ("Subject ID", "Subject ID"),
+            ("ALSFRS bulbar", "ALSFRS bulbar score"),
+            ("ALSBDI", "ALSBDI total score"),
+            ("ALSFRS total", "ALSFRS total score"),
+            ("Sex", "Sex / gender"),
+            ("Manual audio QC", "Manual audio QC flag"),
+            ("Manual video QC", "Manual video QC flag"),
             ("Ignore", "Ignore"),
         ]:
             b = QPushButton(label)
@@ -1117,22 +1361,15 @@ class FeatureAnalysisGUI(QMainWindow):
         quick.addStretch(1)
         card.layout.addLayout(quick)
 
-        btns = QHBoxLayout()
-        refresh = QPushButton("Refresh Metadata Mapping")
-        refresh.setProperty("secondary", True)
-        refresh.clicked.connect(self.refresh_metadata_mapping_table)
-        accept = QPushButton("Accept Metadata Mapping")
-        accept.clicked.connect(self.accept_metadata_mapping)
-        btns.addWidget(refresh)
-        btns.addWidget(accept)
-        btns.addStretch(1)
-        card.layout.addLayout(btns)
+        self.metadata_mapping_summary_label = QLabel("Load a metadata table to inspect clinical/demographic roles.")
+        self.metadata_mapping_summary_label.setWordWrap(True)
+        self.metadata_mapping_summary_label.setStyleSheet(f"color:{MUTED}; background:#F7FAFD; border:1px solid {LINE}; border-radius:8px; padding:8px;")
+        card.layout.addWidget(self.metadata_mapping_summary_label)
 
-        layout.addWidget(card)
-        layout.addStretch(1)
+        layout.addWidget(card, 1)
         return self._wrap_scroll(body)
 
-    def refresh_metadata_mapping_table(self) -> None:
+    def refresh_metadata_mapping_table(self, rebuild: bool = True) -> None:
         if not hasattr(self, "metadata_mapping_table"):
             return
         if self.meta_df is None or self.meta_df.empty:
@@ -1141,38 +1378,61 @@ class FeatureAnalysisGUI(QMainWindow):
             if hasattr(self, "metadata_mapping_summary_label"):
                 self.metadata_mapping_summary_label.setText("No metadata table loaded.")
             return
-        if self.metadata_mapping_df.empty:
+        if rebuild or self.metadata_mapping_df.empty:
             self.metadata_mapping_df = self._build_metadata_mapping_df()
+
         df = self.metadata_mapping_df.copy()
+        filt = self.metadata_mapping_filter_combo.currentText() if hasattr(self, "metadata_mapping_filter_combo") else "All roles"
+        if filt == "Mapped only":
+            df = df[df["role"].astype(str).ne("Ignore")]
+        elif filt == "Unmapped / ignored":
+            df = df[df["role"].astype(str).eq("Ignore")]
+        elif filt == "Priority clinical scores":
+            df = df[df["role_group"].astype(str).eq("Priority clinical scores")]
+        elif filt == "Manual metadata QC":
+            df = df[df["role_group"].astype(str).eq("Manual metadata QC / validity")]
+        elif filt == "Unlabeled columns":
+            df = df[df["role"].astype(str).eq("Unlabeled / malformed metadata column")]
+
         self.metadata_mapping_table.setRowCount(len(df))
-        self.metadata_mapping_table.setColumnCount(8)
+        self.metadata_mapping_table.setColumnCount(10)
         roles = self._metadata_mapping_roles()
-        for i, r in df.iterrows():
-            self.metadata_mapping_table.setItem(i, 0, QTableWidgetItem(str(r["column"])))
+        source_indices = df.index.tolist()
+        for visual_i, source_i in enumerate(source_indices):
+            r = self.metadata_mapping_df.loc[source_i]
+            self.metadata_mapping_table.setItem(visual_i, 0, QTableWidgetItem(str(r["column"])))
+            self.metadata_mapping_table.setItem(visual_i, 1, QTableWidgetItem(str(r.get("role_group", ""))))
             combo = NoWheelComboBox()
-            combo.addItems(roles)
+            for role in roles:
+                combo.addItem(role)
+                if role.startswith("--"):
+                    idx = combo.count() - 1
+                    combo.model().item(idx).setEnabled(False)
             combo.setCurrentText(str(r.get("role", "Ignore")))
+            combo.setProperty("source_index", int(source_i))
             combo.currentTextChanged.connect(lambda _=None: self.collect_metadata_mapping_from_table())
-            self.metadata_mapping_table.setCellWidget(i, 1, combo)
-            for j, col in enumerate(["canonical_field", "confidence", "reason", "dtype", "missing", "unique"], start=2):
+            self.metadata_mapping_table.setCellWidget(visual_i, 2, combo)
+            for j, col in enumerate(["canonical_field", "confidence", "missing", "unique", "examples", "reason", "dtype"], start=3):
                 item = QTableWidgetItem(str(r.get(col, "")))
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-                self.metadata_mapping_table.setItem(i, j, item)
+                self.metadata_mapping_table.setItem(visual_i, j, item)
         self.update_metadata_mapping_summary()
 
     def collect_metadata_mapping_from_table(self) -> pd.DataFrame:
         if self.metadata_mapping_df.empty or not hasattr(self, "metadata_mapping_table"):
             return self.metadata_mapping_df
         df = self.metadata_mapping_df.copy()
-        roles = []
-        canonical = []
         for i in range(self.metadata_mapping_table.rowCount()):
-            widget = self.metadata_mapping_table.cellWidget(i, 1)
-            role = widget.currentText() if isinstance(widget, QComboBox) else str(df.iloc[i].get("role", "Ignore"))
-            roles.append(role)
-            canonical.append(self._metadata_role_to_canonical(role) or "")
-        df["role"] = roles
-        df["canonical_field"] = canonical
+            widget = self.metadata_mapping_table.cellWidget(i, 2)
+            if not isinstance(widget, QComboBox):
+                continue
+            source_i = widget.property("source_index")
+            if source_i is None or int(source_i) not in df.index:
+                continue
+            role = widget.currentText()
+            df.loc[int(source_i), "role"] = role
+            df.loc[int(source_i), "role_group"] = self._metadata_role_group(role)
+            df.loc[int(source_i), "canonical_field"] = self._metadata_role_to_canonical(role) or ""
         self.metadata_mapping_df = df
         self.update_metadata_mapping_summary()
         return df
@@ -1180,10 +1440,18 @@ class FeatureAnalysisGUI(QMainWindow):
     def update_metadata_mapping_summary(self) -> None:
         if self.metadata_mapping_df.empty or not hasattr(self, "metadata_mapping_summary_label"):
             return
-        counts = self.metadata_mapping_df["role"].astype(str).value_counts()
-        useful = int((self.metadata_mapping_df["role"].astype(str) != "Ignore").sum())
-        parts = [f"{k}: {int(v)}" for k, v in counts.head(8).items()]
-        self.metadata_mapping_summary_label.setText(f"Metadata mapping | mapped clinical/context columns: {useful} | " + " | ".join(parts))
+        roles = self.metadata_mapping_df["role"].astype(str)
+        groups = self.metadata_mapping_df["role_group"].astype(str)
+        mapped = int(roles.ne("Ignore").sum())
+        ignored = int(roles.eq("Ignore").sum())
+        priority = int(groups.eq("Priority clinical scores").sum())
+        manual_qc = int(groups.eq("Manual metadata QC / validity").sum())
+        unlabeled = int(roles.eq("Unlabeled / malformed metadata column").sum())
+        self.metadata_mapping_summary_label.setText(
+            f"Mapped: {mapped} | Ignored: {ignored} | Priority clinical scores: {priority} | "
+            f"Manual metadata QC flags: {manual_qc} | Unlabeled/malformed: {unlabeled}. "
+            "Manual metadata QC flags are yes/no acquisition observations; numeric QC-feature analysis remains in QC Integration."
+        )
 
     def set_selected_metadata_role(self, role: str) -> None:
         if not hasattr(self, "metadata_mapping_table"):
@@ -1193,7 +1461,7 @@ class FeatureAnalysisGUI(QMainWindow):
             QMessageBox.information(self, "No rows selected", "Select one or more metadata rows first.")
             return
         for row in rows:
-            widget = self.metadata_mapping_table.cellWidget(row, 1)
+            widget = self.metadata_mapping_table.cellWidget(row, 2)
             if isinstance(widget, QComboBox):
                 widget.setCurrentText(role)
         self.collect_metadata_mapping_from_table()

@@ -3,7 +3,7 @@ from pathlib import Path
 
 def test_feature_gui_v081_overview_visual_polish_app_source():
     text = Path("src/vslp/gui/features/app.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "v0.84.0"' in text
+    assert 'APP_VERSION = "v0.85.0"' in text
     assert 'Overview is the orientation layer' in text
     assert 'border-left:5px solid' in text
     assert 'side_panel.setFixedWidth(340)' in text

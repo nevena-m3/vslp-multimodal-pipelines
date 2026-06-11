@@ -3,7 +3,7 @@ from pathlib import Path
 
 def test_feature_gui_v072_distributions_has_local_task_and_clinical_scope():
     text = Path("src/vslp/gui/features/app.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "v0.84.0"' in text
+    assert 'APP_VERSION = "v0.85.0"' in text
     assert 'self.dist_task_combo' in text
     assert 'self.dist_context_combo' in text
     assert 'self.dist_context_value_combo' in text
