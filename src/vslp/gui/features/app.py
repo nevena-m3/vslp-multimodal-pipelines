@@ -85,7 +85,7 @@ from vslp.analysis.features.plots import (
     plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.87.0"
+APP_VERSION = "v0.86.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -1220,7 +1220,9 @@ class FeatureAnalysisGUI(QMainWindow):
         card = Card("Metadata Mapping", "Assign clinical, demographic, manual-QC, and administrative roles. If no metadata table is provided, derive basic recording context from a filename column.")
         card.layout.setSpacing(10)
 
-        toolbar = QHBoxLayout()
+        self.metadata_toolbar_widget = QWidget()
+        toolbar = QHBoxLayout(self.metadata_toolbar_widget)
+        toolbar.setContentsMargins(0, 0, 0, 0)
         toolbar.setSpacing(8)
         toolbar.addWidget(QLabel("Show:"))
         self.metadata_mapping_filter_combo = QComboBox()
@@ -1235,7 +1237,7 @@ class FeatureAnalysisGUI(QMainWindow):
         accept.clicked.connect(self.accept_metadata_mapping)
         toolbar.addWidget(refresh)
         toolbar.addWidget(accept)
-        card.layout.addLayout(toolbar)
+        card.layout.addWidget(self.metadata_toolbar_widget)
 
         self.filename_metadata_fallback_frame = QFrame()
         self.filename_metadata_fallback_frame.setStyleSheet(
@@ -1279,6 +1281,11 @@ class FeatureAnalysisGUI(QMainWindow):
         self.filename_example_label.setObjectName("ExampleBox")
         self.filename_example_label.setWordWrap(True)
         fallback_layout.addWidget(self.filename_example_label)
+
+        self.filename_fallback_status_label = QLabel("No filename context has been applied yet.")
+        self.filename_fallback_status_label.setWordWrap(True)
+        self.filename_fallback_status_label.setStyleSheet(f"color:{MUTED}; background:transparent; border:none; padding:0px;")
+        fallback_layout.addWidget(self.filename_fallback_status_label)
 
         token_grid = QGridLayout()
         token_grid.setHorizontalSpacing(10)
@@ -1374,38 +1381,136 @@ class FeatureAnalysisGUI(QMainWindow):
 
 
     def update_metadata_mapping_mode_visibility(self) -> None:
-        """Show filename fallback only when no metadata table is loaded."""
+        """Switch Metadata Mapping between metadata-role mode and filename-fallback mode."""
         has_metadata = self.meta_df is not None and not self.meta_df.empty
         if hasattr(self, "filename_metadata_fallback_frame"):
             self.filename_metadata_fallback_frame.setVisible(not has_metadata)
+        if hasattr(self, "metadata_toolbar_widget"):
+            self.metadata_toolbar_widget.setVisible(has_metadata)
         if hasattr(self, "metadata_mapping_table"):
             self.metadata_mapping_table.setVisible(has_metadata)
         if hasattr(self, "metadata_mapping_filter_combo"):
             self.metadata_mapping_filter_combo.setEnabled(has_metadata)
         if hasattr(self, "metadata_quick_role_widget"):
             self.metadata_quick_role_widget.setVisible(has_metadata)
+        if hasattr(self, "metadata_mapping_summary_label"):
+            self.metadata_mapping_summary_label.setVisible(has_metadata)
+        if not has_metadata and hasattr(self, "filename_source_combo"):
+            self.refresh_filename_source_combo(self.feature_df)
 
     def apply_filename_context_from_metadata_mapping(self) -> None:
-        """Apply filename-derived metadata context when no metadata table is available."""
+        """Apply filename-derived context directly from the Metadata Mapping fallback UI.
+
+        This deliberately bypasses the metadata merge path. In no-metadata mode,
+        the selected feature-table filename column and token template are the
+        source of truth, and the parsed canonical fields must be written into
+        analysis_df so downstream menus can immediately see task/subject/date.
+        """
         if self.feature_df is None or self.feature_df.empty:
             QMessageBox.information(self, "No feature table", "Load a primary feature table first.")
             return
-        # Do not refresh token controls here; the user-selected template is the source of truth.
-        self.refresh_filename_source_combo(self.feature_df)
-        feature_mapping = self.mapping_df if self.mapping_df is not None and not self.mapping_df.empty else classify_columns(self.feature_df, table_kind="feature", registry=self.registry_df)
-        self.analysis_df, self.mapping_df, self.metadata_join_strategy = self._merge_metadata_context(self.feature_df, feature_mapping)
-        self.proposed_mapping_df = self.mapping_df.copy()
-        self.refresh_mapping_table()
-        parsed_df = getattr(self, "filename_context_parse_df", pd.DataFrame())
+
+        if hasattr(self, "filename_source_combo") and self.filename_source_combo.count() <= 1:
+            self.refresh_filename_source_combo(self.feature_df)
+
+        selected_col = None
+        if hasattr(self, "filename_source_combo"):
+            candidate = self.filename_source_combo.currentText().strip()
+            if candidate and candidate != "Auto-detect" and candidate in self.feature_df.columns:
+                selected_col = candidate
+        if selected_col is None:
+            selected_col = self._file_source_column(self.feature_df)
+        if selected_col is None or selected_col not in self.feature_df.columns:
+            msg = "No usable filename/source column is selected. Choose the feature-table column containing filenames or stems."
+            if hasattr(self, "filename_fallback_status_label"):
+                self.filename_fallback_status_label.setText(msg)
+            QMessageBox.warning(self, "Filename context not applied", msg)
+            return
+
+        non_empty = int(self.feature_df[selected_col].dropna().astype(str).str.strip().ne("").sum())
+        first_example = ""
+        sample = self.feature_df[selected_col].dropna().astype(str).str.strip()
+        if not sample.empty:
+            first_example = str(sample.iloc[0])
+
+        base_df = self._standardize_feature_match_helpers(self.feature_df)
+        parsed_context = self._parse_filename_context_frame(base_df)
+        self.filename_context_parse_df = parsed_context
+
+        out = base_df.copy()
+        canonical_pairs = [
+            ("subject_id", "parsed_subject_id"),
+            ("protocol_id", "parsed_protocol_id"),
+            ("iteration", "parsed_iteration"),
+            ("duration", "parsed_duration"),
+            ("recording_date", "parsed_recording_date"),
+            ("task_code", "parsed_task_code"),
+            ("task", "parsed_task"),
+        ]
+
+        def fill_or_create(canonical: str, parsed_col: str) -> None:
+            if parsed_col not in parsed_context.columns:
+                return
+            values = parsed_context[parsed_col].reindex(out.index)
+            valid = values.notna()
+            if canonical not in out.columns:
+                out[canonical] = pd.Series(pd.NA, index=out.index, dtype="object")
+            if canonical != "recording_date":
+                out[canonical] = out[canonical].astype("object")
+                out.loc[valid, canonical] = values.loc[valid].astype("object")
+            else:
+                out.loc[valid, canonical] = values.loc[valid]
+
+        for canonical, parsed_col in canonical_pairs:
+            fill_or_create(canonical, parsed_col)
+        for c in parsed_context.columns:
+            if c not in out.columns:
+                out[c] = parsed_context[c]
+
+        helper_cols = [c for c in ["_match_file_basename", "_match_file_stem"] if c in out.columns]
+        if helper_cols:
+            out = out.drop(columns=helper_cols)
+
+        self.analysis_df = out
+        self.metadata_join_strategy = "feature_table_only:metadata_mapping_filename_fallback_direct"
+        # Re-classify the enriched analysis table so newly-created context columns
+        # are visible to mapping/export code without disturbing feature values.
+        try:
+            self.mapping_df = classify_columns(self.analysis_df, table_kind="feature", registry=self.registry_df)
+            self.proposed_mapping_df = self.mapping_df.copy()
+            self.refresh_mapping_table()
+        except Exception as exc:
+            self.log_error("Filename context mapping refresh failed", exc)
+
         parsed_ok = 0
-        if parsed_df is not None and not parsed_df.empty:
-            if "parsed_context_status" in parsed_df.columns:
-                parsed_ok = int(parsed_df["parsed_context_status"].astype(str).isin(["parsed", "parsed_by_user_template"]).sum())
+        status_counts = {}
+        if parsed_context is not None and not parsed_context.empty:
+            if "parsed_context_status" in parsed_context.columns:
+                status_series = parsed_context["parsed_context_status"].astype(str)
+                status_counts = status_series.value_counts(dropna=False).to_dict()
+                parsed_ok = int(status_series.isin(["parsed", "parsed_by_user_template"]).sum())
             if parsed_ok == 0:
-                context_cols = [c for c in ["parsed_subject_id", "parsed_task", "parsed_recording_date"] if c in parsed_df.columns]
+                context_cols = [c for c in ["parsed_subject_id", "parsed_protocol_id", "parsed_iteration", "parsed_recording_date", "parsed_task_code", "parsed_task"] if c in parsed_context.columns]
                 if context_cols:
-                    parsed_ok = int(parsed_df[context_cols].notna().any(axis=1).sum())
-        self.log(f"Filename-derived metadata context applied from Metadata Mapping: {parsed_ok} / {len(parsed_df) if parsed_df is not None else 0} rows parsed.")
+                    parsed_ok = int(parsed_context[context_cols].notna().any(axis=1).sum())
+
+        mapping = self._filename_template_mapping()
+        status = (
+            f"Filename-derived context applied. Parsed rows: {parsed_ok} / {len(parsed_context)}. "
+            f"Column: {selected_col}. Non-empty values: {non_empty}. "
+            f"Example: {first_example or 'none'}. Template: {mapping}. Status counts: {status_counts or 'none'}."
+        )
+        if hasattr(self, "filename_fallback_status_label"):
+            self.filename_fallback_status_label.setText(status)
+        self.log(status)
+        if hasattr(self, "_refresh_missingness_task_combo"):
+            self._refresh_missingness_task_combo(self.analysis_df)
+        if hasattr(self, "_refresh_dist_task_combo"):
+            self._refresh_dist_task_combo(self.analysis_df)
+        if hasattr(self, "_refresh_qc_task_combo"):
+            self._refresh_qc_task_combo(self.analysis_df)
+        if hasattr(self, "_refresh_focus_combos"):
+            self._refresh_focus_combos()
         QMessageBox.information(self, "Filename context applied", f"Filename-derived context applied. Parsed rows: {parsed_ok}.")
 
     def refresh_metadata_mapping_table(self, rebuild: bool = True) -> None:
