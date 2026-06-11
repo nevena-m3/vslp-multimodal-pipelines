@@ -23,7 +23,7 @@ try:
         QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow, QMessageBox,
         QPushButton, QSizePolicy, QStackedWidget, QTableWidget, QTableWidgetItem,
         QTextEdit, QVBoxLayout, QWidget, QSplitter, QScrollArea, QAbstractItemView,
-        QTabWidget, QProgressBar
+        QTabWidget, QProgressBar, QListView
     )
 except Exception as exc:  # pragma: no cover
     raise RuntimeError("Feature Analysis GUI requires PySide6. Install with pip install -e '.[gui]'.") from exc
@@ -85,7 +85,7 @@ from vslp.analysis.features.plots import (
     plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.87.0"
+APP_VERSION = "v0.88.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -1000,6 +1000,63 @@ class FeatureAnalysisGUI(QMainWindow):
             "Ignore": None,
         }.get(role)
 
+    def _accepted_metadata_role_map(self) -> dict[str, str]:
+        """Return user-accepted metadata source-column -> canonical-field mappings.
+
+        This is the authoritative bridge from the Metadata Mapping UI to all
+        downstream menus. It lets manually assigned roles propagate even when the
+        original metadata headers are dataset-specific, verbose, or malformed.
+        """
+        df = getattr(self, "metadata_mapping_df", pd.DataFrame())
+        if df is None or df.empty:
+            return {}
+        role_map: dict[str, str] = {}
+        for _, row in df.iterrows():
+            source = str(row.get("column", "")).strip()
+            role = str(row.get("role", "Ignore")).strip()
+            canonical = str(row.get("canonical_field", "")).strip()
+            if not canonical or canonical.lower() in {"none", "nan", "<na>"}:
+                canonical = self._metadata_role_to_canonical(role) or ""
+            if not source or not canonical or role == "Ignore" or role.startswith("--"):
+                continue
+            role_map[source] = canonical
+        return role_map
+
+    def _apply_accepted_metadata_roles_to_columns(self, meta_df: pd.DataFrame) -> pd.DataFrame:
+        """Create/fill canonical metadata columns from the accepted role mapping.
+
+        The original metadata columns are preserved for auditability. Canonical
+        columns such as diagnosis, alsfrs_bulbar, sex_or_gender, recording_date,
+        iteration, task_validity_flag, and manual_*_qc_flag are added or filled so
+        Overview, Missingness, Distributions, QC, Task Review, Longitudinal, and
+        ML export all query the same stable names.
+        """
+        if meta_df is None or meta_df.empty:
+            return meta_df
+        role_map = self._accepted_metadata_role_map()
+        if not role_map:
+            return meta_df
+        out = meta_df.copy()
+        exact_lookup = {str(c): str(c) for c in out.columns}
+        norm_lookup = {normalize_name(c): str(c) for c in out.columns}
+        for source, canonical in role_map.items():
+            source_col = exact_lookup.get(source) or norm_lookup.get(normalize_name(source))
+            if source_col is None or source_col not in out.columns:
+                continue
+            if canonical == source_col:
+                continue
+            values = out[source_col]
+            if canonical not in out.columns:
+                out[canonical] = values
+                exact_lookup[canonical] = canonical
+                norm_lookup[normalize_name(canonical)] = canonical
+            else:
+                empty = self._is_effectively_empty(out[canonical])
+                if bool(empty.any()):
+                    out[canonical] = out[canonical].astype("object")
+                    out.loc[empty, canonical] = values.loc[empty].astype("object")
+        return out
+
     def _infer_metadata_role(self, column: str) -> tuple[str, str]:
         n = normalize_name(column)
         raw = str(column).strip()
@@ -1343,13 +1400,14 @@ class FeatureAnalysisGUI(QMainWindow):
         self.metadata_mapping_table.setWordWrap(False)
         self.metadata_mapping_table.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.metadata_mapping_table.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
-        self.metadata_mapping_table.verticalHeader().setDefaultSectionSize(30)
+        self.metadata_mapping_table.verticalHeader().setDefaultSectionSize(32)
+        self.metadata_mapping_table.verticalHeader().setMinimumSectionSize(30)
         self.metadata_mapping_table.setMinimumHeight(620)
         header = self.metadata_mapping_table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.Interactive)
         self.metadata_mapping_table.setColumnWidth(0, 260)
         self.metadata_mapping_table.setColumnWidth(1, 190)
-        self.metadata_mapping_table.setColumnWidth(2, 230)
+        self.metadata_mapping_table.setColumnWidth(2, 240)
         self.metadata_mapping_table.setColumnWidth(3, 160)
         self.metadata_mapping_table.setColumnWidth(4, 80)
         self.metadata_mapping_table.setColumnWidth(5, 75)
@@ -1525,6 +1583,27 @@ class FeatureAnalysisGUI(QMainWindow):
             self._refresh_focus_combos()
         QMessageBox.information(self, "Filename context applied", f"Filename-derived context applied. Parsed rows: {parsed_ok}.")
 
+    def _style_metadata_role_combo(self, combo: QComboBox) -> None:
+        """Make Assigned role selectors compact and readable inside table rows."""
+        combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        combo.setMinimumContentsLength(18)
+        combo.setMinimumWidth(190)
+        combo.setMaximumWidth(260)
+        combo.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        combo.setFixedHeight(28)
+        combo.setView(QListView())
+        combo.view().setMinimumWidth(300)
+        combo.view().setTextElideMode(Qt.ElideRight)
+        combo.setStyleSheet(
+            f"QComboBox {{ background:#FFFFFF; color:{INK}; border:1px solid {LINE}; "
+            "border-radius:8px; padding:2px 22px 2px 8px; min-height:22px; }}"
+            f"QComboBox:hover {{ border:1px solid {TEAL}; }}"
+            "QComboBox::drop-down { width:20px; border:none; }"
+            f"QComboBox QAbstractItemView {{ background:#FFFFFF; color:{INK}; "
+            f"border:1px solid {LINE}; selection-background-color:#E9F7F6; "
+            f"selection-color:{INK}; outline:0px; }}"
+        )
+
     def refresh_metadata_mapping_table(self, rebuild: bool = True) -> None:
         if not hasattr(self, "metadata_mapping_table"):
             return
@@ -1586,6 +1665,7 @@ class FeatureAnalysisGUI(QMainWindow):
             self.metadata_mapping_table.setItem(visual_i, 0, QTableWidgetItem(str(r["column"])))
             self.metadata_mapping_table.setItem(visual_i, 1, QTableWidgetItem(str(r.get("role_group", ""))))
             combo = NoWheelComboBox()
+            self._style_metadata_role_combo(combo)
             for role in roles:
                 combo.addItem(role)
                 if role.startswith("--"):
@@ -1671,6 +1751,16 @@ class FeatureAnalysisGUI(QMainWindow):
         if self.feature_df is not None and not self.mapping_df.empty:
             self.analysis_df, self.mapping_df, self.metadata_join_strategy = self._merge_metadata_context(self.feature_df, self.mapping_df)
             self.log(f"Metadata context refreshed after metadata mapping: {self.metadata_join_strategy}")
+            if hasattr(self, "_refresh_missingness_task_combo"):
+                self._refresh_missingness_task_combo(self.analysis_df)
+            if hasattr(self, "_refresh_dist_task_combo"):
+                self._refresh_dist_task_combo(self.analysis_df)
+            if hasattr(self, "_refresh_qc_task_combo"):
+                self._refresh_qc_task_combo(self.analysis_df)
+            if hasattr(self, "_refresh_clinical_context_controls"):
+                self._refresh_clinical_context_controls(self.analysis_df)
+            if hasattr(self, "_refresh_focus_combos"):
+                self._refresh_focus_combos()
         self.show_page("overview")
 
     def _overview_page(self) -> QWidget:
@@ -1896,7 +1986,7 @@ class FeatureAnalysisGUI(QMainWindow):
             "task_code": ["task_code", "Task Code", "protocol_task_code", "metadata__task_code", "metadata__Task Code"],
             "diagnosis": ["diagnosis", "Diagnosis", "dx", "Dx", "diagnostic_group", "disease_group", "group", "Group", "group_label", "metadata__diagnosis", "metadata__Diagnosis", "metadata__diagnostic_group"],
             "severity_bin": ["severity_bin", "severity_class", "alsfrs_bulbar_severity", "ALSFRS bulbar severity", "metadata__severity_bin", "metadata__severity_class"],
-            "severity_score": ["severity_score", "functional_score", "bulbar_score", "clinical_score_1", "clinical_score_2", "clinical_score_3", "target_primary", "target_1", "outcome_1", "ALSFRS total score", "ALSFRS-R total score", "ALSFRS bulbar", "ALSFRS-R bulbar", "ALSBDI", "metadata__ALSFRS total score", "metadata__ALSFRS bulbar", "metadata__ALSBDI"],
+            "severity_score": ["severity_score", "functional_score", "bulbar_score", "bulbar_total_score", "alsfrs_total", "alsfrs_bulbar", "alsbdi_total", "clinical_score_1", "clinical_score_2", "clinical_score_3", "target_primary", "target_1", "outcome_1", "ALSFRS total score", "ALSFRS-R total score", "ALSFRS bulbar", "ALSFRS-R bulbar", "ALSBDI", "metadata__severity_score", "metadata__alsfrs_total", "metadata__alsfrs_bulbar", "metadata__alsbdi_total", "metadata__ALSFRS total score", "metadata__ALSFRS bulbar", "metadata__ALSBDI"],
             "sex_or_gender": ["sex_or_gender", "sex", "Sex", "gender", "Gender", "metadata__sex_or_gender", "metadata__Sex", "metadata__Gender"],
             "device": ["device", "microphone", "site", "platform", "recording_device", "metadata__device", "metadata__microphone", "metadata__site"],
             "recording_date": ["recording_date", "Recording date", "assessment_date", "visit_date", "metadata__recording_date", "metadata__Recording date"],
@@ -2415,10 +2505,14 @@ class FeatureAnalysisGUI(QMainWindow):
         return out
 
     def _standardize_metadata_table(self, meta_df: pd.DataFrame) -> pd.DataFrame:
-        """Rename common metadata columns and add match helpers without discarding originals."""
+        """Rename/map metadata columns and add match helpers without discarding originals."""
         if meta_df is None or meta_df.empty:
             return meta_df
         out = meta_df.copy()
+        # First honor explicit user role assignments from Metadata Mapping. This
+        # is more reliable than column-name heuristics for clinical scores,
+        # diagnosis, demographics, manual QC flags, dates, and iterations.
+        out = self._apply_accepted_metadata_roles_to_columns(out)
         rename: dict[str, str] = {}
         used = set(str(c) for c in out.columns)
         for col in out.columns:
@@ -2431,6 +2525,9 @@ class FeatureAnalysisGUI(QMainWindow):
                     rename[str(col)] = f"metadata__{canon}"
         if rename:
             out = out.rename(columns=rename)
+        # Apply explicit roles again after heuristic renaming, so a mapped source
+        # column still wins if a rename changed the source-column spelling.
+        out = self._apply_accepted_metadata_roles_to_columns(out)
         return self._add_file_match_helpers(out)
 
     def _standardize_feature_match_helpers(self, feature_df: pd.DataFrame) -> pd.DataFrame:
@@ -5135,10 +5232,10 @@ class FeatureAnalysisGUI(QMainWindow):
                 candidates[label] = col
 
         add("Diagnosis", ["diagnosis", "Diagnosis", "diagnostic_group", "metadata__diagnosis", "metadata__Diagnosis"])
-        add("ALSFRS total", ["ALSFRS total score", "ALSFRS-R total score", "ALSFRS total", "ALSFRS-R total", "alsfrs_total", "alsfrsr_total", "metadata__ALSFRS total score"])
-        add("ALSFRS bulbar", ["ALSFRS bulbar", "ALSFRS-R bulbar", "ALSFRS bulbar score", "ALSFRS-R bulbar score", "bulbar", "bulbar_score", "alsfrs_bulbar", "alsfrsr_bulbar", "metadata__ALSFRS bulbar", "metadata__ALSFRS-R bulbar"])
-        add("ALSBDI", ["ALSBDI", "ALSBDI score", "ALS Bulbar Dysfunction Index", "alsbdi", "alsbdi_score", "metadata__ALSBDI", "metadata__ALSBDI score"])
-        add("Sex / gender", ["sex", "Sex", "gender", "Gender", "metadata__Sex", "metadata__sex"])
+        add("ALSFRS total", ["ALSFRS total score", "ALSFRS-R total score", "ALSFRS total", "ALSFRS-R total", "alsfrs_total", "alsfrsr_total", "metadata__alsfrs_total", "metadata__ALSFRS total score"])
+        add("ALSFRS bulbar", ["ALSFRS bulbar", "ALSFRS-R bulbar", "ALSFRS bulbar score", "ALSFRS-R bulbar score", "bulbar", "bulbar_score", "alsfrs_bulbar", "alsfrsr_bulbar", "metadata__alsfrs_bulbar", "metadata__ALSFRS bulbar", "metadata__ALSFRS-R bulbar"])
+        add("ALSBDI", ["ALSBDI", "ALSBDI score", "ALS Bulbar Dysfunction Index", "alsbdi", "alsbdi_score", "alsbdi_total", "metadata__alsbdi_total", "metadata__ALSBDI", "metadata__ALSBDI score"])
+        add("Sex / gender", ["sex_or_gender", "sex", "Sex", "gender", "Gender", "metadata__sex_or_gender", "metadata__Sex", "metadata__sex"])
         add("Session / visit", ["session_id", "visit_id", "Clinical Visit ID", "metadata__session_id", "metadata__visit_id", "metadata__Clinical Visit ID"])
         add("Iteration", ["iteration", "Iteration", "metadata__iteration", "metadata__Iteration"])
         return candidates

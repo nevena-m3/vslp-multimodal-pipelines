@@ -3,7 +3,7 @@ from pathlib import Path
 
 def test_feature_gui_v085_metadata_roles_are_grouped_and_priority_specific():
     text = Path("src/vslp/gui/features/app.py").read_text(encoding="utf-8")
-    assert 'APP_VERSION = "v0.86.0"' in text
+    assert 'APP_VERSION = "v0.88.0"' in text
     roles = text[text.index('def _metadata_mapping_roles'):text.index('def _metadata_role_to_canonical')]
     for label in [
         '-- File / recording identity --',
