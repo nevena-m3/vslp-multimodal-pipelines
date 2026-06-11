@@ -81,7 +81,7 @@ from vslp.analysis.features.plots import (
     plot_ml_export_manifest_summary
 )
 
-APP_VERSION = "v0.65.0"
+APP_VERSION = "v0.66.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -1786,32 +1786,122 @@ class FeatureAnalysisGUI(QMainWindow):
 
         card = Card(
             "Distributions / Outliers",
-            "Inspect feature distributions, robust outliers, expected-range flags, and group/context overlays. These are review tools, not automatic exclusion decisions."
+            "Inspect feature distributions, robust outliers, expected-range flags, and group/context overlays. This menu is limited to value shape and plausibility; missingness, QC sensitivity, relationships, and outcome screening stay in their own menus."
         )
-
-        self.dist_metric_grid = QGridLayout()
-        self.dist_metric_grid.setHorizontalSpacing(12)
-        self.dist_metric_grid.setVerticalSpacing(12)
-        card.layout.addLayout(self.dist_metric_grid)
 
         self.dist_note = QLabel("Run Feature Analysis to populate distribution diagnostics. Review outliers in context: task, QC, device, diagnosis/severity, and implementation status can all affect feature values.")
         self.dist_note.setWordWrap(True)
         self.dist_note.setStyleSheet(f"color:{MUTED}; background:#F7FAFD; border:1px solid {LINE}; border-radius:8px; padding:10px;")
         card.layout.addWidget(self.dist_note)
 
-        top_controls = QHBoxLayout()
-        top_controls.addWidget(QLabel("Feature to inspect:"))
+        dist_split = QHBoxLayout()
+        dist_split.setSpacing(14)
+
+        # Main visual area matches Overview and Missingness: one large plot panel,
+        # one compact toolbar, and detailed tables below.
+        plot_panel = QFrame()
+        plot_panel.setStyleSheet(f"QFrame {{ background:#F8FBFE; border:1px solid {LINE}; border-radius:12px; }}")
+        plot_panel_layout = QVBoxLayout(plot_panel)
+        plot_panel_layout.setContentsMargins(14, 14, 14, 14)
+        plot_panel_layout.setSpacing(10)
+
+        plot_header = QHBoxLayout()
+        plot_header.setSpacing(10)
+        plot_title = QLabel("Distribution plot")
+        plot_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
+        plot_header.addWidget(plot_title)
+
+        self.dist_plot_combo = QComboBox()
+        self.dist_plot_combo.setMinimumWidth(360)
+        self.dist_plot_combo.addItem("Review status", "distribution_review_status")
+        self.dist_plot_combo.addItem("Shape priority", "distribution_shape_summary")
+        self.dist_plot_combo.addItem("Shape landscape", "distribution_shape_landscape")
+        self.dist_plot_combo.addItem("Expected-range flags", "expected_range_flags")
+        self.dist_plot_combo.addItem("Outlier counts", "outlier_counts")
+        self.dist_plot_combo.addItem("Row outlier burden", "row_outlier_burden")
+        self.dist_plot_combo.addItem("Variance screen", "variance_screen")
+        self.dist_plot_combo.addItem("Selected feature diagnostic", "selected_feature_distribution")
+        self.dist_plot_combo.addItem("Selected feature by group", "selected_feature_by_group")
+        plot_header.addWidget(self.dist_plot_combo, 1)
+
+        show_btn = QPushButton("Show")
+        show_btn.setProperty("secondary", True)
+        show_btn.clicked.connect(lambda: self.preview_distribution_plot(self.dist_plot_combo.currentData()))
+        plot_header.addWidget(show_btn)
+
+        regen = QPushButton("Regenerate")
+        regen.clicked.connect(self.regenerate_overview_plots)
+        plot_header.addWidget(regen)
+
+        plot_header.addStretch(1)
+        open_btn = QPushButton("Open current plot")
+        open_btn.setProperty("secondary", True)
+        open_btn.clicked.connect(self.open_current_distribution_plot)
+        plot_header.addWidget(open_btn)
+        plot_panel_layout.addLayout(plot_header)
+
+        self.dist_plot_caption = QLabel(
+            "Distributions uses only value-shape and plausibility plots: review status, shape priority, shape landscape, expected ranges, outlier burden, row burden, variance screen, and one selected-feature diagnostic. It does not duplicate Missingness, QC Integration, Relationships, Screening, or ML Export."
+        )
+        self.dist_plot_caption.setWordWrap(True)
+        self.dist_plot_caption.setStyleSheet(f"color:{MUTED}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:9px;")
+        plot_panel_layout.addWidget(self.dist_plot_caption)
+
+        selectors = QHBoxLayout()
+        selectors.setSpacing(10)
+        selectors.addWidget(QLabel("Feature to inspect:"))
         self.dist_feature_combo = QComboBox()
-        self.dist_feature_combo.setMinimumWidth(360)
+        self.dist_feature_combo.setMinimumWidth(320)
         self.dist_feature_combo.currentTextChanged.connect(lambda _: self.generate_selected_distribution_plot())
-        top_controls.addWidget(self.dist_feature_combo)
-        top_controls.addWidget(QLabel("Group overlay:"))
+        selectors.addWidget(self.dist_feature_combo, 1)
+        selectors.addWidget(QLabel("Group overlay:"))
         self.dist_group_combo = QComboBox()
-        self.dist_group_combo.setMinimumWidth(240)
+        self.dist_group_combo.setMinimumWidth(220)
         self.dist_group_combo.currentTextChanged.connect(lambda _: self.generate_selected_group_plot())
-        top_controls.addWidget(self.dist_group_combo)
-        top_controls.addStretch(1)
-        card.layout.addLayout(top_controls)
+        selectors.addWidget(self.dist_group_combo)
+        plot_panel_layout.addLayout(selectors)
+
+        self.dist_plot_preview = QLabel("Run Feature Analysis, then choose one distribution plot.")
+        self.dist_plot_preview.setAlignment(Qt.AlignCenter)
+        self.dist_plot_preview.setMinimumHeight(520)
+        self.dist_plot_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.dist_plot_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
+        plot_panel_layout.addWidget(self.dist_plot_preview, 1)
+
+        self.dist_interpretation_label = QLabel("Select a plot to see structured interpretation guidance.")
+        self.dist_interpretation_label.setWordWrap(True)
+        self.dist_interpretation_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.dist_interpretation_label.setStyleSheet(f"QLabel {{ background:#FFFFFF; color:{INK}; border:1px solid {LINE}; border-radius:10px; padding:12px; font-size:12px; line-height:140%; }}")
+        plot_panel_layout.addWidget(self.dist_interpretation_label)
+
+        dist_split.addWidget(plot_panel, 1)
+
+        # Side summary keeps distribution metrics visible without occupying the
+        # top of the page, matching Overview and Missingness.
+        side_panel = QFrame()
+        side_panel.setStyleSheet(f"QFrame {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:12px; }}")
+        side_layout = QVBoxLayout(side_panel)
+        side_layout.setContentsMargins(12, 12, 12, 12)
+        side_layout.setSpacing(10)
+        side_title = QLabel("Distribution snapshot")
+        side_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
+        side_layout.addWidget(side_title)
+        side_note = QLabel("Compact value-shape metrics. Use these as navigation cues; detailed review, outlier, range, shape, and row-burden tables remain below the plot.")
+        side_note.setWordWrap(True)
+        side_note.setStyleSheet(f"color:{MUTED}; border:none; background:transparent; font-size:12px;")
+        side_layout.addWidget(side_note)
+        self.dist_metric_grid = QGridLayout()
+        self.dist_metric_grid.setHorizontalSpacing(8)
+        self.dist_metric_grid.setVerticalSpacing(8)
+        side_layout.addLayout(self.dist_metric_grid)
+        side_layout.addStretch(1)
+        side_panel.setFixedWidth(300)
+        dist_split.addWidget(side_panel)
+        card.layout.addLayout(dist_split)
+
+        tables_header = QLabel("Detailed distribution tables")
+        tables_header.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; padding-top:8px;")
+        card.layout.addWidget(tables_header)
 
         tabs = QTabWidget()
         tabs.setStyleSheet(f"""
@@ -1828,44 +1918,16 @@ class FeatureAnalysisGUI(QMainWindow):
         self.dist_row_burden_table = QTableWidget(0, 0)
         for t in [self.dist_summary_table, self.dist_review_table, self.dist_outlier_table, self.dist_range_table, self.dist_shape_table, self.dist_row_burden_table]:
             t.setAlternatingRowColors(True)
-            t.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+            t.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+            t.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+            t.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         tabs.addTab(self.dist_summary_table, "Distribution summary")
         tabs.addTab(self.dist_review_table, "Review summary")
         tabs.addTab(self.dist_outlier_table, "Row-level outliers")
         tabs.addTab(self.dist_range_table, "Expected ranges")
         tabs.addTab(self.dist_shape_table, "Shape audit")
         tabs.addTab(self.dist_row_burden_table, "Row burden")
-        # Tables are placed below plots for visual-first review.
-
-
-        self._add_standard_plot_gallery(
-            card.layout,
-            "Distribution plot",
-            "Distribution review focuses on shape, outlier burden, expected ranges, variance, and one selected-feature diagnostic. Missingness and QC-specific explanations stay in their own menus.",
-            "dist_plot_combo",
-            [
-                ("Review status", "distribution_review_status"),
-                ("Shape priority", "distribution_shape_summary"),
-                ("Shape landscape", "distribution_shape_landscape"),
-                ("Expected-range flags", "expected_range_flags"),
-                ("Outlier counts", "outlier_counts"),
-                ("Row outlier burden", "row_outlier_burden"),
-                ("Variance screen", "variance_screen"),
-                ("Selected feature diagnostic", "selected_feature_distribution"),
-                ("Selected feature by group", "selected_feature_by_group"),
-            ],
-            "dist_plot_preview",
-            "dist_interpretation_label",
-            self.preview_distribution_plot,
-            self.open_current_distribution_plot,
-            "Run Feature Analysis, then choose one distribution plot.",
-            520,
-        )
-        tables_header = QLabel("Detailed tables")
-        tables_header.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; padding-top:8px;")
-        card.layout.addWidget(tables_header)
         card.layout.addWidget(tabs)
-
 
         layout.addWidget(card)
         return self._wrap_scroll(body)
@@ -1893,17 +1955,17 @@ class FeatureAnalysisGUI(QMainWindow):
         shape_review = int(shape.get("priority", pd.Series(dtype=str)).astype(str).eq("review").sum()) if shape is not None and not shape.empty else 0
         row_review = int(row_burden.get("review_level", pd.Series(dtype=str)).astype(str).eq("review").sum()) if row_burden is not None and not row_burden.empty else 0
         tiles = [
-            ("Features audited", n_features, "numeric selected features"),
-            ("Monitor", int(monitor), "moderate distribution issues"),
-            ("Review", int(review_n), "high-risk distribution issues"),
-            ("Outlier rows", out_n, "row-level robust/range flags"),
-            ("Range flags", range_n, "features outside supplied ranges"),
+            ("Features", n_features, "numeric predictors"),
+            ("Monitor", int(monitor), "moderate issues"),
+            ("Review", int(review_n), "high-risk issues"),
+            ("Outlier rows", out_n, "row-level flags"),
+            ("Range flags", range_n, "outside expected ranges"),
             ("Zero variance", zero_n, "not useful for ML"),
-            ("Shape review", shape_review, "features needing shape review"),
+            ("Shape review", shape_review, "shape needs review"),
             ("Row burden", row_review, "recordings with many flags"),
         ]
         for idx, (title, value, subtitle) in enumerate(tiles):
-            self.dist_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx // 3, idx % 3)
+            self.dist_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx, 0)
         self._fill_table(self.dist_summary_table, dist)
         self._fill_table(self.dist_review_table, review)
         self._fill_table(self.dist_outlier_table, outliers)
