@@ -59,6 +59,7 @@ from vslp.analysis.features.plots import (
     plot_missingness, plot_feature_availability_heatmap,
     plot_row_missingness_distribution, plot_missingness_by_group,
     plot_missingness_family_summary, plot_comissing_heatmap,
+    plot_feature_availability_bars, plot_comissing_pair_bars,
     plot_distribution_review_summary, plot_expected_range_flags,
     plot_selected_feature_distribution, plot_selected_feature_diagnostic, plot_group_feature_boxplot, plot_distribution_grid, plot_outlier_counts,
     plot_distribution_shape_summary, plot_distribution_shape_landscape, plot_row_outlier_burden, plot_variance_screen,
@@ -88,7 +89,7 @@ from vslp.analysis.features.plots import (
     plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.99.0"
+APP_VERSION = "v0.102.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -1501,6 +1502,7 @@ class FeatureAnalysisGUI(QMainWindow):
             QMessageBox.warning(self, "Filename context not applied", msg)
             return
 
+        self.log(f"Applying filename context from Metadata Mapping fallback using selected column: {selected_col}")
         non_empty = int(self.feature_df[selected_col].dropna().astype(str).str.strip().ne("").sum())
         first_example = ""
         sample = self.feature_df[selected_col].dropna().astype(str).str.strip()
@@ -1546,6 +1548,7 @@ class FeatureAnalysisGUI(QMainWindow):
             out = out.drop(columns=helper_cols)
 
         self.analysis_df = out
+        self.filename_context_applied = True
         self.metadata_join_strategy = "feature_table_only:metadata_mapping_filename_fallback_direct"
         # Re-classify the enriched analysis table so newly-created context columns
         # are visible to mapping/export code without disturbing feature values.
@@ -1585,7 +1588,20 @@ class FeatureAnalysisGUI(QMainWindow):
             self._refresh_qc_task_combo(self.analysis_df)
         if hasattr(self, "_refresh_focus_combos"):
             self._refresh_focus_combos()
-        QMessageBox.information(self, "Filename context applied", f"Filename-derived context applied. Parsed rows: {parsed_ok}.")
+        if parsed_context is not None and not parsed_context.empty:
+            try:
+                out_dir = self._output_dir() / "feature_analysis" / "tables"
+                out_dir.mkdir(parents=True, exist_ok=True)
+                parsed_context.to_csv(out_dir / "filename_context_parse_preview.csv", index=False)
+                self.log(f"Filename context preview saved: {out_dir / 'filename_context_parse_preview.csv'}")
+            except Exception as exc:
+                self.log_error("Could not save filename context preview", exc)
+        try:
+            if hasattr(self, "regenerate_overview_plots"):
+                self.regenerate_overview_plots()
+        except Exception as exc:
+            self.log_error("Overview refresh after filename context apply failed", exc)
+        QMessageBox.information(self, "Filename context applied", f"Filename-derived context applied. Parsed rows: {parsed_ok} / {len(parsed_context)}. Downstream menus now use these parsed context fields.")
 
     def _style_metadata_role_combo(self, combo: QComboBox) -> None:
         """Make Assigned role selectors compact and readable inside table rows."""
@@ -2066,17 +2082,17 @@ class FeatureAnalysisGUI(QMainWindow):
 
     def _context_aliases(self) -> dict[str, list[str]]:
         return {
-            "subject": ["subject_id", "SubjectID", "participant_id", "patient_id", "metadata__subject_id", "metadata__SubjectID"],
+            "subject": ["metadata__subject_id", "metadata__SubjectID", "subject_id", "SubjectID", "participant_id", "patient_id"],
             "session": ["session_id", "visit_id", "clinical_visit_id", "Clinical Visit ID", "metadata__session_id", "metadata__visit_id", "metadata__Clinical Visit ID"],
-            "task": ["task", "task_name", "Task Name", "prompt", "metadata__task", "metadata__task_name", "metadata__Task Name"],
-            "task_code": ["task_code", "Task Code", "protocol_task_code", "metadata__task_code", "metadata__Task Code"],
-            "diagnosis": ["diagnosis", "Diagnosis", "dx", "Dx", "diagnostic_group", "disease_group", "group", "Group", "group_label", "metadata__diagnosis", "metadata__Diagnosis", "metadata__diagnostic_group"],
+            "task": ["metadata__task", "metadata__task_name", "metadata__Task Name", "task", "task_name", "Task Name", "prompt", "parsed_task"],
+            "task_code": ["metadata__task_code", "metadata__Task Code", "task_code", "Task Code", "protocol_task_code", "parsed_task_code"],
+            "diagnosis": ["metadata__diagnosis", "metadata__Diagnosis", "metadata__diagnostic_group", "diagnosis", "Diagnosis", "dx", "Dx", "diagnostic_group", "disease_group", "group", "Group", "group_label"],
             "severity_bin": ["severity_bin", "severity_class", "alsfrs_bulbar_severity", "ALSFRS bulbar severity", "metadata__severity_bin", "metadata__severity_class"],
             "severity_score": ["severity_score", "functional_score", "bulbar_score", "bulbar_total_score", "alsfrs_total", "alsfrs_bulbar", "alsbdi_total", "clinical_score_1", "clinical_score_2", "clinical_score_3", "target_primary", "target_1", "outcome_1", "ALSFRS total score", "ALSFRS-R total score", "ALSFRS bulbar", "ALSFRS-R bulbar", "ALSBDI", "metadata__severity_score", "metadata__alsfrs_total", "metadata__alsfrs_bulbar", "metadata__alsbdi_total", "metadata__ALSFRS total score", "metadata__ALSFRS bulbar", "metadata__ALSBDI"],
-            "sex_or_gender": ["sex_or_gender", "sex", "Sex", "gender", "Gender", "metadata__sex_or_gender", "metadata__Sex", "metadata__Gender"],
+            "sex_or_gender": ["metadata__sex_or_gender", "metadata__Sex", "metadata__Gender", "sex_or_gender", "sex", "Sex", "gender", "Gender"],
             "device": ["device", "microphone", "site", "platform", "recording_device", "metadata__device", "metadata__microphone", "metadata__site"],
             "recording_date": ["recording_date", "Recording date", "assessment_date", "visit_date", "metadata__recording_date", "metadata__Recording date"],
-            "iteration": ["iteration", "Iteration", "metadata__iteration", "metadata__Iteration"],
+            "iteration": ["metadata__iteration", "metadata__Iteration", "iteration", "Iteration", "parsed_iteration"],
         }
 
     def _first_context_column(self, df: pd.DataFrame, role: str) -> str | None:
@@ -2491,6 +2507,23 @@ class FeatureAnalysisGUI(QMainWindow):
                 combo.setCurrentIndex(ix)
             combo.blockSignals(False)
 
+    def _filename_task_from_span(self, tokens: list[str], start_idx: int | None, end_idx: int | None) -> str | None:
+        """Reconstruct a task label from an inclusive token span without dropping words.
+
+        If a user selects a task start but leaves task end as Auto, the intended
+        clinical task is usually the rest of the filename stem. Using the final
+        token by default prevents NSM_TNG_LATERAL_NORMAL from collapsing to only
+        NSM. Tokens are joined with underscores to create a stable downstream
+        task key while preserving the full token text.
+        """
+        if not tokens or start_idx is None or start_idx < 0 or start_idx >= len(tokens):
+            return None
+        if end_idx is None or end_idx < 0 or end_idx >= len(tokens):
+            end_idx = len(tokens) - 1
+        lo, hi = sorted([int(start_idx), int(end_idx)])
+        span = [str(t).strip() for t in tokens[lo:hi + 1] if str(t).strip()]
+        return "_".join(span) if span else None
+
     def _parse_filename_context_by_template(self, stem_value: object) -> dict[str, object]:
         tokens = self._filename_tokens_from_stem(stem_value)
         mapping = self._filename_template_mapping()
@@ -2519,13 +2552,7 @@ class FeatureAnalysisGUI(QMainWindow):
         task_code = token_at("task_code")
         task_start_idx = mapping.get("task")
         task_end_idx = mapping.get("task_end")
-        task = None
-        if task_start_idx is not None and 0 <= task_start_idx < len(tokens):
-            if task_end_idx is not None and 0 <= task_end_idx < len(tokens):
-                lo, hi = sorted([task_start_idx, task_end_idx])
-                task = "_".join(tokens[lo:hi + 1])
-            else:
-                task = tokens[task_start_idx]
+        task = self._filename_task_from_span(tokens, task_start_idx, task_end_idx)
 
         if subj:
             result["parsed_subject_id"] = subj
@@ -2543,7 +2570,7 @@ class FeatureAnalysisGUI(QMainWindow):
         if task_code:
             result["parsed_task_code"] = task_code
         if task:
-            result["parsed_task"] = str(task).upper()
+            result["parsed_task"] = str(task).strip()
         if any(pd.notna(result.get(k)) for k in ["parsed_subject_id", "parsed_protocol_id", "parsed_iteration", "parsed_duration", "parsed_recording_date", "parsed_task_code", "parsed_task"]):
             result["parsed_context_status"] = "parsed_by_user_template"
         return result
@@ -3970,7 +3997,7 @@ class FeatureAnalysisGUI(QMainWindow):
             "Audit feature and row availability. This page is limited to missing-data burden and structure; distribution shape, QC sensitivity, and outcome screening stay in their own menus."
         )
 
-        self.missing_note = QLabel("Run Feature Analysis to populate missingness plots and tables. Use this page to decide whether missingness is isolated, feature-family specific, row/recording specific, or related to metadata groups before any imputation or exclusion.")
+        self.missing_note = QLabel("Use Task focus and Context/Value to inspect missingness within the relevant analysis subset. Tables below mirror the current scope.")
         self.missing_note.setWordWrap(True)
         self.missing_note.setStyleSheet(f"color:{MUTED}; background:#F7FAFD; border:1px solid {LINE}; border-radius:8px; padding:10px;")
         card.layout.addWidget(self.missing_note)
@@ -3998,8 +4025,8 @@ class FeatureAnalysisGUI(QMainWindow):
         self.missing_plot_combo.addItem("Recording missingness burden", "missingness_row_distribution")
         self.missing_plot_combo.addItem("Missingness by metadata group", "missingness_by_group")
         self.missing_plot_combo.addItem("Missingness by feature family", "missingness_by_family")
-        self.missing_plot_combo.addItem("Feature availability heatmap", "feature_availability_heatmap")
-        self.missing_plot_combo.addItem("Co-missingness clusters", "missingness_comissing_heatmap")
+        self.missing_plot_combo.addItem("Feature availability summary", "feature_availability_summary")
+        self.missing_plot_combo.addItem("Co-missingness pair summary", "missingness_comissing_pairs_plot")
         plot_header.addWidget(self.missing_plot_combo, 1)
 
         show_btn = QPushButton("Show")
@@ -4019,7 +4046,7 @@ class FeatureAnalysisGUI(QMainWindow):
         plot_panel_layout.addLayout(plot_header)
 
         self.missing_plot_caption = QLabel(
-            "Missingness uses only availability plots: feature burden, recording burden, metadata-group structure, feature-family structure, availability heatmap, and co-missingness clusters. It does not duplicate distribution, QC, relationship, screening, or ML-export plots."
+            "Missingness summarizes feature availability by task and context. Use Task focus and Context/Value to localize missingness before making exclusion or imputation decisions."
         )
         self.missing_plot_caption.setWordWrap(True)
         self.missing_plot_caption.setStyleSheet(f"color:{MUTED}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:9px;")
@@ -4031,7 +4058,7 @@ class FeatureAnalysisGUI(QMainWindow):
         self.missing_task_combo = QComboBox()
         self.missing_task_combo.setMinimumWidth(320)
         self.missing_task_combo.addItem("All tasks / not available")
-        self.missing_task_combo.currentIndexChanged.connect(lambda _=0: self.preview_missingness_plot(self.missing_plot_combo.currentData() if hasattr(self, "missing_plot_combo") else "missingness_top_features"))
+        self.missing_task_combo.currentIndexChanged.connect(lambda _=0: (self._refresh_missingness_context_value_combo(self._missingness_scope_table()[0] if hasattr(self, "_missingness_scope_table") else self._active_analysis_table()), self.preview_missingness_plot(self.missing_plot_combo.currentData() if hasattr(self, "missing_plot_combo") else "missingness_top_features")))
         scope_row.addWidget(self.missing_task_combo, 1)
         scope_row.addWidget(QLabel("Context:"))
         self.missing_context_combo = QComboBox()
@@ -4066,7 +4093,7 @@ class FeatureAnalysisGUI(QMainWindow):
         side_title = QLabel("Availability snapshot")
         side_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
         side_layout.addWidget(side_title)
-        side_note = QLabel("Compact availability metrics. Use these as navigation cues; detailed feature, row, group, family, and co-missing tables remain below the plot.")
+        side_note = QLabel("Current-scope missingness metrics. Updates with Task focus and Context/Value.")
         side_note.setWordWrap(True)
         side_note.setStyleSheet(f"color:{MUTED}; border:none; background:transparent; font-size:12px;")
         side_layout.addWidget(side_note)
@@ -4109,6 +4136,35 @@ class FeatureAnalysisGUI(QMainWindow):
 
         layout.addWidget(card)
         return self._wrap_scroll(body)
+
+
+
+    def _missingness_task_column(self, df: pd.DataFrame) -> str | None:
+        """Return the task column for Missingness, preferring metadata-derived task when available.
+
+        Metadata Mapping is the source of truth when metadata is loaded. Filename-derived
+        task is used only when metadata task columns are absent or empty.
+        """
+        if df is None or df.empty:
+            return None
+        candidates = [
+            "metadata__task", "metadata__task_name", "metadata__Task Name",
+            "metadata__task_code",
+            "task", "task_name", "Task Name", "parsed_task", "parsed_task_code", "task_code",
+        ]
+        for c in candidates:
+            if c in df.columns:
+                try:
+                    if not self._is_effectively_empty(df[c]).all():
+                        return c
+                except Exception:
+                    if df[c].notna().any():
+                        return c
+        try:
+            return self._first_context_column(df, "task")
+        except Exception:
+            return None
+
 
 
 
@@ -4181,7 +4237,7 @@ class FeatureAnalysisGUI(QMainWindow):
     def _refresh_missingness_task_combo(self, df: pd.DataFrame) -> None:
         if not hasattr(self, "missing_task_combo"):
             return
-        task_col = self._task_col(df) if hasattr(self, "_task_col") else None
+        task_col = self._missingness_task_column(df) if hasattr(self, "_missingness_task_column") else (self._task_col(df) if hasattr(self, "_task_col") else None)
         current = self.missing_task_combo.currentText()
         self.missing_task_combo.blockSignals(True)
         self.missing_task_combo.clear()
@@ -4209,7 +4265,7 @@ class FeatureAnalysisGUI(QMainWindow):
             return pd.DataFrame(), "All tasks | all context"
         scoped = df.copy()
         parts = []
-        task_col = self._task_col(scoped) if hasattr(self, "_task_col") else None
+        task_col = self._missingness_task_column(scoped) if hasattr(self, "_missingness_task_column") else (self._task_col(scoped) if hasattr(self, "_task_col") else None)
         task_value = self.missing_task_combo.currentText() if hasattr(self, "missing_task_combo") else "All tasks"
         if task_col and task_col in scoped.columns and task_value not in {"", "All tasks", "All tasks / not available"}:
             scoped = scoped[scoped[task_col].astype(str).eq(str(task_value))].copy()
@@ -4237,32 +4293,139 @@ class FeatureAnalysisGUI(QMainWindow):
             return [c for c in roles.get("Feature", []) if c in df.columns]
         return [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
 
-    def generate_missingness_scope_plots(self) -> None:
+    def _missingness_scope_outputs(self) -> tuple[dict[str, pd.DataFrame], list[str], str]:
+        """Build Missingness tables for the currently selected task/context scope.
+
+        These tables are local to the Missingness menu. They are recomputed from
+        the same scoped DataFrame used for plots so the detailed tabs and side
+        snapshot always match Task focus and Context/Value. This avoids relying
+        on stale full-analysis outputs that may not have been regenerated after
+        the user changes scope.
+        """
         df, scope_label = self._missingness_scope_table()
-        self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
         feature_cols = self._missingness_feature_cols(df)
+        outputs: dict[str, pd.DataFrame] = {}
+        if df is None or df.empty or not feature_cols:
+            outputs["missingness_by_feature"] = pd.DataFrame(columns=["feature", "missing_fraction", "n_missing", "n_total"])
+            outputs["missingness_by_row"] = pd.DataFrame(columns=["row_index", "missing_fraction_feature_columns", "n_missing_feature_columns"])
+            outputs["missingness_by_group"] = pd.DataFrame(columns=["group_variable", "column", "level", "n_rows", "mean_feature_missing_fraction"])
+            outputs["missingness_by_family"] = pd.DataFrame(columns=["family_or_subsystem", "n_features", "mean_missing_fraction"])
+            outputs["missingness_comissing_pairs"] = pd.DataFrame(columns=["feature_a", "feature_b", "co_missing_fraction", "n_co_missing"])
+            outputs["missingness_scope_summary"] = pd.DataFrame([{
+                "scope": scope_label,
+                "n_rows": 0 if df is None else int(len(df)),
+                "n_feature_columns": 0,
+                "mean_missingness": pd.NA,
+            }])
+            return outputs, feature_cols, scope_label
+
+        missing_feature = missingness_feature_summary(df, feature_cols, self.registry_df)
+        row_missing = missingness_row_summary(df, feature_cols)
+        group_missing = missingness_group_summary(df, feature_cols)
+        family_missing = missingness_family_summary(missing_feature)
+        comissing_pairs = missingness_comissing_pairs(df, feature_cols)
+        mean_missing = pd.NA
+        if missing_feature is not None and not missing_feature.empty and "missing_fraction" in missing_feature.columns:
+            mean_missing = float(pd.to_numeric(missing_feature["missing_fraction"], errors="coerce").mean())
+        outputs["missingness_by_feature"] = missing_feature
+        outputs["missingness_by_row"] = row_missing
+        outputs["missingness_by_group"] = group_missing
+        outputs["missingness_by_family"] = family_missing
+        outputs["missingness_comissing_pairs"] = comissing_pairs
+        outputs["missingness_scope_summary"] = pd.DataFrame([{
+            "scope": scope_label,
+            "n_rows": int(len(df)),
+            "n_feature_columns": int(len(feature_cols)),
+            "mean_missingness": mean_missing,
+            "task_focus": self.missing_task_combo.currentText() if hasattr(self, "missing_task_combo") else "All tasks",
+            "context": self.missing_context_combo.currentText() if hasattr(self, "missing_context_combo") else "All context / not available",
+            "value": self.missing_context_value_combo.currentText() if hasattr(self, "missing_context_value_combo") else "All values",
+        }])
+        return outputs, feature_cols, scope_label
+
+    def _update_missingness_snapshot(self, outputs: dict[str, pd.DataFrame], scope_label: str | None = None) -> None:
+        if not hasattr(self, "missing_metric_grid"):
+            return
+        while self.missing_metric_grid.count():
+            item = self.missing_metric_grid.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        feat = outputs.get("missingness_by_feature", pd.DataFrame()) if isinstance(outputs, dict) else pd.DataFrame()
+        row = outputs.get("missingness_by_row", pd.DataFrame()) if isinstance(outputs, dict) else pd.DataFrame()
+        group = outputs.get("missingness_by_group", pd.DataFrame()) if isinstance(outputs, dict) else pd.DataFrame()
+        summary = outputs.get("missingness_scope_summary", pd.DataFrame()) if isinstance(outputs, dict) else pd.DataFrame()
+        n_features = len(feat) if feat is not None else 0
+        n_rows = len(row) if row is not None else 0
+        if summary is not None and not summary.empty:
+            try:
+                n_rows = int(summary.iloc[0].get("n_rows", n_rows))
+            except Exception:
+                pass
+        mean_miss = "-"
+        high_features = "-"
+        high_rows = "-"
+        groups = "-"
+        if feat is not None and not feat.empty and "missing_fraction" in feat.columns:
+            miss = pd.to_numeric(feat["missing_fraction"], errors="coerce")
+            mean_miss = f"{miss.mean():.3f}" if miss.notna().any() else "-"
+            high_features = int((miss >= 0.50).sum())
+        if row is not None and not row.empty and "missing_fraction_feature_columns" in row.columns:
+            high_rows = int((pd.to_numeric(row["missing_fraction_feature_columns"], errors="coerce") >= 0.50).sum())
+        if group is not None and not group.empty and "group_variable" in group.columns:
+            groups = int(group["group_variable"].nunique())
+        scope_text = scope_label or "current scope"
+        if len(str(scope_text)) > 42:
+            scope_text = str(scope_text)[:39] + "..."
+        tiles = [
+            ("Scope", scope_text, "task/context filter"),
+            ("Rows", n_rows, "recordings in scope"),
+            ("Features", n_features, "mapped feature columns"),
+            ("Mean missingness", mean_miss, "across features"),
+            ("High-missing features", high_features, ">=50% missing"),
+            ("High-missing rows", high_rows, ">=50% feature missingness"),
+            ("Metadata groups", groups, "detected strata"),
+        ]
+        for idx, (title, value, subtitle) in enumerate(tiles):
+            self.missing_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx, 0)
+
+    def _update_missingness_tables(self, outputs: dict[str, pd.DataFrame]) -> None:
+        if not hasattr(self, "missing_feature_table"):
+            return
+        self._fill_table(self.missing_feature_table, outputs.get("missingness_by_feature", pd.DataFrame()))
+        self._fill_table(self.missing_row_table, outputs.get("missingness_by_row", pd.DataFrame()))
+        self._fill_table(self.missing_group_table, outputs.get("missingness_by_group", pd.DataFrame()))
+        self._fill_table(self.missing_family_table, outputs.get("missingness_by_family", pd.DataFrame()))
+        self._fill_table(self.missing_comissing_table, outputs.get("missingness_comissing_pairs", pd.DataFrame()))
+
+    def generate_missingness_scope_plots(self) -> None:
+        self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
+        outputs, feature_cols, scope_label = self._missingness_scope_outputs()
         safe_scope = re.sub(r"[^A-Za-z0-9_.-]+", "_", scope_label).strip("_")[:80] or "all_tasks"
         if not hasattr(self, "plot_paths"):
             self.plot_paths = {}
-        if df.empty or not feature_cols:
-            # Generate clear empty plots rather than failing.
-            missing_feature = pd.DataFrame()
-            row_missing = pd.DataFrame()
-            group_missing = pd.DataFrame()
-            family_missing = pd.DataFrame()
-        else:
-            missing_feature = missingness_feature_summary(df, feature_cols, self.registry_df)
-            row_missing = missingness_row_summary(df, feature_cols)
-            group_missing = missingness_group_summary(df, feature_cols)
-            family_missing = missingness_family_summary(missing_feature)
+        missing_feature = outputs.get("missingness_by_feature", pd.DataFrame())
+        row_missing = outputs.get("missingness_by_row", pd.DataFrame())
+        group_missing = outputs.get("missingness_by_group", pd.DataFrame())
+        family_missing = outputs.get("missingness_by_family", pd.DataFrame())
+        comissing_pairs = outputs.get("missingness_comissing_pairs", pd.DataFrame())
         self.plot_paths["missingness_top_features"] = str(plot_missingness(missing_feature, plots_dir / f"missingness_top_features_{safe_scope}.png"))
         self.plot_paths["missingness_row_distribution"] = str(plot_row_missingness_distribution(row_missing, plots_dir / f"missingness_row_distribution_{safe_scope}.png"))
         self.plot_paths["missingness_by_group"] = str(plot_missingness_by_group(group_missing, plots_dir / f"missingness_by_group_{safe_scope}.png"))
         self.plot_paths["missingness_by_family"] = str(plot_missingness_family_summary(family_missing, plots_dir / f"missingness_by_family_{safe_scope}.png"))
-        self.plot_paths["feature_availability_heatmap"] = str(plot_feature_availability_heatmap(df, feature_cols, plots_dir / f"feature_availability_heatmap_{safe_scope}.png", max_features=None, max_rows=None))
-        self.plot_paths["missingness_comissing_heatmap"] = str(plot_comissing_heatmap(df, feature_cols, plots_dir / f"missingness_comissing_heatmap_{safe_scope}.png", max_features=None))
+        self.plot_paths["feature_availability_summary"] = str(plot_feature_availability_bars(missing_feature, plots_dir / f"feature_availability_summary_{safe_scope}.png"))
+        self.plot_paths["missingness_comissing_pairs_plot"] = str(plot_comissing_pair_bars(comissing_pairs, plots_dir / f"missingness_comissing_pairs_{safe_scope}.png"))
+        # Backward-compatible aliases for older saved reports/buttons. These now
+        # point to readable bar summaries rather than dense heatmaps.
+        self.plot_paths["feature_availability_heatmap"] = self.plot_paths["feature_availability_summary"]
+        self.plot_paths["missingness_comissing_heatmap"] = self.plot_paths["missingness_comissing_pairs_plot"]
+        self.current_missingness_outputs = outputs
+        self._update_missingness_snapshot(outputs, scope_label)
+        self._update_missingness_tables(outputs)
         if hasattr(self, "missing_plot_caption"):
-            self.missing_plot_caption.setText(f"{self._missingness_plot_caption_text(self.missing_plot_combo.currentData())}\n\nCurrent scope: {scope_label}. Feature heatmaps include all selected feature columns when feasible.")
+            self.missing_plot_caption.setText(f"{self._missingness_plot_caption_text(self.missing_plot_combo.currentData())}\n\nCurrent scope: {scope_label}.")
+        if hasattr(self, "missing_note"):
+            self.missing_note.setText("Missingness audit generated for the current scope. Tables and snapshot update with Task focus and Context/Value.")
 
     def regenerate_missingness_scope_plots(self) -> None:
         self.generate_missingness_scope_plots()
@@ -4271,45 +4434,25 @@ class FeatureAnalysisGUI(QMainWindow):
     def update_missingness_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
         if not hasattr(self, "missing_metric_grid"):
             return
-        while self.missing_metric_grid.count():
-            item = self.missing_metric_grid.takeAt(0)
-            w = item.widget()
-            if w:
-                w.deleteLater()
-        feat = outputs.get("missingness_by_feature", pd.DataFrame())
-        row = outputs.get("missingness_by_row", pd.DataFrame())
-        group = outputs.get("missingness_by_group", pd.DataFrame())
-        n_features = len(feat) if feat is not None else 0
-        mean_miss = "-"
-        high_features = "-"
-        high_rows = "-"
-        groups = "-"
-        if feat is not None and not feat.empty and "missing_fraction" in feat.columns:
-            mean_miss = f"{pd.to_numeric(feat['missing_fraction'], errors='coerce').mean():.3f}"
-            high_features = int(feat.get("missingness_status", pd.Series(dtype=str)).isin(["review", "high_review"]).sum())
-        if row is not None and not row.empty and "missing_fraction_feature_columns" in row.columns:
-            high_rows = int((pd.to_numeric(row["missing_fraction_feature_columns"], errors="coerce") >= 0.50).sum())
-        if group is not None and not group.empty and "group_variable" in group.columns:
-            groups = int(group["group_variable"].nunique())
-        tiles = [
-            ("Features", n_features, "selected predictors"),
-            ("Rows", len(row) if row is not None else "-", "recordings / files"),
-            ("Mean missingness", mean_miss, "across selected predictors"),
-            ("High-missing features", high_features, ">=50% missing or worse"),
-            ("Metadata groups", groups, "available strata"),
-            ("Default policy", "do not auto-impute", "review mechanism first"),
-        ]
-        for idx, (title, value, subtitle) in enumerate(tiles):
-            self.missing_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx, 0)
         active_missing_scope = self._active_analysis_table() if hasattr(self, "_active_analysis_table") else pd.DataFrame()
         self._refresh_missingness_task_combo(active_missing_scope)
         self._refresh_missingness_context_controls(active_missing_scope)
-        self._fill_table(self.missing_feature_table, outputs.get("missingness_by_feature", pd.DataFrame()))
-        self._fill_table(self.missing_row_table, outputs.get("missingness_by_row", pd.DataFrame()))
-        self._fill_table(self.missing_group_table, outputs.get("missingness_by_group", pd.DataFrame()))
-        self._fill_table(self.missing_family_table, outputs.get("missingness_by_family", pd.DataFrame()))
-        self._fill_table(self.missing_comissing_table, outputs.get("missingness_comissing_pairs", pd.DataFrame()))
-        self.missing_note.setText("Missingness audit generated. Read this menu as a missing-data mechanism screen: first identify high-missing features, then check whether missingness is concentrated in rows, tasks/groups, feature families, or co-missing clusters. Imputation and complete-case exclusion should be deferred to ML only after this review.")
+        # Build scoped outputs from the current canonical analysis table so the
+        # detailed tabs and snapshot are never empty/stale after task/context changes.
+        try:
+            scoped_outputs, _feature_cols, scope_label = self._missingness_scope_outputs()
+        except Exception as exc:
+            self.log(f"WARN | Missingness scoped table update failed; using full-analysis outputs. {exc}") if hasattr(self, "log") else None
+            scoped_outputs = outputs or {}
+            scope_label = "All tasks | context = all/unavailable"
+        self.current_missingness_outputs = scoped_outputs
+        self._update_missingness_snapshot(scoped_outputs, scope_label)
+        self._update_missingness_tables(scoped_outputs)
+        try:
+            self.generate_missingness_scope_plots()
+        except Exception as exc:
+            self.log(f"WARN | Missingness scoped plot refresh failed: {exc}") if hasattr(self, "log") else None
+        self.missing_note.setText("Missingness audit generated for the current scope. Tables and snapshot update with Task focus and Context/Value.")
 
     def _missingness_plot_caption_text(self, key: str) -> str:
         captions = {
@@ -4317,8 +4460,10 @@ class FeatureAnalysisGUI(QMainWindow):
             "missingness_row_distribution": "Row-level missingness: shows how much feature information is lost per recording/row. A right-shifted distribution means many recordings have broad feature failure, which can reduce usable sample size and bias ML training.",
             "missingness_by_group": "Missingness by group: compares average feature missingness across detected task, diagnosis, severity, device, session, or similar groups. Group differences suggest missingness may be non-random and should not be handled by naive complete-case analysis.",
             "missingness_by_family": "Missingness by family: summarizes failure by feature subsystem. A high family-level value suggests a systematic issue, such as formant tracking, voicing detection, segmentation support, or missing registry labels, rather than isolated bad features.",
-            "feature_availability_heatmap": "Feature availability heatmap: rows are recordings and columns are features. Contiguous missing blocks suggest structured missingness by task, modality, subject group, or computation mode; scattered gaps suggest more local feature failure.",
-            "missingness_comissing_heatmap": "Co-missing heatmap: shows features that fail together. Strong co-missing clusters often indicate shared algorithmic dependencies or task support limitations, and they should be reviewed as groups rather than one feature at a time.",
+            "feature_availability_summary": "Feature availability summary: shows available versus missing counts for the least available features in the current task/context scope. This replaces the dense heatmap with a readable bar summary.",
+            "missingness_comissing_pairs_plot": "Co-missingness pair summary: shows the feature pairs that are most often missing together in the current task/context scope. Review these as shared algorithmic or task-support failure modes.",
+            "feature_availability_heatmap": "Feature availability summary: shows available versus missing counts for the least available features in the current task/context scope.",
+            "missingness_comissing_heatmap": "Co-missingness pair summary: shows feature pairs that are most often missing together in the current task/context scope.",
         }
         return captions.get(key, "Missingness plot. Use it to determine whether feature absence is isolated, structured, or associated with design/QC variables.")
 
@@ -4338,7 +4483,7 @@ class FeatureAnalysisGUI(QMainWindow):
         if hasattr(self, "missing_plot_caption"):
             _, scope_label = self._missingness_scope_table()
             self.missing_plot_caption.setText(
-                f"{self._missingness_plot_caption_text(key)}\n\nCurrent scope: {scope_label}. Feature heatmaps include all selected feature columns when feasible."
+                f"{self._missingness_plot_caption_text(key)}\n\nCurrent scope: {scope_label}."
             )
         self._display_plot_image(self.missing_plot_preview, path)
 
@@ -5991,7 +6136,13 @@ class FeatureAnalysisGUI(QMainWindow):
         return None
 
     def _task_col(self, df: pd.DataFrame) -> str | None:
-        return self._first_existing_col(df, ["task", "task_name", "metadata__task", "metadata__task_name"])
+        try:
+            hit = self._first_context_column(df, "task")
+            if hit:
+                return hit
+        except Exception:
+            pass
+        return self._first_existing_col(df, ["metadata__task", "metadata__task_name", "task", "task_name", "parsed_task"])
 
     def _subject_col(self, df: pd.DataFrame) -> str | None:
         return self._first_existing_col(df, ["subject_id", "SubjectID", "subject", "participant_id", "metadata__subject_id", "metadata__SubjectID"])
