@@ -80,12 +80,12 @@ from vslp.analysis.features.plots import (
     plot_recommendation_reason_counts, plot_recommendation_family_summary,
     plot_ml_export_manifest_summary,
     plot_task_counts, plot_task_subject_matrix, plot_task_label_context,
-    plot_task_feature_support, plot_longitudinal_subject_records,
+    plot_task_feature_support, plot_task_clinical_context, plot_task_clinical_filtered_counts, plot_longitudinal_subject_records,
     plot_longitudinal_session_matrix, plot_longitudinal_iteration_counts,
     plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.69.0"
+APP_VERSION = "v0.71.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -805,7 +805,7 @@ class FeatureAnalysisGUI(QMainWindow):
         plot_header.addWidget(show_btn)
 
         regen = QPushButton("Regenerate")
-        regen.clicked.connect(self.regenerate_overview_plots)
+        regen.clicked.connect(self.regenerate_missingness_scope_plots)
         plot_header.addWidget(regen)
 
         plot_header.addStretch(1)
@@ -1472,14 +1472,7 @@ class FeatureAnalysisGUI(QMainWindow):
     def _show_overview_plot(self, path: Path) -> None:
         if not hasattr(self, "overview_plot_preview"):
             return
-        pix = QPixmap(str(path))
-        if pix.isNull():
-            self.overview_plot_preview.setText(f"Could not load plot:\n{path}")
-            return
-        target_size = self.overview_plot_preview.size()
-        scaled = pix.scaled(target_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        self.overview_plot_preview.setPixmap(scaled)
-        self.overview_plot_preview.setToolTip(str(path))
+        self._display_plot_image(self.overview_plot_preview, path)
 
     def open_current_overview_plot(self) -> None:
         path = getattr(self, "current_overview_plot", None)
@@ -1505,6 +1498,23 @@ class FeatureAnalysisGUI(QMainWindow):
         self.open_file(path)
 
 
+
+
+    def _display_plot_image(self, label: QLabel, path: Path) -> bool:
+        """Render a plot preview without allowing repeated Show clicks to resize/zoom the widget."""
+        pix = QPixmap(str(path))
+        if pix.isNull():
+            label.clear()
+            label.setText(f"Could not load plot:\n{path}")
+            return False
+        target = label.contentsRect().size()
+        if target.width() < 320 or target.height() < 260:
+            target = QSize(1000, 560)
+        scaled = pix.scaled(target, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        label.clear()
+        label.setPixmap(scaled)
+        label.setToolTip(str(path))
+        return True
 
     def _add_standard_plot_gallery(
         self,
@@ -1629,7 +1639,7 @@ class FeatureAnalysisGUI(QMainWindow):
         plot_header.addWidget(show_btn)
 
         regen = QPushButton("Regenerate")
-        regen.clicked.connect(self.regenerate_overview_plots)
+        regen.clicked.connect(self.regenerate_missingness_scope_plots)
         plot_header.addWidget(regen)
 
         plot_header.addStretch(1)
@@ -1645,6 +1655,17 @@ class FeatureAnalysisGUI(QMainWindow):
         self.missing_plot_caption.setWordWrap(True)
         self.missing_plot_caption.setStyleSheet(f"color:{MUTED}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:9px;")
         plot_panel_layout.addWidget(self.missing_plot_caption)
+
+        scope_row = QHBoxLayout()
+        scope_row.setSpacing(10)
+        scope_row.addWidget(QLabel("Task focus:"))
+        self.missing_task_combo = QComboBox()
+        self.missing_task_combo.setMinimumWidth(320)
+        self.missing_task_combo.addItem("All tasks / not available")
+        self.missing_task_combo.currentIndexChanged.connect(lambda _=0: self.preview_missingness_plot(self.missing_plot_combo.currentData() if hasattr(self, "missing_plot_combo") else "missingness_top_features"))
+        scope_row.addWidget(self.missing_task_combo, 1)
+        scope_row.addStretch(1)
+        plot_panel_layout.addLayout(scope_row)
 
         self.missing_plot_preview = QLabel("Run Feature Analysis, then choose one missingness plot.")
         self.missing_plot_preview.setAlignment(Qt.AlignCenter)
@@ -1708,6 +1729,79 @@ class FeatureAnalysisGUI(QMainWindow):
         layout.addWidget(card)
         return self._wrap_scroll(body)
 
+
+    def _refresh_missingness_task_combo(self, df: pd.DataFrame) -> None:
+        if not hasattr(self, "missing_task_combo"):
+            return
+        task_col = self._task_col(df) if hasattr(self, "_task_col") else None
+        current = self.missing_task_combo.currentText()
+        self.missing_task_combo.blockSignals(True)
+        self.missing_task_combo.clear()
+        if task_col and task_col in df.columns:
+            values = sorted([str(x) for x in df[task_col].dropna().unique().tolist() if str(x).strip()])
+            self.missing_task_combo.addItem("All tasks")
+            for v in values[:500]:
+                self.missing_task_combo.addItem(v)
+        else:
+            self.missing_task_combo.addItem("All tasks / not available")
+        ix = self.missing_task_combo.findText(current)
+        if ix >= 0:
+            self.missing_task_combo.setCurrentIndex(ix)
+        self.missing_task_combo.blockSignals(False)
+
+    def _missingness_scope_table(self) -> tuple[pd.DataFrame, str]:
+        """Return task-scoped table for Missingness plots only.
+
+        This does not alter analysis outputs or tables. It is deliberately local
+        so missingness can be inspected per task without rerunning the whole GUI.
+        """
+        df = self._active_analysis_table() if hasattr(self, "_active_analysis_table") else (self.analysis_df if self.analysis_df is not None else self.feature_df)
+        if df is None:
+            return pd.DataFrame(), "All tasks"
+        task_col = self._task_col(df) if hasattr(self, "_task_col") else None
+        task_value = self.missing_task_combo.currentText() if hasattr(self, "missing_task_combo") else "All tasks"
+        if task_col and task_col in df.columns and task_value not in {"", "All tasks", "All tasks / not available"}:
+            scoped = df[df[task_col].astype(str).eq(str(task_value))].copy()
+            return scoped, f"Task = {task_value}"
+        return df.copy(), "All tasks"
+
+    def _missingness_feature_cols(self, df: pd.DataFrame) -> list[str]:
+        if getattr(self, "mapping_df", None) is not None and not self.mapping_df.empty:
+            roles = role_lists(self.mapping_df)
+            return [c for c in roles.get("Feature", []) if c in df.columns]
+        return [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+
+    def generate_missingness_scope_plots(self) -> None:
+        df, scope_label = self._missingness_scope_table()
+        self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
+        feature_cols = self._missingness_feature_cols(df)
+        safe_scope = re.sub(r"[^A-Za-z0-9_.-]+", "_", scope_label).strip("_")[:80] or "all_tasks"
+        if not hasattr(self, "plot_paths"):
+            self.plot_paths = {}
+        if df.empty or not feature_cols:
+            # Generate clear empty plots rather than failing.
+            missing_feature = pd.DataFrame()
+            row_missing = pd.DataFrame()
+            group_missing = pd.DataFrame()
+            family_missing = pd.DataFrame()
+        else:
+            missing_feature = missingness_feature_summary(df, feature_cols, self.registry_df)
+            row_missing = missingness_row_summary(df, feature_cols)
+            group_missing = missingness_group_summary(df, feature_cols)
+            family_missing = missingness_family_summary(missing_feature)
+        self.plot_paths["missingness_top_features"] = str(plot_missingness(missing_feature, plots_dir / f"missingness_top_features_{safe_scope}.png"))
+        self.plot_paths["missingness_row_distribution"] = str(plot_row_missingness_distribution(row_missing, plots_dir / f"missingness_row_distribution_{safe_scope}.png"))
+        self.plot_paths["missingness_by_group"] = str(plot_missingness_by_group(group_missing, plots_dir / f"missingness_by_group_{safe_scope}.png"))
+        self.plot_paths["missingness_by_family"] = str(plot_missingness_family_summary(family_missing, plots_dir / f"missingness_by_family_{safe_scope}.png"))
+        self.plot_paths["feature_availability_heatmap"] = str(plot_feature_availability_heatmap(df, feature_cols, plots_dir / f"feature_availability_heatmap_{safe_scope}.png", max_features=None, max_rows=None))
+        self.plot_paths["missingness_comissing_heatmap"] = str(plot_comissing_heatmap(df, feature_cols, plots_dir / f"missingness_comissing_heatmap_{safe_scope}.png", max_features=None))
+        if hasattr(self, "missing_plot_caption"):
+            self.missing_plot_caption.setText(f"{self._missingness_plot_caption_text(self.missing_plot_combo.currentData())}\n\nCurrent scope: {scope_label}. Feature heatmaps include all selected feature columns when feasible.")
+
+    def regenerate_missingness_scope_plots(self) -> None:
+        self.generate_missingness_scope_plots()
+        self.preview_missingness_plot(self.missing_plot_combo.currentData() if hasattr(self, "missing_plot_combo") else "missingness_top_features", regenerate=False)
+
     def update_missingness_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
         if not hasattr(self, "missing_metric_grid"):
             return
@@ -1741,6 +1835,7 @@ class FeatureAnalysisGUI(QMainWindow):
         ]
         for idx, (title, value, subtitle) in enumerate(tiles):
             self.missing_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx, 0)
+        self._refresh_missingness_task_combo(self._active_analysis_table() if hasattr(self, "_active_analysis_table") else pd.DataFrame())
         self._fill_table(self.missing_feature_table, outputs.get("missingness_by_feature", pd.DataFrame()))
         self._fill_table(self.missing_row_table, outputs.get("missingness_by_row", pd.DataFrame()))
         self._fill_table(self.missing_group_table, outputs.get("missingness_by_group", pd.DataFrame()))
@@ -1759,9 +1854,11 @@ class FeatureAnalysisGUI(QMainWindow):
         }
         return captions.get(key, "Missingness plot. Use it to determine whether feature absence is isolated, structured, or associated with design/QC variables.")
 
-    def preview_missingness_plot(self, key: str) -> None:
-        if not hasattr(self, "plot_paths") or key not in self.plot_paths or not Path(self.plot_paths.get(key, "")).exists():
-            self.regenerate_overview_plots()
+    def preview_missingness_plot(self, key: str, regenerate: bool = True) -> None:
+        if regenerate:
+            self.generate_missingness_scope_plots()
+        elif not hasattr(self, "plot_paths") or key not in self.plot_paths or not Path(self.plot_paths.get(key, "")).exists():
+            self.generate_missingness_scope_plots()
         if not hasattr(self, "plot_paths") or key not in self.plot_paths:
             QMessageBox.information(self, "Plot unavailable", "Run Feature Analysis first, or this plot was not generated for the current dataset.")
             return
@@ -1771,14 +1868,11 @@ class FeatureAnalysisGUI(QMainWindow):
             return
         self.current_missingness_plot = path
         if hasattr(self, "missing_plot_caption"):
-            self.missing_plot_caption.setText(self._missingness_plot_caption_text(key))
-        pix = QPixmap(str(path))
-        if pix.isNull():
-            self.missing_plot_preview.setText(f"Could not load plot:\n{path}")
-            return
-        scaled = pix.scaled(self.missing_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        self.missing_plot_preview.setPixmap(scaled)
-        self.missing_plot_preview.setToolTip(str(path))
+            _, scope_label = self._missingness_scope_table()
+            self.missing_plot_caption.setText(
+                f"{self._missingness_plot_caption_text(key)}\n\nCurrent scope: {scope_label}. Feature heatmaps include all selected feature columns when feasible."
+            )
+        self._display_plot_image(self.missing_plot_preview, path)
 
     def open_current_missingness_plot(self) -> None:
         path = getattr(self, "current_missingness_plot", None)
@@ -2810,6 +2904,8 @@ class FeatureAnalysisGUI(QMainWindow):
         self.task_review_combo.setMinimumWidth(360)
         self.task_review_combo.addItem("Task coverage", "task_counts")
         self.task_review_combo.addItem("Task x subject coverage", "task_subject_matrix")
+        self.task_review_combo.addItem("Task x clinical context", "task_clinical_context")
+        self.task_review_combo.addItem("Task counts within clinical value", "task_clinical_filtered_counts")
         self.task_review_combo.addItem("Task x diagnosis/severity", "task_label_context")
         self.task_review_combo.addItem("Task feature support", "task_feature_support")
         plot_header.addWidget(self.task_review_combo, 1)
@@ -2839,6 +2935,17 @@ class FeatureAnalysisGUI(QMainWindow):
         self.task_focus_combo.addItem("All tasks / not available")
         self.task_focus_combo.currentIndexChanged.connect(lambda _=0: self.preview_task_review_plot(self.task_review_combo.currentData() if hasattr(self, 'task_review_combo') else 'task_counts'))
         selectors.addWidget(self.task_focus_combo, 1)
+        selectors.addWidget(QLabel("Clinical context:"))
+        self.clinical_context_combo = QComboBox()
+        self.clinical_context_combo.setMinimumWidth(260)
+        self.clinical_context_combo.addItem("Auto / not available")
+        self.clinical_context_combo.currentIndexChanged.connect(lambda _=0: self._refresh_clinical_value_combo(self._active_analysis_table()))
+        selectors.addWidget(self.clinical_context_combo, 1)
+        selectors.addWidget(QLabel("Value:"))
+        self.clinical_value_combo = QComboBox()
+        self.clinical_value_combo.setMinimumWidth(220)
+        self.clinical_value_combo.addItem("All values")
+        selectors.addWidget(self.clinical_value_combo, 1)
         selectors.addStretch(1)
         plot_panel_layout.addLayout(selectors)
 
@@ -2886,10 +2993,14 @@ class FeatureAnalysisGUI(QMainWindow):
         self.task_subject_table = self._simple_table()
         self.task_diagnosis_table = self._simple_table()
         self.task_feature_support_table = self._simple_table()
+        self.local_context_detection_table = self._simple_table()
+        self.local_severity_preset_table = self._simple_table()
         tabs.addTab(self.task_summary_table, "Task summary")
         tabs.addTab(self.task_subject_table, "Task x subject")
-        tabs.addTab(self.task_diagnosis_table, "Task x diagnosis")
+        tabs.addTab(self.task_diagnosis_table, "Task x clinical group")
         tabs.addTab(self.task_feature_support_table, "Task feature support")
+        tabs.addTab(self.local_context_detection_table, "Context detection")
+        tabs.addTab(self.local_severity_preset_table, "Severity presets")
         card.layout.addWidget(tabs)
 
         layout.addWidget(card)
@@ -3087,6 +3198,164 @@ class FeatureAnalysisGUI(QMainWindow):
                     combo.setCurrentIndex(ix)
             combo.blockSignals(False)
 
+
+    def _safe_context_candidates(self, df: pd.DataFrame) -> dict[str, str]:
+        """Detect optional metadata columns without modifying analysis data.
+
+        This helper is intentionally permissive and never raises. Missing metadata
+        simply produces fewer options in local plot controls.
+        """
+        candidates: dict[str, str] = {}
+        if df is None or df.empty:
+            return candidates
+        def add(label: str, aliases: list[str]) -> None:
+            col = self._first_existing_col(df, aliases)
+            if col and col in df.columns and df[col].notna().sum() > 0:
+                candidates[label] = col
+
+        add("Diagnosis", ["diagnosis", "Diagnosis", "diagnostic_group", "metadata__diagnosis", "metadata__Diagnosis"])
+        add("ALSFRS total", ["ALSFRS total score", "ALSFRS-R total score", "ALSFRS total", "ALSFRS-R total", "alsfrs_total", "alsfrsr_total", "metadata__ALSFRS total score"])
+        add("ALSFRS bulbar", ["ALSFRS bulbar", "ALSFRS-R bulbar", "ALSFRS bulbar score", "ALSFRS-R bulbar score", "bulbar", "bulbar_score", "alsfrs_bulbar", "alsfrsr_bulbar", "metadata__ALSFRS bulbar", "metadata__ALSFRS-R bulbar"])
+        add("ALSBDI", ["ALSBDI", "ALSBDI score", "ALS Bulbar Dysfunction Index", "alsbdi", "alsbdi_score", "metadata__ALSBDI", "metadata__ALSBDI score"])
+        add("Sex / gender", ["sex", "Sex", "gender", "Gender", "metadata__Sex", "metadata__sex"])
+        add("Session / visit", ["session_id", "visit_id", "Clinical Visit ID", "metadata__session_id", "metadata__visit_id", "metadata__Clinical Visit ID"])
+        add("Iteration", ["iteration", "Iteration", "metadata__iteration", "metadata__Iteration"])
+        return candidates
+
+    def _bulbar_severity_local(self, score) -> str:
+        try:
+            val = pd.to_numeric(pd.Series([score]), errors="coerce").iloc[0]
+        except Exception:
+            val = pd.NA
+        if pd.isna(val):
+            return "no_score_or_control"
+        if val > 12:
+            return "invalid_above_12"
+        if val < 0:
+            return "invalid_below_0"
+        if val >= 11:
+            return "near_normal_11_12"
+        if val >= 9:
+            return "mild_9_10"
+        if val >= 6:
+            return "moderate_6_8"
+        return "severe_0_5"
+
+    def _alsfrs_total_severity_local(self, score) -> str:
+        val = pd.to_numeric(pd.Series([score]), errors="coerce").iloc[0]
+        if pd.isna(val):
+            return "no_score_or_control"
+        if val > 48:
+            return "invalid_above_48"
+        if val < 0:
+            return "invalid_below_0"
+        if val >= 37:
+            return "mild_or_high_function_37_48"
+        if val >= 25:
+            return "moderate_25_36"
+        return "severe_0_24"
+
+    def _clinical_context_series(self, df: pd.DataFrame) -> tuple[pd.Series | None, str]:
+        """Return a local clinical grouping series for plotting only."""
+        if df is None or df.empty or not hasattr(self, "clinical_context_combo"):
+            return None, "clinical context"
+        label = self.clinical_context_combo.currentText()
+        candidates = self._safe_context_candidates(df)
+        if label in {"", "Auto / not available"}:
+            if "Diagnosis" in candidates:
+                label = "Diagnosis"
+            elif "ALSFRS bulbar" in candidates:
+                label = "ALSFRS bulbar severity"
+            else:
+                return None, "clinical context"
+        if label == "ALSFRS bulbar severity":
+            col = candidates.get("ALSFRS bulbar")
+            if not col:
+                return None, label
+            return df[col].map(self._bulbar_severity_local).astype("string"), label
+        if label == "ALSFRS total severity":
+            col = candidates.get("ALSFRS total")
+            if not col:
+                return None, label
+            return df[col].map(self._alsfrs_total_severity_local).astype("string"), label
+        if label == "ALSBDI severity":
+            col = candidates.get("ALSBDI")
+            if not col:
+                return None, label
+            score = pd.to_numeric(df[col], errors="coerce")
+            out = pd.Series("score_detected_cutoffs_pending", index=df.index, dtype="string")
+            out[score.isna()] = "no_score_or_control"
+            return out, label
+        col = candidates.get(label)
+        if col:
+            return df[col].astype("string"), label
+        return None, label
+
+    def _refresh_clinical_context_controls(self, df: pd.DataFrame) -> None:
+        if not hasattr(self, "clinical_context_combo"):
+            return
+        current = self.clinical_context_combo.currentText()
+        candidates = self._safe_context_candidates(df)
+        options = ["Auto / not available"]
+        for label in ["Diagnosis", "ALSFRS bulbar severity", "ALSFRS total severity", "ALSBDI severity", "Sex / gender", "Session / visit", "Iteration"]:
+            if label == "ALSFRS bulbar severity" and "ALSFRS bulbar" not in candidates:
+                continue
+            if label == "ALSFRS total severity" and "ALSFRS total" not in candidates:
+                continue
+            if label == "ALSBDI severity" and "ALSBDI" not in candidates:
+                continue
+            if label in {"Diagnosis", "Sex / gender", "Session / visit", "Iteration"} and label not in candidates:
+                continue
+            options.append(label)
+        self.clinical_context_combo.blockSignals(True)
+        self.clinical_context_combo.clear()
+        for opt in options:
+            self.clinical_context_combo.addItem(opt)
+        ix = self.clinical_context_combo.findText(current)
+        if ix >= 0:
+            self.clinical_context_combo.setCurrentIndex(ix)
+        self.clinical_context_combo.blockSignals(False)
+        self._refresh_clinical_value_combo(df)
+
+    def _refresh_clinical_value_combo(self, df: pd.DataFrame) -> None:
+        if not hasattr(self, "clinical_value_combo"):
+            return
+        current = self.clinical_value_combo.currentText()
+        series, label = self._clinical_context_series(df)
+        self.clinical_value_combo.blockSignals(True)
+        self.clinical_value_combo.clear()
+        self.clinical_value_combo.addItem("All values")
+        if series is not None:
+            for v in sorted([str(x) for x in series.dropna().unique().tolist() if str(x).strip()])[:200]:
+                self.clinical_value_combo.addItem(v)
+        ix = self.clinical_value_combo.findText(current)
+        if ix >= 0:
+            self.clinical_value_combo.setCurrentIndex(ix)
+        self.clinical_value_combo.blockSignals(False)
+
+    def _local_context_detection_table(self, df: pd.DataFrame) -> pd.DataFrame:
+        candidates = self._safe_context_candidates(df)
+        rows = []
+        for label in ["Diagnosis", "ALSFRS total", "ALSFRS bulbar", "ALSBDI", "Sex / gender", "Session / visit", "Iteration"]:
+            col = candidates.get(label, "")
+            if col:
+                s = df[col]
+                rows.append({"context": label, "source_column": col, "n_nonmissing": int(s.notna().sum()), "n_unique": int(s.dropna().nunique()), "status": "detected"})
+            else:
+                rows.append({"context": label, "source_column": "", "n_nonmissing": 0, "n_unique": 0, "status": "not_detected"})
+        return pd.DataFrame(rows)
+
+    def _local_severity_preset_table(self) -> pd.DataFrame:
+        return pd.DataFrame([
+            {"preset": "ALSFRS bulbar project preset", "source_score": "ALSFRS bulbar", "valid_range": "0-12", "bin": "near_normal_11_12", "rule": "score >= 11"},
+            {"preset": "ALSFRS bulbar project preset", "source_score": "ALSFRS bulbar", "valid_range": "0-12", "bin": "mild_9_10", "rule": "score >= 9 and <= 10"},
+            {"preset": "ALSFRS bulbar project preset", "source_score": "ALSFRS bulbar", "valid_range": "0-12", "bin": "moderate_6_8", "rule": "score >= 6 and <= 8"},
+            {"preset": "ALSFRS bulbar project preset", "source_score": "ALSFRS bulbar", "valid_range": "0-12", "bin": "severe_0_5", "rule": "score <= 5"},
+            {"preset": "ALSFRS bulbar validity", "source_score": "ALSFRS bulbar", "valid_range": "0-12", "bin": "invalid_above_12", "rule": "score > 12"},
+            {"preset": "ALSFRS total configurable preset", "source_score": "ALSFRS total", "valid_range": "0-48", "bin": "mild_or_high_function_37_48 / moderate_25_36 / severe_0_24", "rule": "temporary preset; revise later if needed"},
+            {"preset": "ALSBDI pending preset", "source_score": "ALSBDI", "valid_range": "pending", "bin": "score_detected_cutoffs_pending", "rule": "score shown; cutoffs not hard-coded yet"},
+        ])
+
     def update_task_review_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
         if not hasattr(self, "task_metric_grid"):
             return
@@ -3097,8 +3366,8 @@ class FeatureAnalysisGUI(QMainWindow):
         df = self._active_analysis_table()
         task_col = self._task_col(df)
         subj_col = self._subject_col(df)
-        diag_col = self._first_existing_col(df, ["diagnosis", "metadata__diagnosis", "Diagnosis"])
-        sev_col = self._first_existing_col(df, ["severity_score", "ALSFRS total score", "metadata__severity_score", "metadata__ALSFRS total score"])
+        self._refresh_clinical_context_controls(df)
+        clinical_series, clinical_label = self._clinical_context_series(df)
         if df.empty or not task_col:
             tiles = [
                 ("Task column", "not available", "load metadata or infer tasks"),
@@ -3113,7 +3382,11 @@ class FeatureAnalysisGUI(QMainWindow):
             self._fill_table(self.task_subject_table, pd.DataFrame())
             self._fill_table(self.task_diagnosis_table, pd.DataFrame())
             self._fill_table(self.task_feature_support_table, pd.DataFrame())
-            self.task_note.setText("Task metadata is not available. Load metadata with a task column, or use the planned task/session parser when metadata cannot be supplied.")
+            if hasattr(self, "local_context_detection_table"):
+                self._fill_table(self.local_context_detection_table, self._local_context_detection_table(df))
+            if hasattr(self, "local_severity_preset_table"):
+                self._fill_table(self.local_severity_preset_table, self._local_severity_preset_table())
+            self.task_note.setText("Task metadata is not available. Load metadata with a task column, or use filename/task parsing later. Optional clinical metadata detection is still shown below when available.")
             self._task_feature_support_df = pd.DataFrame()
             self.generate_task_review_plots()
             self.preview_task_review_plot("task_counts")
@@ -3133,12 +3406,11 @@ class FeatureAnalysisGUI(QMainWindow):
             task_subject = pd.crosstab(df[subj_col].astype(str), task_series).reset_index().rename(columns={subj_col: "subject_id"})
         else:
             task_subject = pd.DataFrame([{"status": "subject_id not available; task x subject matrix cannot be built"}])
-        if diag_col:
-            task_diag = pd.crosstab(task_series, df[diag_col].astype(str)).reset_index().rename(columns={"row_0": "task"})
-        elif sev_col:
-            task_diag = df.assign(_task=task_series).groupby("_task")[sev_col].agg(["count", "mean", "median"]).reset_index().rename(columns={"_task": "task"})
+        if clinical_series is not None:
+            task_diag = pd.crosstab(task_series, clinical_series.astype(str).fillna("missing")).reset_index().rename(columns={"row_0": "task"})
+            task_diag.insert(0, "clinical_context", clinical_label)
         else:
-            task_diag = pd.DataFrame([{"status": "diagnosis/severity not available for task context"}])
+            task_diag = pd.DataFrame([{"status": "diagnosis/severity metadata not available for task context"}])
 
         feature_cols = []
         if getattr(self, "mapping_df", None) is not None and not self.mapping_df.empty:
@@ -3158,8 +3430,8 @@ class FeatureAnalysisGUI(QMainWindow):
             ("Rows", len(df), "records / files"),
             ("Subjects", int(df[subj_col].nunique()) if subj_col else "-", "with task context"),
             ("Largest task", task_summary.iloc[0]["n_rows"] if not task_summary.empty else "-", task_summary.iloc[0]["task"] if not task_summary.empty else "not available"),
-            ("Diagnosis", "yes" if diag_col else "no", "task x label context"),
-            ("Severity", "yes" if sev_col else "no", "task x score context"),
+            ("Clinical context", "yes" if clinical_series is not None else "no", clinical_label),
+            ("Severity presets", "available", "bulbar / total / ALSBDI"),
         ]
         for idx, (title, value, subtitle) in enumerate(tiles):
             self.task_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx, 0)
@@ -3168,7 +3440,11 @@ class FeatureAnalysisGUI(QMainWindow):
         self._fill_table(self.task_subject_table, task_subject)
         self._fill_table(self.task_diagnosis_table, task_diag)
         self._fill_table(self.task_feature_support_table, task_feature_support)
-        self.task_note.setText("Task review generated. Use this menu to decide whether downstream plots should be interpreted task-specifically or pooled across tasks.")
+        if hasattr(self, "local_context_detection_table"):
+            self._fill_table(self.local_context_detection_table, self._local_context_detection_table(df))
+        if hasattr(self, "local_severity_preset_table"):
+            self._fill_table(self.local_severity_preset_table, self._local_severity_preset_table())
+        self.task_note.setText("Task review generated. Clinical context controls are local to this menu and only affect Task Review plots, not the base analysis.")
         self._refresh_focus_combos()
         self.generate_task_review_plots()
         self.preview_task_review_plot(self.task_review_combo.currentData() if hasattr(self, "task_review_combo") else "task_counts")
@@ -3178,9 +3454,14 @@ class FeatureAnalysisGUI(QMainWindow):
         self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
         task_col = self._task_col(df)
         subj_col = self._subject_col(df)
-        diag_col = self._first_existing_col(df, ["diagnosis", "metadata__diagnosis", "Diagnosis"])
-        sev_col = self._first_existing_col(df, ["severity_score", "ALSFRS total score", "metadata__severity_score", "metadata__ALSFRS total score"])
-        label_col = diag_col or sev_col
+        self._refresh_clinical_context_controls(df)
+        clinical_series, clinical_label = self._clinical_context_series(df)
+        selected_level = self.clinical_value_combo.currentText() if hasattr(self, "clinical_value_combo") else "All values"
+        label_col = None
+        if clinical_series is not None:
+            df = df.copy()
+            label_col = "__local_clinical_context__"
+            df[label_col] = clinical_series.values
         support = pd.DataFrame()
         if hasattr(self, "task_feature_support_table"):
             # Prefer the table just filled in the GUI when available.
@@ -3189,6 +3470,8 @@ class FeatureAnalysisGUI(QMainWindow):
             self.plot_paths = {}
         self.plot_paths["task_counts"] = str(plot_task_counts(df, task_col, plots_dir / "task_counts.png"))
         self.plot_paths["task_subject_matrix"] = str(plot_task_subject_matrix(df, task_col, subj_col, plots_dir / "task_subject_matrix.png"))
+        self.plot_paths["task_clinical_context"] = str(plot_task_clinical_context(df, task_col, clinical_series, clinical_label, plots_dir / "task_clinical_context.png"))
+        self.plot_paths["task_clinical_filtered_counts"] = str(plot_task_clinical_filtered_counts(df, task_col, clinical_series, clinical_label, selected_level, plots_dir / "task_clinical_filtered_counts.png"))
         self.plot_paths["task_label_context"] = str(plot_task_label_context(df, task_col, label_col, plots_dir / "task_label_context.png"))
         self.plot_paths["task_feature_support"] = str(plot_task_feature_support(support, plots_dir / "task_feature_support.png"))
 
@@ -3207,7 +3490,9 @@ class FeatureAnalysisGUI(QMainWindow):
         captions = {
             "task_counts": "Rows by task. Use this to decide whether pooled analysis is dominated by one task or whether task-specific review is required.",
             "task_subject_matrix": "Task x subject coverage. Sparse blocks indicate that task comparisons may be confounded by subject availability.",
-            "task_label_context": "Task x diagnosis/severity context. Use this to check whether labels are balanced across tasks before screening or ML.",
+            "task_clinical_context": "Task x clinical context. Use this to inspect diagnosis, ALSFRS bulbar severity, ALSFRS total severity, ALSBDI placeholder bins, or other detected grouping variables across tasks.",
+            "task_clinical_filtered_counts": "Task counts within a selected clinical value. Use the Clinical context and Value controls to inspect one diagnosis/severity group without changing the base analysis.",
+            "task_label_context": "Task x diagnosis/severity context. This legacy view uses the currently selected local clinical context.",
             "task_feature_support": "Task-level feature support. High missingness in one task suggests task-specific feature incompatibility or acquisition issues.",
         }
         if hasattr(self, "task_review_interpretation"):
@@ -4682,49 +4967,22 @@ Decision colors:
 
     def resizeEvent(self, event):  # noqa: N802 - Qt override
         super().resizeEvent(event)
-        path = getattr(self, "current_overview_plot", None)
-        if path and hasattr(self, "overview_plot_preview"):
-            self._show_overview_plot(Path(path))
-        mpath = getattr(self, "current_missingness_plot", None)
-        if mpath and hasattr(self, "missing_plot_preview"):
-            pix = QPixmap(str(mpath))
-            if not pix.isNull():
-                self.missing_plot_preview.setPixmap(pix.scaled(self.missing_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        dpath = getattr(self, "current_distribution_plot", None)
-        if dpath and hasattr(self, "dist_plot_preview"):
-            pix = QPixmap(str(dpath))
-            if not pix.isNull():
-                self.dist_plot_preview.setPixmap(pix.scaled(self.dist_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        qpath = getattr(self, "current_qc_plot", None)
-        if qpath and hasattr(self, "qc_plot_preview"):
-            pix = QPixmap(str(qpath))
-            if not pix.isNull():
-                self.qc_plot_preview.setPixmap(pix.scaled(self.qc_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        rpath = getattr(self, "current_relationship_plot", None)
-        if rpath and hasattr(self, "relationship_plot_preview"):
-            pix = QPixmap(str(rpath))
-            if not pix.isNull():
-                self.relationship_plot_preview.setPixmap(pix.scaled(self.relationship_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        spath = getattr(self, "current_screening_plot", None)
-        if spath and hasattr(self, "screening_plot_preview"):
-            pix = QPixmap(str(spath))
-            if not pix.isNull():
-                self.screening_plot_preview.setPixmap(pix.scaled(self.screening_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        relpath = getattr(self, "current_reliability_plot", None)
-        if relpath and hasattr(self, "reliability_plot_preview"):
-            pix = QPixmap(str(relpath))
-            if not pix.isNull():
-                self.reliability_plot_preview.setPixmap(pix.scaled(self.reliability_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        recpath = getattr(self, "current_recommendation_plot", None)
-        if recpath and hasattr(self, "recommendation_plot_preview"):
-            pix = QPixmap(str(recpath))
-            if not pix.isNull():
-                self.recommendation_plot_preview.setPixmap(pix.scaled(self.recommendation_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        epath = getattr(self, "current_export_plot", None)
-        if epath and hasattr(self, "export_plot_preview"):
-            pix = QPixmap(str(epath))
-            if not pix.isNull():
-                self.export_plot_preview.setPixmap(pix.scaled(self.export_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        pairs = [
+            ("current_overview_plot", "overview_plot_preview"),
+            ("current_missingness_plot", "missing_plot_preview"),
+            ("current_distribution_plot", "dist_plot_preview"),
+            ("current_qc_plot", "qc_plot_preview"),
+            ("current_relationship_plot", "relationship_plot_preview"),
+            ("current_screening_plot", "screening_plot_preview"),
+            ("current_reliability_plot", "reliability_plot_preview"),
+            ("current_recommendation_plot", "recommendation_plot_preview"),
+            ("current_export_plot", "export_plot_preview"),
+        ]
+        for path_attr, label_attr in pairs:
+            path = getattr(self, path_attr, None)
+            label = getattr(self, label_attr, None)
+            if path and label is not None:
+                self._display_plot_image(label, Path(path))
 
     def write_report(self, path: Path, outputs: dict[str, pd.DataFrame], export_manifest: pd.DataFrame | None = None, export_profile: str = "Default export") -> None:
         inv = outputs.get("dataset_inventory", pd.DataFrame()).to_html(index=False, escape=False)

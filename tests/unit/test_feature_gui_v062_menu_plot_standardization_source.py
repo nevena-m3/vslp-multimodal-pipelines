@@ -3,7 +3,7 @@ from pathlib import Path
 
 def test_feature_gui_v062_version_and_shared_plot_gallery():
     text = Path('src/vslp/gui/features/app.py').read_text(encoding='utf-8')
-    assert 'APP_VERSION = "v0.69.0"' in text
+    assert 'APP_VERSION = "v0.71.0"' in text
     assert 'def _add_standard_plot_gallery' in text
     assert 'Open current plot' in text
     assert 'Detailed tables' in text

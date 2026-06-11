@@ -256,19 +256,19 @@ def plot_missingness_family_summary(family_summary: pd.DataFrame, path: Path) ->
     return _save(fig, path)
 
 
-def plot_comissing_heatmap(feature_df: pd.DataFrame, feature_cols: Sequence[str], path: Path, max_features: int = 45) -> Path:
+def plot_comissing_heatmap(feature_df: pd.DataFrame, feature_cols: Sequence[str], path: Path, max_features: int | None = None) -> Path:
     cols = [c for c in list(feature_cols) if c in feature_df.columns]
     if not cols:
         return _empty(path, "No feature columns were available for co-missingness analysis.", "Co-missingness")
     miss_fr = feature_df[cols].isna().mean().sort_values(ascending=False)
-    cols = miss_fr.head(max_features).index.tolist()
+    cols = miss_fr.index.tolist() if max_features is None else miss_fr.head(max_features).index.tolist()
     if len(cols) < 2:
         return _empty(path, "At least two feature columns are required for co-missingness analysis.", "Co-missingness")
     miss = feature_df[cols].isna().astype(float)
     mat = miss.T.dot(miss) / max(1, len(miss))
     fig, ax = plt.subplots(figsize=(max(8, 0.24 * len(cols)), max(7, 0.24 * len(cols))))
     im = ax.imshow(mat.to_numpy(), vmin=0, vmax=min(1, max(0.01, float(np.nanmax(mat.to_numpy())))), cmap="magma", aspect="auto")
-    ax.set_title("Pairwise co-missingness among most-missing features", fontsize=14, fontweight="bold", color=NAVY, pad=12)
+    ax.set_title("Pairwise co-missingness among feature columns", fontsize=14, fontweight="bold", color=NAVY, pad=12)
     ax.set_xticks(range(len(cols))); ax.set_xticklabels(cols, rotation=90, fontsize=6, color=MUTED)
     ax.set_yticks(range(len(cols))); ax.set_yticklabels(cols, fontsize=6, color=MUTED)
     cbar = fig.colorbar(im, ax=ax, fraction=0.025, pad=0.02)
@@ -1522,4 +1522,86 @@ def plot_longitudinal_date_timeline(df: pd.DataFrame, subject_col: str | None, d
     y_step = max(1, len(subjects) // 35)
     ax.set_yticks(range(0, len(subjects), y_step)); ax.set_yticklabels([subjects[i] for i in range(0, len(subjects), y_step)], fontsize=7, color=MUTED)
     _style(ax)
+    return _save(fig, path)
+
+
+def _empty_context_plot(path: Path, title: str, message: str) -> Path:
+    return _empty(path, message, title)
+
+
+def plot_task_clinical_context(
+    df: pd.DataFrame,
+    task_col: str | None,
+    clinical_series: pd.Series | None,
+    clinical_label: str,
+    path: Path,
+) -> Path:
+    """Task x clinical-context matrix for local Task Review plotting.
+
+    clinical_series is computed locally by the GUI and is not written back into
+    the analysis dataframe. This keeps metadata optional and non-disruptive.
+    """
+    if df is None or df.empty:
+        return _empty_context_plot(path, "Task x clinical context", "No analysis table is available.")
+    if not task_col or task_col not in df.columns:
+        return _empty_context_plot(path, "Task x clinical context", "No task column was detected.")
+    if clinical_series is None or len(clinical_series) != len(df):
+        return _empty_context_plot(path, "Task x clinical context", "No clinical grouping variable was selected or detected.")
+    tmp = pd.DataFrame({
+        "task": df[task_col].astype(str).replace({"nan": ""}),
+        "clinical_group": clinical_series.astype("string").fillna("missing").astype(str),
+    })
+    tmp = tmp[(tmp["task"].str.len() > 0) & (tmp["clinical_group"].str.len() > 0)]
+    if tmp.empty:
+        return _empty_context_plot(path, "Task x clinical context", "Task and clinical grouping values were not usable.")
+    tab = pd.crosstab(tmp["task"], tmp["clinical_group"])
+    if tab.empty:
+        return _empty_context_plot(path, "Task x clinical context", "No task x clinical context counts were available.")
+    fig, ax = plt.subplots(figsize=(max(9, 0.55 * tab.shape[1] + 0.35 * tab.shape[0] + 5), max(5, 0.35 * tab.shape[0] + 3)))
+    im = ax.imshow(tab.to_numpy(dtype=float), aspect="auto", cmap="Blues")
+    ax.set_title(f"Task x {clinical_label}", fontsize=14, fontweight="bold", color=NAVY, pad=12)
+    ax.set_xlabel(clinical_label, color=MUTED)
+    ax.set_ylabel("Task", color=MUTED)
+    ax.set_xticks(range(tab.shape[1]))
+    ax.set_xticklabels(tab.columns.astype(str), rotation=45, ha="right", fontsize=8, color=MUTED)
+    ax.set_yticks(range(tab.shape[0]))
+    ax.set_yticklabels(tab.index.astype(str), fontsize=8, color=MUTED)
+    for i in range(tab.shape[0]):
+        for j in range(tab.shape[1]):
+            ax.text(j, i, str(int(tab.iat[i, j])), ha="center", va="center", fontsize=8, color=NAVY)
+    fig.colorbar(im, ax=ax, fraction=0.025, pad=0.02)
+    return _save(fig, path)
+
+
+def plot_task_clinical_filtered_counts(
+    df: pd.DataFrame,
+    task_col: str | None,
+    clinical_series: pd.Series | None,
+    clinical_label: str,
+    selected_level: str | None,
+    path: Path,
+) -> Path:
+    if df is None or df.empty:
+        return _empty_context_plot(path, "Task filtered by clinical group", "No analysis table is available.")
+    if not task_col or task_col not in df.columns:
+        return _empty_context_plot(path, "Task filtered by clinical group", "No task column was detected.")
+    if clinical_series is None or len(clinical_series) != len(df):
+        return _empty_context_plot(path, "Task filtered by clinical group", "No clinical grouping variable was selected or detected.")
+    tmp = pd.DataFrame({
+        "task": df[task_col].astype(str).replace({"nan": ""}),
+        "clinical_group": clinical_series.astype("string").fillna("missing").astype(str),
+    })
+    if selected_level and selected_level not in {"All values", "Auto / not available"}:
+        tmp = tmp[tmp["clinical_group"].eq(str(selected_level))]
+    tmp = tmp[tmp["task"].str.len() > 0]
+    if tmp.empty:
+        return _empty_context_plot(path, "Task filtered by clinical group", "The selected clinical level contains no task rows.")
+    counts = tmp["task"].value_counts().sort_values(ascending=True)
+    fig, ax = plt.subplots(figsize=(10, max(4.8, 0.38 * len(counts))))
+    ax.barh(counts.index.astype(str), counts.values, color=TEAL)
+    ax.set_xlabel("Rows / recordings", color=MUTED)
+    title_suffix = f"{clinical_label} = {selected_level}" if selected_level and selected_level != "All values" else f"all {clinical_label}"
+    _style(ax, f"Task counts within {title_suffix}")
+    for i, v in enumerate(counts.values):
+        ax.text(v + max(0.2, counts.max() * 0.01), i, str(int(v)), va="center", fontsize=9, color=MUTED)
     return _save(fig, path)
