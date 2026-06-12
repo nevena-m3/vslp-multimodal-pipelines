@@ -96,6 +96,94 @@ def plot_feature_availability_heatmap(df: pd.DataFrame, feature_cols: Sequence[s
     return _save(fig, path)
 
 
+def plot_feature_availability_bars(summary: pd.DataFrame, path: Path, top_n: int = 30) -> Path:
+    """Readable availability plot replacing dense feature x row heatmaps.
+
+    Expects a feature-level missingness table from missingness_feature_summary.
+    Plots available and missing row counts for the features with the lowest
+    availability in the current task/context scope.
+    """
+    if summary is None or summary.empty:
+        return _empty(path, "No feature availability data were available for the current scope.", "Feature availability")
+    df = summary.copy()
+    if "feature" not in df.columns:
+        df["feature"] = df.index.astype(str)
+    if "missing_fraction" not in df.columns:
+        return _empty(path, "Feature missingness fractions were not available for this scope.", "Feature availability")
+    df["missing_fraction"] = pd.to_numeric(df["missing_fraction"], errors="coerce")
+    if "n_rows" in df.columns:
+        df["n_rows"] = pd.to_numeric(df["n_rows"], errors="coerce")
+    elif "n" in df.columns:
+        df["n_rows"] = pd.to_numeric(df["n"], errors="coerce")
+    else:
+        # Recover a useful denominator when only fractions are present.
+        df["n_rows"] = np.nan
+    if "n_missing" in df.columns:
+        df["missing_rows"] = pd.to_numeric(df["n_missing"], errors="coerce")
+    elif "missing_count" in df.columns:
+        df["missing_rows"] = pd.to_numeric(df["missing_count"], errors="coerce")
+    else:
+        df["missing_rows"] = df["missing_fraction"] * df["n_rows"]
+    if "n_available" in df.columns:
+        df["available_rows"] = pd.to_numeric(df["n_available"], errors="coerce")
+    elif "available_count" in df.columns:
+        df["available_rows"] = pd.to_numeric(df["available_count"], errors="coerce")
+    else:
+        df["available_rows"] = df["n_rows"] - df["missing_rows"]
+    df = df.dropna(subset=["missing_fraction"]).sort_values("missing_fraction", ascending=False).head(top_n)
+    if df.empty:
+        return _empty(path, "No feature availability values were available for this scope.", "Feature availability")
+    # If counts could not be recovered, fall back to percentages.
+    if df[["available_rows", "missing_rows"]].isna().all().all():
+        df["available_rows"] = 1.0 - df["missing_fraction"]
+        df["missing_rows"] = df["missing_fraction"]
+        xlabel = "Fraction of rows"
+    else:
+        df["available_rows"] = df["available_rows"].fillna(0)
+        df["missing_rows"] = df["missing_rows"].fillna(0)
+        xlabel = "Rows / recordings"
+    labels = df["feature"].astype(str)
+    y = np.arange(len(df))
+    fig, ax = plt.subplots(figsize=(11, max(5, 0.36 * len(df))))
+    ax.barh(y, df["available_rows"].astype(float), color=TEAL, label="available")
+    ax.barh(y, df["missing_rows"].astype(float), left=df["available_rows"].astype(float), color=RED, label="missing")
+    ax.set_yticks(y)
+    ax.set_yticklabels(labels, fontsize=8, color=MUTED)
+    ax.invert_yaxis()
+    ax.set_xlabel(xlabel, color=MUTED)
+    _style(ax, "Feature availability summary")
+    ax.legend(frameon=False, fontsize=8)
+    return _save(fig, path)
+
+
+def plot_comissing_pair_bars(pairs: pd.DataFrame, path: Path, top_n: int = 30) -> Path:
+    """Readable co-missingness plot replacing feature x feature heatmaps."""
+    if pairs is None or pairs.empty:
+        return _empty(path, "No co-missing feature pairs were available for the current scope.", "Co-missingness pairs")
+    df = pairs.copy()
+    # Support several possible audit table schemas.
+    if "feature_pair" not in df.columns:
+        if {"feature_a", "feature_b"}.issubset(df.columns):
+            df["feature_pair"] = df["feature_a"].astype(str) + " + " + df["feature_b"].astype(str)
+        elif {"feature_1", "feature_2"}.issubset(df.columns):
+            df["feature_pair"] = df["feature_1"].astype(str) + " + " + df["feature_2"].astype(str)
+        else:
+            df["feature_pair"] = df.index.astype(str)
+    value_col = next((c for c in ["co_missing_fraction", "pair_missing_fraction", "fraction_co_missing", "co_missing_rate", "n_co_missing"] if c in df.columns), None)
+    if value_col is None:
+        return _empty(path, "Co-missingness scores were not available for this scope.", "Co-missingness pairs")
+    df[value_col] = pd.to_numeric(df[value_col], errors="coerce")
+    df = df.dropna(subset=[value_col]).sort_values(value_col, ascending=False).head(top_n)
+    if df.empty:
+        return _empty(path, "No usable co-missingness scores were available for this scope.", "Co-missingness pairs")
+    df = df.sort_values(value_col, ascending=True)
+    fig, ax = plt.subplots(figsize=(11, max(5, 0.36 * len(df))))
+    colors = [RED if v >= 0.50 else GOLD if v >= 0.20 else TEAL for v in df[value_col].astype(float)]
+    ax.barh(df["feature_pair"].astype(str), df[value_col].astype(float), color=colors)
+    ax.set_xlabel("Co-missing fraction" if "fraction" in value_col or "rate" in value_col else "Co-missing rows", color=MUTED)
+    _style(ax, "Top co-missing feature pairs")
+    return _save(fig, path)
+
 def plot_distribution_grid(df: pd.DataFrame, feature_cols: Sequence[str], path: Path, max_features: int = 12) -> Path:
     cols = list(feature_cols)[:max_features]
     if df is None or df.empty or not cols:
@@ -370,6 +458,168 @@ def plot_group_feature_boxplot(df: pd.DataFrame, feature: str, path: Path, group
     return _save(fig, path)
 
 
+
+def _plot_context_col(df: pd.DataFrame, aliases: Sequence[str]) -> str | None:
+    if df is None or df.empty:
+        return None
+    norm = {str(c).lower().replace(" ", "_").replace("-", "_"): c for c in df.columns}
+    for a in aliases:
+        key = str(a).lower().replace(" ", "_").replace("-", "_")
+        if key in norm:
+            return norm[key]
+    return None
+
+
+def _clean_context_series(s: pd.Series) -> pd.Series:
+    out = s.astype("string").fillna("").str.strip()
+    return out.loc[out.ne("") & ~out.str.lower().isin(["nan", "none", "<na>", "nat"])]
+
+
+def plot_overview_dataset_structure(df: pd.DataFrame, path: Path) -> Path:
+    """Dataset-structure overview: subjects, sex/gender, diagnosis, tasks, sessions, repeats."""
+    if df is None or df.empty:
+        return _empty(path, "No analysis table was available.", "Dataset structure")
+    subject_col = _plot_context_col(df, ["subject_id", "participant_id", "patient_id", "metadata__subject_id"])
+    task_col = _plot_context_col(df, ["task", "task_name", "prompt", "metadata__task"])
+    sex_col = _plot_context_col(df, ["sex_or_gender", "sex", "gender", "metadata__sex_or_gender", "metadata__sex", "metadata__gender"])
+    diagnosis_col = _plot_context_col(df, ["diagnosis", "dx", "disease_group", "group_label", "metadata__diagnosis"])
+    session_col = _plot_context_col(df, ["session_id", "visit_id", "timepoint", "recording_date", "assessment_date", "metadata__recording_date"])
+    iteration_col = _plot_context_col(df, ["iteration", "metadata__iteration"])
+
+    subject_values = _clean_context_series(df[subject_col]) if subject_col else pd.Series(dtype=str)
+    task_values = _clean_context_series(df[task_col]) if task_col else pd.Series(dtype=str)
+    sex_counts = _clean_context_series(df[sex_col]).value_counts().head(10) if sex_col else pd.Series(dtype=int)
+    dx_counts = _clean_context_series(df[diagnosis_col]).value_counts().head(10) if diagnosis_col else pd.Series(dtype=int)
+    task_counts = task_values.value_counts().head(14) if task_col else pd.Series(dtype=int)
+
+    n_subjects = int(subject_values.nunique()) if subject_col else 0
+    n_tasks = int(task_values.nunique()) if task_col else 0
+    repeated_subjects = 0
+    sessions_per_subject = pd.Series(dtype=float)
+    if subject_col:
+        if session_col:
+            tmp = df[[subject_col, session_col]].copy()
+            tmp[subject_col] = tmp[subject_col].astype("string").fillna("").str.strip()
+            tmp[session_col] = tmp[session_col].astype("string").fillna("").str.strip()
+            tmp = tmp.loc[tmp[subject_col].ne("") & tmp[session_col].ne("")]
+            if not tmp.empty:
+                sessions_per_subject = tmp.groupby(subject_col)[session_col].nunique().sort_values(ascending=False)
+        if sessions_per_subject.empty:
+            sessions_per_subject = df[subject_col].astype("string").fillna("").str.strip().value_counts()
+        if task_col and iteration_col:
+            tmp = df[[subject_col, task_col, iteration_col]].copy()
+            for c in [subject_col, task_col, iteration_col]:
+                tmp[c] = tmp[c].astype("string").fillna("").str.strip()
+            tmp = tmp.loc[tmp[subject_col].ne("") & tmp[task_col].ne("") & tmp[iteration_col].ne("")]
+            if not tmp.empty:
+                rep = tmp.groupby([subject_col, task_col])[iteration_col].nunique().reset_index(name="n_iterations")
+                repeated_subjects = int(rep.loc[rep["n_iterations"].ge(2), subject_col].nunique())
+        elif task_col:
+            tmp = df[[subject_col, task_col]].copy()
+            tmp[subject_col] = tmp[subject_col].astype("string").fillna("").str.strip()
+            tmp[task_col] = tmp[task_col].astype("string").fillna("").str.strip()
+            rep = tmp.groupby([subject_col, task_col]).size().reset_index(name="n_records")
+            repeated_subjects = int(rep.loc[rep["n_records"].ge(2), subject_col].nunique())
+
+    max_labels = int(c.groupby("section").size().max()) if not c.empty else 1
+    fig_h = max(10.2, 8.2 + 0.18 * min(max_labels, 24))
+    fig = plt.figure(figsize=(15.8, fig_h))
+    gs = fig.add_gridspec(3, 2, height_ratios=[0.9, 1.35, 1.55], hspace=0.58, wspace=0.36)
+    ax0 = fig.add_subplot(gs[0, :]); ax0.axis("off")
+    ax0.text(0.00, 0.82, "Dataset design context", fontsize=18, fontweight="bold", color=NAVY, va="center")
+    ax0.text(0.00, 0.50, "Counts from the active analysis table after feature, metadata, QC, and filename context mapping.", fontsize=10.5, color=MUTED, va="center")
+    cards = [("Subjects", n_subjects), ("Tasks", n_tasks), ("Rows/files", len(df)), ("Repeated-analysis subjects", repeated_subjects)]
+    for i, (lab, val) in enumerate(cards):
+        x = 0.02 + i * 0.24
+        ax0.add_patch(plt.Rectangle((x, 0.04), 0.20, 0.30, transform=ax0.transAxes, color="#F7FAFD", ec=GRID, lw=0.8))
+        ax0.text(x + 0.015, 0.25, lab, transform=ax0.transAxes, fontsize=9, color=MUTED, fontweight="bold", va="center")
+        ax0.text(x + 0.015, 0.11, str(val), transform=ax0.transAxes, fontsize=18, color=NAVY, fontweight="bold", va="center")
+
+    axes = [fig.add_subplot(gs[1,0]), fig.add_subplot(gs[1,1]), fig.add_subplot(gs[2,0]), fig.add_subplot(gs[2,1])]
+    plot_items = [
+        (axes[0], sex_counts, "Sex / gender counts", "subjects/rows"),
+        (axes[1], dx_counts, "Diagnosis counts", "subjects/rows"),
+        (axes[2], task_counts, "Task counts", "records"),
+        (axes[3], sessions_per_subject.value_counts().sort_index().head(15), "Sessions per subject", "subjects"),
+    ]
+    for ax, counts, title, xlabel in plot_items:
+        if counts is None or len(counts) == 0:
+            ax.text(0.5, 0.5, "not available", ha="center", va="center", color=MUTED)
+            ax.set_title(title, fontsize=12, fontweight="bold", color=NAVY)
+            ax.axis("off")
+            continue
+        labels = [str(x)[:36] for x in counts.index]
+        vals = counts.astype(float).to_numpy()
+        ax.barh(labels[::-1], vals[::-1], color=TEAL)
+        for j, v in enumerate(vals[::-1]):
+            ax.text(v + max(vals) * 0.015, j, f"{int(v)}", va="center", fontsize=8, color=MUTED)
+        ax.set_xlabel(xlabel, color=MUTED)
+        ax.tick_params(axis="y", labelsize=8.2)
+        _style(ax, title)
+    fig.subplots_adjust(left=0.17, right=0.98)
+    return _save(fig, path)
+
+
+def plot_role_mapping_summary(role_summary: pd.DataFrame, path: Path) -> Path:
+    if role_summary is None or role_summary.empty:
+        return _empty(path, "No role mapping summary was available.", "Role mapping summary")
+    df = role_summary.copy()
+    role_col = "role" if "role" in df.columns else df.columns[0]
+    count_col = "n_columns" if "n_columns" in df.columns else ("count" if "count" in df.columns else None)
+    if count_col is None:
+        df["n_columns"] = 1
+        count_col = "n_columns"
+    df[count_col] = pd.to_numeric(df[count_col], errors="coerce").fillna(0)
+    df = df.loc[df[count_col].gt(0)].sort_values(count_col, ascending=True).tail(24)
+    if df.empty:
+        return _empty(path, "No mapped columns were counted.", "Role mapping summary")
+    fig, ax = plt.subplots(figsize=(11.5, max(5.2, 0.38 * len(df))))
+    ax.barh(df[role_col].astype(str), df[count_col], color=TEAL)
+    ax.set_xlabel("Number of columns", color=MUTED)
+    _style(ax, "Accepted role mapping summary")
+    for i, v in enumerate(df[count_col]):
+        ax.text(float(v) + max(float(df[count_col].max()) * 0.015, 0.2), i, f"{int(v)}", va="center", fontsize=8.5, color=MUTED)
+    return _save(fig, path)
+
+
+def plot_subject_task_coverage_bars(df: pd.DataFrame, path: Path) -> Path:
+    if df is None or df.empty:
+        return _empty(path, "No analysis table was available.", "Subject × task coverage")
+    subject_col = _plot_context_col(df, ["subject_id", "participant_id", "patient_id", "metadata__subject_id"])
+    task_col = _plot_context_col(df, ["task", "task_name", "prompt", "metadata__task"])
+    iteration_col = _plot_context_col(df, ["iteration", "metadata__iteration"])
+    if subject_col is None or task_col is None:
+        return _empty(path, "Subject and task columns are required for subject × task coverage.", "Subject × task coverage")
+    work = df[[subject_col, task_col] + ([iteration_col] if iteration_col else [])].copy()
+    for c in work.columns:
+        work[c] = work[c].astype("string").fillna("").str.strip()
+    work = work.loc[work[subject_col].ne("") & work[task_col].ne("")]
+    if work.empty:
+        return _empty(path, "No non-empty subject/task records were available.", "Subject × task coverage")
+    records = work[task_col].value_counts()
+    subjects = work.groupby(task_col)[subject_col].nunique()
+    if iteration_col:
+        rep = work.loc[work[iteration_col].ne("")].groupby([subject_col, task_col])[iteration_col].nunique().reset_index(name="n_iterations")
+        repeated = rep.loc[rep["n_iterations"].ge(2)].groupby(task_col)[subject_col].nunique()
+    else:
+        rep = work.groupby([subject_col, task_col]).size().reset_index(name="n_records")
+        repeated = rep.loc[rep["n_records"].ge(2)].groupby(task_col)[subject_col].nunique()
+    summary = pd.DataFrame({"records": records, "subjects": subjects, "repeated_subjects": repeated}).fillna(0)
+    summary = summary.sort_values(["subjects", "records"], ascending=True).tail(24)
+    fig, ax = plt.subplots(figsize=(12.4, max(5.5, 0.42 * len(summary))))
+    y = np.arange(len(summary))
+    width = 0.25
+    ax.barh(y - width, summary["records"], height=width, color=TEAL, label="records")
+    ax.barh(y, summary["subjects"], height=width, color=GOLD, label="subjects")
+    ax.barh(y + width, summary["repeated_subjects"], height=width, color=NAVY, label="subjects with ≥2 iterations/records")
+    ax.set_yticks(y); ax.set_yticklabels([str(x)[:42] for x in summary.index], color=MUTED, fontsize=8.5)
+    ax.set_xlabel("Count", color=MUTED)
+    ax.legend(frameon=False, fontsize=8)
+    _style(ax, "Subject × task coverage counts")
+    fig.subplots_adjust(left=0.26, right=0.98)
+    return _save(fig, path)
+
+
 def plot_overview_readiness_scorecard(readiness: pd.DataFrame, path: Path) -> Path:
     if readiness is None or readiness.empty or not {"dimension", "score_0_100"}.issubset(readiness.columns):
         return _empty(path, "No readiness summary was available.", "Overview readiness")
@@ -505,30 +755,8 @@ def plot_feature_family_quality(family_overview: pd.DataFrame, path: Path) -> Pa
 
 
 def plot_subject_task_matrix(df: pd.DataFrame, path: Path) -> Path:
-    if df is None or df.empty:
-        return _empty(path, "No feature table was available.", "Subject × task coverage")
-    subject_col = next((c for c in ["subject_id", "participant_id", "patient_id"] if c in df.columns), None)
-    task_col = next((c for c in ["task", "task_name", "prompt"] if c in df.columns), None)
-    if subject_col is None or task_col is None:
-        return _empty(path, "Subject and task columns are both required for this coverage matrix.", "Subject × task coverage")
-    work = df[[subject_col, task_col]].dropna().copy()
-    if work.empty:
-        return _empty(path, "No non-missing subject/task pairs were available.", "Subject × task coverage")
-    top_subjects = work[subject_col].astype(str).value_counts().head(60).index.tolist()
-    top_tasks = work[task_col].astype(str).value_counts().head(25).index.tolist()
-    mat = pd.crosstab(work[subject_col].astype(str), work[task_col].astype(str)).reindex(index=top_subjects, columns=top_tasks, fill_value=0)
-    fig, ax = plt.subplots(figsize=(max(8, 0.34 * len(top_tasks) + 4), max(6, 0.12 * len(top_subjects) + 3)))
-    im = ax.imshow(mat.to_numpy(), aspect="auto", interpolation="nearest", cmap="viridis")
-    ax.set_title("Subject × task recording coverage", fontsize=14, fontweight="bold", color=NAVY, pad=12)
-    ax.set_xlabel("Task", color=MUTED); ax.set_ylabel("Subject", color=MUTED)
-    ax.set_xticks(range(len(top_tasks))); ax.set_xticklabels(top_tasks, rotation=70, ha="right", fontsize=7, color=MUTED)
-    ystep = max(1, len(top_subjects) // 30)
-    yticks = list(range(0, len(top_subjects), ystep))
-    ax.set_yticks(yticks); ax.set_yticklabels([top_subjects[i] for i in yticks], fontsize=6, color=MUTED)
-    cbar = fig.colorbar(im, ax=ax, fraction=0.025, pad=0.02)
-    cbar.set_label("records", color=MUTED)
-    cbar.ax.tick_params(labelsize=8, colors=MUTED)
-    return _save(fig, path)
+    """Backward-compatible Overview subject/task coverage, now rendered as count bars rather than a heatmap."""
+    return plot_subject_task_coverage_bars(df, path)
 
 
 def plot_distribution_shape_summary(shape: pd.DataFrame, path: Path) -> Path:
@@ -605,6 +833,119 @@ def plot_variance_screen(dist: pd.DataFrame, path: Path) -> Path:
     ax.barh(df["feature"].astype(str), df["iqr"].fillna(0), color=colors)
     ax.set_xlabel("Interquartile range (native units)", color=MUTED)
     _style(ax, "Zero / near-zero variance screen")
+    return _save(fig, path)
+
+
+
+
+def plot_distribution_shape_story(shape: pd.DataFrame, path: Path) -> Path:
+    """Clinician-facing combined shape triage: priority counts plus skew/tail landscape."""
+    required = {"feature", "priority"}
+    if shape is None or shape.empty or not required.issubset(shape.columns):
+        return _empty(path, "No distribution-shape audit was available for this task scope.", "Distribution shape audit")
+    df = shape.copy()
+    df["priority"] = df["priority"].astype(str).str.lower()
+    order = ["ok", "monitor", "review"]
+    counts = df["priority"].value_counts().reindex(order).fillna(0)
+    fig, axes = plt.subplots(1, 2, figsize=(13.5, 5.8), gridspec_kw={"width_ratios": [0.85, 1.45]})
+    colors = [TEAL, GOLD, RED]
+    axes[0].bar(counts.index, counts.values, color=colors)
+    axes[0].set_ylabel("Number of features", color=MUTED)
+    _style(axes[0], "Shape priority")
+    for i, v in enumerate(counts.values):
+        axes[0].text(i, v + max(0.1, counts.max() * 0.04), str(int(v)), ha="center", fontsize=10, color=MUTED)
+
+    ax = axes[1]
+    if {"skew_proxy", "tail_ratio"}.issubset(df.columns):
+        df["skew_proxy"] = pd.to_numeric(df["skew_proxy"], errors="coerce")
+        df["tail_ratio"] = pd.to_numeric(df["tail_ratio"], errors="coerce")
+        xy = df.replace([np.inf, -np.inf], np.nan).dropna(subset=["skew_proxy", "tail_ratio"])
+    else:
+        xy = pd.DataFrame()
+    if xy.empty:
+        ax.text(0.5, 0.5, "No usable skew/tail values", ha="center", va="center", color=MUTED)
+        ax.axis("off")
+    else:
+        cmap = {"ok": TEAL, "monitor": GOLD, "review": RED}
+        ax.scatter(xy["skew_proxy"], xy["tail_ratio"], s=52, c=[cmap.get(str(v), MUTED) for v in xy["priority"]], alpha=0.78, edgecolors="white", linewidths=0.7)
+        ax.axvline(0, color=GRID, linewidth=1)
+        ax.axvline(0.75, color=GOLD, linestyle="--", linewidth=1)
+        ax.axvline(-0.75, color=GOLD, linestyle="--", linewidth=1)
+        ax.axhline(4.5, color=GOLD, linestyle="--", linewidth=1)
+        ax.set_xlabel("Skew proxy: (mean − median) / SD", color=MUTED)
+        ax.set_ylabel("Tail ratio: (q95 − q05) / IQR", color=MUTED)
+        _style(ax, "Skew / tail landscape")
+        lab = xy[xy["priority"].astype(str).eq("review")].head(8)
+        for _, r in lab.iterrows():
+            ax.text(float(r["skew_proxy"]), float(r["tail_ratio"]), "  " + str(r["feature"])[:24], fontsize=7, color=NAVY, alpha=0.85)
+    fig.suptitle("Distribution shape and tail audit", fontsize=15, fontweight="bold", color=NAVY)
+    return _save(fig, path)
+
+
+def plot_distribution_outlier_range_story(expected: pd.DataFrame, outliers: pd.DataFrame, review: pd.DataFrame, path: Path) -> Path:
+    """Combined feature-level plausibility panel: expected-range flags plus robust outlier evidence."""
+    fig, axes = plt.subplots(1, 2, figsize=(14.0, 6.2), gridspec_kw={"width_ratios": [1.1, 1.1]})
+    # Expected range panel.
+    ax = axes[0]
+    if expected is None or expected.empty or "fraction_outside_expected" not in expected.columns:
+        ax.text(0.5, 0.5, "No registry expected ranges available", ha="center", va="center", color=MUTED, wrap=True)
+        ax.axis("off")
+    else:
+        er = expected.copy()
+        er["fraction_outside_expected"] = pd.to_numeric(er["fraction_outside_expected"], errors="coerce")
+        er = er.dropna(subset=["fraction_outside_expected"]).sort_values("fraction_outside_expected", ascending=False).head(18).iloc[::-1]
+        if er.empty:
+            ax.text(0.5, 0.5, "No outside-range features", ha="center", va="center", color=MUTED)
+            ax.axis("off")
+        else:
+            colors = [RED if v >= 0.20 else GOLD if v > 0 else TEAL for v in er["fraction_outside_expected"]]
+            ax.barh(er["feature"].astype(str), er["fraction_outside_expected"], color=colors)
+            ax.set_xlabel("Fraction outside expected range", color=MUTED)
+            ax.set_xlim(0, max(0.05, min(1.0, float(er["fraction_outside_expected"].max()) * 1.15)))
+            _style(ax, "Expected-range flags")
+    # Robust outlier count panel.
+    ax = axes[1]
+    if outliers is None or outliers.empty or "feature" not in outliers.columns:
+        ax.text(0.5, 0.5, "No robust outlier flags", ha="center", va="center", color=MUTED)
+        ax.axis("off")
+    else:
+        cnt = outliers["feature"].astype(str).value_counts().head(18).sort_values(ascending=True)
+        ax.barh(cnt.index, cnt.values, color=GOLD)
+        ax.set_xlabel("Robust outlier rows", color=MUTED)
+        _style(ax, "Outlier counts")
+    fig.suptitle("Range and outlier triage", fontsize=15, fontweight="bold", color=NAVY)
+    return _save(fig, path)
+
+
+def plot_row_outlier_story(row_burden: pd.DataFrame, path: Path) -> Path:
+    """Readable recording-level burden panel: burden distribution and top review rows."""
+    if row_burden is None or row_burden.empty or "n_flagged_features" not in row_burden.columns:
+        return _empty(path, "No row-level outlier burden was available.", "Recording outlier burden")
+    df = row_burden.copy()
+    df["n_flagged_features"] = pd.to_numeric(df["n_flagged_features"], errors="coerce").fillna(0)
+    fig, axes = plt.subplots(1, 2, figsize=(14.0, 6.0), gridspec_kw={"width_ratios": [0.85, 1.35]})
+    ax = axes[0]
+    if "review_level" in df.columns:
+        order = ["ok", "monitor", "review"]
+        counts = df["review_level"].astype(str).value_counts().reindex(order).fillna(0)
+        ax.bar(counts.index, counts.values, color=[TEAL, GOLD, RED])
+        ax.set_ylabel("Recordings", color=MUTED)
+        _style(ax, "Recording triage")
+        for i, v in enumerate(counts.values):
+            ax.text(i, v + max(0.1, counts.max() * 0.04), str(int(v)), ha="center", fontsize=10, color=MUTED)
+    else:
+        ax.hist(df["n_flagged_features"], bins=min(25, max(5, int(np.sqrt(len(df))))), color=TEAL, edgecolor="white")
+        ax.set_xlabel("Flagged features per recording", color=MUTED)
+        ax.set_ylabel("Recordings", color=MUTED)
+        _style(ax, "Burden distribution")
+    top = df.sort_values("n_flagged_features", ascending=False).head(25).iloc[::-1]
+    ax = axes[1]
+    label_col = next((c for c in ["file_name", "record_key", "subject_id", "row_index"] if c in top.columns), "row_index")
+    colors = [RED if str(v) == "review" else GOLD if str(v) == "monitor" else TEAL for v in top.get("review_level", pd.Series(["ok"] * len(top)))]
+    ax.barh(top[label_col].astype(str), top["n_flagged_features"], color=colors)
+    ax.set_xlabel("Number of flagged features", color=MUTED)
+    _style(ax, "Highest-burden recordings")
+    fig.suptitle("Recording outlier burden", fontsize=15, fontweight="bold", color=NAVY)
     return _save(fig, path)
 
 
@@ -688,8 +1029,8 @@ def plot_qc_artifact_model(path: Path, framework: str = "Auto / all QC") -> Path
     ]
     fig, ax = plt.subplots(figsize=(12.5, 5.7))
     ax.axis("off")
-    ax.text(0.5, 0.93, "Multidimensional QC interpretation model", ha="center", va="center", fontsize=16, fontweight="bold", color=NAVY)
-    ax.text(0.5, 0.855, "QC is interpreted as a vector of artifact families, not as one global good/bad score.", ha="center", va="center", fontsize=10.5, color=MUTED)
+    ax.text(0.5, 0.93, "QC source overview", ha="center", va="center", fontsize=16, fontweight="bold", color=NAVY)
+    ax.text(0.5, 0.855, "Manual QC uses human metadata flags; Automated QC uses numeric QC metrics from the uploaded QC table.", ha="center", va="center", fontsize=10.5, color=MUTED)
     xs = np.linspace(0.08, 0.92, len(families))
     for i, ((title, desc), x) in enumerate(zip(families, xs)):
         color = [TEAL, GOLD, "#6B5DD3", "#4E7AA8", RED, "#7A8798"][i]
@@ -697,12 +1038,14 @@ def plot_qc_artifact_model(path: Path, framework: str = "Auto / all QC") -> Path
         ax.add_patch(rect)
         ax.text(x, 0.54, title, ha="center", va="center", fontsize=9.5, fontweight="bold", color="white", transform=ax.transAxes)
         ax.text(x, 0.29, desc, ha="center", va="center", fontsize=8.2, color=MUTED, transform=ax.transAxes, wrap=True)
-    framework_note = {
-        "Auto / all QC": "Current framework: Auto / all QC. All detected numeric QC variables are used when available.",
-        "Acoustic QC": "Current framework: Acoustic QC. Uses detected acoustic/audio QC variables when available. Acoustic-specific extensions can be added later.",
-        "Kinematic QC": "Current framework: Kinematic QC. Uses detected video/landmark/tracking QC variables when available. Kinematic-specific extensions can be added later.",
-    }.get(str(framework), f"Current framework: {framework}.")
-    ax.text(0.5, 0.165, framework_note, ha="center", va="center", fontsize=9.5, color=NAVY, transform=ax.transAxes, wrap=True)
+    source_note = {
+        "Manual QC": "Current source: Manual QC. Uses modality-aware human metadata flags such as acquisition validity, audio QC, video QC, and face-visibility QC.",
+        "Automated QC": "Current source: Automated QC. Uses the uploaded numeric QC table only; metadata manual flags are not mixed into this mode.",
+        "Auto / all QC": "Current source: Automated QC. All detected numeric QC variables are used when available.",
+        "Acoustic QC": "Current source: Automated acoustic QC. Uses detected acoustic/audio QC variables when available.",
+        "Kinematic QC": "Current source: Automated kinematic QC. Uses detected video/landmark/tracking QC variables when available.",
+    }.get(str(framework), f"Current source: {framework}.")
+    ax.text(0.5, 0.165, source_note, ha="center", va="center", fontsize=9.5, color=NAVY, transform=ax.transAxes, wrap=True)
     ax.text(0.5, 0.075, "Use QC to ask whether feature variation, missingness, or outliers are plausibly explained by acquisition artifacts before interpreting them as speech physiology.", ha="center", va="center", fontsize=9.5, color=NAVY, transform=ax.transAxes, wrap=True)
     return _save(fig, path)
 
@@ -729,28 +1072,54 @@ def plot_qc_family_burden(family_summary: pd.DataFrame, path: Path) -> Path:
 
 def plot_qc_metric_distributions(qc_df: pd.DataFrame | None, catalog: pd.DataFrame, path: Path, max_metrics: int = 12) -> Path:
     if qc_df is None or qc_df.empty or catalog is None or catalog.empty:
-        return _empty(path, "No numeric QC metrics were available for distribution plotting.", "QC metric distributions")
+        return _empty(path, "No QC flags or metrics were available for plotting.", "QC value distributions")
     cat = catalog.copy()
+    cat["n_valid"] = pd.to_numeric(cat.get("n_valid", np.nan), errors="coerce")
+    cat["n_unique"] = pd.to_numeric(cat.get("n_unique", np.nan), errors="coerce")
+    cat = cat[cat["n_valid"].fillna(0) > 0].copy()
+    if cat.empty:
+        return _empty(path, "All candidate QC variables were missing in this scope.", "QC value distributions")
+    cols_all = [c for c in cat["qc_variable"].astype(str).tolist() if c in qc_df.columns]
+    if not cols_all:
+        return _empty(path, "No catalogued QC variables were present in the QC table.", "QC value distributions")
+    families = set(cat.get("artifact_family", pd.Series(dtype=str)).astype(str).tolist())
+    is_manual = bool(families) and all(f.startswith("Manual ") for f in families)
+    if is_manual:
+        rows = []
+        for col in cols_all:
+            x = pd.to_numeric(qc_df[col], errors="coerce")
+            if x.notna().sum() == 0:
+                continue
+            fam = str(cat.loc[cat["qc_variable"].astype(str).eq(col), "artifact_family"].iloc[0]) if (cat["qc_variable"].astype(str).eq(col)).any() else "Manual QC"
+            rows.append({"qc_variable": col, "artifact_family": fam, "flag_rate": float(x.fillna(0).mean()), "n_valid": int(x.notna().sum())})
+        df = pd.DataFrame(rows).sort_values("flag_rate", ascending=True).tail(max_metrics)
+        if df.empty:
+            return _empty(path, "Manual QC flags were present but contained no usable values in this scope.", "Manual QC flag prevalence")
+        labels = [f"{v}\n{f}" for v, f in zip(df["qc_variable"].astype(str), df["artifact_family"].astype(str))]
+        fig, ax = plt.subplots(figsize=(12, max(5.2, 0.46 * len(df))))
+        ax.barh(labels, df["flag_rate"].astype(float), color=TEAL)
+        ax.set_xlabel("Flagged fraction of recordings", color=MUTED)
+        ax.set_xlim(0, max(0.05, min(1.0, float(df["flag_rate"].max()) * 1.25 if not df.empty else 0.1)))
+        _style(ax, "Manual QC flag prevalence")
+        return _save(fig, path)
     cat["iqr"] = pd.to_numeric(cat.get("iqr", np.nan), errors="coerce")
-    cat = cat.sort_values("iqr", ascending=False).head(max_metrics)
-    cols = [c for c in cat["qc_variable"].astype(str).tolist() if c in qc_df.columns]
+    cat = cat.sort_values(["iqr", "n_valid"], ascending=[False, False]).head(max_metrics)
+    cols = [c for c in cat["qc_variable"].astype(str).tolist() if c in qc_df.columns and pd.to_numeric(qc_df[c], errors="coerce").notna().any()]
     if not cols:
-        return _empty(path, "No catalogued QC variables were present in the QC table.", "QC metric distributions")
+        return _empty(path, "No non-missing QC variables were available for distribution plotting.", "QC value distributions")
     ncols = 3; nrows = int(np.ceil(len(cols)/ncols))
     fig, axes = plt.subplots(nrows, ncols, figsize=(13, 3.3*nrows))
     axes = np.array(axes).reshape(-1)
     for ax, col in zip(axes, cols):
         x = pd.to_numeric(qc_df[col], errors="coerce").dropna()
         fam = str(cat.loc[cat["qc_variable"].astype(str).eq(col), "artifact_family"].iloc[0]) if (cat["qc_variable"].astype(str).eq(col)).any() else "QC"
-        if x.empty:
-            ax.text(.5, .5, "all missing", ha="center", va="center", color=MUTED); ax.axis("off"); continue
         ax.hist(x, bins=min(26, max(6, int(np.sqrt(len(x))))), color=TEAL, alpha=.88, edgecolor="white")
         ax.axvline(float(x.median()), color=NAVY, linestyle="--", linewidth=1)
         ax.set_title(f"{col}\n{fam}", fontsize=8.5, color=NAVY)
         _style(ax)
     for ax in axes[len(cols):]:
         ax.axis("off")
-    fig.suptitle("QC metric distributions: highest-spread indicators", fontsize=15, fontweight="bold", color=NAVY, y=1.01)
+    fig.suptitle("QC value distributions: highest-spread indicators", fontsize=15, fontweight="bold", color=NAVY, y=1.01)
     return _save(fig, path)
 
 
@@ -970,6 +1339,48 @@ def plot_relationship_pca_loadings(loadings: pd.DataFrame, path: Path, top_n: in
     _style(ax, "Largest PCA loadings across early components")
     return _save(fig, path)
 
+
+
+def plot_relationship_dimensionality_profile(pca_summary: pd.DataFrame, loadings: pd.DataFrame, path: Path, top_n: int = 12) -> Path:
+    """Combined PCA scree and leading-loading panel for Feature Relationships."""
+    if pca_summary is None or pca_summary.empty or "variance_percent" not in pca_summary.columns:
+        return _empty(path, "PCA requires at least two usable numeric features with enough non-missing observations.", "Dimensionality profile")
+    ps = pca_summary.copy().head(8)
+    fig = plt.figure(figsize=(12.5, 7.2))
+    gs = fig.add_gridspec(1, 2, width_ratios=[1.05, 1.35], wspace=.32)
+    ax1 = fig.add_subplot(gs[0,0])
+    x = np.arange(len(ps))
+    ax1.bar(x, pd.to_numeric(ps["variance_percent"], errors="coerce"), color=TEAL)
+    if "cumulative_variance_percent" in ps.columns:
+        ax1.plot(x, pd.to_numeric(ps["cumulative_variance_percent"], errors="coerce"), marker="o", color=NAVY, linewidth=2)
+    ax1.set_xticks(x); ax1.set_xticklabels(ps.get("component", pd.Series([f"PC{i+1}" for i in x])).astype(str), color=MUTED)
+    ax1.set_ylabel("Variance explained (%)", color=MUTED)
+    ax1.set_ylim(0, max(100, float(pd.to_numeric(ps.get("cumulative_variance_percent", ps["variance_percent"]), errors="coerce").max())*1.05))
+    _style(ax1, "Variance concentration")
+
+    ax2 = fig.add_subplot(gs[0,1])
+    if loadings is None or loadings.empty or not {"component","feature","loading"}.issubset(loadings.columns):
+        ax2.text(.5, .5, "PCA loadings unavailable", ha="center", va="center", color=MUTED)
+        ax2.axis("off")
+    else:
+        df = loadings.copy()
+        if "abs_loading" not in df.columns:
+            df["abs_loading"] = pd.to_numeric(df["loading"], errors="coerce").abs()
+        df = df[df["component"].astype(str).isin(["PC1", "PC2", "PC3"])].dropna(subset=["abs_loading"])
+        df = df.sort_values("abs_loading", ascending=False).head(top_n).sort_values("abs_loading", ascending=True)
+        if df.empty:
+            ax2.text(.5, .5, "No early-component loading drivers", ha="center", va="center", color=MUTED)
+            ax2.axis("off")
+        else:
+            labels = [f"{c}: {f}" for c, f in zip(df["component"].astype(str), df["feature"].astype(str))]
+            vals = pd.to_numeric(df["loading"], errors="coerce")
+            colors = [TEAL if v >= 0 else GOLD for v in vals]
+            ax2.barh(labels, vals, color=colors)
+            ax2.axvline(0, color=GRID, linewidth=1)
+            ax2.set_xlabel("PCA loading", color=MUTED)
+            _style(ax2, "Largest early-component drivers")
+    fig.suptitle("Dimensionality profile: variance concentration and leading feature drivers", fontsize=15, fontweight="bold", color=NAVY, y=.98)
+    return _save(fig, path)
 
 def plot_selected_feature_correlations(corr_long: pd.DataFrame, feature: str, path: Path, top_n: int = 30) -> Path:
     if corr_long is None or corr_long.empty or not feature:
@@ -1458,6 +1869,223 @@ def plot_task_feature_support(task_feature_support: pd.DataFrame, path: Path) ->
     return _save(fig, path)
 
 
+
+def _task_tmp_frame(df: pd.DataFrame, task_col: str | None) -> pd.DataFrame:
+    if df is None or df.empty or not task_col or task_col not in df.columns:
+        return pd.DataFrame()
+    tmp = df.copy()
+    tmp["__task__"] = tmp[task_col].astype("string").fillna("").astype(str)
+    tmp = tmp[tmp["__task__"].str.strip().ne("")]
+    return tmp
+
+
+def plot_task_readiness_dashboard(
+    df: pd.DataFrame,
+    task_col: str | None,
+    subject_col: str | None,
+    clinical_series: pd.Series | None,
+    clinical_label: str,
+    feature_cols: list[str],
+    readiness: pd.DataFrame,
+    path: Path,
+) -> Path:
+    """Clinician-facing task readiness dashboard.
+
+    The goal is not a model; it is a fast orientation screen: completion burden,
+    subject breadth, feature completeness, and clinical group coverage by task.
+    """
+    tmp = _task_tmp_frame(df, task_col)
+    if tmp.empty:
+        return _empty(path, "No task metadata were available. Load metadata or apply filename task parsing before Task Review.", "Task readiness overview")
+    if readiness is None or readiness.empty or "task" not in readiness.columns:
+        rows = []
+        for task, subdf in tmp.groupby("__task__"):
+            rows.append({"task": task, "n_rows": len(subdf), "n_subjects": subdf[subject_col].nunique() if subject_col and subject_col in subdf else 0, "mean_feature_missingness": 0.0})
+        readiness = pd.DataFrame(rows)
+    r = readiness.copy()
+    for col in ["n_rows", "n_subjects", "mean_feature_missingness", "smallest_clinical_group_n"]:
+        if col in r.columns:
+            r[col] = pd.to_numeric(r[col], errors="coerce")
+    r = r.sort_values("n_rows", ascending=False).head(18)
+    if r.empty:
+        return _empty(path, "No task readiness rows could be built.", "Task readiness overview")
+
+    fig = plt.figure(figsize=(14, max(7.5, 0.42 * len(r) + 4)))
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.0, 1.2], hspace=0.42, wspace=0.30)
+    fig.suptitle("Task readiness overview", fontsize=16, fontweight="bold", color=NAVY, y=0.98)
+
+    ax1 = fig.add_subplot(gs[0, 0])
+    y = range(len(r))
+    ax1.barh(y, r["n_rows"], color=TEAL)
+    ax1.set_yticks(y); ax1.set_yticklabels(r["task"].astype(str), fontsize=8, color=MUTED)
+    ax1.invert_yaxis(); ax1.set_xlabel("Rows / recordings", color=MUTED)
+    _style(ax1, "Completion burden by task")
+
+    ax2 = fig.add_subplot(gs[0, 1])
+    subj = r["n_subjects"] if "n_subjects" in r else pd.Series([0] * len(r))
+    ax2.barh(y, subj, color=GOLD)
+    ax2.set_yticks(y); ax2.set_yticklabels(r["task"].astype(str), fontsize=8, color=MUTED)
+    ax2.invert_yaxis(); ax2.set_xlabel("Subjects", color=MUTED)
+    _style(ax2, "Subject breadth")
+
+    ax3 = fig.add_subplot(gs[1, 0])
+    miss = r["mean_feature_missingness"] if "mean_feature_missingness" in r else pd.Series([np.nan] * len(r))
+    colors = [RED if pd.notna(v) and v >= .40 else GOLD if pd.notna(v) and v >= .15 else TEAL for v in miss]
+    ax3.barh(y, miss.fillna(0), color=colors)
+    ax3.set_yticks(y); ax3.set_yticklabels(r["task"].astype(str), fontsize=8, color=MUTED)
+    ax3.invert_yaxis(); ax3.set_xlim(0, 1); ax3.set_xlabel("Mean feature missingness", color=MUTED)
+    _style(ax3, "Feature completeness risk")
+
+    ax4 = fig.add_subplot(gs[1, 1])
+    if "smallest_clinical_group_n" in r.columns and r["smallest_clinical_group_n"].notna().sum() > 0:
+        vals = r["smallest_clinical_group_n"].fillna(0)
+        ax4.barh(y, vals, color=TEAL)
+        ax4.set_xlabel("Smallest clinical group count", color=MUTED)
+        title = f"Clinical balance ({clinical_label})"
+    elif clinical_series is not None and len(clinical_series) == len(df):
+        aligned = pd.Series(clinical_series.to_numpy(), index=df.index).astype("string").fillna("missing")
+        counts = []
+        for task in r["task"].astype(str):
+            sub = aligned.loc[tmp[tmp["__task__"].eq(task)].index].value_counts()
+            counts.append(int(sub.min()) if len(sub) else 0)
+        ax4.barh(y, counts, color=TEAL)
+        ax4.set_xlabel("Smallest clinical group count", color=MUTED)
+        title = f"Clinical balance ({clinical_label})"
+    else:
+        ax4.text(.5, .5, "No clinical grouping selected", ha="center", va="center", color=MUTED, transform=ax4.transAxes)
+        ax4.set_xticks([]); ax4.set_yticks([])
+        title = "Clinical balance"
+    ax4.set_yticks(y); ax4.set_yticklabels(r["task"].astype(str), fontsize=8, color=MUTED)
+    ax4.invert_yaxis(); _style(ax4, title)
+
+    fig.text(0.5, 0.01, "Readiness is descriptive: it flags task support, balance, and completeness before clinical interpretation or modeling.", ha="center", color=MUTED, fontsize=9)
+    return _save(fig, path)
+
+
+def plot_task_clinical_balance_bars(
+    df: pd.DataFrame,
+    task_col: str | None,
+    clinical_series: pd.Series | None,
+    clinical_label: str,
+    selected_level: str | None,
+    path: Path,
+) -> Path:
+    tmp = _task_tmp_frame(df, task_col)
+    if tmp.empty:
+        return _empty(path, "No task metadata were available for clinical balance review.", "Task clinical balance")
+    if clinical_series is None or len(clinical_series) != len(df):
+        return _empty(path, "No diagnosis/severity/context variable was selected or detected.", "Task clinical balance")
+    tmp["__clinical__"] = pd.Series(clinical_series.to_numpy(), index=df.index).astype("string").fillna("missing").astype(str)
+    tmp = tmp[tmp["__clinical__"].str.strip().ne("")]
+    if selected_level and selected_level not in {"All values", "Auto / not available"}:
+        counts = tmp[tmp["__clinical__"].eq(str(selected_level))]["__task__"].value_counts().sort_values(ascending=True)
+        if counts.empty:
+            return _empty(path, f"No task rows for {clinical_label} = {selected_level}.", "Task clinical balance")
+        fig, ax = plt.subplots(figsize=(10, max(4.8, 0.38 * len(counts))))
+        ax.barh(counts.index.astype(str), counts.values, color=TEAL)
+        ax.set_xlabel("Rows / recordings", color=MUTED)
+        _style(ax, f"Task representation within {clinical_label} = {selected_level}")
+        return _save(fig, path)
+    tab = pd.crosstab(tmp["__task__"], tmp["__clinical__"])
+    if tab.empty:
+        return _empty(path, "No task x clinical grouping counts were available.", "Task clinical balance")
+    # Limit visual complexity but keep most represented groups.
+    tab = tab.loc[tab.sum(axis=1).sort_values(ascending=False).head(18).index]
+    keep_cols = tab.sum(axis=0).sort_values(ascending=False).head(6).index.tolist()
+    other = tab.drop(columns=keep_cols).sum(axis=1) if len(tab.columns) > len(keep_cols) else None
+    plot_tab = tab[keep_cols].copy()
+    if other is not None and other.sum() > 0:
+        plot_tab["Other"] = other
+    prop = plot_tab.div(plot_tab.sum(axis=1).replace(0, np.nan), axis=0).fillna(0)
+    fig, ax = plt.subplots(figsize=(12, max(5.2, 0.44 * len(prop) + 2)))
+    left = np.zeros(len(prop))
+    for col in prop.columns:
+        vals = prop[col].to_numpy(dtype=float)
+        ax.barh(prop.index.astype(str), vals, left=left, label=str(col))
+        left += vals
+    ax.set_xlim(0, 1)
+    ax.set_xlabel("Proportion within task", color=MUTED)
+    ax.legend(loc="lower center", bbox_to_anchor=(0.5, -0.28), ncol=min(4, len(prop.columns)), frameon=False, fontsize=8)
+    _style(ax, f"Clinical balance by task: {clinical_label}")
+    fig.text(0.5, 0.02, "Stacked bars show composition, not performance. Check counts in the detailed table before interpreting small groups.", ha="center", color=MUTED, fontsize=9)
+    return _save(fig, path)
+
+
+def plot_task_subject_coverage_summary(df: pd.DataFrame, task_col: str | None, subject_col: str | None, path: Path) -> Path:
+    tmp = _task_tmp_frame(df, task_col)
+    if tmp.empty:
+        return _empty(path, "No task metadata were available for subject coverage.", "Subject-task coverage")
+    if not subject_col or subject_col not in tmp.columns:
+        return _empty(path, "No subject_id column was available for subject-task coverage.", "Subject-task coverage")
+    g = tmp.groupby("__task__").agg(n_rows=(subject_col, "size"), n_subjects=(subject_col, lambda x: x.astype(str).nunique())).reset_index().rename(columns={"__task__":"task"})
+    g["records_per_subject"] = g["n_rows"] / g["n_subjects"].replace(0, np.nan)
+    g = g.sort_values("n_subjects", ascending=True).tail(18)
+    if g.empty:
+        return _empty(path, "No usable subject-task coverage rows were available.", "Subject-task coverage")
+    fig, ax = plt.subplots(figsize=(11, max(5, 0.42 * len(g) + 2)))
+    y = np.arange(len(g))
+    ax.barh(y - 0.18, g["n_subjects"], height=0.34, color=TEAL, label="Subjects")
+    ax.barh(y + 0.18, g["n_rows"], height=0.34, color=GOLD, label="Rows")
+    ax.set_yticks(y); ax.set_yticklabels(g["task"].astype(str), fontsize=8, color=MUTED)
+    ax.set_xlabel("Count", color=MUTED)
+    ax.legend(frameon=False, loc="lower right")
+    _style(ax, "Subject-task coverage")
+    fig.text(0.5, 0.02, "Tasks with many rows but few subjects may reflect repeated recordings rather than broad cohort coverage.", ha="center", color=MUTED, fontsize=9)
+    return _save(fig, path)
+
+
+def plot_task_feature_profile(df: pd.DataFrame, task_col: str | None, feature_cols: list[str], selected_task: str | None, path: Path) -> Path:
+    tmp = _task_tmp_frame(df, task_col)
+    if tmp.empty:
+        return _empty(path, "No task metadata were available for task-specific feature profiles.", "Task-specific feature profile")
+    feature_cols = [c for c in (feature_cols or []) if c in tmp.columns and pd.api.types.is_numeric_dtype(tmp[c])]
+    if not feature_cols:
+        return _empty(path, "No mapped numeric feature columns were available.", "Task-specific feature profile")
+    selected_task = str(selected_task or "")
+    all_tasks = {"", "All tasks", "All tasks / not available"}
+    rows = []
+    if selected_task not in all_tasks and selected_task in set(tmp["__task__"].astype(str)):
+        in_task = tmp["__task__"].astype(str).eq(selected_task)
+        if in_task.sum() < 3 or (~in_task).sum() < 3:
+            return _empty(path, "Selected task has too few rows for a feature profile against the remaining data.", "Task-specific feature profile")
+        for c in feature_cols:
+            x = pd.to_numeric(tmp.loc[in_task, c], errors="coerce").dropna()
+            y = pd.to_numeric(tmp.loc[~in_task, c], errors="coerce").dropna()
+            if len(x) < 3 or len(y) < 3:
+                continue
+            pooled = pd.concat([x, y])
+            spread = float(pooled.std(ddof=0))
+            if not np.isfinite(spread) or spread == 0:
+                continue
+            z = float((x.median() - y.median()) / spread)
+            rows.append({"feature": c, "effect": z, "abs_effect": abs(z), "task_median": float(x.median()), "other_median": float(y.median())})
+        title = f"Feature profile for {selected_task}"
+        xlabel = "Median difference vs other tasks (SD units)"
+    else:
+        for c in feature_cols:
+            vals = pd.to_numeric(tmp[c], errors="coerce")
+            if vals.notna().sum() < 6 or vals.std(ddof=0) == 0:
+                continue
+            med = tmp.assign(__v__=vals).groupby("__task__")["__v__"].median().dropna()
+            if len(med) < 2:
+                continue
+            effect = float((med.max() - med.min()) / vals.std(ddof=0))
+            rows.append({"feature": c, "effect": effect, "abs_effect": abs(effect), "task_median": float(med.max()), "other_median": float(med.min())})
+        title = "Features most separated across tasks"
+        xlabel = "Between-task median spread (SD units)"
+    out = pd.DataFrame(rows).sort_values("abs_effect", ascending=True).tail(18) if rows else pd.DataFrame()
+    if out.empty:
+        return _empty(path, "No stable task-feature contrasts could be computed.", "Task-specific feature profile")
+    fig, ax = plt.subplots(figsize=(11, max(5, 0.38 * len(out) + 2)))
+    vals = out["effect"].to_numpy(dtype=float)
+    colors = [TEAL if v >= 0 else GOLD for v in vals]
+    ax.barh(out["feature"].astype(str), vals, color=colors)
+    ax.axvline(0, color=NAVY, lw=1)
+    ax.set_xlabel(xlabel, color=MUTED)
+    _style(ax, title)
+    fig.text(0.5, 0.02, "This is descriptive and task-contextual. It identifies task-sensitive features; it is not a clinical outcome test.", ha="center", color=MUTED, fontsize=9)
+    return _save(fig, path)
+
 def plot_longitudinal_subject_records(df: pd.DataFrame, subject_col: str | None, path: Path) -> Path:
     if df is None or df.empty or not subject_col or subject_col not in df.columns:
         return _empty(path, "No subject_id column was available for repeated-subject review.", "Subject repeats")
@@ -1649,4 +2277,91 @@ def plot_qc_framework_selection(framework_table: pd.DataFrame, selected_framewor
                 str(int(row["n_numeric_qc"])), va="center", fontsize=9, color=MUTED)
     footer = "Auto uses all numeric QC metrics. Acoustic/Kinematic modes use conservative column-name heuristics and keep identifiers for alignment."
     ax.text(0, -0.85, footer, fontsize=9, color=MUTED)
+    return _save(fig, path)
+
+
+def plot_overview_design_from_tables(metrics: pd.DataFrame, counts: pd.DataFrame, path: Path) -> Path:
+    """Plot Overview design context from pre-aggregated tables only.
+
+    This avoids row/feature dimension coupling inside the plotting layer. The
+    GUI computes metadata-first counts before calling this function.
+    """
+    if metrics is None or metrics.empty:
+        return _empty(path, "No Overview design metrics were available.", "Dataset design context")
+    m = metrics.copy()
+    if "metric" not in m.columns or "value" not in m.columns:
+        return _empty(path, "Overview design metrics are missing required columns.", "Dataset design context")
+    m["metric"] = m["metric"].astype(str)
+    m["value"] = pd.to_numeric(m["value"], errors="coerce").fillna(0)
+    c = counts.copy() if counts is not None else pd.DataFrame(columns=["section", "level", "count"])
+    for col in ["section", "level"]:
+        if col not in c.columns:
+            c[col] = ""
+    if "count" not in c.columns:
+        c["count"] = 0
+    c["count"] = pd.to_numeric(c["count"], errors="coerce").fillna(0)
+
+    max_labels = int(c.groupby("section").size().max()) if not c.empty else 1
+    fig_h = max(10.2, 8.2 + 0.18 * min(max_labels, 24))
+    fig = plt.figure(figsize=(15.8, fig_h))
+    gs = fig.add_gridspec(3, 2, height_ratios=[0.9, 1.35, 1.55], hspace=0.58, wspace=0.36)
+    ax0 = fig.add_subplot(gs[0, :]); ax0.axis("off")
+    ax0.text(0.00, 0.82, "Dataset design context", fontsize=18, fontweight="bold", color=NAVY, va="center")
+    ax0.text(0.00, 0.50, "Metadata-first counts from accepted Metadata Mapping; filename context is used only when metadata is absent.", fontsize=10.5, color=MUTED, va="center")
+    card_metrics = ["subjects", "tasks", "rows/files", "subjects eligible for repeated analysis"]
+    for i, metric in enumerate(card_metrics):
+        row = m.loc[m["metric"].eq(metric)]
+        val = int(row["value"].iloc[0]) if not row.empty else 0
+        x = 0.02 + i * 0.24
+        ax0.add_patch(plt.Rectangle((x, 0.04), 0.20, 0.30, transform=ax0.transAxes, color="#F7FAFD", ec=GRID, lw=0.8))
+        ax0.text(x + 0.015, 0.25, metric.replace("subjects eligible for repeated analysis", "Repeated-analysis subjects").title(), transform=ax0.transAxes, fontsize=9, color=MUTED, fontweight="bold", va="center")
+        ax0.text(x + 0.015, 0.11, str(val), transform=ax0.transAxes, fontsize=18, color=NAVY, fontweight="bold", va="center")
+
+    sections = [
+        ("sex_or_gender", "Sex / gender counts", "subjects/rows"),
+        ("diagnosis", "Diagnosis counts", "subjects/rows"),
+        ("task", "Task counts", "records"),
+        ("sessions_per_subject", "Sessions per subject", "subjects"),
+    ]
+    axes = [fig.add_subplot(gs[1, 0]), fig.add_subplot(gs[1, 1]), fig.add_subplot(gs[2, 0]), fig.add_subplot(gs[2, 1])]
+    for ax, (section, title, xlabel) in zip(axes, sections):
+        sub = c.loc[c["section"].astype(str).eq(section)].copy()
+        sub = sub.sort_values("count", ascending=False).head(15).sort_values("count", ascending=True)
+        if sub.empty:
+            ax.text(0.5, 0.5, "not available", ha="center", va="center", color=MUTED)
+            ax.set_title(title, fontsize=12, fontweight="bold", color=NAVY)
+            ax.axis("off")
+            continue
+        labels = [str(x) for x in sub["level"]]
+        vals = sub["count"].astype(float).to_numpy()
+        ax.barh(labels, vals, color=TEAL)
+        for j, v in enumerate(vals):
+            ax.text(v + max(vals) * 0.015, j, f"{int(v)}", va="center", fontsize=8, color=MUTED)
+        ax.set_xlabel(xlabel, color=MUTED)
+        ax.tick_params(axis="y", labelsize=8.2)
+        _style(ax, title)
+    fig.subplots_adjust(left=0.17, right=0.98)
+    return _save(fig, path)
+
+
+def plot_subject_task_summary_bars(summary: pd.DataFrame, path: Path) -> Path:
+    """Render subject/task coverage from a pre-aggregated table."""
+    required = {"task", "records", "subjects", "repeated_subjects"}
+    if summary is None or summary.empty or not required.issubset(summary.columns):
+        return _empty(path, "No pre-aggregated subject/task coverage table was available.", "Subject × task coverage")
+    df = summary.copy()
+    for c in ["records", "subjects", "repeated_subjects"]:
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+    df = df.sort_values(["subjects", "records"], ascending=True).tail(24)
+    fig, ax = plt.subplots(figsize=(12.4, max(5.5, 0.42 * len(df))))
+    y = np.arange(len(df))
+    width = 0.25
+    ax.barh(y - width, df["records"], height=width, color=TEAL, label="records")
+    ax.barh(y, df["subjects"], height=width, color=GOLD, label="subjects")
+    ax.barh(y + width, df["repeated_subjects"], height=width, color=NAVY, label="subjects with ≥2 iterations/records")
+    ax.set_yticks(y); ax.set_yticklabels([str(x) for x in df["task"]], color=MUTED, fontsize=8.5)
+    ax.set_xlabel("Count", color=MUTED)
+    ax.legend(frameon=False, fontsize=8)
+    _style(ax, "Subject × task coverage counts")
+    fig.subplots_adjust(left=0.26, right=0.98)
     return _save(fig, path)
