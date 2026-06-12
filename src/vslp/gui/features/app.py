@@ -51,7 +51,8 @@ from vslp.analysis.features.audit import (
     reliability_design_summary, reliability_subject_record_counts,
     feature_repeatability_summary, reliability_family_summary,
     feature_recommendation_table, feature_recommendation_summary,
-    feature_recommendation_reason_counts, feature_recommendation_family_summary
+    feature_recommendation_reason_counts, feature_recommendation_family_summary,
+    qc_family_from_name
 )
 from vslp.analysis.features.ml_export_builder import build_ml_export_package
 from vslp.analysis.features.plots import (
@@ -61,6 +62,7 @@ from vslp.analysis.features.plots import (
     plot_missingness_family_summary, plot_comissing_heatmap,
     plot_feature_availability_bars, plot_comissing_pair_bars,
     plot_distribution_review_summary, plot_expected_range_flags,
+    plot_distribution_shape_story, plot_distribution_outlier_range_story, plot_row_outlier_story,
     plot_selected_feature_distribution, plot_selected_feature_diagnostic, plot_group_feature_boxplot, plot_distribution_grid, plot_outlier_counts,
     plot_distribution_shape_summary, plot_distribution_shape_landscape, plot_row_outlier_burden, plot_variance_screen,
     plot_overview_readiness_scorecard, plot_dataset_design_tiles,
@@ -73,7 +75,7 @@ from vslp.analysis.features.plots import (
     plot_relationship_correlation_heatmap, plot_relationship_redundant_pairs,
     plot_relationship_family_matrix, plot_relationship_pca_scree,
     plot_relationship_pca_scores, plot_relationship_pca_loadings,
-    plot_selected_feature_correlations,
+    plot_relationship_dimensionality_profile, plot_selected_feature_correlations,
     plot_screening_group_balance, plot_screening_effect_ranking,
     plot_screening_continuous_heatmap, plot_screening_group_heatmap,
     plot_screening_effect_landscape, plot_selected_feature_outcome,
@@ -84,12 +86,15 @@ from vslp.analysis.features.plots import (
     plot_recommendation_reason_counts, plot_recommendation_family_summary,
     plot_ml_export_manifest_summary,
     plot_task_counts, plot_task_subject_matrix, plot_task_label_context,
-    plot_task_feature_support, plot_task_clinical_context, plot_task_clinical_filtered_counts, plot_longitudinal_subject_records,
+    plot_task_feature_support, plot_task_clinical_context, plot_task_clinical_filtered_counts,
+    plot_task_readiness_dashboard, plot_task_clinical_balance_bars,
+    plot_task_subject_coverage_summary, plot_task_feature_profile,
+    plot_longitudinal_subject_records,
     plot_longitudinal_session_matrix, plot_longitudinal_iteration_counts,
     plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.102.0"
+APP_VERSION = "v0.111.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -546,6 +551,7 @@ class FeatureAnalysisGUI(QMainWindow):
         self.mapping_modified = False
         self.mapping_accepted = False
         self.outputs: dict[str, pd.DataFrame] = {}
+        self.analysis_ready = False
         self.output_dir: Optional[Path] = None
         self.page_keys = ["project", "mapping", "metadata_mapping", "overview", "missing", "dist", "qc", "relationships", "task_review", "longitudinal", "screening", "reliability", "recommendations", "ml_export", "export"]
 
@@ -598,7 +604,59 @@ class FeatureAnalysisGUI(QMainWindow):
             self.stack.addWidget(self.pages[key])
         self.show_page("project")
 
+    def _analysis_required_pages(self) -> set[str]:
+        return {
+            "missing", "dist", "qc", "relationships", "task_review",
+            "longitudinal", "screening", "reliability", "recommendations",
+            "ml_export", "export",
+        }
+
+    def _has_full_analysis_outputs(self) -> bool:
+        if not bool(getattr(self, "analysis_ready", False)):
+            return False
+        outputs = getattr(self, "outputs", {}) or {}
+        required_any = [
+            "feature_distribution_summary", "missingness_by_feature",
+            "feature_qc_spearman_correlation", "feature_relationship_summary",
+        ]
+        return any(k in outputs and isinstance(outputs.get(k), pd.DataFrame) and not outputs.get(k).empty for k in required_any)
+
+    def _prompt_run_analysis_before_menu(self, key: str) -> bool:
+        if key not in self._analysis_required_pages():
+            return True
+        if self._has_full_analysis_outputs():
+            return True
+        page_label = {
+            "missing": "Missingness",
+            "dist": "Distributions / Outliers",
+            "qc": "QC Integration",
+            "relationships": "Feature Relationships",
+            "task_review": "Task Review",
+            "longitudinal": "Longitudinal / Iterations",
+            "screening": "Group / Outcome Screening",
+            "reliability": "Reliability",
+            "recommendations": "Recommendations",
+            "ml_export": "ML Export Builder",
+            "export": "Export / Report",
+        }.get(key, key)
+        reply = QMessageBox.question(
+            self,
+            "Run Feature Analysis first",
+            f"{page_label} uses derived analysis tables and scoped plots.\n\nRun Feature Analysis now?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if reply == QMessageBox.Yes:
+            self.run_analysis()
+        else:
+            self.log(f"Navigation to {page_label} cancelled because Feature Analysis has not been run yet.")
+        return False
+
     def show_page(self, key: str) -> None:
+        if key not in self.page_keys:
+            return
+        if not self._prompt_run_analysis_before_menu(key):
+            return
         self.stack.setCurrentIndex(self.page_keys.index(key))
         self.sidebar.set_active(key)
 
@@ -640,7 +698,7 @@ class FeatureAnalysisGUI(QMainWindow):
         sc.setFrameShape(QFrame.NoFrame)
         sc.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         sc.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        widget.setMinimumWidth(980)
+        widget.setMinimumWidth(860)
         return sc
 
     def _project_step_label(self, number: int, title: str, subtitle: str) -> QFrame:
@@ -1163,8 +1221,8 @@ class FeatureAnalysisGUI(QMainWindow):
             "duration_s": "Duration",
             "duration": "Duration",
 
-            "task_completed_as_instructed": "Task validity flag",
-            "needs_parsing": "Parsing-needed flag",
+            "task_completed_as_instructed": "Manual acquisition QC flag",
+            "needs_parsing": "Manual acquisition QC flag",
             "another_person_in_frame": "Manual video QC flag",
             "another_person_speaks": "Manual audio QC flag",
             "background_noise": "Manual audio QC flag",
@@ -1175,8 +1233,8 @@ class FeatureAnalysisGUI(QMainWindow):
             "subject_looks_away": "Manual face/visibility QC flag",
             "poor_light": "Manual acquisition QC flag",
             "blurry_image": "Manual acquisition QC flag",
-            "wearing_glasses": "Appearance/accessory flag",
-            "facial_hair_present": "Appearance/accessory flag",
+            "wearing_glasses": "Manual face/visibility QC flag",
+            "facial_hair_present": "Manual face/visibility QC flag",
 
             "shared_externally": "Governance / sharing flag",
             "type_of_data_to_be_shared": "Data-use permission",
@@ -1843,7 +1901,7 @@ class FeatureAnalysisGUI(QMainWindow):
         plot_header.addWidget(show_btn)
 
         regen = QPushButton("Regenerate")
-        regen.clicked.connect(self.regenerate_overview_plots)
+        regen.clicked.connect(self.regenerate_relationships)
         plot_header.addWidget(regen)
 
         plot_header.addStretch(1)
@@ -1885,7 +1943,8 @@ class FeatureAnalysisGUI(QMainWindow):
         self.overview_metric_grid.setVerticalSpacing(10)
         side_layout.addLayout(self.overview_metric_grid)
         side_layout.addStretch(1)
-        side_panel.setFixedWidth(340)
+        side_panel.setMinimumWidth(280)
+        side_panel.setMaximumWidth(360)
         overview_split.addWidget(side_panel)
         card.layout.addLayout(overview_split)
 
@@ -3953,7 +4012,7 @@ class FeatureAnalysisGUI(QMainWindow):
         toolbar.addWidget(show_btn)
 
         regen = QPushButton("Regenerate")
-        regen.clicked.connect(self.regenerate_overview_plots)
+        regen.clicked.connect(self.regenerate_relationships)
         toolbar.addWidget(regen)
 
         toolbar.addStretch(1)
@@ -4102,7 +4161,8 @@ class FeatureAnalysisGUI(QMainWindow):
         self.missing_metric_grid.setVerticalSpacing(8)
         side_layout.addLayout(self.missing_metric_grid)
         side_layout.addStretch(1)
-        side_panel.setFixedWidth(340)
+        side_panel.setMinimumWidth(280)
+        side_panel.setMaximumWidth(360)
         missing_split.addWidget(side_panel)
         card.layout.addLayout(missing_split)
 
@@ -4503,10 +4563,10 @@ class FeatureAnalysisGUI(QMainWindow):
 
         card = Card(
             "Distributions / Outliers",
-            "Inspect feature distributions, robust outliers, expected-range flags, and group/context overlays. This menu is limited to value shape and plausibility; missingness, QC sensitivity, relationships, and outcome screening stay in their own menus."
+            "Clinician-facing distribution and outlier triage: review feature value shape, expected-range violations, robust outliers, row-level burden, and selected-feature diagnostics within the active task scope."
         )
 
-        self.dist_note = QLabel("Run Feature Analysis to populate distribution diagnostics. Review outliers in context: task, QC, device, diagnosis/severity, and implementation status can all affect feature values.")
+        self.dist_note = QLabel("Run Feature Analysis to populate distribution/outlier diagnostics. Use Task focus and Feature to inspect to move from global triage to selected-feature review.")
         self.dist_note.setWordWrap(True)
         self.dist_note.setStyleSheet(f"color:{MUTED}; background:#F7FAFD; border:1px solid {LINE}; border-radius:8px; padding:10px;")
         card.layout.addWidget(self.dist_note)
@@ -4529,16 +4589,14 @@ class FeatureAnalysisGUI(QMainWindow):
         plot_header.addWidget(plot_title)
 
         self.dist_plot_combo = QComboBox()
-        self.dist_plot_combo.setMinimumWidth(360)
+        self.dist_plot_combo.setMinimumWidth(260)
+        self.dist_plot_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.dist_plot_combo.addItem("Review status", "distribution_review_status")
-        self.dist_plot_combo.addItem("Shape priority", "distribution_shape_summary")
-        self.dist_plot_combo.addItem("Shape landscape", "distribution_shape_landscape")
-        self.dist_plot_combo.addItem("Expected-range flags", "expected_range_flags")
-        self.dist_plot_combo.addItem("Outlier counts", "outlier_counts")
-        self.dist_plot_combo.addItem("Row outlier burden", "row_outlier_burden")
+        self.dist_plot_combo.addItem("Shape and tail audit", "distribution_shape_story")
+        self.dist_plot_combo.addItem("Range and outlier triage", "distribution_outlier_range_story")
+        self.dist_plot_combo.addItem("Recording outlier burden", "row_outlier_story")
         self.dist_plot_combo.addItem("Variance screen", "variance_screen")
         self.dist_plot_combo.addItem("Selected feature diagnostic", "selected_feature_distribution")
-        self.dist_plot_combo.addItem("Selected feature by group", "selected_feature_by_group")
         plot_header.addWidget(self.dist_plot_combo, 1)
 
         show_btn = QPushButton("Show")
@@ -4558,7 +4616,7 @@ class FeatureAnalysisGUI(QMainWindow):
         plot_panel_layout.addLayout(plot_header)
 
         self.dist_plot_caption = QLabel(
-            "Distributions uses only value-shape and plausibility plots. Task focus filters all distribution plots locally. Clinical context/value filters the distribution scope and also supplies grouping for selected-feature plots. There is no separate group overlay control."
+            "Task focus filters every plot. Review status gives the high-level triage; Shape and tail audit summarizes distribution shape risk; Range and outlier triage links expected-range violations with robust-outlier burden; Selected feature diagnostic provides the detailed feature-level review."
         )
         self.dist_plot_caption.setWordWrap(True)
         self.dist_plot_caption.setStyleSheet(f"color:{MUTED}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:9px;")
@@ -4568,38 +4626,27 @@ class FeatureAnalysisGUI(QMainWindow):
         scope_row.setSpacing(10)
         scope_row.addWidget(QLabel("Task focus:"))
         self.dist_task_combo = QComboBox()
-        self.dist_task_combo.setMinimumWidth(260)
+        self.dist_task_combo.setMinimumWidth(200)
+        self.dist_task_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.dist_task_combo.addItem("All tasks / not available")
         self.dist_task_combo.currentIndexChanged.connect(lambda _=0: self.preview_distribution_plot(self.dist_plot_combo.currentData() if hasattr(self, "dist_plot_combo") else "distribution_review_status"))
         scope_row.addWidget(self.dist_task_combo, 1)
-        scope_row.addWidget(QLabel("Clinical context:"))
-        self.dist_context_combo = QComboBox()
-        self.dist_context_combo.setMinimumWidth(250)
-        self.dist_context_combo.addItem("Auto / not available")
-        self.dist_context_combo.currentIndexChanged.connect(lambda _=0: (self._refresh_dist_context_value_combo(self._active_analysis_table()), self.preview_distribution_plot(self.dist_plot_combo.currentData() if hasattr(self, "dist_plot_combo") else "distribution_review_status")))
-        scope_row.addWidget(self.dist_context_combo, 1)
-        scope_row.addWidget(QLabel("Value:"))
-        self.dist_context_value_combo = QComboBox()
-        self.dist_context_value_combo.setMinimumWidth(220)
-        self.dist_context_value_combo.addItem("All values")
-        self.dist_context_value_combo.currentIndexChanged.connect(lambda _=0: self.preview_distribution_plot(self.dist_plot_combo.currentData() if hasattr(self, "dist_plot_combo") else "distribution_review_status"))
-        scope_row.addWidget(self.dist_context_value_combo, 1)
         plot_panel_layout.addLayout(scope_row)
 
         selectors = QHBoxLayout()
         selectors.setSpacing(10)
         selectors.addWidget(QLabel("Feature to inspect:"))
         self.dist_feature_combo = QComboBox()
-        self.dist_feature_combo.setMinimumWidth(360)
+        self.dist_feature_combo.setMinimumWidth(240)
+        self.dist_feature_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.dist_feature_combo.currentTextChanged.connect(lambda _: self.generate_selected_distribution_plot())
         selectors.addWidget(self.dist_feature_combo, 1)
-        selectors.addWidget(QLabel("Grouping for selected-feature plots comes from Clinical context above."))
         selectors.addStretch(1)
         plot_panel_layout.addLayout(selectors)
 
         self.dist_plot_preview = QLabel("Run Feature Analysis, then choose one distribution plot.")
         self.dist_plot_preview.setAlignment(Qt.AlignCenter)
-        self.dist_plot_preview.setMinimumHeight(520)
+        self.dist_plot_preview.setMinimumHeight(440)
         self.dist_plot_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.dist_plot_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
         plot_panel_layout.addWidget(self.dist_plot_preview, 1)
@@ -4610,7 +4657,8 @@ class FeatureAnalysisGUI(QMainWindow):
         self.dist_interpretation_label.setStyleSheet(f"QLabel {{ background:#FFFFFF; color:{INK}; border:1px solid {LINE}; border-radius:10px; padding:12px; font-size:12px; line-height:140%; }}")
         plot_panel_layout.addWidget(self.dist_interpretation_label)
 
-        dist_split.addWidget(plot_panel, 1)
+        plot_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        dist_split.addWidget(plot_panel, 4)
 
         # Side summary keeps distribution metrics visible without occupying the
         # top of the page, matching Overview and Missingness.
@@ -4622,7 +4670,7 @@ class FeatureAnalysisGUI(QMainWindow):
         side_title = QLabel("Distribution snapshot")
         side_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
         side_layout.addWidget(side_title)
-        side_note = QLabel("Compact value-shape metrics. Use these as navigation cues; detailed review, outlier, range, shape, and row-burden tables remain below the plot.")
+        side_note = QLabel("Compact current-scope triage metrics. These update with Task focus and point to the detailed tables below.")
         side_note.setWordWrap(True)
         side_note.setStyleSheet(f"color:{MUTED}; border:none; background:transparent; font-size:12px;")
         side_layout.addWidget(side_note)
@@ -4631,8 +4679,10 @@ class FeatureAnalysisGUI(QMainWindow):
         self.dist_metric_grid.setVerticalSpacing(8)
         side_layout.addLayout(self.dist_metric_grid)
         side_layout.addStretch(1)
-        side_panel.setFixedWidth(340)
-        dist_split.addWidget(side_panel)
+        side_panel.setMinimumWidth(260)
+        side_panel.setMaximumWidth(340)
+        side_panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        dist_split.addWidget(side_panel, 0)
         card.layout.addLayout(dist_split)
 
         tables_header = QLabel("Detailed distribution tables")
@@ -4657,12 +4707,12 @@ class FeatureAnalysisGUI(QMainWindow):
             t.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
             t.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
             t.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
-        tabs.addTab(self.dist_summary_table, "Distribution summary")
+        tabs.addTab(self.dist_summary_table, "Feature diagnostics")
         tabs.addTab(self.dist_review_table, "Review summary")
         tabs.addTab(self.dist_outlier_table, "Row-level outliers")
         tabs.addTab(self.dist_range_table, "Expected ranges")
         tabs.addTab(self.dist_shape_table, "Shape audit")
-        tabs.addTab(self.dist_row_burden_table, "Row burden")
+        tabs.addTab(self.dist_row_burden_table, "Recording burden")
         card.layout.addWidget(tabs)
 
         layout.addWidget(card)
@@ -4778,18 +4828,6 @@ class FeatureAnalysisGUI(QMainWindow):
             parts.append(f"Task = {task_value}")
         else:
             parts.append("All tasks")
-        series, label = self._dist_context_series(out)
-        value = self.dist_context_value_combo.currentText() if hasattr(self, "dist_context_value_combo") else "All values"
-        if series is not None:
-            aligned_series = self._align_context_series_to_frame(series, out) if hasattr(self, "_align_context_series_to_frame") else pd.Series(series.to_numpy() if len(series) == len(out) else pd.NA, index=out.index)
-            out["__local_clinical_context__"] = aligned_series
-            if value not in {"", "All values", "Auto / not available"}:
-                out = out[out["__local_clinical_context__"].astype(str).eq(str(value))].copy()
-                parts.append(f"{label} = {value}")
-            else:
-                parts.append(f"{label} = all")
-        else:
-            parts.append("clinical context = unavailable")
         return out, " | ".join(parts)
 
     def _distribution_feature_cols(self, df: pd.DataFrame) -> list[str]:
@@ -4798,39 +4836,152 @@ class FeatureAnalysisGUI(QMainWindow):
             return [c for c in roles.get("Feature", []) if c in df.columns]
         return [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
 
-    def generate_distribution_scope_plots(self) -> None:
+    def _distribution_scope_outputs(self) -> tuple[dict[str, pd.DataFrame], list[str], str]:
+        """Build row-safe distribution outputs for the current Task focus.
+
+        This mirrors the Missingness menu pattern: all plots, snapshot tiles, and
+        detailed tables are built from the same scoped DataFrame. It never
+        mutates analysis_df and never relies on stale full-analysis outputs.
+        """
         df, scope_label = self._distribution_scope_table()
-        self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
         feature_cols = self._distribution_feature_cols(df)
+        outputs: dict[str, pd.DataFrame] = {}
+        if df is None or df.empty or not feature_cols:
+            outputs["feature_distribution_summary"] = pd.DataFrame(columns=["feature", "n", "missing_fraction", "median", "iqr", "robust_outlier_fraction", "zero_variance", "near_zero_variance"])
+            outputs["feature_expected_range_flags"] = pd.DataFrame(columns=["feature", "fraction_outside_expected", "n_outside_expected"])
+            outputs["distribution_review_summary"] = pd.DataFrame(columns=["feature", "distribution_status"])
+            outputs["distribution_shape_audit"] = pd.DataFrame(columns=["feature", "priority", "skew_proxy", "tail_ratio"])
+            outputs["robust_outlier_flags"] = pd.DataFrame(columns=["row_index", "feature", "value", "robust_z"])
+            outputs["row_outlier_burden_summary"] = pd.DataFrame(columns=["row_index", "n_flagged_features", "fraction_flagged_features", "review_level"])
+            outputs["distribution_scope_summary"] = pd.DataFrame([{"scope": scope_label, "n_rows": 0 if df is None else int(len(df)), "n_feature_columns": 0}])
+            return outputs, feature_cols, scope_label
+        dist = feature_distribution_summary(df, feature_cols)
+        expected = expected_range_flags(df, feature_cols, self.registry_df)
+        review = distribution_review_summary(dist, expected)
+        shape = distribution_shape_audit(dist, expected)
+        outliers = robust_outlier_flags(df, feature_cols, self.registry_df)
+        row_burden = row_outlier_burden_summary(outliers, len(feature_cols))
+        outputs["feature_distribution_summary"] = dist
+        outputs["feature_expected_range_flags"] = expected
+        outputs["distribution_review_summary"] = review
+        outputs["distribution_shape_audit"] = shape
+        outputs["robust_outlier_flags"] = outliers
+        outputs["row_outlier_burden_summary"] = row_burden
+        outputs["distribution_scope_summary"] = pd.DataFrame([{
+            "scope": scope_label,
+            "n_rows": int(len(df)),
+            "n_feature_columns": int(len(feature_cols)),
+            "task_focus": self.dist_task_combo.currentText() if hasattr(self, "dist_task_combo") else "All tasks",
+        }])
+        return outputs, feature_cols, scope_label
+
+    def _update_distribution_snapshot(self, outputs: dict[str, pd.DataFrame], scope_label: str | None = None) -> None:
+        if not hasattr(self, "dist_metric_grid"):
+            return
+        while self.dist_metric_grid.count():
+            item = self.dist_metric_grid.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        dist = outputs.get("feature_distribution_summary", pd.DataFrame()) if isinstance(outputs, dict) else pd.DataFrame()
+        review = outputs.get("distribution_review_summary", pd.DataFrame()) if isinstance(outputs, dict) else pd.DataFrame()
+        outliers = outputs.get("robust_outlier_flags", pd.DataFrame()) if isinstance(outputs, dict) else pd.DataFrame()
+        ranges = outputs.get("feature_expected_range_flags", pd.DataFrame()) if isinstance(outputs, dict) else pd.DataFrame()
+        shape = outputs.get("distribution_shape_audit", pd.DataFrame()) if isinstance(outputs, dict) else pd.DataFrame()
+        row_burden = outputs.get("row_outlier_burden_summary", pd.DataFrame()) if isinstance(outputs, dict) else pd.DataFrame()
+        summary = outputs.get("distribution_scope_summary", pd.DataFrame()) if isinstance(outputs, dict) else pd.DataFrame()
+        n_features = len(dist) if dist is not None else 0
+        n_rows = 0
+        if summary is not None and not summary.empty:
+            try:
+                n_rows = int(summary.iloc[0].get("n_rows", 0))
+            except Exception:
+                n_rows = 0
+        status = review.get("distribution_status", pd.Series(dtype=str)).astype(str) if review is not None and not review.empty else pd.Series(dtype=str)
+        monitor = int(status.eq("monitor").sum()) if not status.empty else 0
+        review_n = int(status.eq("review").sum()) if not status.empty else 0
+        range_n = int(pd.to_numeric(ranges.get("fraction_outside_expected", pd.Series(dtype=float)), errors="coerce").gt(0).sum()) if ranges is not None and not ranges.empty else 0
+        out_features = int(outliers["feature"].nunique()) if outliers is not None and not outliers.empty and "feature" in outliers.columns else 0
+        zero_n = int(dist.get("zero_variance", pd.Series(dtype=bool)).fillna(False).sum()) if dist is not None and not dist.empty else 0
+        row_review = int(row_burden.get("review_level", pd.Series(dtype=str)).astype(str).eq("review").sum()) if row_burden is not None and not row_burden.empty else 0
+        scope_text = scope_label or "current scope"
+        if len(str(scope_text)) > 42:
+            scope_text = str(scope_text)[:39] + "..."
+        tiles = [
+            ("Scope", scope_text, "task filter"),
+            ("Rows", n_rows, "recordings in scope"),
+            ("Features", n_features, "mapped numeric features"),
+            ("Monitor", monitor, "moderate diagnostics"),
+            ("Review", review_n, "highest-priority features"),
+            ("Range flags", range_n, "features outside policy range"),
+            ("Outlier features", out_features, "robust outlier evidence"),
+            ("Row burden", row_review, "recordings needing review"),
+            ("Zero variance", zero_n, "not informative in scope"),
+        ]
+        for idx, (title, value, subtitle) in enumerate(tiles):
+            self.dist_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx, 0)
+
+    def _update_distribution_tables(self, outputs: dict[str, pd.DataFrame]) -> None:
+        if not hasattr(self, "dist_summary_table"):
+            return
+        self._fill_table(self.dist_summary_table, outputs.get("feature_distribution_summary", pd.DataFrame()))
+        self._fill_table(self.dist_review_table, outputs.get("distribution_review_summary", pd.DataFrame()))
+        self._fill_table(self.dist_outlier_table, outputs.get("robust_outlier_flags", pd.DataFrame()))
+        self._fill_table(self.dist_range_table, outputs.get("feature_expected_range_flags", pd.DataFrame()))
+        self._fill_table(self.dist_shape_table, outputs.get("distribution_shape_audit", pd.DataFrame()))
+        self._fill_table(self.dist_row_burden_table, outputs.get("row_outlier_burden_summary", pd.DataFrame()))
+
+    def _update_distribution_feature_selector(self, dist: pd.DataFrame) -> None:
+        if not hasattr(self, "dist_feature_combo"):
+            return
+        current = self.dist_feature_combo.currentText()
+        self.dist_feature_combo.blockSignals(True)
+        self.dist_feature_combo.clear()
+        if dist is not None and not dist.empty and "feature" in dist.columns:
+            # Prioritize review/monitor features when available.
+            ordered = dist.copy()
+            if "robust_outlier_fraction" in ordered.columns:
+                ordered["__sort__"] = pd.to_numeric(ordered["robust_outlier_fraction"], errors="coerce").fillna(0)
+                ordered = ordered.sort_values("__sort__", ascending=False)
+            self.dist_feature_combo.addItems([str(x) for x in ordered["feature"].dropna().tolist()])
+        if current:
+            ix = self.dist_feature_combo.findText(current)
+            if ix >= 0:
+                self.dist_feature_combo.setCurrentIndex(ix)
+        self.dist_feature_combo.blockSignals(False)
+
+    def generate_distribution_scope_plots(self) -> None:
+        self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
+        outputs, feature_cols, scope_label = self._distribution_scope_outputs()
         safe_scope = re.sub(r"[^A-Za-z0-9_.-]+", "_", scope_label).strip("_")[:90] or "distribution_scope"
         if not hasattr(self, "plot_paths"):
             self.plot_paths = {}
-        if df.empty or not feature_cols:
-            dist = pd.DataFrame()
-            expected = pd.DataFrame()
-            review = pd.DataFrame()
-            shape = pd.DataFrame()
-            outliers = pd.DataFrame()
-            row_burden = pd.DataFrame()
-        else:
-            dist = feature_distribution_summary(df, feature_cols)
-            expected = expected_range_flags(df, feature_cols, self.registry_df)
-            review = distribution_review_summary(dist, expected)
-            shape = distribution_shape_audit(dist, expected)
-            outliers = robust_outlier_flags(df, feature_cols, self.registry_df)
-            row_burden = row_outlier_burden_summary(outliers, len(feature_cols))
+        dist = outputs.get("feature_distribution_summary", pd.DataFrame())
+        expected = outputs.get("feature_expected_range_flags", pd.DataFrame())
+        review = outputs.get("distribution_review_summary", pd.DataFrame())
+        shape = outputs.get("distribution_shape_audit", pd.DataFrame())
+        outliers = outputs.get("robust_outlier_flags", pd.DataFrame())
+        row_burden = outputs.get("row_outlier_burden_summary", pd.DataFrame())
         self.plot_paths["distribution_review_status"] = str(plot_distribution_review_summary(review, plots_dir / f"distribution_review_status_{safe_scope}.png"))
-        self.plot_paths["distribution_shape_summary"] = str(plot_distribution_shape_summary(shape, plots_dir / f"distribution_shape_summary_{safe_scope}.png"))
-        self.plot_paths["distribution_shape_landscape"] = str(plot_distribution_shape_landscape(shape, plots_dir / f"distribution_shape_landscape_{safe_scope}.png"))
-        self.plot_paths["expected_range_flags"] = str(plot_expected_range_flags(expected, plots_dir / f"feature_expected_range_flags_{safe_scope}.png"))
-        self.plot_paths["outlier_counts"] = str(plot_outlier_counts(outliers, plots_dir / f"outlier_counts_{safe_scope}.png"))
-        self.plot_paths["row_outlier_burden"] = str(plot_row_outlier_burden(row_burden, plots_dir / f"row_outlier_burden_{safe_scope}.png"))
+        self.plot_paths["distribution_shape_story"] = str(plot_distribution_shape_story(shape, plots_dir / f"distribution_shape_story_{safe_scope}.png"))
+        self.plot_paths["distribution_outlier_range_story"] = str(plot_distribution_outlier_range_story(expected, outliers, review, plots_dir / f"distribution_outlier_range_story_{safe_scope}.png"))
+        self.plot_paths["row_outlier_story"] = str(plot_row_outlier_story(row_burden, plots_dir / f"row_outlier_story_{safe_scope}.png"))
         self.plot_paths["variance_screen"] = str(plot_variance_screen(dist, plots_dir / f"variance_screen_{safe_scope}.png"))
+        # Backward-compatible keys retained for reports/tests. These now point to
+        # the consolidated diagnostic panels where appropriate.
+        self.plot_paths["distribution_shape_summary"] = self.plot_paths["distribution_shape_story"]
+        self.plot_paths["distribution_shape_landscape"] = self.plot_paths["distribution_shape_story"]
+        self.plot_paths["expected_range_flags"] = self.plot_paths["distribution_outlier_range_story"]
+        self.plot_paths["outlier_counts"] = self.plot_paths["distribution_outlier_range_story"]
+        self.plot_paths["row_outlier_burden"] = self.plot_paths["row_outlier_story"]
+        self.current_distribution_outputs = outputs
+        self._update_distribution_snapshot(outputs, scope_label)
+        self._update_distribution_tables(outputs)
+        self._update_distribution_feature_selector(dist)
         if hasattr(self, "dist_plot_caption"):
-            self.dist_plot_caption.setText(
-                "Distributions uses value-shape and plausibility plots only. Current scope: "
-                f"{scope_label}. The base analysis table is not modified."
-            )
+            self.dist_plot_caption.setText(f"{self._distribution_plot_caption_text(self.dist_plot_combo.currentData())}\n\nCurrent scope: {scope_label}.")
+        if hasattr(self, "dist_note"):
+            self.dist_note.setText("Distribution/outlier audit generated for the current task scope. Snapshot, detailed tables, and plots all use the same scoped rows.")
 
     def regenerate_distribution_scope_plots(self) -> None:
         self.generate_distribution_scope_plots()
@@ -4839,58 +4990,23 @@ class FeatureAnalysisGUI(QMainWindow):
     def update_distribution_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
         if not hasattr(self, "dist_metric_grid"):
             return
-        while self.dist_metric_grid.count():
-            item = self.dist_metric_grid.takeAt(0)
-            w = item.widget()
-            if w:
-                w.deleteLater()
-        dist = outputs.get("feature_distribution_summary", pd.DataFrame())
-        review = outputs.get("distribution_review_summary", pd.DataFrame())
-        outliers = outputs.get("robust_outlier_flags", pd.DataFrame())
-        ranges = outputs.get("feature_expected_range_flags", pd.DataFrame())
-        shape = outputs.get("distribution_shape_audit", pd.DataFrame())
-        row_burden = outputs.get("row_outlier_burden_summary", pd.DataFrame())
-        n_features = len(dist) if dist is not None else 0
-        monitor = review.get("distribution_status", pd.Series(dtype=str)).isin(["monitor"]).sum() if review is not None and not review.empty else 0
-        review_n = review.get("distribution_status", pd.Series(dtype=str)).isin(["review"]).sum() if review is not None and not review.empty else 0
-        out_n = len(outliers) if outliers is not None else 0
-        range_n = int(pd.to_numeric(ranges.get("fraction_outside_expected", pd.Series(dtype=float)), errors="coerce").gt(0).sum()) if ranges is not None and not ranges.empty else 0
-        zero_n = int(dist.get("zero_variance", pd.Series(dtype=bool)).fillna(False).sum()) if dist is not None and not dist.empty else 0
-        shape_review = int(shape.get("priority", pd.Series(dtype=str)).astype(str).eq("review").sum()) if shape is not None and not shape.empty else 0
-        row_review = int(row_burden.get("review_level", pd.Series(dtype=str)).astype(str).eq("review").sum()) if row_burden is not None and not row_burden.empty else 0
-        tiles = [
-            ("Features", n_features, "numeric predictors"),
-            ("Monitor", int(monitor), "moderate issues"),
-            ("Review", int(review_n), "high-risk issues"),
-            ("Outlier rows", out_n, "row-level flags"),
-            ("Range flags", range_n, "outside expected ranges"),
-            ("Zero variance", zero_n, "not useful for ML"),
-            ("Shape review", shape_review, "shape needs review"),
-            ("Row burden", row_review, "recordings with many flags"),
-        ]
-        for idx, (title, value, subtitle) in enumerate(tiles):
-            self.dist_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx, 0)
         active_for_scope = self._active_analysis_table() if hasattr(self, "_active_analysis_table") else (self.analysis_df if self.analysis_df is not None else self.feature_df)
         self._refresh_dist_task_combo(active_for_scope)
-        self._refresh_dist_context_controls(active_for_scope)
-        self._fill_table(self.dist_summary_table, dist)
-        self._fill_table(self.dist_review_table, review)
-        self._fill_table(self.dist_outlier_table, outliers)
-        self._fill_table(self.dist_range_table, ranges)
-        self._fill_table(self.dist_shape_table, shape)
-        self._fill_table(self.dist_row_burden_table, row_burden)
-        if hasattr(self, "dist_feature_combo"):
-            current = self.dist_feature_combo.currentText()
-            self.dist_feature_combo.blockSignals(True)
-            self.dist_feature_combo.clear()
-            if dist is not None and not dist.empty and "feature" in dist.columns:
-                self.dist_feature_combo.addItems([str(x) for x in dist["feature"].dropna().tolist()])
-            if current:
-                ix = self.dist_feature_combo.findText(current)
-                if ix >= 0:
-                    self.dist_feature_combo.setCurrentIndex(ix)
-            self.dist_feature_combo.blockSignals(False)
-        self.dist_note.setText("Distribution audit generated. Review statistical outliers together with expected ranges, QC artifacts, task compatibility, and clinical/context metadata before excluding or transforming features.")
+        try:
+            scoped_outputs, _feature_cols, scope_label = self._distribution_scope_outputs()
+        except Exception as exc:
+            self.log(f"WARN | Distribution scoped table update failed; using full-analysis outputs. {exc}") if hasattr(self, "log") else None
+            scoped_outputs = outputs or {}
+            scope_label = "All tasks"
+        self.current_distribution_outputs = scoped_outputs
+        self._update_distribution_snapshot(scoped_outputs, scope_label)
+        self._update_distribution_tables(scoped_outputs)
+        self._update_distribution_feature_selector(scoped_outputs.get("feature_distribution_summary", pd.DataFrame()))
+        try:
+            self.generate_distribution_scope_plots()
+        except Exception as exc:
+            self.log(f"WARN | Distribution scoped plot refresh failed: {exc}") if hasattr(self, "log") else None
+        self.dist_note.setText("Distribution/outlier audit generated for the current task scope. Use the selected-feature diagnostic for the final feature-level review.")
 
     def _selected_distribution_feature(self) -> str | None:
         if not hasattr(self, "dist_feature_combo"):
@@ -4907,8 +5023,6 @@ class FeatureAnalysisGUI(QMainWindow):
         to task when present.
         """
         df, _scope = self._distribution_scope_table()
-        if "__local_clinical_context__" in df.columns and df["__local_clinical_context__"].notna().sum() > 0:
-            return "__local_clinical_context__"
         task_col = self._task_col(df) if hasattr(self, "_task_col") else None
         if task_col and task_col in df.columns and df[task_col].notna().sum() > 0:
             return task_col
@@ -4962,11 +5076,25 @@ class FeatureAnalysisGUI(QMainWindow):
         except Exception:
             pass
 
+    def _distribution_plot_caption_text(self, key: str) -> str:
+        captions = {
+            "distribution_review_status": "Review status: one high-level triage bar showing how many features are ok, monitor, or review in the current task scope.",
+            "distribution_shape_story": "Shape and tail audit: combines shape priority with skew/tail burden so you can see whether distribution risk is broad or concentrated in a small feature group.",
+            "distribution_outlier_range_story": "Range and outlier triage: compares expected-range violations and robust-outlier burden to identify features needing unit, QC, or task-compatibility review.",
+            "row_outlier_story": "Recording outlier burden: shows whether outlier flags are concentrated in a few recordings or spread across the dataset.",
+            "variance_screen": "Variance screen: identifies zero or near-zero variance features that are unlikely to help downstream models in the current task scope.",
+            "selected_feature_distribution": "Selected feature diagnostic: detailed single-feature distribution, expected bounds, and task grouping. Use this before excluding or transforming a feature.",
+            "distribution_shape_summary": "Shape and tail audit: combined priority and shape landscape.",
+            "distribution_shape_landscape": "Shape and tail audit: combined priority and shape landscape.",
+            "expected_range_flags": "Range and outlier triage: expected range plus outlier evidence.",
+            "outlier_counts": "Range and outlier triage: expected range plus outlier evidence.",
+            "row_outlier_burden": "Recording outlier burden: row-level burden summary.",
+        }
+        return captions.get(str(key), "Distribution/outlier plot for the current task scope.")
+
     def preview_distribution_plot(self, key: str, regenerate: bool = True) -> None:
         if key == "selected_feature_distribution":
             self.generate_selected_distribution_plot()
-        elif key == "selected_feature_by_group":
-            self.generate_selected_group_plot()
         elif regenerate:
             self.generate_distribution_scope_plots()
         elif not hasattr(self, "plot_paths") or key not in self.plot_paths or not Path(self.plot_paths.get(key, "")).exists():
@@ -4986,7 +5114,7 @@ class FeatureAnalysisGUI(QMainWindow):
         if not hasattr(self, "dist_interpretation_label"):
             return
         feature = self._selected_distribution_feature() or "selected feature"
-        group = self.dist_context_combo.currentText() if hasattr(self, "dist_context_combo") and self.dist_context_combo.currentText() not in {"", "Auto / not available"} else "task or detected context"
+        group = "task focus"
         captions = {
             "distribution_review_status": (
                 "<b>What it shows</b><br>Counts of features labelled ok, monitor, or review after combining valid n, missingness, zero variance, robust outlier burden, and expected-range flags.<br><br>"
@@ -5083,7 +5211,7 @@ class FeatureAnalysisGUI(QMainWindow):
         )
 
         self.qc_note = QLabel(
-            "Load an optional QC table in Project, accept Column Mapping, and run Feature Analysis. QC is interpreted as a multidimensional profile: additive interference, gain/level dynamics, reverberation/echo, channel/device/platform, nonlinear distortion, and temporal discontinuities."
+            "Choose Manual QC to review human metadata flags, or Automated QC to review the uploaded QC table. Manual QC is filtered by the Project modality setting so acoustic projects use acquisition/audio flags and kinematic projects use acquisition/video/face-visibility flags."
         )
         self.qc_note.setWordWrap(True)
         self.qc_note.setStyleSheet(f"color:{INK}; background:#F7FAFD; border:1px solid {LINE}; border-radius:10px; padding:10px;")
@@ -5108,15 +5236,15 @@ class FeatureAnalysisGUI(QMainWindow):
         plot_header.addWidget(plot_title)
 
         self.qc_plot_combo = QComboBox()
-        self.qc_plot_combo.setMinimumWidth(360)
-        self.qc_plot_combo.addItem("QC framework", "qc_artifact_model")
-        self.qc_plot_combo.addItem("Family burden", "qc_family_burden")
-        self.qc_plot_combo.addItem("QC metric distributions", "qc_metric_distributions")
-        self.qc_plot_combo.addItem("Feature x QC-family heatmap", "qc_feature_association_heatmap")
+        self.qc_plot_combo.setMinimumWidth(300)
+        self.qc_plot_combo.addItem("QC source overview", "qc_artifact_model")
+        self.qc_plot_combo.addItem("QC flag/metric burden", "qc_family_burden")
+        self.qc_plot_combo.addItem("QC value distributions", "qc_metric_distributions")
+        self.qc_plot_combo.addItem("Feature × QC-family heatmap", "qc_feature_association_heatmap")
         self.qc_plot_combo.addItem("Top feature-QC associations", "qc_top_feature_associations")
         self.qc_plot_combo.addItem("Missingness linked to QC", "qc_missingness_associations")
-        self.qc_plot_combo.addItem("Row QC burden", "qc_row_burden")
-        self.qc_plot_combo.addItem("Selected feature x selected QC", "selected_feature_qc_scatter")
+        self.qc_plot_combo.addItem("Recording QC burden", "qc_row_burden")
+        self.qc_plot_combo.addItem("Selected feature × selected QC", "selected_feature_qc_scatter")
         plot_header.addWidget(self.qc_plot_combo, 1)
 
         show_btn = QPushButton("Show")
@@ -5136,7 +5264,7 @@ class FeatureAnalysisGUI(QMainWindow):
         plot_panel_layout.addLayout(plot_header)
 
         self.qc_plot_caption = QLabel(
-            "QC Integration uses only acquisition-sensitivity plots: artifact framework, QC burden, feature-QC associations, missingness-QC links, row burden, and one selected feature x QC metric scatter. It does not duplicate Missingness, Distributions, Relationships, Screening, or ML Export."
+            "QC Integration asks whether feature values, missingness, or row outliers are linked to quality-control flags/metrics rather than clinical signal. Manual QC uses metadata flags; Automated QC uses the uploaded QC table only when selected."
         )
         self.qc_plot_caption.setWordWrap(True)
         self.qc_plot_caption.setStyleSheet(f"color:{MUTED}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:9px;")
@@ -5144,18 +5272,18 @@ class FeatureAnalysisGUI(QMainWindow):
 
         scope_row = QHBoxLayout()
         scope_row.setSpacing(10)
+        scope_row.addWidget(QLabel("QC source:"))
+        self.qc_source_combo = QComboBox()
+        self.qc_source_combo.setMinimumWidth(180)
+        self.qc_source_combo.addItems(["Manual QC", "Automated QC"])
+        self.qc_source_combo.currentIndexChanged.connect(lambda _=0: (self._refresh_qc_selector_combos(), self.preview_qc_plot(self.qc_plot_combo.currentData() if hasattr(self, "qc_plot_combo") else "qc_artifact_model")))
+        scope_row.addWidget(self.qc_source_combo, 0)
         scope_row.addWidget(QLabel("Task focus:"))
         self.qc_task_combo = QComboBox()
-        self.qc_task_combo.setMinimumWidth(280)
+        self.qc_task_combo.setMinimumWidth(220)
         self.qc_task_combo.addItem("All tasks / not available")
         self.qc_task_combo.currentIndexChanged.connect(lambda _=0: (self._refresh_qc_selector_combos(), self.preview_qc_plot(self.qc_plot_combo.currentData() if hasattr(self, "qc_plot_combo") else "qc_artifact_model")))
         scope_row.addWidget(self.qc_task_combo, 1)
-        scope_row.addWidget(QLabel("QC framework:"))
-        self.qc_framework_combo = QComboBox()
-        self.qc_framework_combo.setMinimumWidth(240)
-        self.qc_framework_combo.addItems(["Auto / all QC", "Acoustic QC", "Kinematic QC"])
-        self.qc_framework_combo.currentIndexChanged.connect(lambda _=0: (self._refresh_qc_selector_combos(), self.preview_qc_plot(self.qc_plot_combo.currentData() if hasattr(self, "qc_plot_combo") else "qc_artifact_model")))
-        scope_row.addWidget(self.qc_framework_combo, 1)
         plot_panel_layout.addLayout(scope_row)
 
         selectors = QHBoxLayout()
@@ -5197,7 +5325,7 @@ class FeatureAnalysisGUI(QMainWindow):
         side_title = QLabel("QC snapshot")
         side_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
         side_layout.addWidget(side_title)
-        side_note = QLabel("Compact acquisition-context metrics. Use these as navigation cues; detailed QC summary, metric catalog, feature-QC associations, missingness-QC links, and row-burden tables remain below the plot.")
+        side_note = QLabel("Compact metrics for the selected QC source and task. Manual QC is modality-aware; Automated QC is used only when selected.")
         side_note.setWordWrap(True)
         side_note.setStyleSheet(f"color:{MUTED}; border:none; background:transparent; font-size:12px;")
         side_layout.addWidget(side_note)
@@ -5206,7 +5334,8 @@ class FeatureAnalysisGUI(QMainWindow):
         self.qc_metric_grid.setVerticalSpacing(8)
         side_layout.addLayout(self.qc_metric_grid)
         side_layout.addStretch(1)
-        side_panel.setFixedWidth(340)
+        side_panel.setMinimumWidth(280)
+        side_panel.setMaximumWidth(360)
         qc_split.addWidget(side_panel)
         card.layout.addLayout(qc_split)
 
@@ -5229,9 +5358,9 @@ class FeatureAnalysisGUI(QMainWindow):
         self.qc_missing_table = self._simple_table()
         self.qc_outlier_table = self._simple_table()
         self.qc_row_table = self._simple_table()
-        self.qc_framework_table = self._simple_table()
+        self.qc_source_table = self._simple_table()
         tabs.addTab(self.qc_summary_table, "Summary")
-        tabs.addTab(self.qc_framework_table, "QC framework")
+        tabs.addTab(self.qc_source_table, "QC source variables")
         tabs.addTab(self.qc_catalog_table, "QC metrics")
         tabs.addTab(self.qc_family_table, "Family burden")
         tabs.addTab(self.qc_assoc_table, "Feature x QC")
@@ -5245,80 +5374,299 @@ class FeatureAnalysisGUI(QMainWindow):
         return self._wrap_scroll(body)
 
 
-    def _qc_framework_mode(self) -> str:
-        if not hasattr(self, "qc_framework_combo"):
-            return "Auto / all QC"
-        return self.qc_framework_combo.currentText().strip() or "Auto / all QC"
+    def _project_modality_mode(self) -> str:
+        """Return the modality selected in Project setup as a stable key."""
+        text = ""
+        if hasattr(self, "modality_combo"):
+            text = str(self.modality_combo.currentText() or "")
+        n = normalize_name(text)
+        if "acoustic" in n and "kinematic" not in n:
+            return "acoustic"
+        if "kinematic" in n and "acoustic" not in n:
+            return "kinematic"
+        if "mixed" in n or ("acoustic" in n and "kinematic" in n):
+            return "mixed"
+        if "generic" in n:
+            return "generic"
+        return "auto"
 
-    def _qc_framework_keep_column(self, col: str, mode: str) -> bool:
-        name = normalize_name(col)
-        if mode in {"", "Auto / all QC"}:
-            return True
-        if mode == "Acoustic QC":
-            acoustic_markers = [
-                "qadd", "qgain", "qrev", "qchan", "qdist", "qtemp", "qdrop",
-                "snr", "noise", "pause", "speech", "audio", "clip", "clipping",
-                "reverb", "echo", "gain", "level", "rms", "codec", "channel",
-                "jitter", "shimmer", "hnr", "cpp",
-            ]
-            return any(m in name for m in acoustic_markers)
-        if mode == "Kinematic QC":
-            kinematic_markers = [
-                "kin", "video", "frame", "landmark", "pose", "face", "hand",
-                "visibility", "tracking", "mediapipe", "pixel", "motion", "fps",
-                "detection", "occlusion", "mouth", "jaw", "lip", "head",
-            ]
-            return any(m in name for m in kinematic_markers)
-        return True
+    def _selected_qc_source_mode(self) -> str:
+        if hasattr(self, "qc_source_combo"):
+            val = self.qc_source_combo.currentText().strip()
+            if val in {"Manual QC", "Automated QC"}:
+                return val
+        return "Manual QC"
 
-    def _qc_framework_table(self, qc_df: pd.DataFrame | None) -> pd.DataFrame:
+    def _manual_qc_family_for_role(self, role: str, col: str) -> str | None:
+        """Map accepted metadata-QC roles into manual QC families.
+
+        Manual QC must be driven by the accepted Metadata Mapping role, not by
+        loose header keywords over the joined analysis table.  The previous
+        header fallback was too broad: feature/clinical names containing words
+        such as ``speech`` or ``audio`` were pulled into the manual-QC panel.
+        Here, a non-empty non-manual role is treated as an explicit exclusion.
+        Header inference is kept only for pre-mapping/legacy states where no
+        accepted role exists at all.
+        """
+        role = str(role or "").strip()
+        n = normalize_name(col)
+        if role in {"Manual acquisition QC flag", "Task validity flag", "Parsing-needed flag"}:
+            return "Manual acquisition QC"
+        if role == "Manual audio QC flag":
+            return "Manual audio QC"
+        if role == "Manual video QC flag":
+            return "Manual video QC"
+        if role in {"Manual face/visibility QC flag", "Appearance/accessory flag"}:
+            return "Manual face/visibility QC"
+        if role and not role.startswith("--"):
+            return None
+        # Legacy/header fallback only when no assigned metadata role is known.
+        if any(t in n for t in ["task_completed", "completed_as_instructed", "needs_parsing", "parsing_needed", "poor_light", "blurry", "acquisition"]):
+            return "Manual acquisition QC"
+        if any(t in n for t in ["another_person_speaks", "background_noise", "poor_audio", "audio_quality", "volume_is_unstable", "microphone"]):
+            return "Manual audio QC"
+        if any(t in n for t in ["another_person_in_frame", "frozen_video", "video_is_unstable"]):
+            return "Manual video QC"
+        if any(t in n for t in ["face_visibility", "subject_looks_away", "wearing_glasses", "facial_hair", "mouth_visible", "occlusion"]):
+            return "Manual face/visibility QC"
+        return None
+
+    def _manual_qc_family_allowed(self, family: str | None) -> bool:
+        modality = self._project_modality_mode()
+        if family is None:
+            return False
+        if modality == "acoustic":
+            return family in {"Manual acquisition QC", "Manual audio QC"}
+        if modality == "kinematic":
+            return family in {"Manual acquisition QC", "Manual video QC", "Manual face/visibility QC"}
+        # Auto, mixed, and generic keep all manual QC families because the user has
+        # not chosen a single acquisition channel.
+        return family in {"Manual acquisition QC", "Manual audio QC", "Manual video QC", "Manual face/visibility QC"}
+
+    def _find_analysis_column(self, df: pd.DataFrame, *names: str) -> str | None:
+        if df is None or df.empty:
+            return None
+        exact = {str(c): str(c) for c in df.columns}
+        norm = {}
+        for c in df.columns:
+            norm.setdefault(normalize_name(c), str(c))
+        for name in names:
+            if not name:
+                continue
+            candidates = [str(name), f"metadata__{name}"]
+            for cand in candidates:
+                if cand in exact:
+                    return exact[cand]
+                hit = norm.get(normalize_name(cand))
+                if hit:
+                    return hit
+        return None
+
+    def _manual_qc_badness(self, s: pd.Series, col: str) -> pd.Series:
+        """Convert yes/no human QC annotations into 0=not flagged, 1=flagged."""
+        n = normalize_name(col)
+        raw = s.astype("object")
+        num = pd.to_numeric(raw, errors="coerce")
+        text = raw.astype(str).str.strip().str.lower()
+        out = pd.Series(pd.NA, index=s.index, dtype="Float64")
+        negative = text.isin(["", "nan", "none", "<na>", "nat"])
+        # Most manual QC columns are issue-present flags: yes/present/poor -> 1.
+        yes = text.isin(["1", "yes", "y", "true", "t", "present", "detected", "poor", "bad", "fail", "failed", "unstable", "needs", "needed"])
+        no = text.isin(["0", "no", "n", "false", "f", "absent", "not present", "good", "ok", "okay", "pass", "passed", "valid", "normal"])
+        out.loc[yes] = 1.0
+        out.loc[no] = 0.0
+        if num.notna().any():
+            out.loc[num.notna()] = (num.loc[num.notna()] > 0).astype(float)
+        # Completion/validity columns are inverted: completed/valid/pass is good.
+        if any(t in n for t in ["completed_as_instructed", "task_completed", "task_validity", "validity"]):
+            out.loc[yes] = 0.0
+            out.loc[no] = 1.0
+            if num.notna().any():
+                out.loc[num.notna()] = (num.loc[num.notna()] <= 0).astype(float)
+        # Parsing columns are direct flags: needs parsing = bad.
+        if any(t in n for t in ["needs_parsing", "parsing_needed"]):
+            out.loc[yes] = 1.0
+            out.loc[no] = 0.0
+        out.loc[negative] = pd.NA
+        return out
+
+    def _manual_qc_columns_from_mapping(self, df: pd.DataFrame) -> list[tuple[str, str, str]]:
+        """Return (analysis column, family, original role) for accepted manual QC metadata flags.
+
+        This intentionally uses assigned Metadata Mapping roles as the source of
+        truth.  Feature columns, clinical scores, permissions, and generic media
+        metadata are never admitted just because their names contain words like
+        ``speech`` or ``audio``.
+        """
+        rows: list[tuple[str, str, str]] = []
+        used: set[str] = set()
+        mapping = getattr(self, "metadata_mapping_df", pd.DataFrame())
+        if mapping is not None and not mapping.empty:
+            for _, r in mapping.iterrows():
+                source = str(r.get("column", "")).strip()
+                role = str(r.get("role", "")).strip()
+                canonical = str(r.get("canonical_field", "")).strip()
+                family = self._manual_qc_family_for_role(role, source)
+                if not self._manual_qc_family_allowed(family):
+                    continue
+                candidates = [source, f"metadata__{source}", canonical, f"metadata__{canonical}"]
+                if canonical:
+                    candidates += [c for c in df.columns if str(c).startswith(f"metadata__{canonical}_")]
+                col = self._find_analysis_column(df, *[c for c in candidates if c])
+                if col and col not in used:
+                    rows.append((col, family or "Manual QC", role))
+                    used.add(col)
+        if rows:
+            return rows
+        # Legacy fallback only if there is no accepted metadata mapping at all.
+        if mapping is None or mapping.empty:
+            for c in df.columns:
+                family = self._manual_qc_family_for_role("", str(c))
+                if self._manual_qc_family_allowed(family) and str(c) not in used:
+                    rows.append((str(c), family or "Manual QC", "inferred_from_header_no_mapping"))
+                    used.add(str(c))
+        return rows
+
+    def _manual_qc_dataframe(self, feature_df: pd.DataFrame) -> pd.DataFrame:
+        if feature_df is None or feature_df.empty:
+            return pd.DataFrame()
+        id_cols = [c for c in ["record_key", "file_name", "filename", "source_file", "subject_id", "participant_id", "task", "task_name"] if c in feature_df.columns]
+        out = feature_df[id_cols].copy() if id_cols else pd.DataFrame(index=feature_df.index)
+        col_rows = self._manual_qc_columns_from_mapping(feature_df)
+        used_names = set(str(c) for c in out.columns)
+        family_lookup = {}
+        family_prefix = {
+            "Manual acquisition QC": "manual_acquisition_qc",
+            "Manual audio QC": "manual_audio_qc",
+            "Manual video QC": "manual_video_qc",
+            "Manual face/visibility QC": "manual_face_visibility_qc",
+        }
+        for col, family, role in col_rows:
+            base_name = normalize_name(col).replace("metadata__", "") or "flag"
+            metric = f"{family_prefix.get(family, 'manual_qc')}__{base_name}"
+            if metric in used_names:
+                metric = self._unique_column_name(metric, used_names)
+            used_names.add(metric)
+            out[metric] = self._manual_qc_badness(feature_df[col], col).values
+            family_lookup[metric] = family
+        self._current_manual_qc_family_lookup = family_lookup
+        return out
+
+    def _automated_qc_dataframe(self, row_mask: pd.Series | None = None) -> pd.DataFrame | None:
+        q = self.qc_df.copy() if getattr(self, "qc_df", None) is not None else None
+        if q is None or q.empty:
+            return q
+        if row_mask is not None and len(q) == len(row_mask):
+            q = q.loc[row_mask.values].copy()
+        return q
+
+    def _limit_qc_table_for_speed(self, qc_df: pd.DataFrame | None, source_mode: str) -> pd.DataFrame | None:
+        """Limit expensive QC metrics while preserving automated artifact-family coverage.
+
+        The prior speed guard selected only the highest-variance QC variables.
+        That made automated heatmaps faster, but it could silently drop low-variance
+        artifact families, which is why the automated family heatmap sometimes
+        showed only four of the six acoustic QC families.  This guard is now
+        stratified by QC family: keep a small quota from every detected family,
+        then fill remaining slots by information content.
+        """
         if qc_df is None or qc_df.empty:
-            return pd.DataFrame([{"framework": self._qc_framework_mode(), "status": "no_qc_table", "n_columns": 0, "n_numeric_qc": 0}])
-        rows = []
-        for mode in ["Auto / all QC", "Acoustic QC", "Kinematic QC"]:
-            numeric_cols = [c for c in qc_df.columns if pd.api.types.is_numeric_dtype(qc_df[c]) or pd.to_numeric(qc_df[c], errors="coerce").notna().any()]
-            kept = [c for c in numeric_cols if self._qc_framework_keep_column(c, mode)]
-            rows.append({
-                "framework": mode,
-                "n_numeric_qc": len(kept),
-                "example_columns": "; ".join(map(str, kept[:8])),
-                "interpretation": (
-                    "Uses all detected numeric QC variables." if mode == "Auto / all QC"
-                    else "Uses QC variables whose names look acoustic/audio-related." if mode == "Acoustic QC"
-                    else "Uses QC variables whose names look kinematic/video/landmark-related."
-                ),
-            })
-        return pd.DataFrame(rows)
+            return qc_df
+        q = qc_df.copy()
+        id_cols = [c for c in ["record_key", "file_name", "filename", "source_file", "subject_id", "participant_id", "task", "task_name"] if c in q.columns]
+        numeric: list[str] = []
+        for c in q.columns:
+            if c in id_cols:
+                continue
+            x = pd.to_numeric(q[c], errors="coerce")
+            if x.notna().any() and x.nunique(dropna=True) > 1:
+                numeric.append(c)
+        if not numeric:
+            return q.loc[:, id_cols].copy() if id_cols else q.iloc[:, 0:0].copy()
+
+        max_metrics = 60 if source_mode == "Manual QC" else 48
+        selected = self._selected_qc_metric() if hasattr(self, "qc_metric_combo") else None
+        if len(numeric) <= max_metrics:
+            return q
+
+        scored = []
+        for c in numeric:
+            x = pd.to_numeric(q[c], errors="coerce")
+            family = qc_family_from_name(c)
+            scored.append((c, family, float(x.var(skipna=True) or 0.0), int(x.notna().sum()), int(x.nunique(dropna=True))))
+
+        keep: list[str] = []
+        if source_mode == "Automated QC":
+            family_order = [
+                "Additive interference",
+                "Gain / level dynamics",
+                "Reverberation / echo",
+                "Channel / device / platform",
+                "Nonlinear distortion",
+                "Temporal discontinuities",
+            ]
+            per_family = max(3, min(8, max_metrics // max(1, len(family_order))))
+            for fam in family_order:
+                fam_rows = [r for r in scored if r[1] == fam]
+                fam_rows.sort(key=lambda t: (t[2], t[3], t[4]), reverse=True)
+                for c, *_ in fam_rows[:per_family]:
+                    if c not in keep:
+                        keep.append(c)
+
+        # Fill remaining capacity from globally informative variables.
+        for c, *_ in sorted(scored, key=lambda t: (t[2], t[3], t[4]), reverse=True):
+            if len(keep) >= max_metrics:
+                break
+            if c not in keep:
+                keep.append(c)
+        if selected and selected in numeric and selected not in keep:
+            keep.append(selected)
+        return q.loc[:, id_cols + [c for c in keep if c not in id_cols]].copy()
+
+    def _qc_source_variable_table(self, qc_df: pd.DataFrame | None) -> pd.DataFrame:
+        source = self._selected_qc_source_mode()
+        modality = self._project_modality_mode()
+        if qc_df is None or qc_df.empty:
+            return pd.DataFrame([{"qc_source": source, "project_modality": modality, "status": "no_usable_qc_variables", "n_variables": 0}])
+        catalog = qc_metric_catalog(qc_df)
+        if catalog.empty:
+            return pd.DataFrame([{"qc_source": source, "project_modality": modality, "status": "no_numeric_or_binary_qc_variables", "n_variables": 0}])
+        out = catalog[["qc_variable", "artifact_family", "n_valid", "missing_fraction", "n_unique", "interpretation"]].copy()
+        out.insert(0, "qc_source", source)
+        out.insert(1, "project_modality", modality)
+        return out
+
+    # Backward-compatible name used by the existing table update path.
+    def _qc_source_table(self, qc_df: pd.DataFrame | None) -> pd.DataFrame:
+        return self._qc_source_variable_table(qc_df)
 
     def _qc_scope_tables(self) -> tuple[pd.DataFrame, pd.DataFrame | None, str]:
         feature_df = self._active_analysis_table() if hasattr(self, "_active_analysis_table") else (self.analysis_df if self.analysis_df is not None else self.feature_df)
-        qc_df = self.qc_df
         if feature_df is None:
-            return pd.DataFrame(), qc_df, "All tasks | " + self._qc_framework_mode()
-        f = feature_df.copy()
-        q = qc_df.copy() if qc_df is not None else None
-        parts = []
-        task_col = self._task_col(f) if hasattr(self, "_task_col") else None
+            return pd.DataFrame(), pd.DataFrame(), f"{self._selected_qc_source_mode()} | no feature table"
+        base = feature_df.copy()
+        row_mask = pd.Series(True, index=base.index)
+        task_col = self._task_col(base) if hasattr(self, "_task_col") else None
         task_value = self.qc_task_combo.currentText() if hasattr(self, "qc_task_combo") else "All tasks"
-        if task_col and task_col in f.columns and task_value not in {"", "All tasks", "All tasks / not available"}:
-            mask = f[task_col].astype(str).eq(str(task_value))
-            f = f[mask].copy()
-            if q is not None and len(q) == len(mask):
-                q = q[mask.values].copy()
+        parts = []
+        if task_col and task_col in base.columns and task_value not in {"", "All tasks", "All tasks / not available"}:
+            row_mask = base[task_col].astype(str).eq(str(task_value))
+            f = base.loc[row_mask].copy()
             parts.append(f"Task = {task_value}")
         else:
+            f = base.copy()
             parts.append("All tasks")
-
-        mode = self._qc_framework_mode()
-        if q is not None and not q.empty and mode not in {"", "Auto / all QC"}:
-            keep = [c for c in q.columns if not (pd.api.types.is_numeric_dtype(q[c]) or pd.to_numeric(q[c], errors="coerce").notna().any())]
-            keep += [c for c in q.columns if c not in keep and self._qc_framework_keep_column(c, mode)]
-            # Preserve possible alignment keys/identifiers even if not numeric.
-            for c in ["record_key", "file_name", "filename", "source_file", "subject_id", "participant_id", "task", "task_name"]:
-                if c in q.columns and c not in keep:
-                    keep.append(c)
-            q = q.loc[:, [c for c in keep if c in q.columns]].copy()
-        parts.append(mode)
+        source = self._selected_qc_source_mode()
+        if source == "Manual QC":
+            q = self._manual_qc_dataframe(f)
+            if q is not None and not q.empty and hasattr(self, "log"):
+                manual_cols = [c for c in q.columns if str(c).startswith("manual_")]
+                self.log(f"Manual QC source: {len(manual_cols)} assigned metadata QC flags after modality filter ({self._project_modality_mode()}).")
+        else:
+            q = self._automated_qc_dataframe(row_mask)
+        q = self._limit_qc_table_for_speed(q, source)
+        parts.insert(0, source)
+        parts.append(f"Project modality = {self._project_modality_mode()}")
         return f, q, " | ".join(parts)
 
     def _refresh_qc_task_combo(self, df: pd.DataFrame) -> None:
@@ -5341,23 +5689,42 @@ class FeatureAnalysisGUI(QMainWindow):
         self.qc_task_combo.blockSignals(False)
 
     def _qc_feature_cols(self, df: pd.DataFrame) -> list[str]:
+        if df is None or df.empty:
+            return []
         if getattr(self, "mapping_df", None) is not None and not self.mapping_df.empty:
             roles = role_lists(self.mapping_df)
-            return [c for c in roles.get("Feature", []) if c in df.columns]
-        return [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+            cols = [c for c in roles.get("Feature", []) if c in df.columns]
+        else:
+            cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
+        numeric = [c for c in cols if pd.to_numeric(df[c], errors="coerce").notna().any()]
+        max_features = 70
+        selected = self._selected_qc_feature() if hasattr(self, "qc_feature_combo") else None
+        if len(numeric) > max_features:
+            score = []
+            for c in numeric:
+                x = pd.to_numeric(df[c], errors="coerce")
+                score.append((c, float(x.var(skipna=True) or 0.0), int(x.notna().sum()), int(x.nunique(dropna=True))))
+            numeric = [c for c, *_ in sorted(score, key=lambda t: (t[1], t[2], t[3]), reverse=True)[:max_features]]
+            if selected and selected in cols and selected not in numeric:
+                numeric.append(selected)
+        return numeric
 
-    def _refresh_qc_framework_combo(self) -> None:
-        if not hasattr(self, "qc_framework_combo"):
+    def _refresh_qc_source_combo(self) -> None:
+        if not hasattr(self, "qc_source_combo"):
             return
-        current = self.qc_framework_combo.currentText()
-        self.qc_framework_combo.blockSignals(True)
-        self.qc_framework_combo.clear()
-        for item in ["Auto / all QC", "Acoustic QC", "Kinematic QC"]:
-            self.qc_framework_combo.addItem(item)
-        ix = self.qc_framework_combo.findText(current)
+        current = self.qc_source_combo.currentText()
+        self.qc_source_combo.blockSignals(True)
+        self.qc_source_combo.clear()
+        for item in ["Manual QC", "Automated QC"]:
+            self.qc_source_combo.addItem(item)
+        ix = self.qc_source_combo.findText(current)
         if ix >= 0:
-            self.qc_framework_combo.setCurrentIndex(ix)
-        self.qc_framework_combo.blockSignals(False)
+            self.qc_source_combo.setCurrentIndex(ix)
+        self.qc_source_combo.blockSignals(False)
+
+    # Compatibility alias for older call sites/tests.
+    def _refresh_qc_framework_combo(self) -> None:
+        self._refresh_qc_source_combo()
 
 
     def _refresh_qc_selector_combos(self) -> None:
@@ -5403,7 +5770,7 @@ class FeatureAnalysisGUI(QMainWindow):
         missing_assoc = qc_missingness_associations(feature_df, qc_df, feature_cols)
         row_burden = qc_row_burden_summary(qc_df)
 
-        self.plot_paths["qc_artifact_model"] = str(plot_qc_artifact_model(plots_dir / f"qc_artifact_model_{safe_scope}.png", self._qc_framework_mode()))
+        self.plot_paths["qc_artifact_model"] = str(plot_qc_artifact_model(plots_dir / f"qc_artifact_model_{safe_scope}.png", self._selected_qc_source_mode()))
         self.plot_paths["qc_family_burden"] = str(plot_qc_family_burden(family, plots_dir / f"qc_family_burden_{safe_scope}.png"))
         self.plot_paths["qc_metric_distributions"] = str(plot_qc_metric_distributions(qc_df, catalog, plots_dir / f"qc_metric_distributions_{safe_scope}.png", max_metrics=18))
         self.plot_paths["qc_feature_association_heatmap"] = str(plot_qc_feature_association_heatmap(family_assoc, plots_dir / f"qc_feature_association_heatmap_{safe_scope}.png", top_features=80))
@@ -5413,8 +5780,8 @@ class FeatureAnalysisGUI(QMainWindow):
         if hasattr(self, "qc_plot_caption"):
             n_qc = len(catalog) if catalog is not None else 0
             self.qc_plot_caption.setText(
-                f"QC Integration is scoped locally. Current scope: {scope_label}. "
-                f"Detected QC metrics in this framework: {n_qc}. Base analysis outputs are not modified."
+                f"Current QC scope: {scope_label}. "
+                f"Usable QC flags/metrics in this source: {n_qc}. Automated QC tables are used only when Automated QC is selected."
             )
 
     def regenerate_qc_scope_plots(self) -> None:
@@ -5447,7 +5814,7 @@ class FeatureAnalysisGUI(QMainWindow):
 
         active_for_qc_scope = self._active_analysis_table() if hasattr(self, "_active_analysis_table") else (self.analysis_df if self.analysis_df is not None else self.feature_df)
         self._refresh_qc_task_combo(active_for_qc_scope)
-        self._refresh_qc_framework_combo()
+        self._refresh_qc_source_combo()
         self._fill_table(self.qc_summary_table, summary)
         self._fill_table(self.qc_catalog_table, outputs.get("qc_metric_catalog", pd.DataFrame()))
         self._fill_table(self.qc_family_table, outputs.get("qc_family_burden_summary", pd.DataFrame()))
@@ -5456,15 +5823,14 @@ class FeatureAnalysisGUI(QMainWindow):
         self._fill_table(self.qc_missing_table, outputs.get("qc_missingness_associations", pd.DataFrame()))
         self._fill_table(self.qc_outlier_table, outputs.get("qc_outlier_associations", pd.DataFrame()))
         self._fill_table(self.qc_row_table, outputs.get("qc_row_burden_summary", pd.DataFrame()))
-        if hasattr(self, "qc_framework_table"):
+        if hasattr(self, "qc_source_table"):
             _f_scope, _q_scope, _scope_label = self._qc_scope_tables()
-            self._fill_table(self.qc_framework_table, self._qc_framework_table(_q_scope))
+            self._fill_table(self.qc_source_table, self._qc_source_table(_q_scope))
 
         self._refresh_qc_selector_combos()
-        if self.qc_df is None or self.qc_df.empty:
-            self.qc_note.setText("No QC table is loaded. This menu will become active when Project includes an optional QC table with qadd/qgain/qrev/qchan/qdist/qtemp/qdrop metrics or equivalent QC indicators.")
-        else:
-            self.qc_note.setText("QC integration generated. Use this menu to distinguish acquisition-sensitive feature behavior from plausible speech-physiology variation. QC associations are descriptive screening signals, not automatic exclusion rules.")
+        self.qc_note.setText(
+            "QC Integration generated. Choose Manual QC to use modality-aware metadata flags, or Automated QC to use the uploaded QC table. Associations are descriptive screening signals, not automatic exclusion rules."
+        )
 
     def _selected_qc_feature(self) -> str | None:
         if hasattr(self, "qc_feature_combo") and self.qc_feature_combo.count() > 0:
@@ -5610,12 +5976,11 @@ class FeatureAnalysisGUI(QMainWindow):
 
         self.relationship_plot_combo = QComboBox()
         self.relationship_plot_combo.setMinimumWidth(360)
-        self.relationship_plot_combo.addItem("Correlation heatmap", "relationship_correlation_heatmap")
-        self.relationship_plot_combo.addItem("Top redundant pairs", "relationship_redundant_pairs")
-        self.relationship_plot_combo.addItem("Family/block matrix", "relationship_family_matrix")
-        self.relationship_plot_combo.addItem("PCA scree", "relationship_pca_scree")
-        self.relationship_plot_combo.addItem("PCA recording map", "relationship_pca_scores")
-        self.relationship_plot_combo.addItem("PCA top loadings", "relationship_pca_loadings")
+        self.relationship_plot_combo.addItem("Correlation structure", "relationship_correlation_heatmap")
+        self.relationship_plot_combo.addItem("Redundancy triage", "relationship_redundant_pairs")
+        self.relationship_plot_combo.addItem("Feature-family structure", "relationship_family_matrix")
+        self.relationship_plot_combo.addItem("Dimensionality profile", "relationship_dimensionality_profile")
+        self.relationship_plot_combo.addItem("Recording similarity map", "relationship_pca_scores")
         self.relationship_plot_combo.addItem("Selected feature links", "selected_feature_correlations")
         plot_header.addWidget(self.relationship_plot_combo, 1)
 
@@ -5625,7 +5990,7 @@ class FeatureAnalysisGUI(QMainWindow):
         plot_header.addWidget(show_btn)
 
         regen = QPushButton("Regenerate")
-        regen.clicked.connect(self.regenerate_overview_plots)
+        regen.clicked.connect(self.regenerate_relationships)
         plot_header.addWidget(regen)
 
         plot_header.addStretch(1)
@@ -5636,7 +6001,7 @@ class FeatureAnalysisGUI(QMainWindow):
         plot_panel_layout.addLayout(plot_header)
 
         self.relationship_plot_caption = QLabel(
-            "Feature Relationships uses only feature-feature structure plots: correlation heatmap, redundant pairs, family/block structure, PCA summaries, and one selected-feature link plot. It does not duplicate Task Review, Outcome Screening, QC Integration, Missingness, or ML Export."
+            "Feature Relationships is a feature-structure layer. It asks which features move together, which are redundant, whether families form coherent blocks, and which selected feature links deserve follow-up. Task focus rebuilds the relationship tables and plots for the selected task."
         )
         self.relationship_plot_caption.setWordWrap(True)
         self.relationship_plot_caption.setStyleSheet(f"color:{MUTED}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:9px;")
@@ -5653,10 +6018,11 @@ class FeatureAnalysisGUI(QMainWindow):
         self.relationship_task_combo = QComboBox()
         self.relationship_task_combo.setMinimumWidth(220)
         self.relationship_task_combo.addItem("All tasks / not available")
+        self.relationship_task_combo.currentIndexChanged.connect(lambda _=0: self.regenerate_relationships(silent=True))
         selectors.addWidget(self.relationship_task_combo)
         plot_panel_layout.addLayout(selectors)
 
-        self.relationship_plot_preview = QLabel("Run Feature Analysis, then choose one relationship plot.")
+        self.relationship_plot_preview = QLabel("Run Feature Analysis, then choose one relationship plot. Task focus rebuilds this menu from the current task scope.")
         self.relationship_plot_preview.setAlignment(Qt.AlignCenter)
         self.relationship_plot_preview.setMinimumHeight(520)
         self.relationship_plot_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -5679,7 +6045,7 @@ class FeatureAnalysisGUI(QMainWindow):
         side_title = QLabel("Relationship snapshot")
         side_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
         side_layout.addWidget(side_title)
-        side_note = QLabel("Compact redundancy and PCA metrics. Use these as navigation cues; detailed correlation, module, family-matrix, PCA, and loading tables remain below the plot.")
+        side_note = QLabel("Compact feature-structure metrics for the current task scope. Use this to decide whether to inspect redundancy, family coupling, PCA, or a selected feature.")
         side_note.setWordWrap(True)
         side_note.setStyleSheet(f"color:{MUTED}; border:none; background:transparent; font-size:12px;")
         side_layout.addWidget(side_note)
@@ -5688,7 +6054,8 @@ class FeatureAnalysisGUI(QMainWindow):
         self.relationship_metric_grid.setVerticalSpacing(8)
         side_layout.addLayout(self.relationship_metric_grid)
         side_layout.addStretch(1)
-        side_panel.setFixedWidth(340)
+        side_panel.setMinimumWidth(280)
+        side_panel.setMaximumWidth(360)
         rel_split.addWidget(side_panel)
         card.layout.addLayout(rel_split)
 
@@ -5736,7 +6103,12 @@ class FeatureAnalysisGUI(QMainWindow):
                 return default
             row = summary.loc[summary["metric"].astype(str).eq(name)]
             return row["value"].iloc[0] if not row.empty else default
+        scope = outputs.get("feature_relationship_scope", pd.DataFrame())
+        task_scope = scope["task_scope"].iloc[0] if scope is not None and not scope.empty and "task_scope" in scope.columns else "All tasks"
+        rows_scope = scope["rows_in_scope"].iloc[0] if scope is not None and not scope.empty and "rows_in_scope" in scope.columns else "-"
         tiles = [
+            ("Task scope", task_scope, "current relationship scope"),
+            ("Rows", rows_scope, "recordings in scope"),
             ("Numeric features", metric("numeric_features"), "usable for relationships"),
             ("Pairwise links", metric("feature_pairs_evaluated"), "Spearman pairs"),
             ("|rho| >= .80", metric("redundant_pairs_abs_rho_ge_0_80"), "strong redundancy"),
@@ -5770,24 +6142,143 @@ class FeatureAnalysisGUI(QMainWindow):
             return self.relationship_feature_combo.currentText()
         return None
 
+    def _relationship_current_task(self) -> str | None:
+        combo = getattr(self, "relationship_task_combo", None)
+        if combo is None or combo.count() == 0:
+            return None
+        txt = combo.currentText().strip()
+        if not txt or txt.startswith("All tasks"):
+            return None
+        return txt
+
+    def _relationship_scoped_frame(self) -> pd.DataFrame:
+        df = self._active_analysis_table().copy()
+        task = self._relationship_current_task()
+        if task and not df.empty:
+            task_col = self._task_col(df)
+            if task_col and task_col in df.columns:
+                mask = df[task_col].astype("string").fillna("").str.strip().eq(str(task).strip())
+                df = df.loc[mask].copy()
+        return df
+
+    def _relationship_feature_cols(self, df: pd.DataFrame) -> list[str]:
+        if df is None or df.empty:
+            return []
+        try:
+            mapping = self.collect_mapping_from_table()
+        except Exception:
+            mapping = getattr(self, "mapping_df", pd.DataFrame())
+        roles = role_lists(mapping) if mapping is not None and not mapping.empty else {}
+        mapped = [c for c in roles.get("Feature", []) if c in df.columns and pd.api.types.is_numeric_dtype(df[c])]
+        if mapped:
+            return mapped
+        base = self.feature_df if getattr(self, "feature_df", None) is not None else df
+        numeric = [c for c in base.columns if c in df.columns and pd.api.types.is_numeric_dtype(df[c])]
+        excluded = {self._task_col(df), self._subject_col(df), self._session_col(df), self._iteration_col(df), self._date_col(df)}
+        return [c for c in numeric if c not in excluded][:220]
+
+    def _build_relationship_outputs(self) -> tuple[dict[str, pd.DataFrame], list[str]]:
+        df = self._relationship_scoped_frame()
+        feature_cols = self._relationship_feature_cols(df)
+        registry = getattr(self, "registry_df", pd.DataFrame())
+        outputs = {
+            "feature_relationship_summary": feature_relationship_summary(df, feature_cols, registry),
+            "feature_correlation_long": feature_correlation_long_table(df, feature_cols, max_features=180),
+        }
+        outputs["feature_redundant_pairs"] = redundant_feature_pairs(outputs["feature_correlation_long"], registry)
+        outputs["feature_relationship_modules"] = feature_relationship_modules(outputs["feature_correlation_long"], registry)
+        outputs["feature_family_correlation_matrix"] = feature_family_correlation_matrix(outputs["feature_correlation_long"], registry)
+        outputs["feature_pca_summary"] = feature_pca_summary(df, feature_cols)
+        outputs["feature_pca_loadings"] = feature_pca_loadings(df, feature_cols, registry)
+        outputs["feature_pca_scores"] = feature_pca_scores(df, feature_cols)
+        task = self._relationship_current_task() or "All tasks"
+        outputs["feature_relationship_scope"] = pd.DataFrame([{
+            "task_scope": task,
+            "rows_in_scope": int(len(df)),
+            "mapped_numeric_features": int(len(feature_cols)),
+        }])
+        return outputs, feature_cols
+
+    def _generate_relationship_plots(self, outputs: dict[str, pd.DataFrame], plots_dir: Path) -> dict[str, str]:
+        paths: dict[str, str] = {}
+        jobs = [
+            ("relationship_correlation_heatmap", "Correlation structure", lambda p: plot_relationship_correlation_heatmap(outputs.get("feature_correlation_long", pd.DataFrame()), p, top_n=55)),
+            ("relationship_redundant_pairs", "Redundancy triage", lambda p: plot_relationship_redundant_pairs(outputs.get("feature_redundant_pairs", pd.DataFrame()), p, top_n=28)),
+            ("relationship_family_matrix", "Feature-family structure", lambda p: plot_relationship_family_matrix(outputs.get("feature_family_correlation_matrix", pd.DataFrame()), p)),
+            ("relationship_dimensionality_profile", "Dimensionality profile", lambda p: plot_relationship_dimensionality_profile(outputs.get("feature_pca_summary", pd.DataFrame()), outputs.get("feature_pca_loadings", pd.DataFrame()), p)),
+            ("relationship_pca_scores", "Recording similarity map", lambda p: plot_relationship_pca_scores(outputs.get("feature_pca_scores", pd.DataFrame()), self._relationship_scoped_frame(), p)),
+        ]
+        task = self._relationship_current_task()
+        suffix = f"__task__{self._safe_task_slug(task)}" if task else ""
+        for key, title, fn in jobs:
+            path = plots_dir / f"{key}{suffix}.png"
+            try:
+                paths[key] = str(fn(path))
+            except Exception as exc:
+                self.log(f"WARN | Relationship plot {key} failed and was replaced by placeholder: {exc}")
+                self.log(traceback.format_exc())
+                paths[key] = str(self._write_overview_placeholder_plot(path, title, str(exc)))
+        return paths
+
+    def regenerate_relationships(self, silent: bool = False) -> None:
+        try:
+            if self.feature_df is None:
+                if not silent:
+                    QMessageBox.information(self, "Load features first", "Load and map feature tables, then run Feature Analysis before reviewing relationships.")
+                return
+            if not self.output_edit.text().strip():
+                if not silent:
+                    QMessageBox.warning(self, "Missing output folder", "Please select an output folder before generating relationship plots.")
+                return
+            self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
+            outputs, feature_cols = self._build_relationship_outputs()
+            merged = dict(getattr(self, "outputs", {}) or {})
+            merged.update(outputs)
+            self.outputs = merged
+            try:
+                self._write_outputs(outputs, tables_dir)
+            except Exception as exc:
+                self.log(f"WARN | Could not write relationship tables: {exc}")
+            new_paths = self._generate_relationship_plots(outputs, plots_dir)
+            if not hasattr(self, "plot_paths") or not isinstance(self.plot_paths, dict):
+                self.plot_paths = {}
+            self.plot_paths.update(new_paths)
+            self.update_relationships_dashboard(outputs)
+            if not silent:
+                task = self._relationship_current_task() or "All tasks"
+                self.log(f"Feature Relationships regenerated for task scope: {task} | rows={outputs.get('feature_relationship_scope', pd.DataFrame()).get('rows_in_scope', pd.Series(['-'])).iloc[0]} | features={len(feature_cols)}")
+                self.preview_relationship_plot(self.relationship_plot_combo.currentData())
+        except Exception as exc:
+            self.log_error("Feature Relationships regeneration failed", exc)
+            if not silent:
+                QMessageBox.critical(self, "Feature Relationships failed", str(exc))
+
     def generate_selected_feature_correlations(self) -> None:
         feature = self._selected_relationship_feature()
         if not feature:
             return
         try:
             self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
-            path = plot_selected_feature_correlations(self.outputs.get("feature_correlation_long", pd.DataFrame()), feature, plots_dir / "selected_feature_correlations.png")
+            if not getattr(self, "outputs", None) or "feature_correlation_long" not in self.outputs:
+                self.regenerate_relationships(silent=True)
+            task = self._relationship_current_task()
+            suffix = f"__task__{self._safe_task_slug(task)}" if task else ""
+            safe_feature = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(feature))[:80]
+            path = plot_selected_feature_correlations(self.outputs.get("feature_correlation_long", pd.DataFrame()), feature, plots_dir / f"selected_feature_correlations__{safe_feature}{suffix}.png")
             if not hasattr(self, "plot_paths"):
                 self.plot_paths = {}
             self.plot_paths["selected_feature_correlations"] = str(path)
-        except Exception:
-            pass
+        except Exception as exc:
+            self.log(f"WARN | Selected feature relationship plot failed: {exc}")
+            self.log(traceback.format_exc())
 
     def preview_relationship_plot(self, key: str) -> None:
         if key == "selected_feature_correlations":
             self.generate_selected_feature_correlations()
         if not hasattr(self, "plot_paths") or key not in self.plot_paths or not Path(self.plot_paths.get(key, "")).exists():
-            self.regenerate_overview_plots()
+            self.regenerate_relationships(silent=True)
+            if key == "selected_feature_correlations":
+                self.generate_selected_feature_correlations()
         if not hasattr(self, "plot_paths") or key not in self.plot_paths:
             QMessageBox.information(self, "Plot unavailable", "Run Feature Analysis first, or this relationship plot could not be generated for the current dataset.")
             return
@@ -5797,12 +6288,7 @@ class FeatureAnalysisGUI(QMainWindow):
             return
         self.current_relationship_plot = path
         self.update_relationship_interpretation(key)
-        pix = QPixmap(str(path))
-        if pix.isNull():
-            self.relationship_plot_preview.setText(f"Could not load plot:\n{path}")
-            return
-        self.relationship_plot_preview.setPixmap(pix.scaled(self.relationship_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        self.relationship_plot_preview.setToolTip(str(path))
+        self._display_plot_image(self.relationship_plot_preview, path)
 
     def update_relationship_interpretation(self, key: str) -> None:
         if not hasattr(self, "relationship_interpretation_label"):
@@ -5827,11 +6313,11 @@ class FeatureAnalysisGUI(QMainWindow):
                 "<b>Do not overinterpret</b><br>Some cross-family coupling is expected in connected speech because speech subsystems are coordinated.<br><br>"
                 "<b>Next check</b><br>Compare family matrix with QC Integration and PCA loadings."
             ),
-            "relationship_pca_scree": (
-                "<b>What it shows</b><br>How much feature variance is captured by each principal component after robust scaling.<br><br>"
-                "<b>Concerning pattern</b><br>A very dominant PC1 may indicate a global size/quality/task axis rather than independent feature domains.<br><br>"
-                "<b>Do not overinterpret</b><br>PCA is exploratory and unsupervised. It is not a clinical classifier or biomarker result.<br><br>"
-                "<b>Next check</b><br>Inspect PCA loadings and the PCA recording map to understand what drives each component."
+            "relationship_dimensionality_profile": (
+                "<b>What it shows</b><br>How concentrated the feature space is, and which features drive the first few unsupervised axes.<br><br>"
+                "<b>Concerning pattern</b><br>A dominant PC1 plus one narrow feature family in the loadings suggests a global technical/task axis or redundant feature block.<br><br>"
+                "<b>Do not overinterpret</b><br>PCA is unsupervised. It is not a diagnostic classifier or biomarker result.<br><br>"
+                "<b>Next check</b><br>Compare dominant loading features with QC Integration, Missingness, and Distribution/Outliers."
             ),
             "relationship_pca_scores": (
                 "<b>What it shows</b><br>Recordings plotted on PC1 and PC2 using numeric features after robust scaling.<br><br>"
@@ -5870,10 +6356,10 @@ class FeatureAnalysisGUI(QMainWindow):
 
         card = Card(
             "Task Review",
-            "Task-aware dataset inspection. This menu summarizes task availability, task x subject coverage, task x diagnosis/severity context, and task-specific feature support when task metadata is available."
+            "Essential task-level readiness checks: coverage, clinical balance, and feature completeness."
         )
 
-        self.task_note = QLabel("Run Feature Analysis with task metadata available. If no task column can be detected or merged, this menu will report that task analysis is not available.")
+        self.task_note = QLabel("Run Feature Analysis with task metadata available. Task Review intentionally keeps only the essential plots needed to decide which tasks are clinically usable downstream.")
         self.task_note.setWordWrap(True)
         self.task_note.setStyleSheet(f"color:{MUTED}; background:#F7FAFD; border:1px solid {LINE}; border-radius:8px; padding:10px;")
         card.layout.addWidget(self.task_note)
@@ -5893,13 +6379,11 @@ class FeatureAnalysisGUI(QMainWindow):
         plot_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
         plot_header.addWidget(plot_title)
         self.task_review_combo = QComboBox()
-        self.task_review_combo.setMinimumWidth(360)
-        self.task_review_combo.addItem("Task coverage", "task_counts")
-        self.task_review_combo.addItem("Task x subject coverage", "task_subject_matrix")
-        self.task_review_combo.addItem("Task x clinical context", "task_clinical_context")
-        self.task_review_combo.addItem("Task counts within clinical value", "task_clinical_filtered_counts")
-        self.task_review_combo.addItem("Task x diagnosis/severity", "task_label_context")
-        self.task_review_combo.addItem("Task feature support", "task_feature_support")
+        self.task_review_combo.setMinimumWidth(300)
+        self.task_review_combo.addItem("Task readiness summary", "task_readiness_overview")
+        self.task_review_combo.addItem("Clinical balance by task", "task_clinical_balance")
+        self.task_review_combo.addItem("Subject coverage by task", "task_subject_coverage")
+        self.task_review_combo.addItem("Feature completeness by task", "task_feature_completeness")
         plot_header.addWidget(self.task_review_combo, 1)
         show_btn = QPushButton("Show")
         show_btn.setProperty("secondary", True)
@@ -5915,7 +6399,7 @@ class FeatureAnalysisGUI(QMainWindow):
         plot_header.addWidget(open_btn)
         plot_panel_layout.addLayout(plot_header)
 
-        self.task_review_caption = QLabel("Task Review is the dedicated place for task axes and task selection. Downstream menus can use task focus controls, but detailed task interpretation belongs here.")
+        self.task_review_caption = QLabel("Task Review answers four practical questions: which tasks have enough recordings, which have enough subjects, whether clinical groups are balanced, and whether feature extraction is complete enough to interpret.")
         self.task_review_caption.setWordWrap(True)
         self.task_review_caption.setStyleSheet(f"color:{MUTED}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:9px;")
         plot_panel_layout.addWidget(self.task_review_caption)
@@ -5937,14 +6421,16 @@ class FeatureAnalysisGUI(QMainWindow):
         self.clinical_value_combo = QComboBox()
         self.clinical_value_combo.setMinimumWidth(220)
         self.clinical_value_combo.addItem("All values")
+        self.clinical_value_combo.currentIndexChanged.connect(lambda _=0: self.preview_task_review_plot(self.task_review_combo.currentData() if hasattr(self, 'task_review_combo') else 'task_readiness_overview'))
         selectors.addWidget(self.clinical_value_combo, 1)
         selectors.addStretch(1)
         plot_panel_layout.addLayout(selectors)
 
-        self.task_review_preview = QLabel("Run Feature Analysis, then choose one task review plot.")
+        self.task_review_preview = QLabel("Run Feature Analysis, then choose a task review plot.")
         self.task_review_preview.setAlignment(Qt.AlignCenter)
-        self.task_review_preview.setMinimumHeight(520)
-        self.task_review_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.task_review_preview.setMinimumHeight(440)
+        self.task_review_preview.setScaledContents(False)
+        self.task_review_preview.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         self.task_review_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
         plot_panel_layout.addWidget(self.task_review_preview, 1)
 
@@ -5963,7 +6449,7 @@ class FeatureAnalysisGUI(QMainWindow):
         side_title = QLabel("Task snapshot")
         side_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
         side_layout.addWidget(side_title)
-        side_note = QLabel("Compact task-context metrics. If task metadata is unavailable, this panel reports that explicitly.")
+        side_note = QLabel("Compact task-readiness metrics for clinical interpretation and downstream modeling.")
         side_note.setWordWrap(True)
         side_note.setStyleSheet(f"color:{MUTED}; border:none; background:transparent; font-size:12px;")
         side_layout.addWidget(side_note)
@@ -5972,7 +6458,8 @@ class FeatureAnalysisGUI(QMainWindow):
         self.task_metric_grid.setVerticalSpacing(8)
         side_layout.addLayout(self.task_metric_grid)
         side_layout.addStretch(1)
-        side_panel.setFixedWidth(340)
+        side_panel.setMinimumWidth(280)
+        side_panel.setMaximumWidth(360)
         task_split.addWidget(side_panel)
         card.layout.addLayout(task_split)
 
@@ -5987,10 +6474,10 @@ class FeatureAnalysisGUI(QMainWindow):
         self.task_feature_support_table = self._simple_table()
         self.local_context_detection_table = self._simple_table()
         self.local_severity_preset_table = self._simple_table()
-        tabs.addTab(self.task_summary_table, "Task summary")
-        tabs.addTab(self.task_subject_table, "Task x subject")
-        tabs.addTab(self.task_diagnosis_table, "Task x clinical group")
-        tabs.addTab(self.task_feature_support_table, "Task feature support")
+        tabs.addTab(self.task_summary_table, "Readiness summary")
+        tabs.addTab(self.task_subject_table, "Subject coverage")
+        tabs.addTab(self.task_diagnosis_table, "Clinical balance")
+        tabs.addTab(self.task_feature_support_table, "Feature completeness")
         tabs.addTab(self.local_context_detection_table, "Context detection")
         tabs.addTab(self.local_severity_preset_table, "Severity presets")
         card.layout.addWidget(tabs)
@@ -6094,7 +6581,8 @@ class FeatureAnalysisGUI(QMainWindow):
         self.longitudinal_metric_grid.setVerticalSpacing(8)
         side_layout.addLayout(self.longitudinal_metric_grid)
         side_layout.addStretch(1)
-        side_panel.setFixedWidth(340)
+        side_panel.setMinimumWidth(280)
+        side_panel.setMaximumWidth(360)
         long_split.addWidget(side_panel)
         card.layout.addLayout(long_split)
 
@@ -6353,6 +6841,77 @@ class FeatureAnalysisGUI(QMainWindow):
             {"preset": "ALSFRS total configurable preset", "source_score": "ALSFRS total", "valid_range": "0-48", "bin": "mild_or_high_function_37_48 / moderate_25_36 / severe_0_24", "rule": "temporary preset; revise later if needed"},
             {"preset": "ALSBDI pending preset", "source_score": "ALSBDI", "valid_range": "pending", "bin": "score_detected_cutoffs_pending", "rule": "score shown; cutoffs not hard-coded yet"},
         ])
+    def _task_review_feature_cols(self, df: pd.DataFrame) -> list[str]:
+        """Mapped numeric feature columns for Task Review only."""
+        if df is None or df.empty:
+            return []
+        cols: list[str] = []
+        if getattr(self, "mapping_df", None) is not None and not self.mapping_df.empty:
+            col_key = "column" if "column" in self.mapping_df.columns else "source_column" if "source_column" in self.mapping_df.columns else None
+            if col_key and "role" in self.mapping_df.columns:
+                cols = self.mapping_df.loc[
+                    self.mapping_df["role"].astype(str).str.contains("Feature", case=False, na=False), col_key
+                ].astype(str).tolist()
+        if not cols:
+            excluded = {self._task_col(df), self._subject_col(df), self._session_col(df), self._iteration_col(df), self._date_col(df)}
+            cols = [c for c in df.columns if c not in excluded and pd.api.types.is_numeric_dtype(df[c])]
+        clean = []
+        for c in cols:
+            if c in df.columns and pd.api.types.is_numeric_dtype(df[c]) and df[c].notna().sum() >= 3:
+                clean.append(c)
+        return clean[:200]
+
+    def _task_readiness_table(
+        self,
+        df: pd.DataFrame,
+        task_col: str | None,
+        subj_col: str | None,
+        feature_cols: list[str],
+        clinical_series: pd.Series | None,
+    ) -> pd.DataFrame:
+        if df is None or df.empty or not task_col or task_col not in df.columns:
+            return pd.DataFrame()
+        tmp = df.copy()
+        tmp["__task__"] = tmp[task_col].astype("string").fillna("").astype(str)
+        tmp = tmp[tmp["__task__"].str.strip().ne("")]
+        rows = []
+        aligned_clinical = None
+        if clinical_series is not None and len(clinical_series) == len(df):
+            aligned_clinical = pd.Series(clinical_series.to_numpy(), index=df.index).astype("string")
+        for task, subdf in tmp.groupby("__task__", dropna=False):
+            if not str(task).strip():
+                continue
+            n_rows = int(len(subdf))
+            n_subjects = int(subdf[subj_col].astype(str).nunique()) if subj_col and subj_col in subdf.columns else 0
+            mean_missing = float(subdf[feature_cols].isna().mean().mean()) if feature_cols else float("nan")
+            median_available = float(subdf[feature_cols].notna().sum(axis=1).median()) if feature_cols else float("nan")
+            n_clinical_groups = 0
+            smallest_group_n = 0
+            if aligned_clinical is not None:
+                counts = aligned_clinical.loc[subdf.index].astype("string").fillna("missing").value_counts()
+                counts = counts[counts.index.astype(str).str.len() > 0]
+                n_clinical_groups = int(len(counts))
+                smallest_group_n = int(counts.min()) if len(counts) else 0
+            if n_rows < 5 or n_subjects < 3 or (pd.notna(mean_missing) and mean_missing >= .40):
+                status = "review_before_modeling"
+            elif n_rows < 10 or n_subjects < 5 or (pd.notna(mean_missing) and mean_missing >= .15):
+                status = "usable_with_caution"
+            else:
+                status = "well_supported"
+            rows.append({
+                "task": task,
+                "n_rows": n_rows,
+                "n_subjects": n_subjects,
+                "records_per_subject": round(n_rows / max(n_subjects, 1), 2) if n_subjects else pd.NA,
+                "n_feature_columns": len(feature_cols),
+                "median_available_features_per_record": median_available,
+                "mean_feature_missingness": mean_missing,
+                "clinical_groups_detected": n_clinical_groups,
+                "smallest_clinical_group_n": smallest_group_n,
+                "readiness_status": status,
+            })
+        return pd.DataFrame(rows).sort_values(["readiness_status", "n_rows"], ascending=[True, False]) if rows else pd.DataFrame()
+
 
     def update_task_review_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
         if not hasattr(self, "task_metric_grid"):
@@ -6410,18 +6969,8 @@ class FeatureAnalysisGUI(QMainWindow):
         else:
             task_diag = pd.DataFrame([{"status": "diagnosis/severity metadata not available for task context"}])
 
-        feature_cols = []
-        if getattr(self, "mapping_df", None) is not None and not self.mapping_df.empty:
-            feature_cols = self.mapping_df.loc[self.mapping_df["role"].astype(str).str.contains("Feature", case=False, na=False), "column"].astype(str).tolist()
-        feature_cols = [c for c in feature_cols if c in df.columns]
-        rows = []
-        for task, subdf in df.groupby(task_series):
-            if not str(task).strip():
-                continue
-            n_feats = len(feature_cols)
-            mean_missing = float(subdf[feature_cols].isna().mean().mean()) if feature_cols else float("nan")
-            rows.append({"task": task, "n_rows": len(subdf), "n_features": n_feats, "mean_feature_missingness": mean_missing})
-        task_feature_support = pd.DataFrame(rows).sort_values("n_rows", ascending=False) if rows else pd.DataFrame()
+        feature_cols = self._task_review_feature_cols(df)
+        task_feature_support = self._task_readiness_table(df, task_col, subj_col, feature_cols, clinical_series)
 
         tiles = [
             ("Tasks", int(task_summary["task"].nunique()), "detected task values"),
@@ -6434,7 +6983,7 @@ class FeatureAnalysisGUI(QMainWindow):
         for idx, (title, value, subtitle) in enumerate(tiles):
             self.task_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx, 0)
         self._task_feature_support_df = task_feature_support
-        self._fill_table(self.task_summary_table, task_summary)
+        self._fill_table(self.task_summary_table, task_feature_support if not task_feature_support.empty else task_summary)
         self._fill_table(self.task_subject_table, task_subject)
         self._fill_table(self.task_diagnosis_table, task_diag)
         self._fill_table(self.task_feature_support_table, task_feature_support)
@@ -6442,7 +6991,7 @@ class FeatureAnalysisGUI(QMainWindow):
             self._fill_table(self.local_context_detection_table, self._local_context_detection_table(df))
         if hasattr(self, "local_severity_preset_table"):
             self._fill_table(self.local_severity_preset_table, self._local_severity_preset_table())
-        self.task_note.setText("Task review generated. Clinical context controls are local to this menu and only affect Task Review plots, not the base analysis.")
+        self.task_note.setText("Task Review generated from accepted task context. The menu is intentionally limited to essential task-readiness checks: coverage, clinical balance, and feature completeness.")
         self._refresh_focus_combos()
         self.generate_task_review_plots()
         self.preview_task_review_plot(self.task_review_combo.currentData() if hasattr(self, "task_review_combo") else "task_counts")
@@ -6461,18 +7010,27 @@ class FeatureAnalysisGUI(QMainWindow):
             label_col = "__local_clinical_context__"
             aligned_series = self._align_context_series_to_frame(clinical_series, df) if hasattr(self, "_align_context_series_to_frame") else pd.Series(clinical_series.to_numpy() if len(clinical_series) == len(df) else pd.NA, index=df.index)
             df[label_col] = aligned_series
-        support = pd.DataFrame()
-        if hasattr(self, "task_feature_support_table"):
-            # Prefer the table just filled in the GUI when available.
-            support = getattr(self, "_task_feature_support_df", pd.DataFrame())
+        feature_cols = self._task_review_feature_cols(df)
+        support = getattr(self, "_task_feature_support_df", pd.DataFrame())
+        if support is None or support.empty:
+            support = self._task_readiness_table(df, task_col, subj_col, feature_cols, clinical_series)
+        selected_task = self.task_focus_combo.currentText() if hasattr(self, "task_focus_combo") else "All tasks"
         if not hasattr(self, "plot_paths"):
             self.plot_paths = {}
+        self.plot_paths["task_readiness_overview"] = str(plot_task_readiness_dashboard(df, task_col, subj_col, clinical_series, clinical_label, feature_cols, support, plots_dir / "task_readiness_overview.png"))
+        self.plot_paths["task_clinical_balance"] = str(plot_task_clinical_balance_bars(df, task_col, clinical_series, clinical_label, selected_level, plots_dir / "task_clinical_balance.png"))
+        self.plot_paths["task_subject_coverage"] = str(plot_task_subject_coverage_summary(df, task_col, subj_col, plots_dir / "task_subject_coverage.png"))
+        self.plot_paths["task_feature_completeness"] = str(plot_task_feature_support(support, plots_dir / "task_feature_completeness.png"))
+        # The older task feature profile and subject-by-task heatmap are intentionally not exposed in v0.111.
+        # They were visually noisy and redundant with the compact coverage/completeness views.
+        self.plot_paths["task_feature_profile"] = self.plot_paths.get("task_feature_completeness", "")
+        self.plot_paths["task_subject_matrix"] = self.plot_paths.get("task_subject_coverage", "")
+        # Legacy keys retained for compatibility with older saved sessions/tests.
         self.plot_paths["task_counts"] = str(plot_task_counts(df, task_col, plots_dir / "task_counts.png"))
-        self.plot_paths["task_subject_matrix"] = str(plot_task_subject_matrix(df, task_col, subj_col, plots_dir / "task_subject_matrix.png"))
         self.plot_paths["task_clinical_context"] = str(plot_task_clinical_context(df, task_col, clinical_series, clinical_label, plots_dir / "task_clinical_context.png"))
         self.plot_paths["task_clinical_filtered_counts"] = str(plot_task_clinical_filtered_counts(df, task_col, clinical_series, clinical_label, selected_level, plots_dir / "task_clinical_filtered_counts.png"))
         self.plot_paths["task_label_context"] = str(plot_task_label_context(df, task_col, label_col, plots_dir / "task_label_context.png"))
-        self.plot_paths["task_feature_support"] = str(plot_task_feature_support(support, plots_dir / "task_feature_support.png"))
+        self.plot_paths["task_feature_support"] = self.plot_paths["task_feature_completeness"]
 
     def preview_task_review_plot(self, key: str | None = None) -> None:
         key = key or (self.task_review_combo.currentData() if hasattr(self, "task_review_combo") else "task_counts")
@@ -6487,8 +7045,13 @@ class FeatureAnalysisGUI(QMainWindow):
             return
         self.current_task_review_plot = path
         captions = {
+            "task_readiness_overview": "Task readiness summary: compact view of recording count, subject breadth, feature completeness, and clinical balance. Use it to decide which tasks are safe to carry forward.",
+            "task_clinical_balance": "Clinical balance by task: shows whether diagnosis/severity or another selected clinical context is unevenly distributed across tasks.",
+            "task_subject_coverage": "Subject coverage by task: compact replacement for the unreadable subject-by-task heatmap. It separates broad cohort coverage from repeated recordings.",
+            "task_feature_completeness": "Feature completeness by task: identifies tasks where feature extraction is incomplete enough to limit interpretation.",
+            "task_feature_profile": "Deprecated in this simplified Task Review view; use Feature Relationships or Distributions for feature-level structure.",
+            "task_subject_matrix": "Deprecated in this simplified Task Review view; use Subject coverage by task instead.",
             "task_counts": "Rows by task. Use this to decide whether pooled analysis is dominated by one task or whether task-specific review is required.",
-            "task_subject_matrix": "Task x subject coverage. Sparse blocks indicate that task comparisons may be confounded by subject availability.",
             "task_clinical_context": "Task x clinical context. Use this to inspect diagnosis, ALSFRS bulbar severity, ALSFRS total severity, ALSBDI placeholder bins, or other detected grouping variables across tasks.",
             "task_clinical_filtered_counts": "Task counts within a selected clinical value. Use the Clinical context and Value controls to inspect one diagnosis/severity group without changing the base analysis.",
             "task_label_context": "Task x diagnosis/severity context. This legacy view uses the currently selected local clinical context.",
@@ -6500,7 +7063,11 @@ class FeatureAnalysisGUI(QMainWindow):
         if pix.isNull():
             self.task_review_preview.setText(f"Could not load plot:\n{path}")
             return
-        scaled = pix.scaled(self.task_review_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        target_size = self.task_review_preview.contentsRect().size()
+        if target_size.width() < 50 or target_size.height() < 50:
+            target_size = QSize(900, 440)
+        scaled = pix.scaled(target_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.task_review_preview.clear()
         self.task_review_preview.setPixmap(scaled)
         self.task_review_preview.setToolTip(str(path))
 
@@ -7777,6 +8344,8 @@ Decision colors:
             self.proposed_mapping_df = self.mapping_df.copy()
             self.mapping_modified = False
             self.mapping_accepted = False
+            self.analysis_ready = False
+            self.outputs = {}
             self.refresh_mapping_table()
             roles = summarize_roles(self.mapping_df)
             self.log(f"Loaded feature table: {self.feature_df.shape[0]} rows x {self.feature_df.shape[1]} columns")
@@ -7939,7 +8508,7 @@ Decision colors:
             reply = QMessageBox.question(
                 self,
                 "Confirm modified column mapping",
-                f"You changed {n_changed} column role(s) from the proposed mapping.\n\nSave this accepted mapping and continue to Overview?",
+                f"You changed {n_changed} column role(s) from the proposed mapping.\n\nSave this accepted mapping and continue to Metadata Mapping?",
                 QMessageBox.Yes | QMessageBox.No,
                 QMessageBox.No,
             )
@@ -7952,7 +8521,8 @@ Decision colors:
         if path:
             self.log(f"Column mapping accepted and saved: {path}")
         self.log(f"Column mapping accepted: {n_features} feature columns selected.")
-        self.show_page("overview")
+        self.log("Next step: review Metadata Mapping. If no metadata table is loaded, apply filename-derived context there.")
+        self.show_page("metadata_mapping")
 
     def update_mapping_summary(self) -> None:
         if self.mapping_df.empty or not hasattr(self, "mapping_summary_label"):
@@ -7993,8 +8563,10 @@ Decision colors:
                 self.write_report(reports_dir / "vslp_feature_analysis_report.html", outputs)
                 self.populate_output_tables(outputs)
                 self._safe_refresh_analysis_dashboards(outputs)
+                self.analysis_ready = True
                 self.log(f"Analysis complete. Outputs written to: {self.output_dir}")
             else:
+                self.analysis_ready = False
                 self.update_overview_dashboard(outputs)
                 self.log(f"Overview-only analysis complete. Deep menu tables were skipped after a dimension mismatch; Overview outputs written to: {self.output_dir}")
             self.show_page("overview")

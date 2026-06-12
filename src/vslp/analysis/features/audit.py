@@ -303,12 +303,25 @@ QC_FAMILY_MECHANISMS = {
     "Channel / device / platform": "Recording-chain spectral transformation: microphone response, bandwidth limitation, codec/browser/platform processing.",
     "Nonlinear distortion": "Amplitude-dependent deformation: clipping, saturation, overload, nonlinear compression.",
     "Temporal discontinuities": "Disruption of time structure: dropouts, skips, glitches, missing or repeated segments, abrupt energy jumps.",
+
+    "Manual acquisition QC": "Human-coded acquisition/task-validity flags: completed as instructed, needs parsing, lighting/blur, or general recording validity observations.",
+    "Manual audio QC": "Human-coded audio-quality flags: another person speaks, background noise, unstable volume, poor audio quality, or related listening observations.",
+    "Manual video QC": "Human-coded video-quality flags: another person in frame, frozen/unstable video, or related frame-level validity observations.",
+    "Manual face/visibility QC": "Human-coded face-visibility/accessory flags: looks away, glasses, facial hair, occlusion, or reduced face visibility.",
     "unclassified": "QC-like variable not recognized from naming conventions; interpret manually.",
 }
 
 
 def qc_family_from_name(name: str) -> str:
     n = normalize_name(str(name))
+    if any(t in n for t in ["manual_acquisition", "task_completed", "completed_as_instructed", "needs_parsing", "parsing_needed", "poor_light", "blurry", "acquisition"]):
+        return "Manual acquisition QC"
+    if any(t in n for t in ["manual_audio", "another_person_speaks", "background_noise", "poor_audio", "audio_quality", "volume_is_unstable", "microphone"]):
+        return "Manual audio QC"
+    if any(t in n for t in ["manual_video", "another_person_in_frame", "frozen_video", "video_is_unstable"]):
+        return "Manual video QC"
+    if any(t in n for t in ["manual_face", "face_visibility", "subject_looks_away", "wearing_glasses", "facial_hair", "visibility", "occlusion"]):
+        return "Manual face/visibility QC"
     for prefix, family in QC_FAMILY_PREFIXES:
         if n.startswith(prefix):
             return family
@@ -1477,10 +1490,20 @@ def feature_pca_scores(feature_df: pd.DataFrame, feature_cols: list[str]) -> pd.
     arr, cols, explained, Vt, scores = _pca_arrays(feature_df, feature_cols)
     if scores is None:
         return pd.DataFrame(columns=["row_index","PC1","PC2","PC3"])
-    rows = {"row_index": feature_df.index.astype(int)}
+    # Defensive alignment: PCA scores should have one row per analysis row, but
+    # malformed/filtered inputs must not crash the GUI with a pandas
+    # length-mismatch assignment. Preserve the overlapping records and report a
+    # row_index for each retained score.
+    n = min(len(feature_df.index), int(scores.shape[0]))
+    if n <= 0:
+        return pd.DataFrame(columns=["row_index","PC1","PC2","PC3"])
+    rows = {"row_index": pd.Index(feature_df.index[:n]).astype(int)}
     for i in range(min(3, scores.shape[1])):
-        rows[f"PC{i+1}"] = scores[:, i]
-    return pd.DataFrame(rows)
+        rows[f"PC{i+1}"] = scores[:n, i]
+    out = pd.DataFrame(rows)
+    if scores.shape[0] != len(feature_df.index):
+        out["alignment_note"] = f"pca_scores_truncated_{scores.shape[0]}_scores_for_{len(feature_df.index)}_rows"
+    return out
 
 
 def feature_relationship_summary(feature_df: pd.DataFrame, feature_cols: list[str], registry: pd.DataFrame | None = None) -> pd.DataFrame:
