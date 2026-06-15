@@ -94,7 +94,7 @@ from vslp.analysis.features.plots import (
     plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.118.0"
+APP_VERSION = "v0.119.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -6517,7 +6517,7 @@ class FeatureAnalysisGUI(QMainWindow):
         self.longitudinal_view_combo = QComboBox()
         self.longitudinal_view_combo.setMinimumWidth(300)
         # v0.117: expose one safe longitudinal view only. Later trajectory plots will be added one at a time.
-        self.longitudinal_view_combo.addItem("Follow-up depth and readiness", "longitudinal_readiness")
+        self.longitudinal_view_combo.addItem("Repeated-record cohort summary", "longitudinal_readiness")
         plot_header.addWidget(self.longitudinal_view_combo, 1)
         show_btn = QPushButton("Show")
         show_btn.setProperty("secondary", True)
@@ -6533,7 +6533,7 @@ class FeatureAnalysisGUI(QMainWindow):
         plot_header.addWidget(open_btn)
         plot_panel_layout.addLayout(plot_header)
 
-        self.longitudinal_caption = QLabel("Step 1: identify which subject-task units have repeated visits and clinically interpretable follow-up spacing. This view prioritizes number of records, available visit/date fields, and elapsed days before any feature-change plots are added.")
+        self.longitudinal_caption = QLabel("Step 1: quantify the repeated-record cohort. This view uses only subject-task units with at least two recordings of the same task, then summarizes repeated subjects, recording depth, and follow-up spacing without plotting every subject individually.")
         self.longitudinal_caption.setWordWrap(True)
         self.longitudinal_caption.setStyleSheet(f"color:{MUTED}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:9px;")
         plot_panel_layout.addWidget(self.longitudinal_caption)
@@ -6577,7 +6577,7 @@ class FeatureAnalysisGUI(QMainWindow):
         side_title = QLabel("Longitudinal snapshot")
         side_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
         side_layout.addWidget(side_title)
-        side_note = QLabel("Compact repeated-measure metrics. If dates, visits, sessions, or iterations are unavailable, this panel reports that explicitly.")
+        side_note = QLabel("Compact repeated-record metrics. Later longitudinal plots will use only subject-task units with at least two recordings of the same task.")
         side_note.setWordWrap(True)
         side_note.setStyleSheet(f"color:{MUTED}; border:none; background:transparent; font-size:12px;")
         side_layout.addWidget(side_note)
@@ -6600,7 +6600,7 @@ class FeatureAnalysisGUI(QMainWindow):
         self.long_session_table = self._simple_table()
         self.long_iteration_table = self._simple_table()
         self.long_date_table = self._simple_table()
-        tabs.addTab(self.long_subject_table, "Readiness by subject-task")
+        tabs.addTab(self.long_subject_table, "Repeated subject-task units")
         tabs.addTab(self.long_session_table, "Visit / session support")
         tabs.addTab(self.long_iteration_table, "Iteration support")
         tabs.addTab(self.long_date_table, "Date support")
@@ -7181,35 +7181,44 @@ class FeatureAnalysisGUI(QMainWindow):
         iter_col = self._iteration_col(df)
         date_col = self._date_col(df)
         readiness = self._longitudinal_readiness_table(df)
-        ready_n = int(readiness.get("ready_for_longitudinal_review", pd.Series(dtype=bool)).fillna(False).sum()) if not readiness.empty else 0
         total_units = len(readiness) if not readiness.empty and "status" not in readiness.columns else 0
-        repeated_records = int((readiness.get("n_records", pd.Series(dtype=float)).fillna(0) >= 2).sum()) if total_units else 0
-        max_elapsed = readiness.get("elapsed_days", pd.Series(dtype=float)).dropna().max() if total_units and "elapsed_days" in readiness.columns else pd.NA
+        repeated_df = readiness.loc[pd.to_numeric(readiness.get("n_records", pd.Series(dtype=float)), errors="coerce").fillna(0) >= 2].copy() if total_units else pd.DataFrame()
+        repeated_units = int(len(repeated_df))
+        repeated_subjects = int(repeated_df["subject_id"].astype(str).nunique()) if repeated_units and "subject_id" in repeated_df.columns else 0
+        dated_repeated = repeated_df.loc[pd.to_numeric(repeated_df.get("elapsed_days", pd.Series(dtype=float)), errors="coerce").notna()].copy() if repeated_units else pd.DataFrame()
+        median_elapsed = pd.to_numeric(dated_repeated.get("elapsed_days", pd.Series(dtype=float)), errors="coerce").median() if not dated_repeated.empty else pd.NA
+        mean_elapsed = pd.to_numeric(dated_repeated.get("elapsed_days", pd.Series(dtype=float)), errors="coerce").mean() if not dated_repeated.empty else pd.NA
+        median_records = pd.to_numeric(repeated_df.get("n_records", pd.Series(dtype=float)), errors="coerce").median() if repeated_units else pd.NA
+        mean_records = pd.to_numeric(repeated_df.get("n_records", pd.Series(dtype=float)), errors="coerce").mean() if repeated_units else pd.NA
         tiles = [
             ("Task scope", self._longitudinal_selected_task() or "All tasks", "current filter"),
-            ("Subject-task units", total_units, "evaluated units"),
-            ("Repeated units", repeated_records, "n_records ≥ 2"),
-            ("Ready units", ready_n, "repeat + visit/date support"),
-            ("Max elapsed days", "n/a" if pd.isna(max_elapsed) else int(max_elapsed), "first to last date"),
+            ("Repeated subjects", repeated_subjects, "≥2 same-task recordings"),
+            ("Repeated subject-task units", repeated_units, f"of {total_units} evaluated"),
+            ("Median / mean records", "n/a" if pd.isna(median_records) else f"{median_records:.1f} / {mean_records:.1f}", "per repeated unit"),
+            ("Median / mean span", "n/a" if pd.isna(median_elapsed) else f"{median_elapsed:.0f} / {mean_elapsed:.0f} d", "dated repeated units"),
             ("Fields", f"S:{'yes' if subj_col else 'no'} T:{'yes' if task_col else 'no'} D:{'yes' if date_col else 'no'}", "subject/task/date"),
         ]
         for idx, (title, value, subtitle) in enumerate(tiles):
             self.longitudinal_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx, 0)
 
         if readiness.empty:
-            readiness = pd.DataFrame([{"status": "No repeated subject-task units could be evaluated."}])
-        self._fill_table(self.long_subject_table, readiness)
+            readiness = pd.DataFrame([{"status": "No subject-task units could be evaluated."}])
+        repeated_for_tables = readiness.loc[pd.to_numeric(readiness.get("n_records", pd.Series(dtype=float)), errors="coerce").fillna(0) >= 2].copy() if "n_records" in readiness.columns else pd.DataFrame()
+        if repeated_for_tables.empty:
+            repeated_for_tables = pd.DataFrame([{"status": "No subject-task unit has at least two recordings of the same task in the current scope."}])
+        self._fill_table(self.long_subject_table, repeated_for_tables)
         support_rows = [{"field": "subject", "column": subj_col or "not detected", "required": True},
                         {"field": "task", "column": task_col or "not detected", "required": False},
                         {"field": "session/visit", "column": session_col or "not detected", "required": False},
                         {"field": "iteration", "column": iter_col or "not detected", "required": False},
                         {"field": "recording/visit date", "column": date_col or "not detected", "required": False}]
         self._fill_table(self.long_session_table, pd.DataFrame(support_rows))
-        iter_summary = readiness[[c for c in ["subject_id", "task", "n_records", "n_sessions", "n_iterations", "ready_for_longitudinal_review"] if c in readiness.columns]].copy() if not readiness.empty else pd.DataFrame()
-        date_summary = readiness[[c for c in ["subject_id", "task", "n_dates", "first_date", "last_date", "elapsed_days", "ready_for_longitudinal_review"] if c in readiness.columns]].copy() if not readiness.empty else pd.DataFrame()
+        repeated_source = repeated_for_tables if isinstance(repeated_for_tables, pd.DataFrame) and "status" not in repeated_for_tables.columns else readiness
+        iter_summary = repeated_source[[c for c in ["subject_id", "task", "n_records", "n_sessions", "n_iterations", "ready_for_longitudinal_review"] if c in repeated_source.columns]].copy() if not repeated_source.empty else pd.DataFrame()
+        date_summary = repeated_source[[c for c in ["subject_id", "task", "n_dates", "first_date", "last_date", "elapsed_days", "ready_for_longitudinal_review"] if c in repeated_source.columns]].copy() if not repeated_source.empty else pd.DataFrame()
         self._fill_table(self.long_iteration_table, iter_summary)
         self._fill_table(self.long_date_table, date_summary)
-        self.longitudinal_note.setText("Longitudinal follow-up map generated. This version evaluates repeated-visit eligibility and follow-up depth only; feature-change and manual-QC trajectory plots will be added after this view is accepted.")
+        self.longitudinal_note.setText("Repeated-record cohort summary generated. Later longitudinal plots will analyze only subject-task units with at least two recordings of the same task.")
         self._refresh_focus_combos()
         self.generate_longitudinal_plots()
         self.preview_longitudinal_plot("longitudinal_readiness")
@@ -7240,7 +7249,7 @@ class FeatureAnalysisGUI(QMainWindow):
             return
         self.current_longitudinal_plot = path
         captions = {
-            "longitudinal_readiness": "Follow-up depth by subject-task unit. Use this first to see who has repeat data, how many records/visits are available, and the elapsed days between first and last dated visit when dates are available."
+            "longitudinal_readiness": "Repeated-record cohort summary. Use this first to quantify how many subjects have repeated same-task recordings, typical recording depth, and typical dated follow-up span before reviewing feature change."
         }
         if hasattr(self, "longitudinal_interpretation"):
             self.longitudinal_interpretation.setText(captions.get(key, "Longitudinal review plot."))
