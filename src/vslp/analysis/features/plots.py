@@ -2107,113 +2107,123 @@ def plot_longitudinal_subject_records(df: pd.DataFrame, subject_col: str | None,
 
 
 def plot_longitudinal_readiness(readiness: pd.DataFrame, path: Path) -> Path:
-    """Clinician-facing follow-up depth and longitudinal readiness summary.
+    """Repeated-record cohort summary for longitudinal review.
 
-    The first longitudinal view should not imply feature change. It answers the
-    prerequisite clinical question: which subject-task units have repeated data,
-    how much follow-up time is available, and whether dates/visits/iterations are
-    strong enough to support later trajectories.
+    This first longitudinal plot intentionally avoids plotting every subject.
+    It filters to subject-task units with at least two recordings of the same
+    task, then summarizes cohort depth, dated follow-up span, and task-level
+    repeated-record coverage with robust statistics.
     """
     if readiness is None or readiness.empty or "status" in readiness.columns:
-        return _empty(path, "No repeated subject-task readiness table could be built.", "Follow-up depth and readiness")
+        return _empty(path, "No longitudinal readiness table could be built.", "Repeated-record cohort summary")
     d = readiness.copy()
     if "n_records" not in d.columns:
-        return _empty(path, "Readiness table is missing n_records.", "Follow-up depth and readiness")
+        return _empty(path, "Readiness table is missing n_records.", "Repeated-record cohort summary")
     for col in ["n_records", "n_sessions", "n_iterations", "n_dates", "elapsed_days"]:
         if col in d.columns:
             d[col] = pd.to_numeric(d[col], errors="coerce")
         else:
             d[col] = pd.NA
-    if "ready_for_longitudinal_review" not in d.columns:
-        d["ready_for_longitudinal_review"] = (d["n_records"].fillna(0) >= 2) & (
-            d[["n_sessions", "n_iterations", "n_dates"]].fillna(0).max(axis=1) >= 2
-        )
-    d["has_dates"] = d["elapsed_days"].notna()
-    d["support_count"] = d[["n_sessions", "n_iterations", "n_dates"]].fillna(0).max(axis=1)
+    if "subject_id" not in d.columns:
+        d["subject_id"] = "subject"
+    if "task" not in d.columns:
+        d["task"] = "all_tasks"
 
-    total = int(len(d))
-    repeated = int((d["n_records"].fillna(0) >= 2).sum())
-    dated = int(d["has_dates"].sum())
-    ready = int(d["ready_for_longitudinal_review"].fillna(False).sum())
-    median_days = d.loc[d["has_dates"], "elapsed_days"].median()
-    median_records = d["n_records"].median()
+    repeated = d.loc[d["n_records"].fillna(0) >= 2].copy()
+    if repeated.empty:
+        total_subjects = int(d["subject_id"].astype(str).nunique()) if "subject_id" in d.columns else 0
+        fig, ax = plt.subplots(figsize=(10.5, 5.8))
+        ax.axis("off")
+        ax.text(0.5, 0.62, "No repeated same-task recordings found", ha="center", va="center", fontsize=16, fontweight="bold", color=NAVY)
+        ax.text(0.5, 0.48, f"Evaluated {len(d)} subject-task units across {total_subjects} subjects. Longitudinal feature-change plots require at least two recordings of the same task for a subject.", ha="center", va="center", fontsize=11, color=MUTED, wrap=True)
+        return _save(fig, path)
 
-    # Prioritize clinically interpretable follow-up rows: dated spans first,
-    # then units with more repeated records or visit/iteration support.
-    plot_d = d.sort_values(
-        ["has_dates", "elapsed_days", "ready_for_longitudinal_review", "n_records", "support_count"],
-        ascending=[False, False, False, False, False],
-        na_position="last",
-    ).head(28).copy()
-    if plot_d.empty:
-        return _empty(path, "No subject-task units could be summarized.", "Follow-up depth and readiness")
+    total_subjects = int(d["subject_id"].astype(str).nunique())
+    repeated_subjects = int(repeated["subject_id"].astype(str).nunique())
+    repeated_units = int(len(repeated))
+    repeated_records = int(repeated["n_records"].fillna(0).sum())
+    dated = repeated.loc[repeated["elapsed_days"].notna()].copy()
+    dated_units = int(len(dated))
+    med_records = float(repeated["n_records"].median())
+    mean_records = float(repeated["n_records"].mean())
+    med_days = float(dated["elapsed_days"].median()) if dated_units else np.nan
+    mean_days = float(dated["elapsed_days"].mean()) if dated_units else np.nan
 
-    labels = []
-    for _, row in plot_d.iterrows():
-        sid = str(row.get("subject_id", "subject")).strip()
-        task = str(row.get("task", "task")).strip()
-        if not task or task.lower() in {"nan", "all_tasks", "none"}:
-            labels.append(sid)
-        else:
-            labels.append(f"{sid} | {task}")
+    fig, axes = plt.subplots(2, 2, figsize=(14.2, 9.2), gridspec_kw={"height_ratios": [1.0, 1.15]})
+    ax0, ax1, ax2, ax3 = axes.ravel()
 
-    fig, axes = plt.subplots(
-        1, 2,
-        figsize=(14, max(6.2, 0.32 * len(plot_d) + 2.6)),
-        gridspec_kw={"width_ratios": [1.05, 2.2]},
-    )
-    ax0, ax1 = axes
-
-    summary = pd.DataFrame({
-        "Metric": ["Subject-task units", "Repeated records", "Dated follow-up", "Ready for change review"],
-        "Count": [total, repeated, dated, ready],
+    # Panel 1: cohort eligibility counts.
+    counts = pd.DataFrame({
+        "metric": ["All subjects", "Repeated subjects", "Repeated subject-task units", "Repeated recordings"],
+        "count": [total_subjects, repeated_subjects, repeated_units, repeated_records],
     })
-    ax0.barh(summary["Metric"], summary["Count"], color=[MUTED, TEAL, GOLD, TEAL])
-    ax0.set_xlabel("Count", color=MUTED)
+    ax0.barh(counts["metric"], counts["count"], color=[MUTED, TEAL, TEAL, GOLD])
     ax0.invert_yaxis()
-    _style(ax0, "Eligibility summary")
-    footer_lines = [
-        f"Median records/unit: {'n/a' if pd.isna(median_records) else int(median_records)}",
-        f"Median dated span: {'n/a' if pd.isna(median_days) else str(int(median_days)) + ' days'}",
-    ]
-    ax0.text(0.02, -0.18, "\n".join(footer_lines), transform=ax0.transAxes, fontsize=9, color=MUTED, va="top")
+    ax0.set_xlabel("Count", color=MUTED)
+    _style(ax0, "Repeated-record cohort")
+    ax0.text(0.02, -0.22, "Inclusion rule for later plots: subject + same task + at least 2 recordings.", transform=ax0.transAxes, fontsize=9, color=MUTED, va="top")
 
-    y = np.arange(len(plot_d))
-    elapsed = plot_d["elapsed_days"].fillna(0).to_numpy(dtype=float)
-    records = plot_d["n_records"].fillna(0).to_numpy(dtype=float)
-    ready_flags = plot_d["ready_for_longitudinal_review"].fillna(False).astype(bool).to_numpy()
-    bar_colors = [TEAL if r else MUTED for r in ready_flags]
-    ax1.barh(y, elapsed, color=bar_colors, alpha=0.88)
-    no_date = ~plot_d["has_dates"].astype(bool).to_numpy()
-    if no_date.any():
-        # Show undated repeated records as small markers at zero; their exact
-        # interval is unknown and should not be visually inflated.
-        ax1.scatter(np.zeros(no_date.sum()), y[no_date], s=np.maximum(28, records[no_date] * 14), color=GOLD, zorder=3, alpha=0.9)
-    ax1.set_yticks(y)
-    ax1.set_yticklabels(labels, fontsize=8, color=MUTED)
-    ax1.invert_yaxis()
-    ax1.set_xlabel("Days from first to last dated visit", color=MUTED)
-    ax1.set_title("Follow-up span by subject-task unit", fontsize=13, fontweight="bold", color=NAVY, pad=10)
-    ax1.grid(axis="x", alpha=0.25)
-    xmax = max(float(np.nanmax(elapsed)) if len(elapsed) else 0.0, 1.0)
-    for yi, (_, row) in enumerate(plot_d.iterrows()):
-        rec = int(row.get("n_records", 0) or 0)
-        n_dates = row.get("n_dates", pd.NA)
-        n_dates_txt = "?" if pd.isna(n_dates) else str(int(n_dates))
-        if bool(row.get("has_dates", False)):
-            days = int(row.get("elapsed_days", 0) or 0)
-            txt = f"{days} d | {rec} records | {n_dates_txt} dates"
-            ax1.text(days + xmax * 0.015, yi, txt, va="center", fontsize=8, color=MUTED)
+    # Panel 2: recording depth distribution.
+    rec = repeated["n_records"].dropna().astype(int)
+    bins = [2, 3, 4, 5, 6, 999999]
+    labels = ["2", "3", "4", "5", "6+"]
+    cats = pd.cut(rec, bins=[1, 2, 3, 4, 5, 999999], labels=labels, right=True)
+    depth = cats.value_counts().reindex(labels, fill_value=0)
+    ax1.bar(depth.index.astype(str), depth.values, color=TEAL)
+    ax1.set_xlabel("Recordings per subject-task unit", color=MUTED)
+    ax1.set_ylabel("Number of units", color=MUTED)
+    _style(ax1, "Recording depth")
+    ax1.text(0.02, 0.95, f"Median: {med_records:.1f}\nMean: {mean_records:.1f}", transform=ax1.transAxes, ha="left", va="top", fontsize=9, color=NAVY, bbox=dict(facecolor="white", edgecolor=GRID, boxstyle="round,pad=0.35"))
+
+    # Panel 3: elapsed-day distribution for dated repeated units.
+    if dated_units:
+        spans = dated["elapsed_days"].dropna().astype(float)
+        max_span = max(float(spans.max()), 1.0)
+        edges = [0, 30, 90, 180, 365, 730]
+        if max_span > 730:
+            edges.append(max_span + 1)
+            span_labels = ["0–30", "31–90", "91–180", "181–365", "366–730", ">730"]
         else:
-            ax1.text(xmax * 0.02, yi, f"date missing | {rec} records", va="center", fontsize=8, color=MUTED)
-    ax1.set_xlim(0, xmax * 1.35)
+            edges.append(731)
+            span_labels = ["0–30", "31–90", "91–180", "181–365", "366–730", ">730"]
+        span_cat = pd.cut(spans, bins=edges, labels=span_labels[:len(edges)-1], include_lowest=True, right=True)
+        span_counts = span_cat.value_counts().reindex(span_labels[:len(edges)-1], fill_value=0)
+        ax2.bar(span_counts.index.astype(str), span_counts.values, color=GOLD)
+        ax2.set_xlabel("Days between first and last dated recording", color=MUTED)
+        ax2.set_ylabel("Number of units", color=MUTED)
+        _style(ax2, "Follow-up span distribution")
+        ax2.text(0.02, 0.95, f"Dated units: {dated_units}/{repeated_units}\nMedian: {med_days:.0f} days\nMean: {mean_days:.0f} days", transform=ax2.transAxes, ha="left", va="top", fontsize=9, color=NAVY, bbox=dict(facecolor="white", edgecolor=GRID, boxstyle="round,pad=0.35"))
+    else:
+        ax2.axis("off")
+        ax2.text(0.5, 0.58, "No dated follow-up spans", ha="center", va="center", fontsize=13, fontweight="bold", color=NAVY)
+        ax2.text(0.5, 0.42, "Repeated recordings exist, but date fields are unavailable or not parseable. Later change plots can use visit/session/iteration order, but not days between visits.", ha="center", va="center", fontsize=10, color=MUTED, wrap=True)
 
-    fig.suptitle("Longitudinal follow-up depth", fontsize=15, fontweight="bold", color=NAVY, y=0.98)
-    fig.text(
-        0.5, 0.02,
-        "Interpretation: dated spans support true time-based change review; undated repeated records may still support session/iteration review but not days-between-visits analysis.",
-        ha="center", color=MUTED, fontsize=9,
-    )
+    # Panel 4: task-level repeated coverage, compact top-N summary.
+    task = repeated["task"].astype(str).replace({"nan": "Unknown", "": "Unknown"})
+    task_summary = repeated.assign(__task=task).groupby("__task", dropna=False).agg(
+        repeated_subjects=("subject_id", lambda x: int(pd.Series(x).astype(str).nunique())),
+        repeated_units=("n_records", "size"),
+        median_records=("n_records", "median"),
+        median_elapsed_days=("elapsed_days", "median"),
+    ).reset_index().sort_values(["repeated_subjects", "repeated_units"], ascending=True).tail(12)
+    if task_summary.empty:
+        ax3.axis("off")
+        ax3.text(0.5, 0.5, "No task-level repeated coverage available", ha="center", va="center", color=MUTED)
+    else:
+        labels = task_summary["__task"].astype(str)
+        ax3.barh(labels, task_summary["repeated_subjects"].astype(float), color=TEAL)
+        ax3.set_xlabel("Subjects with repeated same-task recordings", color=MUTED)
+        _style(ax3, "Repeated coverage by task")
+        xmax = max(float(task_summary["repeated_subjects"].max()), 1.0)
+        for y, (_, row) in enumerate(task_summary.iterrows()):
+            med_rec = row.get("median_records", np.nan)
+            med_span = row.get("median_elapsed_days", np.nan)
+            span_txt = "no dates" if pd.isna(med_span) else f"median {med_span:.0f} d"
+            ax3.text(float(row["repeated_subjects"]) + xmax * 0.02, y, f"units={int(row['repeated_units'])}, records={med_rec:.1f}, {span_txt}", va="center", fontsize=8, color=MUTED)
+        ax3.set_xlim(0, xmax * 1.55)
+
+    fig.suptitle("Longitudinal repeated-record cohort summary", fontsize=15, fontweight="bold", color=NAVY, y=0.985)
+    fig.text(0.5, 0.018, "Interpretation: later longitudinal feature-change plots should be restricted to repeated subject-task units. This screen quantifies how large and how temporally deep that analyzable cohort is.", ha="center", color=MUTED, fontsize=9)
     return _save(fig, path)
 
 def plot_longitudinal_session_matrix(df: pd.DataFrame, subject_col: str | None, session_col: str | None, path: Path) -> Path:
