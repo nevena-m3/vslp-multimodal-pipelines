@@ -2106,6 +2106,116 @@ def plot_longitudinal_subject_records(df: pd.DataFrame, subject_col: str | None,
     return _save(fig, path)
 
 
+def plot_longitudinal_readiness(readiness: pd.DataFrame, path: Path) -> Path:
+    """Clinician-facing follow-up depth and longitudinal readiness summary.
+
+    The first longitudinal view should not imply feature change. It answers the
+    prerequisite clinical question: which subject-task units have repeated data,
+    how much follow-up time is available, and whether dates/visits/iterations are
+    strong enough to support later trajectories.
+    """
+    if readiness is None or readiness.empty or "status" in readiness.columns:
+        return _empty(path, "No repeated subject-task readiness table could be built.", "Follow-up depth and readiness")
+    d = readiness.copy()
+    if "n_records" not in d.columns:
+        return _empty(path, "Readiness table is missing n_records.", "Follow-up depth and readiness")
+    for col in ["n_records", "n_sessions", "n_iterations", "n_dates", "elapsed_days"]:
+        if col in d.columns:
+            d[col] = pd.to_numeric(d[col], errors="coerce")
+        else:
+            d[col] = pd.NA
+    if "ready_for_longitudinal_review" not in d.columns:
+        d["ready_for_longitudinal_review"] = (d["n_records"].fillna(0) >= 2) & (
+            d[["n_sessions", "n_iterations", "n_dates"]].fillna(0).max(axis=1) >= 2
+        )
+    d["has_dates"] = d["elapsed_days"].notna()
+    d["support_count"] = d[["n_sessions", "n_iterations", "n_dates"]].fillna(0).max(axis=1)
+
+    total = int(len(d))
+    repeated = int((d["n_records"].fillna(0) >= 2).sum())
+    dated = int(d["has_dates"].sum())
+    ready = int(d["ready_for_longitudinal_review"].fillna(False).sum())
+    median_days = d.loc[d["has_dates"], "elapsed_days"].median()
+    median_records = d["n_records"].median()
+
+    # Prioritize clinically interpretable follow-up rows: dated spans first,
+    # then units with more repeated records or visit/iteration support.
+    plot_d = d.sort_values(
+        ["has_dates", "elapsed_days", "ready_for_longitudinal_review", "n_records", "support_count"],
+        ascending=[False, False, False, False, False],
+        na_position="last",
+    ).head(28).copy()
+    if plot_d.empty:
+        return _empty(path, "No subject-task units could be summarized.", "Follow-up depth and readiness")
+
+    labels = []
+    for _, row in plot_d.iterrows():
+        sid = str(row.get("subject_id", "subject")).strip()
+        task = str(row.get("task", "task")).strip()
+        if not task or task.lower() in {"nan", "all_tasks", "none"}:
+            labels.append(sid)
+        else:
+            labels.append(f"{sid} | {task}")
+
+    fig, axes = plt.subplots(
+        1, 2,
+        figsize=(14, max(6.2, 0.32 * len(plot_d) + 2.6)),
+        gridspec_kw={"width_ratios": [1.05, 2.2]},
+    )
+    ax0, ax1 = axes
+
+    summary = pd.DataFrame({
+        "Metric": ["Subject-task units", "Repeated records", "Dated follow-up", "Ready for change review"],
+        "Count": [total, repeated, dated, ready],
+    })
+    ax0.barh(summary["Metric"], summary["Count"], color=[MUTED, TEAL, GOLD, TEAL])
+    ax0.set_xlabel("Count", color=MUTED)
+    ax0.invert_yaxis()
+    _style(ax0, "Eligibility summary")
+    footer_lines = [
+        f"Median records/unit: {'n/a' if pd.isna(median_records) else int(median_records)}",
+        f"Median dated span: {'n/a' if pd.isna(median_days) else str(int(median_days)) + ' days'}",
+    ]
+    ax0.text(0.02, -0.18, "\n".join(footer_lines), transform=ax0.transAxes, fontsize=9, color=MUTED, va="top")
+
+    y = np.arange(len(plot_d))
+    elapsed = plot_d["elapsed_days"].fillna(0).to_numpy(dtype=float)
+    records = plot_d["n_records"].fillna(0).to_numpy(dtype=float)
+    ready_flags = plot_d["ready_for_longitudinal_review"].fillna(False).astype(bool).to_numpy()
+    bar_colors = [TEAL if r else MUTED for r in ready_flags]
+    ax1.barh(y, elapsed, color=bar_colors, alpha=0.88)
+    no_date = ~plot_d["has_dates"].astype(bool).to_numpy()
+    if no_date.any():
+        # Show undated repeated records as small markers at zero; their exact
+        # interval is unknown and should not be visually inflated.
+        ax1.scatter(np.zeros(no_date.sum()), y[no_date], s=np.maximum(28, records[no_date] * 14), color=GOLD, zorder=3, alpha=0.9)
+    ax1.set_yticks(y)
+    ax1.set_yticklabels(labels, fontsize=8, color=MUTED)
+    ax1.invert_yaxis()
+    ax1.set_xlabel("Days from first to last dated visit", color=MUTED)
+    ax1.set_title("Follow-up span by subject-task unit", fontsize=13, fontweight="bold", color=NAVY, pad=10)
+    ax1.grid(axis="x", alpha=0.25)
+    xmax = max(float(np.nanmax(elapsed)) if len(elapsed) else 0.0, 1.0)
+    for yi, (_, row) in enumerate(plot_d.iterrows()):
+        rec = int(row.get("n_records", 0) or 0)
+        n_dates = row.get("n_dates", pd.NA)
+        n_dates_txt = "?" if pd.isna(n_dates) else str(int(n_dates))
+        if bool(row.get("has_dates", False)):
+            days = int(row.get("elapsed_days", 0) or 0)
+            txt = f"{days} d | {rec} records | {n_dates_txt} dates"
+            ax1.text(days + xmax * 0.015, yi, txt, va="center", fontsize=8, color=MUTED)
+        else:
+            ax1.text(xmax * 0.02, yi, f"date missing | {rec} records", va="center", fontsize=8, color=MUTED)
+    ax1.set_xlim(0, xmax * 1.35)
+
+    fig.suptitle("Longitudinal follow-up depth", fontsize=15, fontweight="bold", color=NAVY, y=0.98)
+    fig.text(
+        0.5, 0.02,
+        "Interpretation: dated spans support true time-based change review; undated repeated records may still support session/iteration review but not days-between-visits analysis.",
+        ha="center", color=MUTED, fontsize=9,
+    )
+    return _save(fig, path)
+
 def plot_longitudinal_session_matrix(df: pd.DataFrame, subject_col: str | None, session_col: str | None, path: Path) -> Path:
     if df is None or df.empty or not subject_col or subject_col not in df.columns:
         return _empty(path, "No subject_id column was available for session/visit review.", "Session / visit")
