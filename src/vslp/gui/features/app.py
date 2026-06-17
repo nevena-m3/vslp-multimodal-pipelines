@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
+import numpy as np
 
 try:
     from PySide6.QtCore import Qt, QSize, QUrl
@@ -82,6 +83,8 @@ from vslp.analysis.features.plots import (
     plot_reliability_status_counts, plot_reliability_icc_ranking,
     plot_reliability_variance_landscape, plot_reliability_family_summary,
     plot_reliability_subject_counts, plot_selected_feature_reliability,
+    plot_reliability_design_support, plot_reliability_measurement_error_landscape,
+    plot_selected_feature_same_task_reliability,
     plot_recommendation_counts, plot_recommendation_score_landscape,
     plot_recommendation_reason_counts, plot_recommendation_family_summary,
     plot_ml_export_manifest_summary,
@@ -97,7 +100,7 @@ from vslp.analysis.features.plots import (
     plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.126.0"
+APP_VERSION = "v0.127.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -8129,16 +8132,28 @@ class FeatureAnalysisGUI(QMainWindow):
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(16)
         card = Card(
-            "Reliability / Repeatability",
-            "Repeated-measures stability review. This screen asks whether features are stable across repeated recordings/sessions, or mainly session-, task-, QC-, or acquisition-dependent."
+            "Feature Reliability",
+            "Repeatability review for repeated recordings. Reliability is calculated within the same task when task context is available, so task effects are not mistaken for measurement stability."
         )
         self.reliability_metric_grid = QGridLayout()
         card.layout.addLayout(self.reliability_metric_grid)
 
         controls = QHBoxLayout()
+        self.reliability_task_combo = QComboBox()
+        self.reliability_task_combo.setMinimumWidth(220)
+        self.reliability_task_combo.currentIndexChanged.connect(lambda _=0: self._refresh_reliability_scope())
+        controls.addWidget(QLabel("Task focus:"))
+        controls.addWidget(self.reliability_task_combo)
+
+        self.reliability_family_combo = QComboBox()
+        self.reliability_family_combo.setMinimumWidth(220)
+        self.reliability_family_combo.currentIndexChanged.connect(lambda _=0: self._refresh_reliability_feature_combo())
+        controls.addWidget(QLabel("Feature family:"))
+        controls.addWidget(self.reliability_family_combo)
+
         self.reliability_feature_combo = QComboBox()
         self.reliability_feature_combo.setMinimumWidth(360)
-        self.reliability_feature_combo.currentIndexChanged.connect(lambda _=0: self.preview_reliability_plot("selected_feature_reliability"))
+        self.reliability_feature_combo.currentIndexChanged.connect(lambda _=0: self.preview_reliability_plot("selected_feature_same_task_reliability"))
         controls.addWidget(QLabel("Selected feature:"))
         controls.addWidget(self.reliability_feature_combo)
         controls.addStretch(1)
@@ -8156,9 +8171,9 @@ class FeatureAnalysisGUI(QMainWindow):
         self.reliability_screen_table = self._simple_table()
         for title, tbl in [
             ("Design support", self.reliability_design_table),
-            ("Feature repeatability", self.reliability_repeatability_table),
+            ("Feature reliability", self.reliability_repeatability_table),
             ("Family summary", self.reliability_family_table),
-            ("Subject counts", self.reliability_subjects_table),
+            ("Repeated subjects", self.reliability_subjects_table),
             ("Readiness screen", self.reliability_screen_table),
         ]:
             tabs.addTab(tbl, title)
@@ -8166,58 +8181,285 @@ class FeatureAnalysisGUI(QMainWindow):
 
         plot_card = Card(
             "Reliability plots",
-            "Use these plots to distinguish stable participant/setup traits from session-level variability. Interpretation depends on repeated-record design support."
+            "Use this menu to decide whether a feature is stable enough for repeated-measure or longitudinal interpretation before recommending it downstream."
         )
         self._add_standard_plot_gallery(
             plot_card.layout,
             "Reliability plot",
-            "Reliability keeps repeated-measure support, ICC-style ranking, within/between variance, family summary, subject record counts, and one selected-feature trajectory.",
+            "Reliability uses same-task repeated recordings, ICC-style repeatability, and measurement-error / detectable-change thresholds.",
             "reliability_plot_combo",
             [
-                ("Reliability status counts", "reliability_status_counts"),
-                ("ICC ranking", "reliability_icc_ranking"),
-                ("Within vs between variance", "reliability_variance_landscape"),
-                ("Reliability by family", "reliability_family_summary"),
-                ("Subject record counts", "reliability_subject_counts"),
-                ("Selected feature trajectory", "selected_feature_reliability"),
+                ("Design support for reliability", "reliability_design_support"),
+                ("Feature ICC ranking", "reliability_icc_ranking"),
+                ("Detectable-change / error landscape", "reliability_measurement_error_landscape"),
+                ("Reliability by feature family", "reliability_family_summary"),
+                ("Selected feature same-task trajectory", "selected_feature_same_task_reliability"),
             ],
             "reliability_plot_preview",
             "reliability_interpretation_label",
             self.preview_reliability_plot,
             self.open_current_reliability_plot,
             "Run Feature Analysis, then choose one reliability plot.",
-            500,
+            540,
         )
         layout.addWidget(plot_card, 1)
         layout.addWidget(card)
         return self._wrap_scroll(body)
 
-    def update_reliability_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
+    def _reliability_source_frame(self) -> pd.DataFrame:
+        base = self.analysis_df if getattr(self, "analysis_df", None) is not None and not self.analysis_df.empty else self.feature_df
+        if base is None:
+            return pd.DataFrame()
+        return self._ensure_unique_columns(base.copy(), "Reliability source table").reset_index(drop=True)
+
+    def _reliability_feature_cols(self, df: pd.DataFrame) -> list[str]:
+        mapping = self.collect_mapping_from_table() if getattr(self, "mapping_df", None) is not None else pd.DataFrame()
+        roles = role_lists(mapping) if mapping is not None and not mapping.empty else {}
+        candidates = [str(c) for c in roles.get("Feature", []) if str(c) in df.columns]
+        out: list[str] = []
+        seen: set[str] = set()
+        for c in candidates:
+            if c in seen:
+                continue
+            values = df.loc[:, c]
+            if isinstance(values, pd.DataFrame):
+                values = values.iloc[:, 0]
+            if pd.to_numeric(values, errors="coerce").notna().any():
+                out.append(c)
+                seen.add(c)
+        return out
+
+    def _reliability_family_lookup(self) -> dict[str, str]:
+        reg = getattr(self, "registry_df", None)
+        lookup: dict[str, str] = {}
+        if reg is not None and not reg.empty:
+            fcol = next((c for c in ["feature", "feature_name", "name", "column"] if c in reg.columns), None)
+            fam_col = next((c for c in ["family", "feature_family", "subsystem", "domain", "group"] if c in reg.columns), None)
+            if fcol and fam_col:
+                lookup.update(dict(zip(reg[fcol].astype(str), reg[fam_col].astype(str))))
+        return lookup
+
+    def _reliability_context(self, df: pd.DataFrame) -> dict[str, pd.Series]:
+        n = len(df) if df is not None else 0
+        if df is None or df.empty:
+            empty = pd.Series(pd.NA, index=range(n), dtype="object")
+            return {"subject": empty, "task": empty, "session": empty, "date": empty}
+        return {
+            "subject": self._overview_series_for_role(df, "subject").astype("string").fillna("").str.strip(),
+            "task": self._overview_series_for_role(df, "task").astype("string").fillna("").str.strip(),
+            "session": self._overview_series_for_role(df, "session").astype("string").fillna("").str.strip(),
+            "date": self._overview_series_for_role(df, "recording_date").astype("string").fillna("").str.strip(),
+        }
+
+    def _selected_reliability_task(self) -> str:
+        if hasattr(self, "reliability_task_combo") and self.reliability_task_combo.count() > 0:
+            return self.reliability_task_combo.currentText() or "All tasks"
+        return "All tasks"
+
+    def _selected_reliability_family(self) -> str:
+        if hasattr(self, "reliability_family_combo") and self.reliability_family_combo.count() > 0:
+            return self.reliability_family_combo.currentText() or "All families"
+        return "All families"
+
+    def _selected_reliability_feature(self) -> str | None:
+        if hasattr(self, "reliability_feature_combo") and self.reliability_feature_combo.count() > 0:
+            return self.reliability_feature_combo.currentText()
+        return None
+
+    def _build_scoped_reliability_outputs(self) -> dict[str, pd.DataFrame]:
+        df = self._reliability_source_frame()
+        feature_cols = self._reliability_feature_cols(df)
+        ctx = self._reliability_context(df)
+        family_lookup = self._reliability_family_lookup()
+        task_focus = self._selected_reliability_task()
+        if task_focus and task_focus != "All tasks" and "task" in ctx:
+            mask = ctx["task"].astype(str).eq(str(task_focus))
+            scoped = df.loc[mask].copy().reset_index(drop=True)
+            ctx = self._reliability_context(scoped)
+        else:
+            scoped = df.copy().reset_index(drop=True)
+            ctx = self._reliability_context(scoped)
+        subject = ctx["subject"] if len(ctx["subject"]) == len(scoped) else pd.Series("", index=scoped.index)
+        task = ctx["task"] if len(ctx["task"]) == len(scoped) else pd.Series("", index=scoped.index)
+        session = ctx["session"] if len(ctx["session"]) == len(scoped) else pd.Series("", index=scoped.index)
+        rows = []
+        subject_count_rows = []
+        subj_frame = pd.DataFrame({"subject": subject, "task": task, "session": session}, index=scoped.index)
+        subj_frame = subj_frame.loc[subj_frame["subject"].astype(str).str.len().gt(0)]
+        if not subj_frame.empty:
+            if task_focus == "All tasks" and subj_frame["task"].astype(str).str.len().gt(0).any():
+                grp_cols = ["subject", "task"]
+            else:
+                grp_cols = ["subject"]
+            for key, sub in subj_frame.groupby(grp_cols, dropna=True):
+                if isinstance(key, tuple):
+                    sid, task_name = key[0], key[1]
+                else:
+                    sid, task_name = key, task_focus if task_focus != "All tasks" else "selected_scope"
+                subject_count_rows.append({
+                    "subject": str(sid),
+                    "task": str(task_name),
+                    "n_records": int(len(sub)),
+                    "n_sessions": int(sub["session"].replace("", pd.NA).nunique(dropna=True)) if "session" in sub.columns else 0,
+                    "repeated_same_task": bool(len(sub) >= 2),
+                })
+        subject_counts = pd.DataFrame(subject_count_rows)
+        repeated_units = int(subject_counts.loc[subject_counts.get("repeated_same_task", pd.Series(dtype=bool)).astype(bool)].shape[0]) if not subject_counts.empty else 0
+        design = pd.DataFrame([
+            {"metric": "task_scope", "value": task_focus, "interpretation": "Reliability scope. All-tasks mode keeps repeated subject-task units separate."},
+            {"metric": "rows", "value": int(len(scoped)), "interpretation": "Rows/recordings included in this reliability scope."},
+            {"metric": "numeric_features", "value": int(len(feature_cols)), "interpretation": "Mapped numeric feature columns evaluated."},
+            {"metric": "unique_subjects", "value": int(subject.replace("", pd.NA).nunique(dropna=True)), "interpretation": "Subjects represented in this scope."},
+            {"metric": "subjects_with_repeats", "value": int(subject_counts.loc[subject_counts.get("repeated_same_task", pd.Series(dtype=bool)).astype(bool), "subject"].nunique()) if not subject_counts.empty else 0, "interpretation": "Subjects with at least one repeated same-task unit."},
+            {"metric": "repeated_subject_task_units", "value": repeated_units, "interpretation": "Subject-task units with at least two recordings; main reliability substrate."},
+        ])
+        if scoped.empty or not feature_cols or subject.replace("", pd.NA).dropna().empty:
+            return {"design": design, "repeatability": pd.DataFrame(), "family": pd.DataFrame(), "subjects": subject_counts}
+        group_key = pd.DataFrame({"subject": subject.astype(str), "task": task.astype(str)}, index=scoped.index)
+        if task_focus == "All tasks" and task.astype(str).str.len().gt(0).any():
+            group_key["unit"] = group_key["subject"] + " | " + group_key["task"]
+        else:
+            group_key["unit"] = group_key["subject"]
+        for feat in feature_cols:
+            values = pd.to_numeric(scoped[feat], errors="coerce")
+            tmp = pd.DataFrame({"unit": group_key["unit"], "subject": subject, "task": task, "value": values})
+            tmp = tmp.loc[tmp["unit"].astype(str).str.len().gt(0)].dropna(subset=["value"])
+            n_valid = int(len(tmp)); miss = float(values.isna().mean()) if len(values) else 1.0
+            counts = tmp.groupby("unit")["value"].count()
+            repeated = counts[counts >= 2].index
+            n_repeated = int(len(repeated))
+            icc = np.nan; within = np.nan; between = np.nan; sem = np.nan; mdc = np.nan; mdc_std = np.nan; med_range = np.nan
+            status = "not_evaluable"
+            interp = "Too few repeated same-task units for reliability estimation."
+            if n_repeated >= 3 and n_valid >= 6:
+                rep = tmp[tmp["unit"].isin(repeated)].copy()
+                stats = rep.groupby("unit")["value"].agg(["mean", "var", "count", "min", "max"])
+                within = float(np.nanmean(stats["var"].fillna(0).to_numpy()))
+                between = float(np.nanvar(stats["mean"].to_numpy(), ddof=1)) if len(stats) > 1 else np.nan
+                denom = between + within
+                icc = float(between / denom) if denom and np.isfinite(denom) and denom > 0 else np.nan
+                sem = float(np.sqrt(within)) if np.isfinite(within) and within >= 0 else np.nan
+                mdc = float(1.96 * np.sqrt(2.0) * sem) if np.isfinite(sem) else np.nan
+                total_sd = float(np.nanstd(rep["value"].to_numpy(dtype=float), ddof=1)) if len(rep) > 1 else np.nan
+                mdc_std = float(mdc / total_sd) if np.isfinite(mdc) and np.isfinite(total_sd) and total_sd > 0 else np.nan
+                med_range = float(np.nanmedian((stats["max"] - stats["min"]).to_numpy()))
+                if not np.isfinite(icc):
+                    status = "not_evaluable"; interp = "Variance components could not be estimated reliably."
+                elif icc >= .75 and (not np.isfinite(mdc_std) or mdc_std <= 1.25):
+                    status = "stable"; interp = "High repeatability and acceptable detectable-change threshold."
+                elif icc >= .50:
+                    status = "moderate"; interp = "Moderate repeatability; usable with caution and QC/task review."
+                elif icc >= .25:
+                    status = "variable"; interp = "Low-to-moderate repeatability; change interpretation is fragile."
+                else:
+                    status = "unstable"; interp = "Low same-task repeatability; likely session/acquisition/noise sensitive."
+            rows.append({
+                "feature": feat,
+                "family_or_subsystem": family_lookup.get(feat, "unclassified"),
+                "task_scope": task_focus,
+                "n_valid": n_valid,
+                "n_repeated_subject_task_units": n_repeated,
+                "icc1_proxy": icc,
+                "within_subject_variance": within,
+                "between_subject_variance": between,
+                "sem_within_subject": sem,
+                "mdc95": mdc,
+                "mdc95_standardized": mdc_std,
+                "median_within_subject_range": med_range,
+                "missing_fraction": miss,
+                "reliability_status": status,
+                "interpretation": interp,
+            })
+        repeatability = pd.DataFrame(rows)
+        if not repeatability.empty:
+            repeatability = repeatability.sort_values(["reliability_status", "icc1_proxy", "mdc95_standardized"], ascending=[True, False, True], na_position="last")
+        fam_rows=[]
+        if not repeatability.empty:
+            rep = repeatability.copy()
+            rep["icc1_proxy"] = pd.to_numeric(rep["icc1_proxy"], errors="coerce")
+            rep["mdc95_standardized"] = pd.to_numeric(rep["mdc95_standardized"], errors="coerce")
+            for fam, sub in rep.groupby("family_or_subsystem", dropna=False):
+                status = sub["reliability_status"].astype(str)
+                fam_rows.append({
+                    "family_or_subsystem": str(fam),
+                    "n_features": int(len(sub)),
+                    "n_evaluable": int(sub["icc1_proxy"].notna().sum()),
+                    "median_icc1_proxy": float(sub["icc1_proxy"].median()) if sub["icc1_proxy"].notna().any() else np.nan,
+                    "median_mdc95_standardized": float(sub["mdc95_standardized"].median()) if sub["mdc95_standardized"].notna().any() else np.nan,
+                    "n_stable": int(status.eq("stable").sum()),
+                    "n_unstable_or_variable": int(status.isin(["variable", "unstable"]).sum()),
+                    "interpretation": "review individual features; family summaries can hide outliers",
+                })
+        family = pd.DataFrame(fam_rows).sort_values("median_icc1_proxy", ascending=False, na_position="last") if fam_rows else pd.DataFrame()
+        return {"design": design, "repeatability": repeatability, "family": family, "subjects": subject_counts}
+
+    def _refresh_reliability_scope(self) -> None:
+        outputs = self._build_scoped_reliability_outputs()
+        self._populate_reliability_from_scope(outputs)
+        self._refresh_reliability_family_combo(outputs.get("repeatability", pd.DataFrame()))
+        self._refresh_reliability_feature_combo()
+        if hasattr(self, "reliability_plot_combo"):
+            self.preview_reliability_plot(self.reliability_plot_combo.currentData() or "reliability_design_support")
+
+    def _refresh_reliability_family_combo(self, rep: pd.DataFrame | None = None) -> None:
+        if not hasattr(self, "reliability_family_combo"):
+            return
+        current = self.reliability_family_combo.currentText()
+        if rep is None:
+            rep = self._build_scoped_reliability_outputs().get("repeatability", pd.DataFrame())
+        families = sorted([str(x) for x in rep.get("family_or_subsystem", pd.Series(dtype=str)).dropna().unique()]) if rep is not None and not rep.empty else []
+        self.reliability_family_combo.blockSignals(True)
+        self.reliability_family_combo.clear()
+        self.reliability_family_combo.addItem("All families")
+        self.reliability_family_combo.addItems(families)
+        if current and current in ["All families"] + families:
+            self.reliability_family_combo.setCurrentText(current)
+        self.reliability_family_combo.blockSignals(False)
+
+    def _refresh_reliability_feature_combo(self) -> None:
+        if not hasattr(self, "reliability_feature_combo"):
+            return
+        current = self.reliability_feature_combo.currentText()
+        scoped = self._build_scoped_reliability_outputs()
+        rep = scoped.get("repeatability", pd.DataFrame())
+        fam = self._selected_reliability_family()
+        if rep is not None and not rep.empty and fam != "All families" and "family_or_subsystem" in rep.columns:
+            rep = rep.loc[rep["family_or_subsystem"].astype(str).eq(fam)]
+        feats = rep["feature"].astype(str).tolist() if rep is not None and not rep.empty and "feature" in rep.columns else []
+        self.reliability_feature_combo.blockSignals(True)
+        self.reliability_feature_combo.clear()
+        self.reliability_feature_combo.addItems(feats[:750])
+        if current and current in feats:
+            self.reliability_feature_combo.setCurrentText(current)
+        self.reliability_feature_combo.blockSignals(False)
+
+    def _populate_reliability_from_scope(self, scoped: dict[str, pd.DataFrame]) -> None:
         if not hasattr(self, "reliability_repeatability_table"):
             return
         while self.reliability_metric_grid.count():
             item = self.reliability_metric_grid.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        design = outputs.get("reliability_design_summary", pd.DataFrame())
-        rep = outputs.get("feature_repeatability_summary", pd.DataFrame())
-        fam = outputs.get("reliability_family_summary", pd.DataFrame())
-        subj = outputs.get("reliability_subject_record_counts", pd.DataFrame())
+        design = scoped.get("design", pd.DataFrame())
+        rep = scoped.get("repeatability", pd.DataFrame())
+        fam = scoped.get("family", pd.DataFrame())
+        subj = scoped.get("subjects", pd.DataFrame())
         def metric(name: str, default: object = "-") -> object:
             if design is None or design.empty or "metric" not in design.columns:
                 return default
             row = design.loc[design["metric"].astype(str).eq(name)]
             return row["value"].iloc[0] if not row.empty else default
+        evaluable = int(pd.to_numeric(rep.get("icc1_proxy", pd.Series(dtype=float)), errors="coerce").notna().sum()) if rep is not None and not rep.empty else 0
         stable = int(rep["reliability_status"].astype(str).eq("stable").sum()) if rep is not None and not rep.empty and "reliability_status" in rep.columns else 0
         moderate = int(rep["reliability_status"].astype(str).eq("moderate").sum()) if rep is not None and not rep.empty and "reliability_status" in rep.columns else 0
-        evaluable = int(pd.to_numeric(rep.get("icc1_proxy", pd.Series(dtype=float)), errors="coerce").notna().sum()) if rep is not None and not rep.empty else 0
+        med_icc = pd.to_numeric(rep.get("icc1_proxy", pd.Series(dtype=float)), errors="coerce").median() if rep is not None and not rep.empty else np.nan
         tiles = [
-            ("Subject column", metric("subject_column"), "repeatability anchor"),
-            ("Subjects with repeats", metric("subjects_with_repeats", 0), "required for ICC-style review"),
-            ("Median records / subject", metric("median_records_per_subject", 0), "design depth"),
-            ("Evaluable features", evaluable, "ICC-style estimates"),
-            ("Stable features", stable, "ICC proxy >= .75"),
-            ("Moderate features", moderate, "ICC proxy .50-.75"),
+            ("Task scope", metric("task_scope"), "same-task reliability scope"),
+            ("Repeated subject-task units", metric("repeated_subject_task_units", 0), "minimum substrate"),
+            ("Evaluable features", evaluable, "ICC + error estimates"),
+            ("Median ICC proxy", f"{med_icc:.2f}" if np.isfinite(med_icc) else "-", "higher is more repeatable"),
+            ("Stable features", stable, "ICC high + MDC acceptable"),
+            ("Moderate features", moderate, "usable with caution"),
         ]
         for idx, (title, value, subtitle) in enumerate(tiles):
             self.reliability_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx // 3, idx % 3)
@@ -8225,96 +8467,140 @@ class FeatureAnalysisGUI(QMainWindow):
         self._fill_table(self.reliability_repeatability_table, rep)
         self._fill_table(self.reliability_family_table, fam)
         self._fill_table(self.reliability_subjects_table, subj)
-        self._fill_table(self.reliability_screen_table, outputs.get("feature_reliability_screen", pd.DataFrame()))
-        current = self.reliability_feature_combo.currentText() if hasattr(self, "reliability_feature_combo") else ""
-        self.reliability_feature_combo.blockSignals(True)
-        self.reliability_feature_combo.clear()
-        feats = rep["feature"].astype(str).tolist() if rep is not None and not rep.empty and "feature" in rep.columns else []
-        self.reliability_feature_combo.addItems(feats[:500])
-        if current and current in feats:
-            self.reliability_feature_combo.setCurrentText(current)
-        self.reliability_feature_combo.blockSignals(False)
+        self._fill_table(self.reliability_screen_table, self.outputs.get("feature_reliability_screen", pd.DataFrame()) if hasattr(self, "outputs") else pd.DataFrame())
 
-    def _selected_reliability_feature(self) -> str | None:
-        if hasattr(self, "reliability_feature_combo") and self.reliability_feature_combo.count() > 0:
-            return self.reliability_feature_combo.currentText()
-        return None
-
-    def generate_selected_feature_reliability(self) -> None:
-        feature = self._selected_reliability_feature()
-        if not feature:
+    def update_reliability_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
+        if not hasattr(self, "reliability_repeatability_table"):
             return
-        try:
-            active_df = self.analysis_df if self.analysis_df is not None else self.feature_df
-            self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
-            path = plot_selected_feature_reliability(active_df, feature, plots_dir / "selected_feature_reliability.png")
-            if not hasattr(self, "plot_paths"):
-                self.plot_paths = {}
-            self.plot_paths["selected_feature_reliability"] = str(path)
-        except Exception as exc:
-            QMessageBox.warning(self, "Reliability plot failed", str(exc))
+        df = self._reliability_source_frame()
+        ctx = self._reliability_context(df)
+        task_values = sorted([str(x) for x in ctx["task"].replace("", pd.NA).dropna().unique()]) if len(ctx.get("task", [])) else []
+        current_task = self.reliability_task_combo.currentText() if hasattr(self, "reliability_task_combo") else "All tasks"
+        if hasattr(self, "reliability_task_combo"):
+            self.reliability_task_combo.blockSignals(True)
+            self.reliability_task_combo.clear()
+            self.reliability_task_combo.addItem("All tasks")
+            self.reliability_task_combo.addItems(task_values)
+            if current_task and current_task in ["All tasks"] + task_values:
+                self.reliability_task_combo.setCurrentText(current_task)
+            self.reliability_task_combo.blockSignals(False)
+        scoped = self._build_scoped_reliability_outputs()
+        self._populate_reliability_from_scope(scoped)
+        self._refresh_reliability_family_combo(scoped.get("repeatability", pd.DataFrame()))
+        self._refresh_reliability_feature_combo()
+
+    def _selected_feature_reliability_records(self, feature: str) -> pd.DataFrame:
+        df = self._reliability_source_frame()
+        if df.empty or feature not in df.columns:
+            return pd.DataFrame(columns=["subject", "task", "record_order", "value"])
+        ctx = self._reliability_context(df)
+        task_focus = self._selected_reliability_task()
+        if task_focus and task_focus != "All tasks":
+            mask = ctx["task"].astype(str).eq(str(task_focus))
+            df = df.loc[mask].copy().reset_index(drop=True)
+            ctx = self._reliability_context(df)
+        values = pd.to_numeric(df[feature], errors="coerce")
+        task = ctx["task"] if len(ctx["task"]) == len(df) else pd.Series("", index=df.index)
+        subject = ctx["subject"] if len(ctx["subject"]) == len(df) else pd.Series("", index=df.index)
+        date = pd.to_datetime(ctx["date"], errors="coerce") if len(ctx["date"]) == len(df) else pd.Series(pd.NaT, index=df.index)
+        work = pd.DataFrame({"subject": subject.astype(str), "task": task.astype(str), "date": date, "value": values})
+        work = work.loc[work["subject"].str.len().gt(0)].dropna(subset=["value"])
+        if work.empty:
+            return work
+        if task_focus == "All tasks" and work["task"].astype(str).str.len().gt(0).any():
+            group_cols = ["subject", "task"]
+        else:
+            group_cols = ["subject"]
+        work = work.sort_values(["subject", "task", "date"], na_position="last")
+        work["record_order"] = work.groupby(group_cols).cumcount() + 1
+        counts = work.groupby(group_cols)["value"].count()
+        repeated = counts[counts >= 2].reset_index()[group_cols]
+        if repeated.empty:
+            return pd.DataFrame(columns=["subject", "task", "record_order", "value"])
+        if group_cols == ["subject", "task"]:
+            work = work.merge(repeated, on=group_cols, how="inner")
+        else:
+            work = work.merge(repeated, on=["subject"], how="inner")
+        return work
+
+    def _generate_reliability_plot(self, key: str) -> str | None:
+        self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
+        scoped = self._build_scoped_reliability_outputs()
+        rep = scoped.get("repeatability", pd.DataFrame())
+        fam = scoped.get("family", pd.DataFrame())
+        design = scoped.get("design", pd.DataFrame())
+        subj = scoped.get("subjects", pd.DataFrame())
+        if not hasattr(self, "plot_paths"):
+            self.plot_paths = {}
+        task_slug = self._safe_task_slug(self._selected_reliability_task()) if hasattr(self, "_safe_task_slug") else "task"
+        if key == "reliability_design_support":
+            path = plot_reliability_design_support(design, subj, plots_dir / f"reliability_design_support__{task_slug}.png")
+        elif key == "reliability_icc_ranking":
+            path = plot_reliability_icc_ranking(rep, plots_dir / f"reliability_icc_ranking__{task_slug}.png")
+        elif key == "reliability_measurement_error_landscape":
+            path = plot_reliability_measurement_error_landscape(rep, plots_dir / f"reliability_measurement_error_landscape__{task_slug}.png")
+        elif key == "reliability_family_summary":
+            path = plot_reliability_family_summary(fam, plots_dir / f"reliability_family_summary__{task_slug}.png")
+        elif key in {"selected_feature_same_task_reliability", "selected_feature_reliability"}:
+            feature = self._selected_reliability_feature()
+            if not feature:
+                return None
+            records = self._selected_feature_reliability_records(feature)
+            suffix = self._selected_reliability_task()
+            path = plot_selected_feature_same_task_reliability(records, feature, plots_dir / f"selected_feature_same_task_reliability__{task_slug}.png", suffix)
+            key = "selected_feature_same_task_reliability"
+        else:
+            return None
+        self.plot_paths[key] = str(path)
+        return str(path)
 
     def preview_reliability_plot(self, key: str) -> None:
-        if key == "selected_feature_reliability":
-            self.generate_selected_feature_reliability()
-        elif not hasattr(self, "plot_paths") or key not in self.plot_paths or not Path(self.plot_paths.get(key, "")).exists():
-            self.regenerate_overview_plots()
-        if not hasattr(self, "plot_paths") or key not in self.plot_paths:
-            QMessageBox.information(self, "Plot unavailable", "Run Feature Analysis first, or this reliability plot could not be generated for the current dataset.")
+        if hasattr(self, "reliability_plot_combo"):
+            data = self.reliability_plot_combo.currentData()
+            if data:
+                key = str(data)
+        path_str = self._generate_reliability_plot(key)
+        if not path_str:
+            QMessageBox.information(self, "Plot unavailable", "Run Feature Analysis first, select a repeated task/feature if needed, or this reliability plot could not be generated for the current dataset.")
             return
-        path = Path(self.plot_paths[key])
+        path = Path(path_str)
         if not path.exists():
             QMessageBox.information(self, "Plot unavailable", f"Plot file not found:\n{path}")
             return
         self.current_reliability_plot = path
         self.update_reliability_interpretation(key)
-        pix = QPixmap(str(path))
-        if pix.isNull():
-            self.reliability_plot_preview.setText(f"Could not load plot:\n{path}")
-            return
-        self.reliability_plot_preview.setPixmap(pix.scaled(self.reliability_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        self.reliability_plot_preview.setToolTip(str(path))
+        self._display_plot_image(self.reliability_plot_preview, path)
 
     def update_reliability_interpretation(self, key: str) -> None:
         if not hasattr(self, "reliability_interpretation_label"):
             return
         feature = self._selected_reliability_feature() or "selected feature"
+        task = self._selected_reliability_task()
         captions = {
-            "reliability_status_counts": (
-                "<b>What it shows</b><br>Counts of features classified as stable, moderate, variable, unstable, or not evaluable based on repeated-record variance structure.<br><br>"
-                "<b>Concerning pattern</b><br>Many not-evaluable or unstable features means the dataset may not support longitudinal interpretation for those measures.<br><br>"
-                "<b>Do not overinterpret</b><br>These are screening labels, not formal mixed-effects reliability estimates.<br><br>"
-                "<b>Next check</b><br>Inspect design support and selected-feature spaghetti plots."
+            "reliability_design_support": (
+                "<b>What it shows</b><br>Whether this task scope has enough repeated same-task recordings to estimate reliability.<br><br>"
+                "<b>Statistical rule</b><br>Reliability must be estimated inside repeated subject-task units, not by mixing different tasks.<br><br>"
+                "<b>Next check</b><br>If repeated support is low, ICC and detectable-change estimates are fragile."
             ),
             "reliability_icc_ranking": (
-                "<b>What it shows</b><br>Features ranked by ICC(1)-style variance-ratio proxy: between-subject variance divided by total between+within variance.<br><br>"
-                "<b>Concerning pattern</b><br>Low ICC means repeated recordings from the same subject vary substantially; this can weaken longitudinal monitoring.<br><br>"
-                "<b>Do not overinterpret</b><br>High ICC can reflect stable device/setup effects as well as stable physiology. Compare with QC Integration.<br><br>"
-                "<b>Next check</b><br>Review family summary, QC sensitivity, and selected feature trajectories."
+                "<b>What it shows</b><br>Features ranked by ICC(1)-style same-task repeatability proxy.<br><br>"
+                "<b>Interpretation</b><br>Higher ICC means more variance is between subjects than within repeated recordings. This supports stable measurement but does not prove clinical usefulness.<br><br>"
+                "<b>Next check</b><br>Pair ICC with the detectable-change/error landscape."
             ),
-            "reliability_variance_landscape": (
-                "<b>What it shows</b><br>Within-subject variance versus between-subject variance for evaluable features. Larger points have higher ICC proxy.<br><br>"
-                "<b>Concerning pattern</b><br>High within-subject variance suggests session/task/acquisition instability; high between-subject variance can be useful but may include stable device effects.<br><br>"
-                "<b>Do not overinterpret</b><br>This does not separate physiology from acquisition unless paired with QC and task context.<br><br>"
-                "<b>Next check</b><br>Inspect features with high between-subject and low within-subject variance."
+            "reliability_measurement_error_landscape": (
+                "<b>What it shows</b><br>ICC versus MDC95/total SD. This estimates how large a change must be before it likely exceeds same-task measurement noise.<br><br>"
+                "<b>Best pattern</b><br>High ICC and low standardized MDC95. Low ICC or high MDC means longitudinal change is hard to trust.<br><br>"
+                "<b>Next check</b><br>Inspect selected-feature same-task trajectories and QC sensitivity."
             ),
             "reliability_family_summary": (
-                "<b>What it shows</b><br>Median repeatability by feature family/subsystem.<br><br>"
-                "<b>Concerning pattern</b><br>A whole family with low repeatability may reflect task support problems, algorithm instability, or acquisition sensitivity.<br><br>"
-                "<b>Do not overinterpret</b><br>Family medians can hide individual strong features.<br><br>"
-                "<b>Next check</b><br>Open the feature repeatability table and compare with distributions/QC."
+                "<b>What it shows</b><br>Median same-task reliability by feature family.<br><br>"
+                "<b>Important caution</b><br>Family summaries are screening aids; individual features can differ strongly inside one family.<br><br>"
+                "<b>Next check</b><br>Use the feature table and selected-feature plot before deciding what to retain."
             ),
-            "reliability_subject_counts": (
-                "<b>What it shows</b><br>How many repeated records each subject contributes.<br><br>"
-                "<b>Concerning pattern</b><br>Few repeated subjects or very unequal recording counts make reliability estimates fragile.<br><br>"
-                "<b>Do not overinterpret</b><br>More records per subject improve reliability estimation but do not guarantee task or QC comparability.<br><br>"
-                "<b>Next check</b><br>Review task/session structure and subject-level QC burden."
-            ),
-            "selected_feature_reliability": (
-                f"<b>What it shows</b><br>Repeated-record trajectory for <b>{feature}</b> within each subject when subject labels are available.<br><br>"
-                "<b>Concerning pattern</b><br>Large within-subject swings suggest session effects, task differences, QC artifacts, or genuine longitudinal change.<br><br>"
-                "<b>Do not overinterpret</b><br>Spaghetti plots are descriptive; they do not prove progression or stability.<br><br>"
-                "<b>Next check</b><br>Compare against visit timing, task, severity, and QC."
+            "selected_feature_same_task_reliability": (
+                f"<b>What it shows</b><br>Raw repeated-record lines for <b>{feature}</b> in task scope <b>{task}</b>.<br><br>"
+                "<b>Interpretation</b><br>Flat within-subject lines with separation between subjects support repeatability. Large within-subject swings suggest session, QC, task, or acquisition instability.<br><br>"
+                "<b>Next check</b><br>Compare with Longitudinal change and QC plots before making clinical claims."
             ),
         }
         self.reliability_interpretation_label.setText(captions.get(key, "Select a reliability plot to see structured interpretation guidance."))
