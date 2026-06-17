@@ -91,11 +91,12 @@ from vslp.analysis.features.plots import (
     plot_task_subject_coverage_summary, plot_task_feature_profile,
     plot_longitudinal_subject_records, plot_longitudinal_readiness,
     plot_longitudinal_visit_timeline, plot_longitudinal_feature_family_trajectory,
+    plot_longitudinal_qc_change_audit,
     plot_longitudinal_session_matrix, plot_longitudinal_iteration_counts,
     plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.122.0"
+APP_VERSION = "v0.123.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -6521,6 +6522,7 @@ class FeatureAnalysisGUI(QMainWindow):
         self.longitudinal_view_combo.addItem("Repeated-record cohort summary", "longitudinal_readiness")
         self.longitudinal_view_combo.addItem("Selected subject-task visit timeline", "longitudinal_visit_timeline")
         self.longitudinal_view_combo.addItem("Selected subject-task feature change audit", "longitudinal_feature_family_trajectory")
+        self.longitudinal_view_combo.addItem("Selected subject-task QC change audit", "longitudinal_qc_change_audit")
         plot_header.addWidget(self.longitudinal_view_combo, 1)
         show_btn = QPushButton("Show")
         show_btn.setProperty("secondary", True)
@@ -6615,6 +6617,8 @@ class FeatureAnalysisGUI(QMainWindow):
         tabs.addTab(self.long_iteration_table, "Iteration support")
         tabs.addTab(self.long_date_table, "Date support")
         tabs.addTab(self.long_feature_change_table, "Feature change audit")
+        self.long_qc_change_table = self._simple_table()
+        tabs.addTab(self.long_qc_change_table, "QC change audit")
         card.layout.addWidget(tabs)
 
         layout.addWidget(card)
@@ -7355,6 +7359,27 @@ class FeatureAnalysisGUI(QMainWindow):
                 lookup[f] = val if val else "not specified"
         return lookup
 
+    def _interpret_longitudinal_change_direction(self, z_change, direction_value: str) -> str:
+        """Return better/worse only when registry direction explicitly defines it."""
+        if pd.isna(z_change):
+            return "not available"
+        d = normalize_name(direction_value or "")
+        if not d or d in {"not_specified", "unspecified", "unknown", "na", "none"}:
+            return "clinical direction not specified"
+        z = float(z_change)
+        if abs(z) < 1e-12:
+            return "no numeric change"
+        # Common registry conventions. Do not infer direction from feature names.
+        higher_worse = any(t in d for t in ["higher_is_worse", "increase_worse", "increased_worse", "positive_worse", "worse_if_higher", "deterioration_increase", "higher_bad"])
+        higher_better = any(t in d for t in ["higher_is_better", "increase_better", "increased_better", "positive_better", "better_if_higher", "higher_good"])
+        lower_worse = any(t in d for t in ["lower_is_worse", "decrease_worse", "decreased_worse", "negative_worse", "worse_if_lower", "lower_bad"])
+        lower_better = any(t in d for t in ["lower_is_better", "decrease_better", "decreased_better", "negative_better", "better_if_lower", "lower_good"])
+        if higher_worse or lower_better:
+            return "worse" if z > 0 else "better"
+        if higher_better or lower_worse:
+            return "better" if z > 0 else "worse"
+        return "registry direction present; not machine-interpretable"
+
     def _longitudinal_feature_family_change_table(self, df: pd.DataFrame) -> pd.DataFrame:
         """Selected subject-task feature-level change audit table.
 
@@ -7461,11 +7486,137 @@ class FeatureAnalysisGUI(QMainWindow):
                     "standardized_change_from_baseline": z_change,
                     "absolute_standardized_change": abs(z_change) if pd.notna(z_change) else pd.NA,
                     "clinical_direction_from_registry": direction_lookup.get(feat, "not specified"),
-                    "direction_interpretation": "numeric direction only; clinical meaning not inferred" if direction_lookup.get(feat, "not specified") == "not specified" else "use registry direction",
+                    "direction_interpretation": self._interpret_longitudinal_change_direction(z_change, direction_lookup.get(feat, "not specified")),
                 })
         out = pd.DataFrame(rows)
         if out.empty or out["standardized_change_from_baseline"].notna().sum() < 2:
             return pd.DataFrame([{"status": "Selected subject-task feature audit has fewer than two usable feature-change values."}])
+        return out
+
+    def _longitudinal_qc_change_table(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Selected subject-task QC audit table.
+
+        Manual QC is represented as 0/1 flag burden by visit. Automated QC, when
+        an uploaded QC table is row-aligned to the feature table, is represented
+        as standardized change from the selected subject's first same-task
+        recording. This table is same-task and same-subject only.
+        """
+        if df is None or df.empty:
+            return pd.DataFrame([{"status": "No analysis table available. Run Feature Analysis first."}])
+        selected_task = self._longitudinal_selected_task()
+        selected_subject = self._longitudinal_selected_subject()
+        if not selected_task:
+            return pd.DataFrame([{"status": "Select one task first. Longitudinal QC change is only interpreted within the same task."}])
+        if not selected_subject:
+            return pd.DataFrame([{"status": "Select one repeated subject first."}])
+        subj_col = self._subject_col(df)
+        task_col = self._task_col(df)
+        session_col = self._session_col(df)
+        iter_col = self._iteration_col(df)
+        date_col = self._date_col(df)
+        if not subj_col or subj_col not in df.columns or not task_col or task_col not in df.columns:
+            return pd.DataFrame([{"status": "Subject and task fields are required for same-task QC change review."}])
+        mask = df[task_col].astype(str).eq(str(selected_task)) & df[subj_col].astype(str).eq(str(selected_subject))
+        g = df.loc[mask].copy()
+        if len(g) < 2:
+            return pd.DataFrame([{"status": "Selected subject has fewer than two recordings for the selected task."}])
+        if date_col and date_col in g.columns:
+            g["__date"] = pd.to_datetime(g[date_col], errors="coerce")
+        else:
+            g["__date"] = pd.NaT
+        if iter_col and iter_col in g.columns:
+            g["__iteration_num"] = pd.to_numeric(g[iter_col], errors="coerce")
+        else:
+            g["__iteration_num"] = pd.NA
+        sort_cols = [c for c in ["__date", "__iteration_num", session_col] if c and c in g.columns]
+        if sort_cols:
+            g = g.sort_values(sort_cols, na_position="last")
+        first_date = g["__date"].dropna().min() if "__date" in g.columns else pd.NaT
+
+        rows = []
+        # Manual QC from accepted metadata roles; yes/no converted to 0/1 flag burden.
+        manual_qc = self._manual_qc_dataframe(df) if hasattr(self, "_manual_qc_dataframe") else pd.DataFrame()
+        if manual_qc is not None and not manual_qc.empty and len(manual_qc) == len(df):
+            manual_g = manual_qc.loc[g.index].copy()
+            manual_metrics = [c for c in manual_g.columns if str(c).startswith("manual_") and pd.to_numeric(manual_g[c], errors="coerce").notna().any()]
+            family_lookup = getattr(self, "_current_manual_qc_family_lookup", {}) or {}
+            for order, (idx, row) in enumerate(g.iterrows(), start=1):
+                date_value = row.get("__date", pd.NaT)
+                days_since_first = pd.NA
+                if pd.notna(date_value) and pd.notna(first_date):
+                    days_since_first = int((date_value - first_date).days)
+                for metric in manual_metrics:
+                    val = pd.to_numeric(pd.Series([manual_g.loc[idx, metric]]), errors="coerce").iloc[0]
+                    rows.append({
+                        "subject_id": selected_subject,
+                        "task": selected_task,
+                        "qc_source": "Manual QC",
+                        "qc_family": family_lookup.get(metric, "Manual QC"),
+                        "qc_metric": metric,
+                        "record_order": order,
+                        "date": date_value.date().isoformat() if pd.notna(date_value) else "",
+                        "days_since_first": days_since_first,
+                        "session_or_visit": str(row.get(session_col, "")) if session_col and session_col in g.columns else "",
+                        "iteration": str(row.get(iter_col, "")) if iter_col and iter_col in g.columns else "",
+                        "raw_value": float(val) if pd.notna(val) else pd.NA,
+                        "baseline_value": pd.NA,
+                        "change_from_baseline": pd.NA,
+                        "standardized_change_from_baseline": pd.NA,
+                        "display_value": float(val) if pd.notna(val) else pd.NA,
+                        "interpretation": "manual flag present" if pd.notna(val) and float(val) > 0 else ("manual flag absent" if pd.notna(val) else "manual flag missing"),
+                    })
+
+        # Automated QC from uploaded row-aligned QC table only.
+        q = getattr(self, "qc_df", None)
+        if q is not None and not q.empty and len(q) == len(df):
+            qg = q.loc[g.index].copy()
+            qtask = q.loc[df[task_col].astype(str).eq(str(selected_task))].copy()
+            numeric_metrics = []
+            for c in qg.columns:
+                ser = pd.to_numeric(qtask[c], errors="coerce")
+                if ser.notna().sum() >= 2 and ser.nunique(dropna=True) > 1:
+                    numeric_metrics.append(str(c))
+            # Keep all automated QC metrics available in the selected subject-task unit.
+            if numeric_metrics:
+                scales = qtask[numeric_metrics].apply(pd.to_numeric, errors="coerce").std(axis=0, ddof=0).replace(0, pd.NA)
+                values = qg[numeric_metrics].apply(pd.to_numeric, errors="coerce")
+                baseline = values.iloc[0]
+                for order, (idx, row) in enumerate(g.iterrows(), start=1):
+                    date_value = row.get("__date", pd.NaT)
+                    days_since_first = pd.NA
+                    if pd.notna(date_value) and pd.notna(first_date):
+                        days_since_first = int((date_value - first_date).days)
+                    for metric in numeric_metrics:
+                        raw_value = values.loc[idx, metric]
+                        base_value = baseline.get(metric, pd.NA)
+                        scale = scales.get(metric, pd.NA)
+                        raw_change = pd.NA
+                        z_change = pd.NA
+                        if pd.notna(raw_value) and pd.notna(base_value):
+                            raw_change = float(raw_value - base_value)
+                        if pd.notna(raw_change) and pd.notna(scale) and float(scale) != 0:
+                            z_change = float(raw_change / float(scale))
+                        rows.append({
+                            "subject_id": selected_subject,
+                            "task": selected_task,
+                            "qc_source": "Automated QC",
+                            "qc_family": qc_family_from_name(metric),
+                            "qc_metric": metric,
+                            "record_order": order,
+                            "date": date_value.date().isoformat() if pd.notna(date_value) else "",
+                            "days_since_first": days_since_first,
+                            "session_or_visit": str(row.get(session_col, "")) if session_col and session_col in g.columns else "",
+                            "iteration": str(row.get(iter_col, "")) if iter_col and iter_col in g.columns else "",
+                            "raw_value": float(raw_value) if pd.notna(raw_value) else pd.NA,
+                            "baseline_value": float(base_value) if pd.notna(base_value) else pd.NA,
+                            "change_from_baseline": raw_change,
+                            "standardized_change_from_baseline": z_change,
+                            "display_value": z_change,
+                            "interpretation": "numeric QC change; higher/lower is not automatically better unless QC metric definition specifies direction",
+                        })
+        out = pd.DataFrame(rows)
+        if out.empty or "display_value" not in out.columns or pd.to_numeric(out.get("display_value"), errors="coerce").notna().sum() < 2:
+            return pd.DataFrame([{"status": "No usable manual or row-aligned automated QC values were available for the selected subject-task unit."}])
         return out
 
     def update_longitudinal_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
@@ -7524,6 +7675,8 @@ class FeatureAnalysisGUI(QMainWindow):
         self._fill_table(self.long_iteration_table, iter_summary)
         self._fill_table(self.long_date_table, date_summary)
         self._fill_table(self.long_feature_change_table, self._longitudinal_feature_family_change_table(df))
+        if hasattr(self, "long_qc_change_table"):
+            self._fill_table(self.long_qc_change_table, self._longitudinal_qc_change_table(df))
         self.longitudinal_note.setText("Repeated-record cohort summary generated. Later longitudinal plots will analyze only subject-task units with at least two recordings of the same task.")
         self.generate_longitudinal_plots()
         self.preview_longitudinal_plot("longitudinal_readiness")
@@ -7546,6 +7699,10 @@ class FeatureAnalysisGUI(QMainWindow):
         if hasattr(self, "long_feature_change_table"):
             self._fill_table(self.long_feature_change_table, feature_family_change)
         self.plot_paths["longitudinal_feature_family_trajectory"] = str(plot_longitudinal_feature_family_trajectory(feature_family_change, plots_dir / "longitudinal_feature_family_trajectory.png"))
+        qc_change = self._longitudinal_qc_change_table(df)
+        if hasattr(self, "long_qc_change_table"):
+            self._fill_table(self.long_qc_change_table, qc_change)
+        self.plot_paths["longitudinal_qc_change_audit"] = str(plot_longitudinal_qc_change_audit(qc_change, plots_dir / "longitudinal_qc_change_audit.png"))
 
     def preview_longitudinal_plot(self, key: str | None = None) -> None:
         key = key or (self.longitudinal_view_combo.currentData() if hasattr(self, "longitudinal_view_combo") else "long_subject_records")
@@ -7563,7 +7720,8 @@ class FeatureAnalysisGUI(QMainWindow):
         captions = {
             "longitudinal_readiness": "Repeated-record cohort summary. Use this first to quantify how many subjects have repeated same-task recordings, typical recording depth, and typical dated follow-up span before reviewing feature change.",
             "longitudinal_visit_timeline": "Selected subject-task visit timeline. Use this to verify visit ordering, days since first recording, and spacing between repeated recordings before interpreting feature change.",
-            "longitudinal_feature_family_trajectory": "Selected subject-task feature change audit. This analyzes only repeated recordings of the same task for the selected subject. Each feature is shown separately as standardized change from that subject's first same-task recording; positive/negative sign is numeric direction, not clinical improvement/worsening unless the registry defines direction."
+            "longitudinal_feature_family_trajectory": "Selected subject-task feature change audit. This analyzes only repeated recordings of the same task for the selected subject. All selected-family features are shown separately. Better/worse is shown only when the registry explicitly defines direction; otherwise direction is numeric only.",
+            "longitudinal_qc_change_audit": "Selected subject-task QC change audit. Manual QC is shown as yes/no flag status by visit; row-aligned automated QC is shown as standardized numeric change from the first same-task recording."
         }
         if hasattr(self, "longitudinal_interpretation"):
             self.longitudinal_interpretation.setText(captions.get(key, "Longitudinal review plot."))
