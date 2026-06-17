@@ -2293,76 +2293,90 @@ def plot_longitudinal_visit_timeline(visits: pd.DataFrame, path: Path) -> Path:
     return _save(fig, path)
 
 def plot_longitudinal_feature_family_trajectory(traj: pd.DataFrame, path: Path) -> Path:
-    """Selected subject-task feature-family change from baseline.
+    """Selected subject-task feature-level change audit.
 
-    This plot is intentionally within-task and within-subject. The GUI builds
-    ``traj`` only after the user selects one task and one repeated subject.
-    Values represent standardized change from the first available recording in
-    that selected subject-task unit, optionally collapsed across one feature
-    family/subsystem.
+    Features are plotted separately because features within one family can have
+    different scales, meanings, and clinical directions. The y-axis is
+    standardized change from the selected subject's first same-task recording.
+    Positive/negative values are numeric direction only unless a feature
+    registry explicitly defines clinical direction.
     """
-    title = "Selected subject-task feature-family change"
+    title = "Selected subject-task feature change audit"
     if traj is None or traj.empty or "status" in traj.columns:
         msg = "Select one task, one repeated subject, and a feature family."
         if isinstance(traj, pd.DataFrame) and not traj.empty and "status" in traj.columns:
             msg = str(traj["status"].iloc[0])
         return _empty(path, msg, title)
     d = traj.copy()
-    if "record_order" not in d.columns:
-        d["record_order"] = np.arange(1, len(d) + 1)
-    d["record_order"] = pd.to_numeric(d["record_order"], errors="coerce").fillna(pd.Series(np.arange(1, len(d) + 1), index=d.index)).astype(int)
-    y_col = "family_mean_standardized_change_from_baseline"
-    if y_col not in d.columns:
-        return _empty(path, "Trajectory table is missing standardized change values.", title)
-    d[y_col] = pd.to_numeric(d[y_col], errors="coerce")
-    if d[y_col].notna().sum() < 2:
-        return _empty(path, "Fewer than two usable visit-level feature-family change values are available.", title)
+    required = {"feature", "record_order", "standardized_change_from_baseline"}
+    if not required.issubset(set(d.columns)):
+        return _empty(path, "Feature-change audit table is missing required columns.", title)
+    d["record_order"] = pd.to_numeric(d["record_order"], errors="coerce")
+    d["standardized_change_from_baseline"] = pd.to_numeric(d["standardized_change_from_baseline"], errors="coerce")
+    d["absolute_standardized_change"] = pd.to_numeric(d.get("absolute_standardized_change", d["standardized_change_from_baseline"].abs()), errors="coerce")
     if "days_since_first" in d.columns:
         d["days_since_first"] = pd.to_numeric(d["days_since_first"], errors="coerce")
     else:
         d["days_since_first"] = np.nan
-    if d["days_since_first"].notna().sum() >= 2:
-        x = d["days_since_first"].astype(float)
-        xlabel = "Days since first dated recording"
+    d = d.loc[d["standardized_change_from_baseline"].notna() & d["record_order"].notna()].copy()
+    if d.empty or d["record_order"].nunique() < 2:
+        return _empty(path, "Fewer than two usable visit-level feature-change values are available.", title)
+
+    # Keep the plot readable: show features with the largest observed change,
+    # while the detailed table retains all audited features.
+    top_features = (
+        d.groupby("feature")["absolute_standardized_change"]
+        .max()
+        .sort_values(ascending=False)
+        .head(8)
+        .index.astype(str)
+        .tolist()
+    )
+    pdat = d.loc[d["feature"].astype(str).isin(top_features)].copy()
+    if pdat.empty:
+        return _empty(path, "No feature-change values were available after filtering.", title)
+    if pdat["days_since_first"].notna().sum() >= max(2, pdat["record_order"].nunique()):
+        x_col = "days_since_first"
+        xlabel = "Days since first same-task recording"
     else:
-        x = d["record_order"].astype(float)
+        x_col = "record_order"
         xlabel = "Recording order (dates unavailable or incomplete)"
     subject = str(d["subject_id"].dropna().iloc[0]) if "subject_id" in d.columns and d["subject_id"].notna().any() else "selected subject"
     task = str(d["task"].dropna().iloc[0]) if "task" in d.columns and d["task"].notna().any() else "selected task"
-    family = str(d["feature_family"].dropna().iloc[0]) if "feature_family" in d.columns and d["feature_family"].notna().any() else "selected feature family"
-    fig, ax = plt.subplots(figsize=(12.5, 5.8))
+    family = str(d["selected_family"].dropna().iloc[0]) if "selected_family" in d.columns and d["selected_family"].notna().any() else "selected family"
+
+    fig, ax = plt.subplots(figsize=(13, 6.6))
     ax.axhline(0, color=GRID, lw=1.4, zorder=1)
-    ax.plot(x, d[y_col], marker="o", linewidth=2.2, color=TEAL, markersize=7, zorder=3)
-    if "family_mean_abs_standardized_change_from_baseline" in d.columns:
-        abs_change = pd.to_numeric(d["family_mean_abs_standardized_change_from_baseline"], errors="coerce")
-        ax.fill_between(x, d[y_col], 0, where=d[y_col].notna(), alpha=0.10, color=TEAL)
-    for _, row in d.iterrows():
-        xv = float(row["days_since_first"]) if pd.notna(row.get("days_since_first", np.nan)) and d["days_since_first"].notna().sum() >= 2 else float(row["record_order"])
-        yv = row.get(y_col, np.nan)
-        if pd.isna(yv):
+    for feat in top_features:
+        g = pdat.loc[pdat["feature"].astype(str).eq(str(feat))].sort_values([x_col, "record_order"])
+        if g.empty:
             continue
-        order = int(row.get("record_order", 0))
-        date_txt = str(row.get("date", "")).strip()
-        n_avail = row.get("n_available_features", np.nan)
-        n_total = row.get("n_family_features", np.nan)
-        label = f"#{order}"
-        if date_txt:
-            label += f"\n{date_txt}"
-        if pd.notna(n_avail) and pd.notna(n_total):
-            label += f"\n{int(n_avail)}/{int(n_total)} features"
-        ax.text(xv, yv, label, ha="center", va="bottom" if yv >= 0 else "top", fontsize=8, color=NAVY)
+        x = pd.to_numeric(g[x_col], errors="coerce")
+        y = pd.to_numeric(g["standardized_change_from_baseline"], errors="coerce")
+        if x.notna().sum() < 2 or y.notna().sum() < 2:
+            continue
+        label = str(feat)
+        if len(label) > 42:
+            label = label[:39] + "..."
+        ax.plot(x, y, marker="o", linewidth=1.8, markersize=5, alpha=0.92, label=label)
     ax.set_xlabel(xlabel, color=MUTED)
-    ax.set_ylabel("Mean standardized change from subject baseline", color=MUTED)
+    ax.set_ylabel("Standardized change from own baseline", color=MUTED)
     _style(ax, title)
-    ymin, ymax = ax.get_ylim()
-    if ymin > -0.2:
-        ymin = -0.2
-    if ymax < 0.2:
-        ymax = 0.2
-    ax.set_ylim(ymin, ymax)
+    ax.grid(axis="y", color=GRID, alpha=0.75, linewidth=0.8)
+    # Symmetric y-limits make direction and magnitude easier to compare.
+    lim = np.nanmax(np.abs(pd.to_numeric(pdat["standardized_change_from_baseline"], errors="coerce")))
+    if not np.isfinite(lim):
+        lim = 1.0
+    lim = max(1.0, min(float(lim) * 1.15, 8.0))
+    ax.set_ylim(-lim, lim)
+    ax.legend(loc="center left", bbox_to_anchor=(1.01, 0.5), frameon=False, fontsize=8, title="Top changed features")
+    fig.subplots_adjust(right=0.74, bottom=0.18, top=0.84)
     fig.suptitle(f"{subject} | {task} | {family}", fontsize=12, fontweight="bold", color=NAVY, y=0.98)
-    fig.text(0.5, 0.025, "Interpretation: positive/negative values indicate direction of change from this subject's first same-task recording. Values are standardized using feature variability within the selected task cohort; this is descriptive, not adjusted clinical inference.", ha="center", color=MUTED, fontsize=9)
+    n_features = d["feature"].astype(str).nunique()
+    direction_note = "Direction: positive/negative is numeric change only; clinical improvement/worsening is not inferred unless encoded in the feature registry."
+    fig.text(0.5, 0.045, f"Showing top {min(len(top_features), 8)} changed features out of {n_features} audited features. {direction_note}", ha="center", color=MUTED, fontsize=9)
     return _save(fig, path)
+
 
 def plot_longitudinal_session_matrix(df: pd.DataFrame, subject_col: str | None, session_col: str | None, path: Path) -> Path:
     if df is None or df.empty or not subject_col or subject_col not in df.columns:
