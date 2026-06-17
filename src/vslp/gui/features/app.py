@@ -100,7 +100,7 @@ from vslp.analysis.features.plots import (
     plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.131.0"
+APP_VERSION = "v0.132.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -8449,7 +8449,8 @@ class FeatureAnalysisGUI(QMainWindow):
                 grp_cols = ["subject"]
             for key, sub in subj_frame.groupby(grp_cols, dropna=True):
                 if isinstance(key, tuple):
-                    sid, task_name = key[0], key[1]
+                    sid = key[0]
+                    task_name = key[1] if len(key) > 1 else (task_focus if task_focus != "All tasks" else "selected_scope")
                 else:
                     sid, task_name = key, task_focus if task_focus != "All tasks" else "selected_scope"
                 subject_count_rows.append({
@@ -8489,7 +8490,7 @@ class FeatureAnalysisGUI(QMainWindow):
             icc = np.nan; within = np.nan; between = np.nan; sem = np.nan; mdc = np.nan; mdc_std = np.nan; med_range = np.nan
             status = "not_evaluable"
             interp = "Too few repeated same-task units for reliability estimation."
-            if n_repeated >= 3 and n_valid >= 6:
+            if n_repeated >= 2 and n_valid >= 4:
                 rep = tmp[tmp["unit"].isin(repeated)].copy()
                 stats = rep.groupby("unit")["value"].agg(["mean", "var", "count", "min", "max"])
                 within = float(np.nanmean(stats["var"].fillna(0).to_numpy()))
@@ -8511,6 +8512,8 @@ class FeatureAnalysisGUI(QMainWindow):
                     status = "variable"; interp = "Low-to-moderate repeatability; change interpretation is fragile."
                 else:
                     status = "unstable"; interp = "Low same-task repeatability; likely session/acquisition/noise sensitive."
+                if n_repeated < 3:
+                    interp += " Preliminary estimate: only two repeated same-task subject units are available."
             rows.append({
                 "feature": feat,
                 "family_or_subsystem": family_lookup.get(feat, qc_family_from_name(feat) if self._selected_reliability_source() == "automated_qc" else self._infer_acoustic_family_from_feature_name(feat)),
@@ -8530,7 +8533,14 @@ class FeatureAnalysisGUI(QMainWindow):
             })
         repeatability = pd.DataFrame(rows)
         if not repeatability.empty:
-            repeatability = repeatability.sort_values(["reliability_status", "icc1_proxy", "mdc95_standardized"], ascending=[True, False, True], na_position="last")
+            status_rank = {"stable": 0, "moderate": 1, "variable": 2, "unstable": 3, "not_evaluable": 4}
+            repeatability["__status_rank"] = repeatability["reliability_status"].map(status_rank).fillna(5)
+            repeatability["__repeated_rank"] = pd.to_numeric(repeatability["n_repeated_subject_task_units"], errors="coerce").fillna(0)
+            repeatability = repeatability.sort_values(
+                ["__status_rank", "__repeated_rank", "icc1_proxy", "mdc95_standardized"],
+                ascending=[True, False, False, True],
+                na_position="last",
+            ).drop(columns=["__status_rank", "__repeated_rank"], errors="ignore")
         fam_rows=[]
         if not repeatability.empty:
             rep = repeatability.copy()
@@ -8581,7 +8591,7 @@ class FeatureAnalysisGUI(QMainWindow):
         outputs = self._build_scoped_reliability_outputs()
         self._populate_reliability_from_scope(outputs)
         self._refresh_reliability_family_combo(outputs.get("repeatability", pd.DataFrame()))
-        self._refresh_reliability_feature_combo()
+        self._refresh_reliability_feature_combo(outputs)
         if hasattr(self, "reliability_plot_combo"):
             self.preview_reliability_plot(self.reliability_plot_combo.currentData() or "reliability_design_support")
 
@@ -8600,16 +8610,31 @@ class FeatureAnalysisGUI(QMainWindow):
             self.reliability_family_combo.setCurrentText(current)
         self.reliability_family_combo.blockSignals(False)
 
-    def _refresh_reliability_feature_combo(self) -> None:
+    def _refresh_reliability_feature_combo(self, scoped: dict[str, pd.DataFrame] | None = None) -> None:
         if not hasattr(self, "reliability_feature_combo"):
             return
         current = self.reliability_feature_combo.currentText()
-        scoped = self._build_scoped_reliability_outputs()
+        if scoped is None:
+            scoped = self._build_scoped_reliability_outputs()
         rep = scoped.get("repeatability", pd.DataFrame())
         fam = self._selected_reliability_family()
         if rep is not None and not rep.empty and fam != "All families" and "family_or_subsystem" in rep.columns:
             rep = rep.loc[rep["family_or_subsystem"].astype(str).eq(fam)]
-        feats = rep["feature"].astype(str).tolist() if rep is not None and not rep.empty and "feature" in rep.columns else []
+        if rep is not None and not rep.empty and "feature" in rep.columns:
+            rep = rep.copy()
+            status_rank = {"stable": 0, "moderate": 1, "variable": 2, "unstable": 3, "not_evaluable": 4}
+            rep["__icc"] = pd.to_numeric(rep.get("icc1_proxy", pd.Series(dtype=float)), errors="coerce")
+            rep["__repeated"] = pd.to_numeric(rep.get("n_repeated_subject_task_units", pd.Series(dtype=float)), errors="coerce").fillna(0)
+            rep["__evaluable"] = rep["__icc"].notna().astype(int)
+            rep["__status_rank"] = rep.get("reliability_status", pd.Series(dtype=str)).astype(str).map(status_rank).fillna(5)
+            rep = rep.sort_values(
+                ["__evaluable", "__repeated", "__status_rank", "__icc", "feature"],
+                ascending=[False, False, True, False, True],
+                na_position="last",
+            )
+            feats = rep["feature"].astype(str).tolist()
+        else:
+            feats = []
         self.reliability_feature_combo.blockSignals(True)
         self.reliability_feature_combo.clear()
         self.reliability_feature_combo.addItems(feats[:750])
@@ -8677,7 +8702,7 @@ class FeatureAnalysisGUI(QMainWindow):
         scoped = self._build_scoped_reliability_outputs()
         self._populate_reliability_from_scope(scoped)
         self._refresh_reliability_family_combo(scoped.get("repeatability", pd.DataFrame()))
-        self._refresh_reliability_feature_combo()
+        self._refresh_reliability_feature_combo(scoped)
 
     def _selected_feature_reliability_records(self, feature: str) -> pd.DataFrame:
         df = self._reliability_source_frame()
@@ -8824,8 +8849,17 @@ class FeatureAnalysisGUI(QMainWindow):
                 path = plot_reliability_scope_notice(design, subj, notice_path, title, message)
             else:
                 records = self._selected_feature_reliability_records(feature)
-                suffix = self._selected_reliability_task()
-                path = plot_selected_feature_same_task_reliability(records, feature, plots_dir / f"selected_feature_same_task_reliability__{task_slug}.png", suffix)
+                if records is None or records.empty:
+                    title, message = self._reliability_scope_notice_message("selected_feature_same_task_reliability", scoped)
+                    message = (
+                        message
+                        + f"\n\nSelected feature/metric: {feature}\n"
+                        "No repeated valid same-task records were available for this specific selection."
+                    )
+                    path = plot_reliability_scope_notice(design, subj, notice_path, title, message)
+                else:
+                    suffix = self._selected_reliability_task()
+                    path = plot_selected_feature_same_task_reliability(records, feature, plots_dir / f"selected_feature_same_task_reliability__{task_slug}.png", suffix)
             key = "selected_feature_same_task_reliability"
         else:
             return None
