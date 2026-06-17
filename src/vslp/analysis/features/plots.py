@@ -2242,9 +2242,7 @@ def plot_longitudinal_visit_timeline(visits: pd.DataFrame, path: Path) -> Path:
     d = visits.copy()
     if "record_order" not in d.columns:
         d["record_order"] = np.arange(1, len(d) + 1)
-    order_values = pd.to_numeric(d["record_order"], errors="coerce")
-    fallback_order = pd.Series(np.arange(1, len(d) + 1), index=d.index)
-    d["record_order"] = order_values.where(order_values.notna(), fallback_order).astype(int)
+    d["record_order"] = pd.to_numeric(d["record_order"], errors="coerce").fillna(pd.Series(np.arange(1, len(d) + 1), index=d.index)).astype(int)
     if "days_since_first" in d.columns:
         d["days_since_first"] = pd.to_numeric(d["days_since_first"], errors="coerce")
     else:
@@ -2292,6 +2290,78 @@ def plot_longitudinal_visit_timeline(visits: pd.DataFrame, path: Path) -> Path:
     total_span = xmax - xmin if len(d) > 1 else 0
     fig.suptitle(f"{subject} | {task}", fontsize=12, fontweight="bold", color=NAVY, y=0.98)
     fig.text(0.5, 0.03, f"{len(d)} recordings shown. Total displayed span: {total_span:.0f} {'days' if xlabel.startswith('Days') else 'recording-order units'}. Verify this timeline before interpreting feature trajectories.", ha="center", color=MUTED, fontsize=9)
+    return _save(fig, path)
+
+def plot_longitudinal_feature_family_trajectory(traj: pd.DataFrame, path: Path) -> Path:
+    """Selected subject-task feature-family change from baseline.
+
+    This plot is intentionally within-task and within-subject. The GUI builds
+    ``traj`` only after the user selects one task and one repeated subject.
+    Values represent standardized change from the first available recording in
+    that selected subject-task unit, optionally collapsed across one feature
+    family/subsystem.
+    """
+    title = "Selected subject-task feature-family change"
+    if traj is None or traj.empty or "status" in traj.columns:
+        msg = "Select one task, one repeated subject, and a feature family."
+        if isinstance(traj, pd.DataFrame) and not traj.empty and "status" in traj.columns:
+            msg = str(traj["status"].iloc[0])
+        return _empty(path, msg, title)
+    d = traj.copy()
+    if "record_order" not in d.columns:
+        d["record_order"] = np.arange(1, len(d) + 1)
+    d["record_order"] = pd.to_numeric(d["record_order"], errors="coerce").fillna(pd.Series(np.arange(1, len(d) + 1), index=d.index)).astype(int)
+    y_col = "family_mean_standardized_change_from_baseline"
+    if y_col not in d.columns:
+        return _empty(path, "Trajectory table is missing standardized change values.", title)
+    d[y_col] = pd.to_numeric(d[y_col], errors="coerce")
+    if d[y_col].notna().sum() < 2:
+        return _empty(path, "Fewer than two usable visit-level feature-family change values are available.", title)
+    if "days_since_first" in d.columns:
+        d["days_since_first"] = pd.to_numeric(d["days_since_first"], errors="coerce")
+    else:
+        d["days_since_first"] = np.nan
+    if d["days_since_first"].notna().sum() >= 2:
+        x = d["days_since_first"].astype(float)
+        xlabel = "Days since first dated recording"
+    else:
+        x = d["record_order"].astype(float)
+        xlabel = "Recording order (dates unavailable or incomplete)"
+    subject = str(d["subject_id"].dropna().iloc[0]) if "subject_id" in d.columns and d["subject_id"].notna().any() else "selected subject"
+    task = str(d["task"].dropna().iloc[0]) if "task" in d.columns and d["task"].notna().any() else "selected task"
+    family = str(d["feature_family"].dropna().iloc[0]) if "feature_family" in d.columns and d["feature_family"].notna().any() else "selected feature family"
+    fig, ax = plt.subplots(figsize=(12.5, 5.8))
+    ax.axhline(0, color=GRID, lw=1.4, zorder=1)
+    ax.plot(x, d[y_col], marker="o", linewidth=2.2, color=TEAL, markersize=7, zorder=3)
+    if "family_mean_abs_standardized_change_from_baseline" in d.columns:
+        abs_change = pd.to_numeric(d["family_mean_abs_standardized_change_from_baseline"], errors="coerce")
+        ax.fill_between(x, d[y_col], 0, where=d[y_col].notna(), alpha=0.10, color=TEAL)
+    for _, row in d.iterrows():
+        xv = float(row["days_since_first"]) if pd.notna(row.get("days_since_first", np.nan)) and d["days_since_first"].notna().sum() >= 2 else float(row["record_order"])
+        yv = row.get(y_col, np.nan)
+        if pd.isna(yv):
+            continue
+        order = int(row.get("record_order", 0))
+        date_txt = str(row.get("date", "")).strip()
+        n_avail = row.get("n_available_features", np.nan)
+        n_total = row.get("n_family_features", np.nan)
+        label = f"#{order}"
+        if date_txt:
+            label += f"\n{date_txt}"
+        if pd.notna(n_avail) and pd.notna(n_total):
+            label += f"\n{int(n_avail)}/{int(n_total)} features"
+        ax.text(xv, yv, label, ha="center", va="bottom" if yv >= 0 else "top", fontsize=8, color=NAVY)
+    ax.set_xlabel(xlabel, color=MUTED)
+    ax.set_ylabel("Mean standardized change from subject baseline", color=MUTED)
+    _style(ax, title)
+    ymin, ymax = ax.get_ylim()
+    if ymin > -0.2:
+        ymin = -0.2
+    if ymax < 0.2:
+        ymax = 0.2
+    ax.set_ylim(ymin, ymax)
+    fig.suptitle(f"{subject} | {task} | {family}", fontsize=12, fontweight="bold", color=NAVY, y=0.98)
+    fig.text(0.5, 0.025, "Interpretation: positive/negative values indicate direction of change from this subject's first same-task recording. Values are standardized using feature variability within the selected task cohort; this is descriptive, not adjusted clinical inference.", ha="center", color=MUTED, fontsize=9)
     return _save(fig, path)
 
 def plot_longitudinal_session_matrix(df: pd.DataFrame, subject_col: str | None, session_col: str | None, path: Path) -> Path:

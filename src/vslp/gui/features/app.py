@@ -90,12 +90,12 @@ from vslp.analysis.features.plots import (
     plot_task_readiness_dashboard, plot_task_clinical_balance_bars,
     plot_task_subject_coverage_summary, plot_task_feature_profile,
     plot_longitudinal_subject_records, plot_longitudinal_readiness,
-    plot_longitudinal_visit_timeline,
+    plot_longitudinal_visit_timeline, plot_longitudinal_feature_family_trajectory,
     plot_longitudinal_session_matrix, plot_longitudinal_iteration_counts,
     plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.120.0"
+APP_VERSION = "v0.121.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -6520,6 +6520,7 @@ class FeatureAnalysisGUI(QMainWindow):
         # v0.117: expose one safe longitudinal view only. Later trajectory plots will be added one at a time.
         self.longitudinal_view_combo.addItem("Repeated-record cohort summary", "longitudinal_readiness")
         self.longitudinal_view_combo.addItem("Selected subject-task visit timeline", "longitudinal_visit_timeline")
+        self.longitudinal_view_combo.addItem("Selected subject-task feature-family change", "longitudinal_feature_family_trajectory")
         plot_header.addWidget(self.longitudinal_view_combo, 1)
         show_btn = QPushButton("Show")
         show_btn.setProperty("secondary", True)
@@ -6535,7 +6536,7 @@ class FeatureAnalysisGUI(QMainWindow):
         plot_header.addWidget(open_btn)
         plot_panel_layout.addLayout(plot_header)
 
-        self.longitudinal_caption = QLabel("Step 1: quantify the repeated-record cohort. Step 2: select one repeated subject-task unit and inspect the visit timeline before reviewing feature changes.")
+        self.longitudinal_caption = QLabel("Step 1: quantify the repeated-record cohort. Step 2: select one repeated subject-task unit and inspect the visit timeline. Step 3: select a feature family to review within-task change from that subject's baseline.")
         self.longitudinal_caption.setWordWrap(True)
         self.longitudinal_caption.setStyleSheet(f"color:{MUTED}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:9px;")
         plot_panel_layout.addWidget(self.longitudinal_caption)
@@ -6551,8 +6552,14 @@ class FeatureAnalysisGUI(QMainWindow):
         self.subject_focus_combo = QComboBox()
         self.subject_focus_combo.setMinimumWidth(260)
         self.subject_focus_combo.addItem("All subjects / not available")
-        self.subject_focus_combo.currentIndexChanged.connect(lambda _=0: self.preview_longitudinal_plot(self.longitudinal_view_combo.currentData() if hasattr(self, 'longitudinal_view_combo') else 'longitudinal_readiness'))
+        self.subject_focus_combo.currentIndexChanged.connect(lambda _=0: self._on_longitudinal_subject_changed())
         selectors.addWidget(self.subject_focus_combo, 1)
+        selectors.addWidget(QLabel("Feature family:"))
+        self.longitudinal_family_combo = QComboBox()
+        self.longitudinal_family_combo.setMinimumWidth(260)
+        self.longitudinal_family_combo.addItem("All mapped features", "__all__")
+        self.longitudinal_family_combo.currentIndexChanged.connect(lambda _=0: self.preview_longitudinal_plot(self.longitudinal_view_combo.currentData() if hasattr(self, "longitudinal_view_combo") else "longitudinal_readiness"))
+        selectors.addWidget(self.longitudinal_family_combo, 1)
         selectors.addStretch(1)
         plot_panel_layout.addLayout(selectors)
 
@@ -6602,10 +6609,12 @@ class FeatureAnalysisGUI(QMainWindow):
         self.long_session_table = self._simple_table()
         self.long_iteration_table = self._simple_table()
         self.long_date_table = self._simple_table()
+        self.long_feature_change_table = self._simple_table()
         tabs.addTab(self.long_subject_table, "Repeated subject-task units")
         tabs.addTab(self.long_session_table, "Visit / session support")
         tabs.addTab(self.long_iteration_table, "Iteration support")
         tabs.addTab(self.long_date_table, "Date support")
+        tabs.addTab(self.long_feature_change_table, "Feature-family change")
         card.layout.addWidget(tabs)
 
         layout.addWidget(card)
@@ -7158,6 +7167,70 @@ class FeatureAnalysisGUI(QMainWindow):
                 combo.setCurrentIndex(idx)
         combo.blockSignals(False)
 
+    def _on_longitudinal_subject_changed(self) -> None:
+        self._refresh_longitudinal_family_combo()
+        self.preview_longitudinal_plot(self.longitudinal_view_combo.currentData() if hasattr(self, "longitudinal_view_combo") else "longitudinal_readiness")
+
+    def _longitudinal_feature_cols(self, df: pd.DataFrame) -> list[str]:
+        if df is None or df.empty:
+            return []
+        mapping = getattr(self, "mapping_df", pd.DataFrame())
+        try:
+            if mapping is None or mapping.empty:
+                mapping = self.collect_mapping_from_table()
+        except Exception:
+            mapping = getattr(self, "mapping_df", pd.DataFrame())
+        roles = role_lists(mapping) if mapping is not None and not mapping.empty else {}
+        mapped = [c for c in roles.get("Feature", []) if c in df.columns and pd.api.types.is_numeric_dtype(df[c])]
+        if mapped:
+            return mapped
+        base = self.feature_df if getattr(self, "feature_df", None) is not None else df
+        excluded = {self._subject_col(df), self._task_col(df), self._session_col(df), self._iteration_col(df), self._date_col(df)}
+        return [c for c in base.columns if c in df.columns and c not in excluded and pd.api.types.is_numeric_dtype(df[c])][:250]
+
+    def _longitudinal_feature_family_lookup(self, feature_cols: list[str]) -> dict[str, str]:
+        lookup = {str(c): "All mapped features" for c in feature_cols}
+        registry = getattr(self, "registry_df", None)
+        if registry is not None and not registry.empty:
+            feature_col = next((c for c in ["feature", "feature_name", "name", "column"] if c in registry.columns), None)
+            family_col = next((c for c in ["subsystem", "family", "feature_family", "group", "domain"] if c in registry.columns), None)
+            if feature_col and family_col:
+                valid = set(map(str, feature_cols))
+                for _, row in registry[[feature_col, family_col]].dropna().iterrows():
+                    f = str(row[feature_col])
+                    if f in valid:
+                        lookup[f] = str(row[family_col])
+        return lookup
+
+    def _longitudinal_selected_family(self) -> str:
+        combo = getattr(self, "longitudinal_family_combo", None)
+        if combo is None:
+            return "All mapped features"
+        value = combo.currentData()
+        if value in (None, "", "__all__"):
+            return "All mapped features"
+        return str(value)
+
+    def _refresh_longitudinal_family_combo(self) -> None:
+        combo = getattr(self, "longitudinal_family_combo", None)
+        if combo is None:
+            return
+        df = self._longitudinal_scope_df()
+        feature_cols = self._longitudinal_feature_cols(df)
+        fam_lookup = self._longitudinal_feature_family_lookup(feature_cols)
+        families = sorted({v for v in fam_lookup.values() if str(v).strip() and str(v) != "All mapped features"})
+        current = combo.currentData()
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("All mapped features", "__all__")
+        for fam in families[:80]:
+            combo.addItem(str(fam), str(fam))
+        if current is not None:
+            ix = combo.findData(current)
+            if ix >= 0:
+                combo.setCurrentIndex(ix)
+        combo.blockSignals(False)
+
     def _longitudinal_readiness_table(self, df: pd.DataFrame) -> pd.DataFrame:
         if df is None or df.empty:
             return pd.DataFrame([{"status": "No analysis table available. Run Feature Analysis first."}])
@@ -7255,6 +7328,105 @@ class FeatureAnalysisGUI(QMainWindow):
             return pd.DataFrame([{"status": "Selected subject has fewer than two records in the current task scope."}])
         return out
 
+    def _longitudinal_feature_family_change_table(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Selected subject-task feature-family trajectory table.
+
+        This table is intentionally strict: it requires a selected subject and
+        one selected task, then analyzes only that subject's repeated recordings
+        within the same task. Feature values are converted to standardized
+        change from the subject's first recording using cohort scale from the
+        current task scope.
+        """
+        if df is None or df.empty:
+            return pd.DataFrame([{"status": "No analysis table available. Run Feature Analysis first."}])
+        selected_task = self._longitudinal_selected_task()
+        selected_subject = self._longitudinal_selected_subject()
+        if not selected_task:
+            return pd.DataFrame([{"status": "Select one task first. Longitudinal feature change is only interpreted within the same task."}])
+        if not selected_subject:
+            return pd.DataFrame([{"status": "Select one repeated subject first."}])
+        subj_col = self._subject_col(df)
+        task_col = self._task_col(df)
+        session_col = self._session_col(df)
+        iter_col = self._iteration_col(df)
+        date_col = self._date_col(df)
+        if not subj_col or subj_col not in df.columns:
+            return pd.DataFrame([{"status": "Subject ID field not available."}])
+        if not task_col or task_col not in df.columns:
+            return pd.DataFrame([{"status": "Task field not available; same-task change cannot be enforced."}])
+        task_df = df.loc[df[task_col].astype(str).eq(str(selected_task))].copy()
+        g = task_df.loc[task_df[subj_col].astype(str).eq(str(selected_subject))].copy()
+        if len(g) < 2:
+            return pd.DataFrame([{"status": "Selected subject has fewer than two recordings for the selected task."}])
+        feature_cols = self._longitudinal_feature_cols(task_df)
+        if not feature_cols:
+            return pd.DataFrame([{"status": "No mapped numeric feature columns available for longitudinal change."}])
+        fam_lookup = self._longitudinal_feature_family_lookup(feature_cols)
+        selected_family = self._longitudinal_selected_family()
+        if selected_family and selected_family != "All mapped features":
+            selected_features = [f for f in feature_cols if fam_lookup.get(f, "All mapped features") == selected_family]
+        else:
+            selected_features = list(feature_cols)
+            selected_family = "All mapped features"
+        selected_features = [f for f in selected_features if f in g.columns and pd.api.types.is_numeric_dtype(task_df[f])]
+        if not selected_features:
+            return pd.DataFrame([{"status": f"No numeric features found for selected family: {selected_family}"}])
+        if date_col and date_col in g.columns:
+            g["__date"] = pd.to_datetime(g[date_col], errors="coerce")
+        else:
+            g["__date"] = pd.NaT
+        if iter_col and iter_col in g.columns:
+            g["__iteration_num"] = pd.to_numeric(g[iter_col], errors="coerce")
+        else:
+            g["__iteration_num"] = pd.NA
+        sort_cols = [c for c in ["__date", "__iteration_num", session_col] if c and c in g.columns]
+        if sort_cols:
+            g = g.sort_values(sort_cols, na_position="last")
+        cohort = task_df[selected_features].apply(pd.to_numeric, errors="coerce")
+        scales = cohort.std(axis=0, ddof=0).replace(0, pd.NA)
+        # Use IQR as fallback for features with too little SD but some spread.
+        q75 = cohort.quantile(0.75)
+        q25 = cohort.quantile(0.25)
+        iqr = (q75 - q25).replace(0, pd.NA)
+        scales = scales.fillna(iqr).replace(0, pd.NA)
+        usable = [f for f in selected_features if pd.notna(scales.get(f, pd.NA))]
+        if not usable:
+            return pd.DataFrame([{"status": "Selected feature family has no varying features in the selected task; standardized change cannot be computed."}])
+        values = g[usable].apply(pd.to_numeric, errors="coerce")
+        baseline = values.iloc[0]
+        first_date = g["__date"].dropna().min() if "__date" in g.columns else pd.NaT
+        rows = []
+        for order, (idx, row) in enumerate(g.iterrows(), start=1):
+            vals = values.loc[idx]
+            z = (vals - baseline) / scales[usable]
+            date_value = row.get("__date", pd.NaT)
+            days_since_first = pd.NA
+            if pd.notna(date_value) and pd.notna(first_date):
+                days_since_first = int((date_value - first_date).days)
+            n_available = int(vals.notna().sum())
+            n_changed = int(z.notna().sum())
+            rows.append({
+                "subject_id": selected_subject,
+                "task": selected_task,
+                "feature_family": selected_family,
+                "record_order": order,
+                "date": date_value.date().isoformat() if pd.notna(date_value) else "",
+                "days_since_first": days_since_first,
+                "session_or_visit": str(row.get(session_col, "")) if session_col and session_col in g.columns else "",
+                "iteration": str(row.get(iter_col, "")) if iter_col and iter_col in g.columns else "",
+                "n_family_features": int(len(usable)),
+                "n_available_features": n_available,
+                "n_features_with_change_score": n_changed,
+                "family_mean_standardized_change_from_baseline": float(z.mean(skipna=True)) if n_changed else pd.NA,
+                "family_median_standardized_change_from_baseline": float(z.median(skipna=True)) if n_changed else pd.NA,
+                "family_mean_abs_standardized_change_from_baseline": float(z.abs().mean(skipna=True)) if n_changed else pd.NA,
+                "family_missing_fraction": float(1.0 - (n_available / max(len(usable), 1))),
+            })
+        out = pd.DataFrame(rows)
+        if len(out) < 2:
+            return pd.DataFrame([{"status": "Selected subject-task family trajectory has fewer than two usable records."}])
+        return out
+
     def update_longitudinal_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
         if not hasattr(self, "longitudinal_metric_grid"):
             return
@@ -7272,6 +7444,7 @@ class FeatureAnalysisGUI(QMainWindow):
         date_col = self._date_col(df)
         readiness = self._longitudinal_readiness_table(df)
         self._refresh_longitudinal_subject_combo(readiness)
+        self._refresh_longitudinal_family_combo()
         total_units = len(readiness) if not readiness.empty and "status" not in readiness.columns else 0
         repeated_df = readiness.loc[pd.to_numeric(readiness.get("n_records", pd.Series(dtype=float)), errors="coerce").fillna(0) >= 2].copy() if total_units else pd.DataFrame()
         repeated_units = int(len(repeated_df))
@@ -7309,6 +7482,7 @@ class FeatureAnalysisGUI(QMainWindow):
         date_summary = repeated_source[[c for c in ["subject_id", "task", "n_dates", "first_date", "last_date", "elapsed_days", "ready_for_longitudinal_review"] if c in repeated_source.columns]].copy() if not repeated_source.empty else pd.DataFrame()
         self._fill_table(self.long_iteration_table, iter_summary)
         self._fill_table(self.long_date_table, date_summary)
+        self._fill_table(self.long_feature_change_table, self._longitudinal_feature_family_change_table(df))
         self.longitudinal_note.setText("Repeated-record cohort summary generated. Later longitudinal plots will analyze only subject-task units with at least two recordings of the same task.")
         self.generate_longitudinal_plots()
         self.preview_longitudinal_plot("longitudinal_readiness")
@@ -7327,6 +7501,8 @@ class FeatureAnalysisGUI(QMainWindow):
         self.plot_paths["longitudinal_readiness"] = str(plot_longitudinal_readiness(readiness, plots_dir / "longitudinal_readiness.png"))
         visit_records = self._longitudinal_visit_records_table(df)
         self.plot_paths["longitudinal_visit_timeline"] = str(plot_longitudinal_visit_timeline(visit_records, plots_dir / "longitudinal_visit_timeline.png"))
+        feature_family_change = self._longitudinal_feature_family_change_table(df)
+        self.plot_paths["longitudinal_feature_family_trajectory"] = str(plot_longitudinal_feature_family_trajectory(feature_family_change, plots_dir / "longitudinal_feature_family_trajectory.png"))
 
     def preview_longitudinal_plot(self, key: str | None = None) -> None:
         key = key or (self.longitudinal_view_combo.currentData() if hasattr(self, "longitudinal_view_combo") else "long_subject_records")
@@ -7342,7 +7518,8 @@ class FeatureAnalysisGUI(QMainWindow):
         self.current_longitudinal_plot = path
         captions = {
             "longitudinal_readiness": "Repeated-record cohort summary. Use this first to quantify how many subjects have repeated same-task recordings, typical recording depth, and typical dated follow-up span before reviewing feature change.",
-            "longitudinal_visit_timeline": "Selected subject-task visit timeline. Use this to verify visit ordering, days since first recording, and spacing between repeated recordings before interpreting feature change."
+            "longitudinal_visit_timeline": "Selected subject-task visit timeline. Use this to verify visit ordering, days since first recording, and spacing between repeated recordings before interpreting feature change.",
+            "longitudinal_feature_family_trajectory": "Selected subject-task feature-family change. This analyzes only repeated recordings of the same task for the selected subject. Values are standardized change from that subject's first recording within the selected task."
         }
         if hasattr(self, "longitudinal_interpretation"):
             self.longitudinal_interpretation.setText(captions.get(key, "Longitudinal review plot."))
