@@ -102,8 +102,10 @@ def test_v133_handoff_summary_counts_export_sets():
 
 def test_v133_recommendation_ui_has_decision_filters_and_tables():
     text = open("src/vslp/gui/features/app.py", encoding="utf-8").read()
+    section = text[text.index("def _recommendations_page"):text.index("def _recommendation_decision_legend_rows")]
 
-    assert 'APP_VERSION = "v0.133.0"' in text
+    assert 'APP_VERSION = "v0.134.0"' in text
+    assert "self.recommendation_task_combo" in text
     assert "self.recommendation_decision_combo" in text
     assert "self.recommendation_family_combo" in text
     assert "self.recommendation_search_edit" in text
@@ -111,6 +113,12 @@ def test_v133_recommendation_ui_has_decision_filters_and_tables():
     assert "self.recommendation_priority_table" in text
     assert "ML / export handoff" in text
     assert "self.regenerate_overview_plots()" not in text[text.index("def preview_recommendation_plot"):text.index("def update_recommendation_interpretation")]
+    assert "recommendation_split = QHBoxLayout()" in section
+    assert "Recommendation details" in section
+    assert "Detailed recommendation tables" in section
+    assert section.index("recommendation_split = QHBoxLayout()") < section.index("Detailed recommendation tables")
+    assert "plot_card = Card" not in section
+    assert "card.layout.addLayout(self.recommendation_metric_grid)" not in section
 
 
 def test_v133_recommendation_plot_generates_from_outputs_without_overview(tmp_path):
@@ -132,3 +140,28 @@ def test_v133_recommendation_plot_generates_from_outputs_without_overview(tmp_pa
     assert "recommendation_counts" in gui.plot_paths
     assert gui.plot_paths["recommendation_counts"] == path
     assert pd.notna(path)
+
+
+def test_v134_recommendations_are_task_scoped_when_task_selected():
+    gui = _gui()
+    gui.analysis_df = pd.DataFrame(
+        {
+            "task": ["READ", "READ", "DDK", "DDK"],
+            "speech_rate": [1.1, 1.2, None, None],
+            "jitter_local": [0.2, 0.25, 9.0, 9.0],
+        }
+    )
+    gui.feature_df = gui.analysis_df
+    gui.mapping_df = pd.DataFrame()
+    gui.registry_df = None
+    gui.qc_df = None
+    gui.recommendation_task_combo = _Combo("READ", "READ")
+    outputs = {"feature_recommendations": _recommendations()}
+
+    scoped = gui._recommendation_scoped_outputs(outputs)
+    recs = scoped["feature_recommendations"]
+
+    assert not recs.empty
+    assert set(recs["task_scope"]) == {"READ"}
+    assert set(recs["task_specific"]) == {True}
+    assert set(recs["task_n_rows"]) == {2}

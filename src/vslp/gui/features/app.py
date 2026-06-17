@@ -100,7 +100,7 @@ from vslp.analysis.features.plots import (
     plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.133.0"
+APP_VERSION = "v0.134.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -7927,56 +7927,306 @@ class FeatureAnalysisGUI(QMainWindow):
         layout.setSpacing(16)
         card = Card(
             "Group / Outcome Screening",
-            "Descriptive univariate screening of feature associations with clinical labels, task/group variables, and continuous outcomes. This is not modelling, prediction, biomarker discovery, or adjusted inference."
+            "Task-aware descriptive screening of feature associations with clinical labels, group variables, and continuous outcomes. This is not modelling, prediction, biomarker discovery, or adjusted inference."
         )
+        note = QLabel(
+            "Use this menu to find candidate feature-label patterns that need task, QC, covariate, and repeated-measures review. Select a task when interpreting clinical or user-facing effects; all-task screening is a triage view."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{MUTED}; background:#F7FAFD; border:1px solid {LINE}; border-radius:8px; padding:10px;")
+        card.layout.addWidget(note)
+
+        controls = QFrame()
+        controls.setStyleSheet(f"QFrame {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:12px; }}")
+        controls_layout = QHBoxLayout(controls)
+        controls_layout.setContentsMargins(12, 10, 12, 10)
+        controls_layout.setSpacing(10)
+        self.screening_task_combo = QComboBox()
+        self.screening_task_combo.setMinimumWidth(240)
+        self.screening_task_combo.addItem("All tasks (triage only)", "All tasks")
+        self.screening_task_combo.currentIndexChanged.connect(
+            lambda _i=0: self.update_screening_dashboard(getattr(self, "outputs", {}))
+        )
+        controls_layout.addWidget(QLabel("Task focus:"))
+        controls_layout.addWidget(self.screening_task_combo)
+        self.screening_feature_combo = QComboBox()
+        self.screening_feature_combo.setMinimumWidth(280)
+        self.screening_feature_combo.currentIndexChanged.connect(
+            lambda _i=0: self.update_screening_interpretation(self.screening_plot_combo.currentData()) if hasattr(self, "screening_plot_combo") else None
+        )
+        self.screening_variable_combo = QComboBox()
+        self.screening_variable_combo.setMinimumWidth(260)
+        self.screening_variable_combo.currentIndexChanged.connect(
+            lambda _i=0: self.update_screening_interpretation(self.screening_plot_combo.currentData()) if hasattr(self, "screening_plot_combo") else None
+        )
+        controls_layout.addWidget(QLabel("Feature:"))
+        controls_layout.addWidget(self.screening_feature_combo, 1)
+        controls_layout.addWidget(QLabel("Outcome / group:"))
+        controls_layout.addWidget(self.screening_variable_combo, 1)
+        card.layout.addWidget(controls)
+
+        screening_split = QHBoxLayout()
+        screening_split.setSpacing(14)
+
+        plot_panel = QFrame()
+        plot_panel.setStyleSheet(f"QFrame {{ background:#F8FBFE; border:1px solid {LINE}; border-radius:12px; }}")
+        plot_layout = QVBoxLayout(plot_panel)
+        plot_layout.setContentsMargins(14, 14, 14, 14)
+        plot_layout.setSpacing(10)
+        plot_header = QHBoxLayout()
+        plot_header.setSpacing(10)
+        plot_title = QLabel("Screening plot")
+        plot_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
+        plot_header.addWidget(plot_title)
+        self.screening_plot_combo = QComboBox()
+        self.screening_plot_combo.setMinimumWidth(380)
+        for text, key in [
+            ("Group balance", "screening_group_balance"),
+            ("Top screening effects", "screening_effect_ranking"),
+            ("Feature x continuous outcome heatmap", "screening_continuous_heatmap"),
+            ("Feature x categorical group heatmap", "screening_group_heatmap"),
+            ("Effect-size landscape", "screening_effect_landscape"),
+            ("Selected feature vs selected outcome/group", "selected_feature_outcome"),
+        ]:
+            self.screening_plot_combo.addItem(text, key)
+        plot_header.addWidget(self.screening_plot_combo, 1)
+        show_btn = QPushButton("Show")
+        show_btn.setProperty("secondary", True)
+        show_btn.clicked.connect(lambda: self.preview_screening_plot(self.screening_plot_combo.currentData()))
+        plot_header.addWidget(show_btn)
+        regen = QPushButton("Regenerate")
+        regen.clicked.connect(lambda: self.preview_screening_plot(self.screening_plot_combo.currentData()))
+        plot_header.addWidget(regen)
+        plot_header.addStretch(1)
+        open_btn = QPushButton("Open current plot")
+        open_btn.setProperty("secondary", True)
+        open_btn.clicked.connect(self.open_current_screening_plot)
+        plot_header.addWidget(open_btn)
+        plot_layout.addLayout(plot_header)
+
+        caption = QLabel(
+            "Screening plots are generated directly from the current Screening tables and selected task. They do not rerun Overview or overwrite other Feature Analysis outputs."
+        )
+        caption.setWordWrap(True)
+        caption.setStyleSheet(f"color:{MUTED}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:9px;")
+        plot_layout.addWidget(caption)
+
+        self.screening_plot_preview = QLabel("Run Feature Analysis, then choose one screening plot.")
+        self.screening_plot_preview.setAlignment(Qt.AlignCenter)
+        self.screening_plot_preview.setMinimumHeight(520)
+        self.screening_plot_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.screening_plot_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
+        plot_layout.addWidget(self.screening_plot_preview, 1)
+
+        self.screening_interpretation_label = QLabel("Select a screening plot to see structured interpretation guidance.")
+        self.screening_interpretation_label.setWordWrap(True)
+        self.screening_interpretation_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.screening_interpretation_label.setStyleSheet(f"QLabel {{ background:#FFFFFF; color:{INK}; border:1px solid {LINE}; border-radius:10px; padding:12px; font-size:12px; line-height:140%; }}")
+        plot_layout.addWidget(self.screening_interpretation_label)
+
+        side_panel = QFrame()
+        side_panel.setFixedWidth(330)
+        side_panel.setStyleSheet(f"QFrame {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:12px; }}")
+        side_layout = QVBoxLayout(side_panel)
+        side_layout.setContentsMargins(14, 14, 14, 14)
+        side_layout.setSpacing(10)
+        side_title = QLabel("Screening details")
+        side_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
+        side_layout.addWidget(side_title)
+        side_note = QLabel("Compact signal and support summary for the current task scope. Use the tables below before drawing conclusions.")
+        side_note.setWordWrap(True)
+        side_note.setStyleSheet(f"color:{MUTED}; border:none; background:transparent;")
+        side_layout.addWidget(side_note)
         self.screening_metric_grid = QGridLayout()
-        card.layout.addLayout(self.screening_metric_grid)
+        self.screening_metric_grid.setHorizontalSpacing(8)
+        self.screening_metric_grid.setVerticalSpacing(8)
+        side_layout.addLayout(self.screening_metric_grid)
+        side_layout.addStretch(1)
+
+        screening_split.addWidget(plot_panel, 1)
+        screening_split.addWidget(side_panel)
+        card.layout.addLayout(screening_split, 1)
+
+        tables_title = QLabel("Detailed screening tables")
+        tables_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; padding-top:4px;")
+        card.layout.addWidget(tables_title)
         tabs = QTabWidget()
+        self.screening_priority_table = self._make_table()
         self.screening_summary_table = self._make_table()
         self.screening_catalog_table = self._make_table()
         self.screening_continuous_table = self._make_table()
         self.screening_group_table = self._make_table()
         self.screening_balance_table = self._make_table()
+        tabs.addTab(self.screening_priority_table, "Priority effects")
         tabs.addTab(self.screening_summary_table, "Summary")
         tabs.addTab(self.screening_catalog_table, "Variable catalog")
         tabs.addTab(self.screening_continuous_table, "Continuous outcomes")
         tabs.addTab(self.screening_group_table, "Categorical groups")
         tabs.addTab(self.screening_balance_table, "Group balance")
-        card.layout.addWidget(tabs)
-
-        plot_card = Card(
-            "Screening plots",
-            "Use these plots to identify candidate feature-label patterns that need task, QC, covariate, and repeated-measures review. Effects here are screening signals only."
-        )
-        controls = QHBoxLayout()
-        self.screening_feature_combo = QComboBox()
-        self.screening_variable_combo = QComboBox()
-        controls.addWidget(QLabel("Feature:")); controls.addWidget(self.screening_feature_combo)
-        controls.addWidget(QLabel("Outcome / group:")); controls.addWidget(self.screening_variable_combo)
-        plot_card.layout.addLayout(controls)
-        self._add_standard_plot_gallery(
-            plot_card.layout,
-            "Screening plot",
-            "Group/Outcome Screening keeps balance, effect ranking, group/continuous heatmaps, effect-size landscape, and one selected feature x outcome view. These are descriptive screens only.",
-            "screening_plot_combo",
-            [
-                ("Group balance", "screening_group_balance"),
-                ("Top screening effects", "screening_effect_ranking"),
-                ("Feature x continuous outcome heatmap", "screening_continuous_heatmap"),
-                ("Feature x categorical group heatmap", "screening_group_heatmap"),
-                ("Effect-size landscape", "screening_effect_landscape"),
-                ("Selected feature vs selected outcome/group", "selected_feature_outcome"),
-            ],
-            "screening_plot_preview",
-            "screening_interpretation_label",
-            self.preview_screening_plot,
-            self.open_current_screening_plot,
-            "Run Feature Analysis, then choose one screening plot.",
-            500,
-        )
+        card.layout.addWidget(tabs, 1)
         layout.addWidget(card)
-        layout.addWidget(plot_card, 1)
         return self._wrap_scroll(body)
+
+    def _selected_screening_task(self) -> str:
+        combo = getattr(self, "screening_task_combo", None)
+        if combo is not None and combo.count():
+            data = combo.currentData()
+            if data is not None:
+                return str(data)
+            text = combo.currentText()
+            if text.startswith("All tasks"):
+                return "All tasks"
+            return str(text)
+        return "All tasks"
+
+    def _refresh_screening_task_combo(self) -> None:
+        combo = getattr(self, "screening_task_combo", None)
+        if combo is None:
+            return
+        current = self._selected_screening_task()
+        tasks: list[str] = []
+        df = getattr(self, "analysis_df", None)
+        if df is None or df.empty:
+            df = getattr(self, "feature_df", None)
+        if df is not None and not df.empty:
+            try:
+                task_series = self._overview_series_for_role(df, "task").astype("string").fillna("").str.strip()
+                tasks = [str(x) for x in task_series.loc[task_series.ne("")].value_counts().index.tolist()]
+            except Exception:
+                tasks = []
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("All tasks (triage only)", "All tasks")
+        for task in tasks[:300]:
+            combo.addItem(task, task)
+        if current and current in ["All tasks"] + tasks:
+            idx = combo.findData(current)
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+        combo.blockSignals(False)
+
+    def _screening_outputs(self) -> dict[str, pd.DataFrame]:
+        outputs = getattr(self, "outputs", {}) or {}
+        needed = [
+            "screening_summary",
+            "screening_variable_catalog",
+            "screening_continuous_outcome_associations",
+            "screening_categorical_group_associations",
+            "screening_group_balance",
+        ]
+        if any(k in outputs and isinstance(outputs.get(k), pd.DataFrame) and not outputs.get(k).empty for k in needed):
+            return outputs
+        candidates: list[Path] = []
+        if getattr(self, "output_dir", None):
+            candidates.append(Path(self.output_dir) / "tables")
+        if hasattr(self, "output_edit") and self.output_edit.text().strip():
+            candidates.append(Path(self.output_edit.text().strip()) / "feature_analysis" / "tables")
+        for tables_dir in candidates:
+            if not tables_dir.exists():
+                continue
+            loaded = dict(outputs)
+            for name in needed:
+                path = tables_dir / f"{name}.csv"
+                if path.exists():
+                    try:
+                        loaded[name] = pd.read_csv(path)
+                    except Exception as exc:
+                        self.log(f"WARN | Could not reload screening table {path}: {exc}")
+            if any(name in loaded and isinstance(loaded[name], pd.DataFrame) and not loaded[name].empty for name in needed):
+                self.outputs = loaded
+                return loaded
+        return outputs
+
+    def _screening_scoped_outputs(self, outputs: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+        task = self._selected_screening_task()
+        if not task or task == "All tasks":
+            return outputs
+        df = getattr(self, "analysis_df", None)
+        if df is None or df.empty:
+            df = getattr(self, "feature_df", None)
+        if df is None or df.empty:
+            return outputs
+        try:
+            task_series = self._overview_series_for_role(df, "task").astype("string").fillna("").str.strip()
+            scoped = df.loc[task_series.eq(str(task))].copy()
+        except Exception:
+            return outputs
+        cache_token = (task, int(len(scoped)), id(outputs.get("screening_summary", None)))
+        cache = getattr(self, "_screening_task_cache", {})
+        if cache.get("token") == cache_token and isinstance(cache.get("outputs"), dict):
+            return cache["outputs"]
+        loaded = dict(outputs)
+        if scoped.empty:
+            empty = pd.DataFrame()
+            loaded["screening_summary"] = pd.DataFrame([{"metric": "task_scope", "value": task, "interpretation": "No rows were available for this task."}])
+            loaded["screening_variable_catalog"] = empty
+            loaded["screening_continuous_outcome_associations"] = empty
+            loaded["screening_categorical_group_associations"] = empty
+            loaded["screening_group_balance"] = empty
+            self._screening_task_cache = {"token": cache_token, "outputs": loaded}
+            return loaded
+        try:
+            feature_cols = self._recommendation_feature_columns(scoped, outputs)
+            mapping = getattr(self, "mapping_df", pd.DataFrame())
+            scoped_screening = build_group_outcome_screening(scoped, feature_cols, mapping)
+            for name in [
+                "screening_summary",
+                "screening_variable_catalog",
+                "screening_continuous_outcome_associations",
+                "screening_categorical_group_associations",
+                "screening_group_balance",
+            ]:
+                loaded[name] = scoped_screening.get(name, pd.DataFrame())
+            summary = loaded.get("screening_summary", pd.DataFrame())
+            if summary is None or summary.empty:
+                summary = pd.DataFrame()
+            summary = pd.concat([
+                pd.DataFrame([
+                    {"metric": "task_scope", "value": task, "interpretation": "Current Screening task focus."},
+                    {"metric": "task_rows", "value": int(len(scoped)), "interpretation": "Rows included in the selected task scope."},
+                ]),
+                summary,
+            ], ignore_index=True)
+            loaded["screening_summary"] = summary
+            self._screening_task_cache = {"token": cache_token, "outputs": loaded}
+            return loaded
+        except Exception as exc:
+            if hasattr(self, "log"):
+                self.log(f"WARN | Task-specific screening failed for {task}; showing all-task screening instead: {exc}")
+            return outputs
+
+    def _screening_priority_effects(self, cont: pd.DataFrame, cat: pd.DataFrame, max_rows: int = 80) -> pd.DataFrame:
+        frames = []
+        if cont is not None and not cont.empty:
+            c = cont.copy()
+            c["screening_type"] = "continuous_outcome"
+            if "outcome_variable" in c.columns:
+                c["variable"] = c["outcome_variable"]
+            frames.append(c)
+        if cat is not None and not cat.empty:
+            g = cat.copy()
+            g["screening_type"] = "categorical_group"
+            if "group_variable" in g.columns:
+                g["variable"] = g["group_variable"]
+            frames.append(g)
+        if not frames:
+            return pd.DataFrame(columns=["screening_type", "feature", "variable", "abs_effect", "n_pairwise", "next_check"])
+        df = pd.concat(frames, ignore_index=True, sort=False)
+        effect_col = next((c for c in ["abs_effect", "abs_spearman", "abs_effect_size", "effect_abs", "abs_cliffs_delta", "abs_scaled_median_difference"] if c in df.columns), None)
+        if effect_col is None:
+            signed = next((c for c in ["spearman_rho", "effect_size", "cliffs_delta", "scaled_median_difference"] if c in df.columns), None)
+            df["abs_effect"] = pd.to_numeric(df[signed], errors="coerce").abs() if signed else np.nan
+        else:
+            df["abs_effect"] = pd.to_numeric(df[effect_col], errors="coerce").abs()
+        if "n_pairwise" not in df.columns:
+            df["n_pairwise"] = pd.to_numeric(df.get("n", np.nan), errors="coerce")
+        df["next_check"] = np.where(
+            pd.to_numeric(df["n_pairwise"], errors="coerce").fillna(0).lt(10),
+            "Low support: inspect balance before interpretation.",
+            "Inspect distribution, QC sensitivity, redundancy, and reliability.",
+        )
+        cols = [c for c in ["screening_type", "feature", "variable", "abs_effect", "n_pairwise", "next_check"] if c in df.columns]
+        return df.sort_values(["abs_effect", "n_pairwise"], ascending=[False, False], na_position="last")[cols].head(max_rows)
 
     def update_screening_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
         if not hasattr(self, "screening_summary_table"):
@@ -7985,6 +8235,9 @@ class FeatureAnalysisGUI(QMainWindow):
             item = self.screening_metric_grid.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
+        outputs = outputs if outputs and "screening_summary" in outputs else self._screening_outputs()
+        self._refresh_screening_task_combo()
+        outputs = self._screening_scoped_outputs(outputs)
         summary = outputs.get("screening_summary", pd.DataFrame())
         def metric(name: str, default: object = "-") -> object:
             if summary is None or summary.empty or "metric" not in summary.columns:
@@ -7993,7 +8246,10 @@ class FeatureAnalysisGUI(QMainWindow):
             return row["value"].iloc[0] if not row.empty else default
         cont = outputs.get("screening_continuous_outcome_associations", pd.DataFrame())
         cat = outputs.get("screening_categorical_group_associations", pd.DataFrame())
+        priority = self._screening_priority_effects(cont, cat)
+        task_scope = self._selected_screening_task()
         tiles = [
+            ("Task scope", task_scope if task_scope != "All tasks" else "Triage only", "screen inside one task"),
             ("Screening variables", metric("screening_variables_detected"), "outcomes/groups/covariates"),
             ("Continuous screens", metric("continuous_feature_outcome_tests"), "Spearman screens"),
             ("Group screens", metric("categorical_group_feature_tests"), "robust contrasts"),
@@ -8002,7 +8258,8 @@ class FeatureAnalysisGUI(QMainWindow):
             ("Top effect", "-" if (cont is None or cont.empty) and (cat is None or cat.empty) else round(float(pd.concat([d for d in [cont.get('abs_effect') if cont is not None and not cont.empty else pd.Series(dtype=float), cat.get('abs_effect') if cat is not None and not cat.empty else pd.Series(dtype=float)]], ignore_index=True).max()), 3), "descriptive only"),
         ]
         for idx, (title, value, subtitle) in enumerate(tiles):
-            self.screening_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx // 3, idx % 3)
+            self.screening_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx, 0)
+        self._fill_table(self.screening_priority_table, priority)
         self._fill_table(self.screening_summary_table, summary)
         self._fill_table(self.screening_catalog_table, outputs.get("screening_variable_catalog", pd.DataFrame()))
         self._fill_table(self.screening_continuous_table, cont)
@@ -8038,41 +8295,83 @@ class FeatureAnalysisGUI(QMainWindow):
             return self.screening_variable_combo.currentText()
         return None
 
-    def generate_selected_feature_outcome(self) -> None:
+    def _screening_active_frame(self) -> pd.DataFrame | None:
+        df = getattr(self, "analysis_df", None)
+        if df is None or df.empty:
+            df = getattr(self, "feature_df", None)
+        if df is None or df.empty:
+            return None
+        task = self._selected_screening_task()
+        if not task or task == "All tasks":
+            return df
+        try:
+            task_series = self._overview_series_for_role(df, "task").astype("string").fillna("").str.strip()
+            scoped = df.loc[task_series.eq(str(task))].copy()
+            return scoped if not scoped.empty else df.iloc[0:0].copy()
+        except Exception:
+            return df
+
+    def generate_selected_feature_outcome(self) -> str | None:
         feature = self._selected_screening_feature()
         variable = self._selected_screening_variable()
         if not feature or not variable:
-            return
+            return None
         try:
-            active_df = self.analysis_df if self.analysis_df is not None else self.feature_df
+            active_df = self._screening_active_frame()
+            if active_df is None or active_df.empty:
+                return None
             self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
-            path = plot_selected_feature_outcome(active_df, feature, variable, plots_dir / "selected_feature_outcome.png")
+            task_slug = self._safe_task_slug(self._selected_screening_task())
+            path = plot_selected_feature_outcome(active_df, feature, variable, plots_dir / f"selected_feature_outcome__{task_slug}.png")
             if not hasattr(self, "plot_paths"):
                 self.plot_paths = {}
             self.plot_paths["selected_feature_outcome"] = str(path)
+            return str(path)
         except Exception:
-            pass
+            return None
+
+    def _generate_screening_plot(self, key: str) -> str | None:
+        outputs = self._screening_scoped_outputs(self._screening_outputs())
+        self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
+        if not hasattr(self, "plot_paths"):
+            self.plot_paths = {}
+        cont = outputs.get("screening_continuous_outcome_associations", pd.DataFrame())
+        cat = outputs.get("screening_categorical_group_associations", pd.DataFrame())
+        balance = outputs.get("screening_group_balance", pd.DataFrame())
+        task_slug = self._safe_task_slug(self._selected_screening_task())
+        plot_map = {
+            "screening_group_balance": lambda p: plot_screening_group_balance(balance, p),
+            "screening_effect_ranking": lambda p: plot_screening_effect_ranking(cont, cat, p),
+            "screening_continuous_heatmap": lambda p: plot_screening_continuous_heatmap(cont, p),
+            "screening_group_heatmap": lambda p: plot_screening_group_heatmap(cat, p),
+            "screening_effect_landscape": lambda p: plot_screening_effect_landscape(cont, cat, p),
+        }
+        if key == "selected_feature_outcome":
+            return self.generate_selected_feature_outcome()
+        if key not in plot_map:
+            return None
+        path = plots_dir / f"{key}__{task_slug}.png"
+        try:
+            result = plot_map[key](path)
+        except Exception as exc:
+            if hasattr(self, "log"):
+                self.log(f"WARN | Screening plot failed for {key}: {exc}")
+            return None
+        self.plot_paths[key] = str(result)
+        return str(result)
 
     def preview_screening_plot(self, key: str) -> None:
-        if key == "selected_feature_outcome":
-            self.generate_selected_feature_outcome()
-        if not hasattr(self, "plot_paths") or key not in self.plot_paths or not Path(self.plot_paths.get(key, "")).exists():
-            self.regenerate_overview_plots()
-        if not hasattr(self, "plot_paths") or key not in self.plot_paths:
-            QMessageBox.information(self, "Plot unavailable", "Run Feature Analysis first, or this screening plot could not be generated for the current dataset.")
+        path_str = self._generate_screening_plot(str(key))
+        if not path_str:
+            QMessageBox.information(self, "Plot unavailable", "Run Feature Analysis first, or this screening plot could not be generated for the current task/data scope.")
             return
-        path = Path(self.plot_paths[key])
+        path = Path(path_str)
         if not path.exists():
             QMessageBox.information(self, "Plot unavailable", f"Plot file not found:\n{path}")
             return
         self.current_screening_plot = path
         self.update_screening_interpretation(key)
-        pix = QPixmap(str(path))
-        if pix.isNull():
-            self.screening_plot_preview.setText(f"Could not load plot:\n{path}")
-            return
-        self.screening_plot_preview.setPixmap(pix.scaled(self.screening_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        self.screening_plot_preview.setToolTip(str(path))
+        self._display_plot_image(self.screening_plot_preview, path)
 
     def update_screening_interpretation(self, key: str) -> None:
         if not hasattr(self, "screening_interpretation_label"):
@@ -8945,16 +9244,29 @@ class FeatureAnalysisGUI(QMainWindow):
         layout.setSpacing(16)
         card = Card(
             "Feature Recommendation",
-            "Integrated feature-readiness review. This screen combines missingness, distributions, QC sensitivity, redundancy, screening signal, and repeatability into transparent recommendations. It is not automatic ML feature selection."
+            "Task-specific feature-readiness review. This screen combines missingness, distributions, QC sensitivity, redundancy, screening signal, and repeatability into transparent recommendations for the selected task. It is not automatic ML feature selection."
         )
-        self.recommendation_metric_grid = QGridLayout()
-        card.layout.addLayout(self.recommendation_metric_grid)
+        note = QLabel(
+            "Choose a task before acting on recommendations. All-tasks mode is only a dataset-wide triage view; actionable feature decisions should be reviewed inside a specific task because feature quality and usefulness can change by task."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{MUTED}; background:#F7FAFD; border:1px solid {LINE}; border-radius:8px; padding:10px;")
+        card.layout.addWidget(note)
 
         controls = QFrame()
-        controls.setStyleSheet(f"QFrame {{ background:#F8FBFE; border:1px solid {LINE}; border-radius:12px; }}")
+        controls.setStyleSheet(f"QFrame {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:12px; }}")
         controls_layout = QHBoxLayout(controls)
         controls_layout.setContentsMargins(12, 10, 12, 10)
         controls_layout.setSpacing(10)
+        controls_layout.addWidget(QLabel("Task focus:"))
+        self.recommendation_task_combo = QComboBox()
+        self.recommendation_task_combo.setMinimumWidth(260)
+        self.recommendation_task_combo.addItem("All tasks (triage only)", "All tasks")
+        self.recommendation_task_combo.setToolTip("Recommendations are most meaningful when filtered to a single task.")
+        self.recommendation_task_combo.currentIndexChanged.connect(
+            lambda _i=0: self.update_recommendations_dashboard(getattr(self, "outputs", {}))
+        )
+        controls_layout.addWidget(self.recommendation_task_combo)
         controls_layout.addWidget(QLabel("Decision:"))
         self.recommendation_decision_combo = QComboBox()
         self.recommendation_decision_combo.addItem("All decisions", "__all__")
@@ -8980,12 +9292,8 @@ class FeatureAnalysisGUI(QMainWindow):
         controls_layout.addWidget(self.recommendation_search_edit, 1)
         card.layout.addWidget(controls)
 
-        note = QLabel(
-            "Recommendation labels are transparent review decisions. They tell the analyst whether to use a feature directly, use it with documented caution, review it before modeling, recompute it, or hold it out of default export."
-        )
-        note.setWordWrap(True)
-        note.setStyleSheet(f"background:#F7FAFD; color:{INK}; border:1px solid {LINE}; border-radius:10px; padding:10px;")
-        card.layout.addWidget(note)
+        recommendation_split = QHBoxLayout()
+        recommendation_split.setSpacing(14)
         tabs = QTabWidget()
         self.recommendation_action_table = self._simple_table()
         self.recommendation_priority_table = self._simple_table()
@@ -9008,11 +9316,6 @@ class FeatureAnalysisGUI(QMainWindow):
             ("ML export manifest", self.ml_export_manifest_table),
         ]:
             tabs.addTab(tbl, title)
-        card.layout.addWidget(tabs, 1)
-        plot_card = Card(
-            "Recommendation plot board",
-            "These plots explain the integrated readiness decision. Use them to document why features are exported, held for review, or excluded by default."
-        )
         plot_panel = QFrame()
         plot_panel.setStyleSheet(f"QFrame {{ background:#F8FBFE; border:1px solid {LINE}; border-radius:12px; }}")
         plot_layout = QVBoxLayout(plot_panel)
@@ -9067,8 +9370,34 @@ class FeatureAnalysisGUI(QMainWindow):
         self.recommendation_interpretation_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self.recommendation_interpretation_label.setStyleSheet(f"QLabel {{ background:#FFFFFF; color:{INK}; border:1px solid {LINE}; border-radius:10px; padding:12px; font-size:12px; line-height:140%; }}")
         plot_layout.addWidget(self.recommendation_interpretation_label)
-        plot_card.layout.addWidget(plot_panel, 1)
-        layout.addWidget(plot_card, 1)
+
+        side_panel = QFrame()
+        side_panel.setFixedWidth(330)
+        side_panel.setStyleSheet(f"QFrame {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:12px; }}")
+        side_layout = QVBoxLayout(side_panel)
+        side_layout.setContentsMargins(14, 14, 14, 14)
+        side_layout.setSpacing(10)
+        side_title = QLabel("Recommendation details")
+        side_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
+        side_layout.addWidget(side_title)
+        side_note = QLabel("Compact readiness summary for the current task, decision, family, and search filters. Full tables stay below the plot.")
+        side_note.setWordWrap(True)
+        side_note.setStyleSheet(f"color:{MUTED}; border:none; background:transparent;")
+        side_layout.addWidget(side_note)
+        self.recommendation_metric_grid = QGridLayout()
+        self.recommendation_metric_grid.setHorizontalSpacing(8)
+        self.recommendation_metric_grid.setVerticalSpacing(8)
+        side_layout.addLayout(self.recommendation_metric_grid)
+        side_layout.addStretch(1)
+
+        recommendation_split.addWidget(plot_panel, 1)
+        recommendation_split.addWidget(side_panel)
+        card.layout.addLayout(recommendation_split, 1)
+
+        tables_title = QLabel("Detailed recommendation tables")
+        tables_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; padding-top:4px;")
+        card.layout.addWidget(tables_title)
+        card.layout.addWidget(tabs, 1)
         layout.addWidget(card)
         return self._wrap_scroll(body)
 
@@ -9105,6 +9434,171 @@ class FeatureAnalysisGUI(QMainWindow):
         if "repeatability" in text:
             return "Reliability"
         return "Feature table"
+
+    def _selected_recommendation_task(self) -> str:
+        combo = getattr(self, "recommendation_task_combo", None)
+        if combo is not None and combo.count():
+            data = combo.currentData()
+            if data is not None:
+                return str(data)
+            text = combo.currentText()
+            if text.startswith("All tasks"):
+                return "All tasks"
+            return str(text)
+        return "All tasks"
+
+    def _refresh_recommendation_task_combo(self) -> None:
+        combo = getattr(self, "recommendation_task_combo", None)
+        if combo is None:
+            return
+        current = self._selected_recommendation_task()
+        tasks: list[str] = []
+        df = getattr(self, "analysis_df", None)
+        if df is None or df.empty:
+            df = getattr(self, "feature_df", None)
+        if df is not None and not df.empty:
+            try:
+                task_series = self._overview_series_for_role(df, "task").astype("string").fillna("").str.strip()
+                tasks = [str(x) for x in task_series.loc[task_series.ne("")].value_counts().index.tolist()]
+            except Exception:
+                tasks = []
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("All tasks (triage only)", "All tasks")
+        for task in tasks[:300]:
+            combo.addItem(task, task)
+        if current and current in ["All tasks"] + tasks:
+            idx = combo.findData(current)
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+        combo.blockSignals(False)
+
+    def _recommendation_feature_columns(self, df: pd.DataFrame | None, outputs: dict[str, pd.DataFrame]) -> list[str]:
+        if df is None or df.empty:
+            return []
+        cols: list[str] = []
+        mapping = getattr(self, "mapping_df", pd.DataFrame())
+        if mapping is not None and not mapping.empty:
+            try:
+                cols = [c for c in role_lists(mapping).get(ROLE_FEATURE, []) if c in df.columns]
+            except Exception:
+                cols = []
+        if not cols:
+            recs = outputs.get("feature_recommendations", pd.DataFrame()) if outputs else pd.DataFrame()
+            if recs is not None and not recs.empty and "feature" in recs.columns:
+                cols = [c for c in recs["feature"].astype(str).tolist() if c in df.columns]
+        if not cols:
+            context = set(getattr(self, "_context_columns", lambda _df: [])(df))
+            cols = [c for c in df.columns if c not in context and pd.api.types.is_numeric_dtype(df[c])]
+        return cols
+
+    def _recommendation_task_frame(self, task: str) -> tuple[pd.DataFrame | None, pd.Series | None]:
+        if not task or task == "All tasks":
+            return None, None
+        df = getattr(self, "analysis_df", None)
+        if df is None or df.empty:
+            df = getattr(self, "feature_df", None)
+        if df is None or df.empty:
+            return None, None
+        try:
+            task_series = self._overview_series_for_role(df, "task").astype("string").fillna("").str.strip()
+        except Exception:
+            return None, None
+        mask = task_series.eq(str(task))
+        if not bool(mask.any()):
+            return pd.DataFrame(columns=df.columns), mask
+        return df.loc[mask].copy(), mask
+
+    def _recommendation_qc_for_task(self, base_df: pd.DataFrame, mask: pd.Series | None) -> pd.DataFrame | None:
+        qc_df = getattr(self, "qc_df", None)
+        if qc_df is None or qc_df.empty or mask is None:
+            return qc_df
+        join_keys = [k for k in ["record_key", "file_name", "subject_id"] if k in base_df.columns and k in qc_df.columns]
+        if join_keys:
+            return qc_df
+        if len(qc_df) == len(base_df) and len(mask) == len(base_df):
+            try:
+                return qc_df.iloc[np.flatnonzero(mask.to_numpy())].reset_index(drop=True)
+            except Exception:
+                return qc_df
+        return qc_df
+
+    def _recommendation_scoped_outputs(self, outputs: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+        task = self._selected_recommendation_task()
+        if not task or task == "All tasks":
+            return outputs
+        base_df = getattr(self, "analysis_df", None)
+        if base_df is None or base_df.empty:
+            base_df = getattr(self, "feature_df", None)
+        scoped, mask = self._recommendation_task_frame(task)
+        if scoped is None:
+            return outputs
+        cache_token = (task, int(len(scoped)), id(outputs.get("feature_recommendations", None)))
+        cache = getattr(self, "_recommendation_task_cache", {})
+        if cache.get("token") == cache_token and isinstance(cache.get("outputs"), dict):
+            return cache["outputs"]
+        loaded = dict(outputs)
+        if scoped.empty:
+            empty = pd.DataFrame(columns=outputs.get("feature_recommendations", pd.DataFrame()).columns)
+            empty["task_scope"] = task
+            loaded["feature_recommendations"] = empty
+            loaded["feature_recommendation_summary"] = feature_recommendation_summary(empty)
+            loaded["feature_recommendation_reason_counts"] = feature_recommendation_reason_counts(empty)
+            loaded["feature_recommendation_family_summary"] = feature_recommendation_family_summary(empty)
+            loaded["ml_export_manifest"] = empty
+            self._recommendation_task_cache = {"token": cache_token, "outputs": loaded}
+            return loaded
+        try:
+            feature_cols = self._recommendation_feature_columns(scoped, outputs)
+            if not feature_cols:
+                return outputs
+            mapping = getattr(self, "mapping_df", pd.DataFrame())
+            qc_df = self._recommendation_qc_for_task(base_df, mask)
+            dist = feature_distribution_summary(scoped, feature_cols)
+            missing = missingness_feature_summary(scoped, feature_cols, getattr(self, "registry_df", None))
+            ranges = expected_range_flags(scoped, feature_cols, getattr(self, "registry_df", None))
+            shape = distribution_shape_audit(dist, ranges)
+            qc_corr = feature_qc_correlations(scoped, qc_df, feature_cols)
+            try:
+                screening = build_group_outcome_screening(scoped, feature_cols, mapping)
+            except Exception:
+                screening = {}
+            try:
+                repeatability = feature_repeatability_summary(scoped, feature_cols, mapping, getattr(self, "registry_df", None))
+            except Exception:
+                repeatability = outputs.get("feature_repeatability_summary", pd.DataFrame())
+            rec_inputs = {
+                "screening_continuous_outcome_associations": screening.get("screening_continuous_outcome_associations", pd.DataFrame()),
+                "screening_categorical_group_associations": screening.get("screening_categorical_group_associations", pd.DataFrame()),
+            }
+            recs = feature_recommendation_table(
+                dist,
+                missing,
+                shape,
+                qc_corr,
+                outputs.get("feature_redundant_pairs", pd.DataFrame()),
+                repeatability,
+                rec_inputs,
+                getattr(self, "registry_df", None),
+            )
+            recs.insert(0, "task_scope", task)
+            recs.insert(1, "task_n_rows", int(len(scoped)))
+            recs.insert(2, "task_specific", True)
+            loaded["feature_recommendations"] = recs
+            loaded["feature_recommendation_summary"] = feature_recommendation_summary(recs)
+            loaded["feature_recommendation_reason_counts"] = feature_recommendation_reason_counts(recs)
+            loaded["feature_recommendation_family_summary"] = feature_recommendation_family_summary(recs)
+            loaded["ml_export_manifest"] = recs[[c for c in [
+                "task_scope", "task_n_rows", "feature", "family_or_subsystem",
+                "readiness_recommendation", "readiness_score", "ml_export_default",
+                "primary_reasons", "recommended_action",
+            ] if c in recs.columns]].copy()
+            self._recommendation_task_cache = {"token": cache_token, "outputs": loaded}
+            return loaded
+        except Exception as exc:
+            if hasattr(self, "log"):
+                self.log(f"WARN | Task-specific recommendations failed for {task}; showing all-task table instead: {exc}")
+            return outputs
 
     def _filtered_recommendations(self, recs: pd.DataFrame) -> pd.DataFrame:
         if recs is None or recs.empty:
@@ -9223,8 +9717,9 @@ class FeatureAnalysisGUI(QMainWindow):
             if item.widget():
                 item.widget().deleteLater()
         outputs = outputs if outputs and "feature_recommendations" in outputs else self._recommendation_outputs()
+        self._refresh_recommendation_task_combo()
+        outputs = self._recommendation_scoped_outputs(outputs)
         recs = outputs.get("feature_recommendations", pd.DataFrame())
-        summary = outputs.get("feature_recommendation_summary", pd.DataFrame())
         manifest = outputs.get("ml_export_manifest", pd.DataFrame())
         if hasattr(self, "recommendation_family_combo"):
             current_family = self.recommendation_family_combo.currentText()
@@ -9244,12 +9739,14 @@ class FeatureAnalysisGUI(QMainWindow):
         priority = self._recommendation_priority_review(filtered)
         handoff = self._recommendation_handoff_summary(filtered)
         legend = self._recommendation_decision_legend()
+        task_scope = self._selected_recommendation_task()
         def m(metric: str, default: object = 0) -> object:
             if filtered_summary is None or filtered_summary.empty or "metric" not in filtered_summary.columns:
                 return default
             row = filtered_summary.loc[filtered_summary["metric"].astype(str).eq(metric)]
             return row["value"].iloc[0] if not row.empty else default
         tiles = [
+            ("Task scope", task_scope if task_scope != "All tasks" else "Triage only", "act on a selected task"),
             ("Visible features", m("features_reviewed", 0), "after filters"),
             ("Recommended", m("recommended", 0), "clean default candidates"),
             ("With caution", m("recommended_with_caution", 0), "export but document risk"),
@@ -9258,7 +9755,7 @@ class FeatureAnalysisGUI(QMainWindow):
             ("Default ML export", m("default_ml_export_features", 0), "transparent manifest"),
         ]
         for idx, (title, value, subtitle) in enumerate(tiles):
-            self.recommendation_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx // 3, idx % 3)
+            self.recommendation_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx, 0)
         self._fill_table(self.recommendation_action_table, action_plan)
         self._fill_table(self.recommendation_priority_table, priority)
         self._fill_table(self.recommendation_summary_table, filtered_summary)
@@ -9270,7 +9767,7 @@ class FeatureAnalysisGUI(QMainWindow):
         self._fill_table(self.ml_export_manifest_table, manifest)
 
     def _generate_recommendation_plot(self, key: str) -> str | None:
-        outputs = self._recommendation_outputs()
+        outputs = self._recommendation_scoped_outputs(self._recommendation_outputs())
         recs = outputs.get("feature_recommendations", pd.DataFrame())
         if recs is None or recs.empty:
             return None
@@ -9290,7 +9787,8 @@ class FeatureAnalysisGUI(QMainWindow):
         if fam_combo is not None and fam_combo.count():
             family = fam_combo.currentText() or "all_families"
         search = getattr(getattr(self, "recommendation_search_edit", None), "text", lambda: "")().strip()
-        slug = self._safe_task_slug(f"{decision}__{family}__{search or 'all'}")
+        task = self._selected_recommendation_task()
+        slug = self._safe_task_slug(f"{task}__{decision}__{family}__{search or 'all'}")
         plot_map = {
             "recommendation_counts": lambda p: plot_recommendation_counts(filtered, p),
             "recommendation_score_landscape": lambda p: plot_recommendation_score_landscape(filtered, p),
