@@ -1694,6 +1694,46 @@ def plot_selected_feature_reliability(df: pd.DataFrame, feature: str, path: Path
 
 
 
+
+def plot_reliability_scope_notice(
+    design: pd.DataFrame,
+    subject_counts: pd.DataFrame,
+    path: Path,
+    title: str,
+    message: str,
+) -> Path:
+    """Render an explanatory task-scope notice instead of treating sparse tasks as GUI failures."""
+    def _metric_value(name: str, default=0):
+        if design is None or design.empty or "metric" not in design.columns:
+            return default
+        row = design.loc[design["metric"].astype(str).eq(name)]
+        if row.empty:
+            return default
+        return row["value"].iloc[0]
+    rows = int(pd.to_numeric(pd.Series([_metric_value("rows", 0)]), errors="coerce").fillna(0).iloc[0])
+    subjects = int(pd.to_numeric(pd.Series([_metric_value("unique_subjects", 0)]), errors="coerce").fillna(0).iloc[0])
+    repeats = int(pd.to_numeric(pd.Series([_metric_value("repeated_subject_task_units", 0)]), errors="coerce").fillna(0).iloc[0])
+    numeric = int(pd.to_numeric(pd.Series([_metric_value("numeric_features", 0)]), errors="coerce").fillna(0).iloc[0])
+    fig, ax = plt.subplots(figsize=(10.6, 6.1))
+    ax.axis("off")
+    ax.text(0.02, 0.94, title, transform=ax.transAxes, ha="left", va="top", fontsize=15, fontweight="bold", color=NAVY)
+    ax.text(0.02, 0.83, message, transform=ax.transAxes, ha="left", va="top", fontsize=10, color=NAVY, linespacing=1.35, wrap=True)
+    labels = ["Rows", "Subjects", "Repeated units", "Numeric metrics"]
+    values = [rows, subjects, repeats, numeric]
+    inset = fig.add_axes([0.08, 0.09, 0.84, 0.22])
+    colors = [TEAL, TEAL, GOLD if repeats < 3 else TEAL, TEAL]
+    inset.bar(labels, values, color=colors, edgecolor=NAVY, linewidth=.6)
+    inset.set_ylabel("Count", color=MUTED)
+    inset.tick_params(axis="x", labelrotation=0, labelsize=9)
+    inset.tick_params(axis="y", labelsize=8, colors=MUTED)
+    inset.spines["top"].set_visible(False); inset.spines["right"].set_visible(False)
+    inset.spines["left"].set_color(GRID); inset.spines["bottom"].set_color(GRID)
+    ymax = max(values) if values else 1
+    for i, v in enumerate(values):
+        inset.text(i, v + max(1, ymax * .025), str(int(v)), ha="center", va="bottom", fontsize=9, fontweight="bold", color=NAVY)
+    fig.text(0.5, 0.02, "Some reliability plots are intentionally task-specific and require enough repeated same-task subject units. Sparse tasks should be reported as design limitations, not forced into unstable ICC/MDC estimates.", ha="center", va="bottom", fontsize=9, color=MUTED)
+    return _save(fig, path)
+
 def plot_reliability_design_support(design: pd.DataFrame, subject_counts: pd.DataFrame, path: Path) -> Path:
     """Plot whether the dataset design can support repeatability estimation."""
     def _metric_value(name: str, default=0):

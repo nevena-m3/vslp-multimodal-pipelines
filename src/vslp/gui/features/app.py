@@ -84,7 +84,7 @@ from vslp.analysis.features.plots import (
     plot_reliability_variance_landscape, plot_reliability_family_summary,
     plot_reliability_subject_counts, plot_selected_feature_reliability,
     plot_reliability_design_support, plot_reliability_measurement_error_landscape,
-    plot_selected_feature_same_task_reliability,
+    plot_reliability_scope_notice, plot_selected_feature_same_task_reliability,
     plot_recommendation_counts, plot_recommendation_score_landscape,
     plot_recommendation_reason_counts, plot_recommendation_family_summary,
     plot_ml_export_manifest_summary,
@@ -100,7 +100,7 @@ from vslp.analysis.features.plots import (
     plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.130.0"
+APP_VERSION = "v0.131.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -8713,6 +8713,61 @@ class FeatureAnalysisGUI(QMainWindow):
             work = work.merge(repeated, on=["subject"], how="inner")
         return work
 
+    def _reliability_design_metric_value(self, design: pd.DataFrame, name: str, default: object = 0) -> object:
+        if design is None or design.empty or "metric" not in design.columns:
+            return default
+        row = design.loc[design["metric"].astype(str).eq(name)]
+        if row.empty or "value" not in row.columns:
+            return default
+        return row["value"].iloc[0]
+
+    def _reliability_scope_notice_message(self, key: str, scoped: dict[str, pd.DataFrame]) -> tuple[str, str]:
+        """Return a plot-specific scope notice instead of failing silently.
+
+        Reliability plots are not all equally meaningful for every task. A selected task
+        can have repeated recordings but still too few repeated subject units to support
+        ICC/MDC/family inference. In that case the GUI should show a truthful diagnostic
+        plot rather than pretending the menu failed.
+        """
+        design = scoped.get("design", pd.DataFrame())
+        repeated_units = self._reliability_design_metric_value(design, "repeated_subject_task_units", 0)
+        rows = self._reliability_design_metric_value(design, "rows", 0)
+        numeric = self._reliability_design_metric_value(design, "numeric_features", 0)
+        source = self._reliability_design_metric_value(design, "reliability_source", self._reliability_source_label())
+        task = self._reliability_design_metric_value(design, "task_scope", self._selected_reliability_task())
+        try:
+            repeated_units_i = int(pd.to_numeric(pd.Series([repeated_units]), errors="coerce").fillna(0).iloc[0])
+        except Exception:
+            repeated_units_i = 0
+        try:
+            rows_i = int(pd.to_numeric(pd.Series([rows]), errors="coerce").fillna(0).iloc[0])
+        except Exception:
+            rows_i = 0
+        try:
+            numeric_i = int(pd.to_numeric(pd.Series([numeric]), errors="coerce").fillna(0).iloc[0])
+        except Exception:
+            numeric_i = 0
+        base = (
+            f"Reliability source: {source}\n"
+            f"Task scope: {task}\n"
+            f"Rows in selected scope: {rows_i}\n"
+            f"Repeated same-task subject units: {repeated_units_i}\n"
+            f"Numeric features / metrics: {numeric_i}"
+        )
+        if key == "selected_feature_same_task_reliability":
+            title = "Selected feature same-task trajectory"
+            message = base + "\n\nThis plot is meaningful when at least one subject has two or more valid recordings for the selected feature within the selected task. Choose a feature with repeated valid values, or switch to Design support to inspect the task substrate."
+        elif key == "reliability_family_summary":
+            title = "Reliability by feature family"
+            message = base + "\n\nFamily-level reliability requires evaluable ICC estimates within the selected task. If this task has too few repeated subject units, the valid output is the design-support diagnostic rather than a family ranking."
+        elif key == "reliability_measurement_error_landscape":
+            title = "Detectable-change / error landscape"
+            message = base + "\n\nThe MDC95 landscape requires enough repeated same-task units to estimate within-subject error. For sparse tasks, inspect design support and selected-feature trajectories instead of forcing ICC/MDC estimates."
+        else:
+            title = "Feature ICC ranking"
+            message = base + "\n\nICC ranking requires enough repeated same-task units for variance-component estimation. For sparse task-specific scopes, this plot is intentionally withheld and replaced with this diagnostic notice."
+        return title, message
+
     def _generate_reliability_plot(self, key: str) -> str | None:
         self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
         scoped = self._build_scoped_reliability_outputs()
@@ -8723,21 +8778,54 @@ class FeatureAnalysisGUI(QMainWindow):
         if not hasattr(self, "plot_paths"):
             self.plot_paths = {}
         task_slug = self._safe_task_slug(self._selected_reliability_task()) if hasattr(self, "_safe_task_slug") else "task"
+        notice_path = plots_dir / f"reliability_scope_notice__{task_slug}__{key}.png"
+
+        # Plot meaningfulness is task-dependent. Design support is always meaningful;
+        # ICC/MDC/family summaries require evaluable variance estimates; selected-feature
+        # trajectories require repeated valid values for the selected feature. We generate
+        # an explanatory diagnostic image instead of raising a generic unavailable message.
+        evaluable_icc = 0
+        if rep is not None and not rep.empty and "icc1_proxy" in rep.columns:
+            evaluable_icc = int(pd.to_numeric(rep["icc1_proxy"], errors="coerce").notna().sum())
+
         if key == "reliability_design_support":
             path = plot_reliability_design_support(design, subj, plots_dir / f"reliability_design_support__{task_slug}.png")
         elif key == "reliability_icc_ranking":
-            path = plot_reliability_icc_ranking(rep, plots_dir / f"reliability_icc_ranking__{task_slug}.png")
+            if evaluable_icc <= 0:
+                title, message = self._reliability_scope_notice_message(key, scoped)
+                path = plot_reliability_scope_notice(design, subj, notice_path, title, message)
+            else:
+                path = plot_reliability_icc_ranking(rep, plots_dir / f"reliability_icc_ranking__{task_slug}.png")
         elif key == "reliability_measurement_error_landscape":
-            path = plot_reliability_measurement_error_landscape(rep, plots_dir / f"reliability_measurement_error_landscape__{task_slug}.png")
+            has_mdc = False
+            if rep is not None and not rep.empty and {"icc1_proxy", "mdc95_standardized"}.issubset(set(rep.columns)):
+                tmp = rep.copy()
+                tmp["icc1_proxy"] = pd.to_numeric(tmp["icc1_proxy"], errors="coerce")
+                tmp["mdc95_standardized"] = pd.to_numeric(tmp["mdc95_standardized"], errors="coerce")
+                has_mdc = bool(tmp.dropna(subset=["icc1_proxy", "mdc95_standardized"]).shape[0] > 0)
+            if not has_mdc:
+                title, message = self._reliability_scope_notice_message(key, scoped)
+                path = plot_reliability_scope_notice(design, subj, notice_path, title, message)
+            else:
+                path = plot_reliability_measurement_error_landscape(rep, plots_dir / f"reliability_measurement_error_landscape__{task_slug}.png")
         elif key == "reliability_family_summary":
-            path = plot_reliability_family_summary(fam, plots_dir / f"reliability_family_summary__{task_slug}.png")
+            has_family = fam is not None and not fam.empty and "median_icc1_proxy" in fam.columns and pd.to_numeric(fam["median_icc1_proxy"], errors="coerce").notna().any()
+            if not has_family:
+                title, message = self._reliability_scope_notice_message(key, scoped)
+                path = plot_reliability_scope_notice(design, subj, notice_path, title, message)
+            else:
+                path = plot_reliability_family_summary(fam, plots_dir / f"reliability_family_summary__{task_slug}.png")
         elif key in {"selected_feature_same_task_reliability", "selected_feature_reliability"}:
             feature = self._selected_reliability_feature()
+            if not feature and rep is not None and not rep.empty and "feature" in rep.columns:
+                feature = str(rep["feature"].dropna().astype(str).iloc[0]) if not rep["feature"].dropna().empty else None
             if not feature:
-                return None
-            records = self._selected_feature_reliability_records(feature)
-            suffix = self._selected_reliability_task()
-            path = plot_selected_feature_same_task_reliability(records, feature, plots_dir / f"selected_feature_same_task_reliability__{task_slug}.png", suffix)
+                title, message = self._reliability_scope_notice_message("selected_feature_same_task_reliability", scoped)
+                path = plot_reliability_scope_notice(design, subj, notice_path, title, message)
+            else:
+                records = self._selected_feature_reliability_records(feature)
+                suffix = self._selected_reliability_task()
+                path = plot_selected_feature_same_task_reliability(records, feature, plots_dir / f"selected_feature_same_task_reliability__{task_slug}.png", suffix)
             key = "selected_feature_same_task_reliability"
         else:
             return None
@@ -8751,7 +8839,7 @@ class FeatureAnalysisGUI(QMainWindow):
                 key = str(data)
         path_str = self._generate_reliability_plot(key)
         if not path_str:
-            QMessageBox.information(self, "Plot unavailable", "Run Feature Analysis first, choose a reliability source, select a repeated task/feature if needed, or this plot could not be generated for the current dataset. Automated QC requires an aligned QC table.")
+            QMessageBox.information(self, "Plot unavailable", "Run Feature Analysis first. Reliability plots now show task-specific diagnostic notices when a selected task does not have enough repeated same-task data for that plot.")
             return
         path = Path(path_str)
         if not path.exists():
