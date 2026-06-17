@@ -100,7 +100,7 @@ from vslp.analysis.features.plots import (
     plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.128.0"
+APP_VERSION = "v0.129.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -8131,45 +8131,139 @@ class FeatureAnalysisGUI(QMainWindow):
         layout = QVBoxLayout(body)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(16)
+
         card = Card(
             "Feature Reliability",
             "Repeatability review for repeated recordings. Reliability is calculated within the same task when task context is available, so task effects are not mistaken for measurement stability."
         )
-        self.reliability_metric_grid = QGridLayout()
-        card.layout.addLayout(self.reliability_metric_grid)
 
-        controls = QHBoxLayout()
+        note = QLabel("Use this menu to decide whether acoustic features or aligned automated QC metrics are stable enough for repeated-measure or longitudinal interpretation. Controls stay above the plot; compact reliability details stay at the right; full audit tables stay below.")
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color:{MUTED}; background:#F7FAFD; border:1px solid {LINE}; border-radius:8px; padding:10px;")
+        card.layout.addWidget(note)
+
+        control_panel = QFrame()
+        control_panel.setStyleSheet(f"QFrame {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:12px; }}")
+        control_layout = QHBoxLayout(control_panel)
+        control_layout.setContentsMargins(12, 10, 12, 10)
+        control_layout.setSpacing(10)
+
         self.reliability_source_combo = QComboBox()
         self.reliability_source_combo.setMinimumWidth(210)
         self.reliability_source_combo.addItem("Acoustic features", "features")
         self.reliability_source_combo.addItem("Automated QC metrics", "automated_qc")
         self.reliability_source_combo.currentIndexChanged.connect(lambda _=0: self._refresh_reliability_scope())
-        controls.addWidget(QLabel("Reliability source:"))
-        controls.addWidget(self.reliability_source_combo)
+        control_layout.addWidget(QLabel("Reliability source:"))
+        control_layout.addWidget(self.reliability_source_combo)
 
         self.reliability_task_combo = QComboBox()
-        self.reliability_task_combo.setMinimumWidth(220)
+        self.reliability_task_combo.setMinimumWidth(240)
         self.reliability_task_combo.currentIndexChanged.connect(lambda _=0: self._refresh_reliability_scope())
-        controls.addWidget(QLabel("Task focus:"))
-        controls.addWidget(self.reliability_task_combo)
+        control_layout.addWidget(QLabel("Task focus:"))
+        control_layout.addWidget(self.reliability_task_combo)
 
         self.reliability_family_combo = QComboBox()
-        self.reliability_family_combo.setMinimumWidth(220)
+        self.reliability_family_combo.setMinimumWidth(240)
         self.reliability_family_combo.currentIndexChanged.connect(lambda _=0: self._refresh_reliability_feature_combo())
-        controls.addWidget(QLabel("Feature family:"))
-        controls.addWidget(self.reliability_family_combo)
+        control_layout.addWidget(QLabel("Feature / QC family:"))
+        control_layout.addWidget(self.reliability_family_combo)
 
         self.reliability_feature_combo = QComboBox()
-        self.reliability_feature_combo.setMinimumWidth(360)
+        self.reliability_feature_combo.setMinimumWidth(340)
         self.reliability_feature_combo.currentIndexChanged.connect(lambda _=0: self.preview_reliability_plot("selected_feature_same_task_reliability"))
-        controls.addWidget(QLabel("Selected feature:"))
-        controls.addWidget(self.reliability_feature_combo)
-        controls.addStretch(1)
-        open_btn = QPushButton("Open current plot file")
-        open_btn.setProperty("primary", True)
+        control_layout.addWidget(QLabel("Selected feature / metric:"))
+        control_layout.addWidget(self.reliability_feature_combo, 1)
+        card.layout.addWidget(control_panel)
+
+        reliability_split = QHBoxLayout()
+        reliability_split.setSpacing(14)
+
+        plot_panel = QFrame()
+        plot_panel.setStyleSheet(f"QFrame {{ background:#F8FBFE; border:1px solid {LINE}; border-radius:12px; }}")
+        plot_layout = QVBoxLayout(plot_panel)
+        plot_layout.setContentsMargins(14, 14, 14, 14)
+        plot_layout.setSpacing(10)
+
+        plot_header = QHBoxLayout()
+        plot_header.setSpacing(10)
+        plot_title = QLabel("Reliability plot")
+        plot_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
+        plot_header.addWidget(plot_title)
+
+        self.reliability_plot_combo = QComboBox()
+        self.reliability_plot_combo.setMinimumWidth(380)
+        for text, key in [
+            ("Design support for reliability", "reliability_design_support"),
+            ("Feature ICC ranking", "reliability_icc_ranking"),
+            ("Detectable-change / error landscape", "reliability_measurement_error_landscape"),
+            ("Reliability by feature family", "reliability_family_summary"),
+            ("Selected feature same-task trajectory", "selected_feature_same_task_reliability"),
+        ]:
+            self.reliability_plot_combo.addItem(text, key)
+        self.reliability_plot_combo.setToolTip("Choose one reliability plot. The controls above determine source, task, family, and selected feature/metric.")
+        plot_header.addWidget(self.reliability_plot_combo, 1)
+
+        show_btn = QPushButton("Show")
+        show_btn.setProperty("secondary", True)
+        show_btn.clicked.connect(lambda: self.preview_reliability_plot(self.reliability_plot_combo.currentData()))
+        plot_header.addWidget(show_btn)
+
+        regen = QPushButton("Regenerate")
+        regen.clicked.connect(lambda: self.update_reliability_dashboard(getattr(self, "outputs", {})))
+        plot_header.addWidget(regen)
+        plot_header.addStretch(1)
+
+        open_btn = QPushButton("Open current plot")
+        open_btn.setProperty("secondary", True)
         open_btn.clicked.connect(self.open_current_reliability_plot)
-        controls.addWidget(open_btn)
-        card.layout.addLayout(controls)
+        plot_header.addWidget(open_btn)
+        plot_layout.addLayout(plot_header)
+
+        caption = QLabel("Reliability is estimated from repeated same-task recordings. Interpretability comes from the combination of design support, ICC-style repeatability, and detectable-change burden rather than ICC alone.")
+        caption.setWordWrap(True)
+        caption.setStyleSheet(f"color:{MUTED}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:9px;")
+        plot_layout.addWidget(caption)
+
+        self.reliability_plot_preview = QLabel("Run Feature Analysis, then choose one reliability plot.")
+        self.reliability_plot_preview.setAlignment(Qt.AlignCenter)
+        self.reliability_plot_preview.setScaledContents(False)
+        self.reliability_plot_preview.setMinimumHeight(540)
+        self.reliability_plot_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.reliability_plot_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
+        plot_layout.addWidget(self.reliability_plot_preview, 1)
+
+        self.reliability_interpretation_label = QLabel("Select a reliability plot to see structured interpretation guidance.")
+        self.reliability_interpretation_label.setWordWrap(True)
+        self.reliability_interpretation_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.reliability_interpretation_label.setStyleSheet(f"QLabel {{ background:#FFFFFF; color:{INK}; border:1px solid {LINE}; border-radius:10px; padding:12px; font-size:12px; line-height:140%; }}")
+        plot_layout.addWidget(self.reliability_interpretation_label)
+        reliability_split.addWidget(plot_panel, 1)
+
+        side_panel = QFrame()
+        side_panel.setStyleSheet(f"QFrame {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:14px; }}")
+        side_layout = QVBoxLayout(side_panel)
+        side_layout.setContentsMargins(12, 12, 12, 12)
+        side_layout.setSpacing(10)
+        side_title = QLabel("Reliability details")
+        side_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
+        side_layout.addWidget(side_title)
+        side_note = QLabel("Compact same-task repeatability summary for the current source/task/family scope. Full tables remain below the plot.")
+        side_note.setWordWrap(True)
+        side_note.setStyleSheet(f"color:{MUTED}; border:none; background:transparent; font-size:12px;")
+        side_layout.addWidget(side_note)
+        self.reliability_metric_grid = QGridLayout()
+        self.reliability_metric_grid.setHorizontalSpacing(8)
+        self.reliability_metric_grid.setVerticalSpacing(8)
+        side_layout.addLayout(self.reliability_metric_grid)
+        side_layout.addStretch(1)
+        side_panel.setMinimumWidth(280)
+        side_panel.setMaximumWidth(370)
+        reliability_split.addWidget(side_panel)
+        card.layout.addLayout(reliability_split)
+
+        tables_header = QLabel("Detailed reliability tables")
+        tables_header.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; padding-top:8px;")
+        card.layout.addWidget(tables_header)
 
         tabs = QTabWidget()
         self.reliability_design_table = self._simple_table()
@@ -8185,32 +8279,8 @@ class FeatureAnalysisGUI(QMainWindow):
             ("Readiness screen", self.reliability_screen_table),
         ]:
             tabs.addTab(tbl, title)
-        card.layout.addWidget(tabs, 1)
+        card.layout.addWidget(tabs)
 
-        plot_card = Card(
-            "Reliability plots",
-            "Use this menu to decide whether a feature is stable enough for repeated-measure or longitudinal interpretation before recommending it downstream."
-        )
-        self._add_standard_plot_gallery(
-            plot_card.layout,
-            "Reliability plot",
-            "Reliability uses same-task repeated recordings, ICC-style repeatability, and measurement-error / detectable-change thresholds. Choose acoustic features or aligned automated QC metrics as the reliability source.",
-            "reliability_plot_combo",
-            [
-                ("Design support for reliability", "reliability_design_support"),
-                ("Feature ICC ranking", "reliability_icc_ranking"),
-                ("Detectable-change / error landscape", "reliability_measurement_error_landscape"),
-                ("Reliability by feature family", "reliability_family_summary"),
-                ("Selected feature same-task trajectory", "selected_feature_same_task_reliability"),
-            ],
-            "reliability_plot_preview",
-            "reliability_interpretation_label",
-            self.preview_reliability_plot,
-            self.open_current_reliability_plot,
-            "Run Feature Analysis, then choose one reliability plot.",
-            540,
-        )
-        layout.addWidget(plot_card, 1)
         layout.addWidget(card)
         return self._wrap_scroll(body)
 
