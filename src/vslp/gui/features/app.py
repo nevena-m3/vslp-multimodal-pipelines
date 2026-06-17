@@ -100,7 +100,7 @@ from vslp.analysis.features.plots import (
     plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.134.0"
+APP_VERSION = "v0.135.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -462,8 +462,8 @@ class Sidebar(QFrame):
             ("screening", "o  Group / Outcome Screening"),
             ("reliability", "o  Reliability"),
             ("recommendations", "o  Recommendations"),
-            ("ml_export", "o  ML Export Builder"),
             ("export", "o  Export / Report"),
+            ("ml_export", "o  Advanced ML Export Builder"),
         ]:
             b = QPushButton(text)
             b.clicked.connect(lambda _=False, k=key: self.on_select(k))
@@ -558,8 +558,10 @@ class FeatureAnalysisGUI(QMainWindow):
         self.mapping_accepted = False
         self.outputs: dict[str, pd.DataFrame] = {}
         self.analysis_ready = False
+        self.analysis_prompt_responded = False
+        self.analysis_navigation_notice_logged = False
         self.output_dir: Optional[Path] = None
-        self.page_keys = ["project", "mapping", "metadata_mapping", "overview", "missing", "dist", "qc", "relationships", "task_review", "longitudinal", "screening", "reliability", "recommendations", "ml_export", "export"]
+        self.page_keys = ["project", "mapping", "metadata_mapping", "overview", "missing", "dist", "qc", "relationships", "task_review", "longitudinal", "screening", "reliability", "recommendations", "export", "ml_export"]
 
         root = QWidget()
         self.setCentralWidget(root)
@@ -603,8 +605,8 @@ class FeatureAnalysisGUI(QMainWindow):
             "screening": self._screening_page(),
             "reliability": self._reliability_page(),
             "recommendations": self._recommendations_page(),
-            "ml_export": self._ml_export_builder_page(),
             "export": self._export_page(),
+            "ml_export": self._ml_export_builder_page(),
         }
         for key in self.page_keys:
             self.stack.addWidget(self.pages[key])
@@ -614,7 +616,7 @@ class FeatureAnalysisGUI(QMainWindow):
         return {
             "missing", "dist", "qc", "relationships", "task_review",
             "longitudinal", "screening", "reliability", "recommendations",
-            "ml_export", "export",
+            "export",
         }
 
     def _has_full_analysis_outputs(self) -> bool:
@@ -642,21 +644,35 @@ class FeatureAnalysisGUI(QMainWindow):
             "screening": "Group / Outcome Screening",
             "reliability": "Reliability",
             "recommendations": "Recommendations",
-            "ml_export": "ML Export Builder",
             "export": "Export / Report",
         }.get(key, key)
+        if not self.analysis_navigation_notice_logged:
+            self.log(
+                f"{page_label} is available for inspection; derived tables and plots populate after Run Feature Analysis."
+            )
+            self.analysis_navigation_notice_logged = True
+        return True
+
+    def _prompt_run_analysis_after_context_accept(self, context_label: str) -> None:
+        """Offer the analysis run once, immediately after the input context is accepted."""
+        if self._has_full_analysis_outputs() or self.analysis_prompt_responded:
+            self.show_page("overview")
+            return
+        self.analysis_prompt_responded = True
         reply = QMessageBox.question(
             self,
-            "Run Feature Analysis first",
-            f"{page_label} uses derived analysis tables and scoped plots.\n\nRun Feature Analysis now?",
+            "Run Feature Analysis",
+            f"{context_label} is ready. Run Feature Analysis now to populate all review menus?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.Yes,
         )
         if reply == QMessageBox.Yes:
             self.run_analysis()
-        else:
-            self.log(f"Navigation to {page_label} cancelled because Feature Analysis has not been run yet.")
-        return False
+            if self._has_full_analysis_outputs():
+                self.show_page("overview")
+            return
+        self.log("Feature Analysis was deferred. Use Run Feature Analysis on the Project page when ready.")
+        self.show_page("overview")
 
     def show_page(self, key: str) -> None:
         if key not in self.page_keys:
@@ -1665,7 +1681,7 @@ class FeatureAnalysisGUI(QMainWindow):
                 self.regenerate_overview_plots()
         except Exception as exc:
             self.log_error("Overview refresh after filename context apply failed", exc)
-        QMessageBox.information(self, "Filename context applied", f"Filename-derived context applied. Parsed rows: {parsed_ok} / {len(parsed_context)}. Downstream menus now use these parsed context fields.")
+        self._prompt_run_analysis_after_context_accept("Filename-derived context")
 
     def _style_metadata_role_combo(self, combo: QComboBox) -> None:
         """Make Assigned role selectors compact and readable inside table rows."""
@@ -1845,7 +1861,7 @@ class FeatureAnalysisGUI(QMainWindow):
                 self._refresh_clinical_context_controls(self.analysis_df)
             if hasattr(self, "_refresh_focus_combos"):
                 self._refresh_focus_combos()
-        self.show_page("overview")
+        self._prompt_run_analysis_after_context_accept("Metadata mapping")
 
     def _overview_page(self) -> QWidget:
         body = QWidget()
@@ -3348,7 +3364,7 @@ class FeatureAnalysisGUI(QMainWindow):
             ("Group / Outcome Screening", self.update_screening_dashboard),
             ("Reliability", self.update_reliability_dashboard),
             ("Recommendations", self.update_recommendations_dashboard),
-            ("ML Export", self.update_export_dashboard),
+            ("Export / Report", self.update_export_dashboard),
         ]
         failed = []
         for label, updater in dashboard_updates:
@@ -9523,8 +9539,9 @@ class FeatureAnalysisGUI(QMainWindow):
                 return qc_df
         return qc_df
 
-    def _recommendation_scoped_outputs(self, outputs: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
-        task = self._selected_recommendation_task()
+    def _recommendation_outputs_for_task(
+        self, outputs: dict[str, pd.DataFrame], task: str
+    ) -> dict[str, pd.DataFrame]:
         if not task or task == "All tasks":
             return outputs
         base_df = getattr(self, "analysis_df", None)
@@ -9559,6 +9576,8 @@ class FeatureAnalysisGUI(QMainWindow):
             ranges = expected_range_flags(scoped, feature_cols, getattr(self, "registry_df", None))
             shape = distribution_shape_audit(dist, ranges)
             qc_corr = feature_qc_correlations(scoped, qc_df, feature_cols)
+            corr_long = feature_correlation_long_table(scoped, feature_cols, max_features=180)
+            task_redundant = redundant_feature_pairs(corr_long, getattr(self, "registry_df", None))
             try:
                 screening = build_group_outcome_screening(scoped, feature_cols, mapping)
             except Exception:
@@ -9576,7 +9595,7 @@ class FeatureAnalysisGUI(QMainWindow):
                 missing,
                 shape,
                 qc_corr,
-                outputs.get("feature_redundant_pairs", pd.DataFrame()),
+                task_redundant,
                 repeatability,
                 rec_inputs,
                 getattr(self, "registry_df", None),
@@ -9599,6 +9618,9 @@ class FeatureAnalysisGUI(QMainWindow):
             if hasattr(self, "log"):
                 self.log(f"WARN | Task-specific recommendations failed for {task}; showing all-task table instead: {exc}")
             return outputs
+
+    def _recommendation_scoped_outputs(self, outputs: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+        return self._recommendation_outputs_for_task(outputs, self._selected_recommendation_task())
 
     def _filtered_recommendations(self, recs: pd.DataFrame) -> pd.DataFrame:
         if recs is None or recs.empty:
@@ -9869,18 +9891,26 @@ class FeatureAnalysisGUI(QMainWindow):
         layout.setSpacing(16)
 
         card = Card(
-            "ML Export Builder",
-            "Curate acoustic and kinematic feature outputs into clean acoustic-only, kinematic-only, and early-fusion ML-ready tables. This stage does not train models."
+            "Advanced ML Export Builder",
+            "Optional multimodal bridge for packaging acoustic and kinematic outputs. Use Export / Report first for the canonical task-specific single-modality handoff."
         )
 
         note = QLabel(
-            "Use this page as the bridge between the Acoustic/Kinematics GUIs and the future ML GUI. "
+            "Use this page only when acoustic and kinematic exports must be standardized or aligned together. "
             "Load completed feature outputs and registries, optionally add metadata/labels, then write standardized ML-ready tables and a unified feature manifest. "
-            "The ML GUI should consume these exports rather than raw acoustic/kinematic engineering tables."
+            "This builder does not split subjects, impute, scale, transform, select predictors, or train a model."
         )
         note.setWordWrap(True)
         note.setStyleSheet(f"color:{INK}; background:#F7FAFD; border:1px solid {LINE}; border-radius:10px; padding:10px;")
         card.layout.addWidget(note)
+
+        self.ml_fusion_guidance_label = QLabel(
+            "Safe early fusion requires a shared unique key, preferably record_key; otherwise subject_id + session_id/visit_id + task, then subject_id + task. "
+            "If no safe shared key exists, modality-specific exports are still written and early fusion is deliberately skipped."
+        )
+        self.ml_fusion_guidance_label.setWordWrap(True)
+        self.ml_fusion_guidance_label.setStyleSheet(f"color:{INK}; background:#FFF4D6; border:1px solid #E7C66A; border-radius:8px; padding:10px;")
+        card.layout.addWidget(self.ml_fusion_guidance_label)
 
         grid = QGridLayout()
         grid.setHorizontalSpacing(14)
@@ -9936,6 +9966,7 @@ class FeatureAnalysisGUI(QMainWindow):
         self.ml_export_kinematic_table = self._simple_table()
         self.ml_export_fusion_table = self._simple_table()
         self.ml_export_exclusions_table = self._simple_table()
+        self.ml_export_package_table = self._simple_table()
         tabs.addTab(self.ml_export_summary_table, "Export summary")
         tabs.addTab(self.ml_export_overlap_table, "Row alignment")
         tabs.addTab(self.ml_export_manifest_table, "Unified manifest")
@@ -9943,6 +9974,7 @@ class FeatureAnalysisGUI(QMainWindow):
         tabs.addTab(self.ml_export_kinematic_table, "Kinematic ML-ready")
         tabs.addTab(self.ml_export_fusion_table, "Early fusion")
         tabs.addTab(self.ml_export_exclusions_table, "Exclusions / notes")
+        tabs.addTab(self.ml_export_package_table, "Package files")
         card.layout.addWidget(tabs)
 
         guide = Card(
@@ -10000,6 +10032,23 @@ class FeatureAnalysisGUI(QMainWindow):
             self._fill_table(self.ml_export_kinematic_table, result.tables.get("kinematic_ml_ready", pd.DataFrame()), max_rows=200)
             self._fill_table(self.ml_export_fusion_table, result.tables.get("multimodal_early_fusion_ml_ready", pd.DataFrame()), max_rows=200)
             self._fill_table(self.ml_export_exclusions_table, result.tables.get("row_exclusions", pd.DataFrame()))
+            self._fill_table(
+                self.ml_export_package_table,
+                pd.DataFrame([{"output": name, "status": "written", "path": str(path)} for name, path in result.paths.items()]),
+            )
+            join_keys = result.summary.get("join_keys", [])
+            fusion_rows = int(result.summary.get("early_fusion_rows", 0) or 0)
+            if join_keys and fusion_rows > 0:
+                self.ml_fusion_guidance_label.setText(
+                    f"Early fusion created {fusion_rows} aligned rows using: {', '.join(map(str, join_keys))}. "
+                    "Confirm that these keys identify one recording per modality before downstream modelling."
+                )
+            else:
+                notes = "; ".join(map(str, result.summary.get("notes", [])))
+                self.ml_fusion_guidance_label.setText(
+                    "Early fusion was skipped because a safe shared row key was unavailable or one modality was missing. "
+                    f"Acoustic-only and kinematic-only outputs remain valid. {notes}".strip()
+                )
             self.ml_export_status.append(f"ML export package created: {result.output_dir}")
             for name, path in result.paths.items():
                 self.ml_export_status.append(f"{name}: {path}")
@@ -10028,15 +10077,17 @@ class FeatureAnalysisGUI(QMainWindow):
 
         card = Card(
             "Export / Report",
-            "Final packaging screen. Review feature-readiness decisions, choose an export profile, write ML-ready tables, and generate a professional HTML report. No model is trained here."
+            "Canonical single-modality handoff. Build a transparent, task-aware package from the completed Feature Analysis review for the future ML GUI."
         )
-
-        self.export_metric_grid = QGridLayout()
-        self.export_metric_grid.setHorizontalSpacing(12)
-        self.export_metric_grid.setVerticalSpacing(12)
-        card.layout.addLayout(self.export_metric_grid)
-
         control_row = QHBoxLayout()
+        control_row.addWidget(QLabel("Task focus:"))
+        self.export_task_combo = QComboBox()
+        self.export_task_combo.setMinimumWidth(220)
+        self.export_task_combo.addItem("All tasks")
+        self.export_task_combo.currentTextChanged.connect(
+            lambda _=None: self.update_export_dashboard(getattr(self, "outputs", {}))
+        )
+        control_row.addWidget(self.export_task_combo)
         control_row.addWidget(QLabel("Export profile:"))
         self.export_profile_combo = QComboBox()
         self.export_profile_combo.addItems([
@@ -10054,38 +10105,31 @@ class FeatureAnalysisGUI(QMainWindow):
         refresh_btn.clicked.connect(lambda: self.update_export_dashboard(getattr(self, "outputs", {})))
         control_row.addWidget(refresh_btn)
         package_btn = QPushButton("Create Export Package")
+        package_btn.setProperty("primary", True)
         package_btn.clicked.connect(self.create_export_package)
         control_row.addWidget(package_btn)
         card.layout.addLayout(control_row)
 
         guidance = QLabel(
-            "Use the profile selector to choose how conservative the exported feature matrix should be. Green features are clean default candidates; light-green features are usable with documented caution; gold/orange/red features should be reviewed, recomputed, or held out by default. The exported manifest always explains why each feature was included or held."
+            "Select one task for the scientifically preferred ML handoff. Recommendations are recalculated within that task before export. "
+            "All tasks is retained for audit and package review only because a feature may be suitable for one task and unsuitable for another."
         )
         guidance.setWordWrap(True)
-        guidance.setStyleSheet(f"color:{INK}; background:#F7FAFD; border:1px solid {LINE}; border-radius:10px; padding:10px;")
+        guidance.setStyleSheet(f"color:{INK}; background:#F7FAFD; border:1px solid {LINE}; border-radius:8px; padding:10px;")
         card.layout.addWidget(guidance)
 
-        splitter = QSplitter(Qt.Horizontal)
-        left = QFrame(); left.setStyleSheet("QFrame { border:none; background:transparent; }")
-        left_layout = QVBoxLayout(left); left_layout.setContentsMargins(0,0,0,0); left_layout.setSpacing(8)
-        self.export_interpretation = QTextEdit()
-        self.export_interpretation.setReadOnly(True)
-        self.export_interpretation.setMinimumHeight(210)
-        left_layout.addWidget(self.export_interpretation)
-        self.export_status = QTextEdit()
-        self.export_status.setReadOnly(True)
-        self.export_status.setMinimumHeight(170)
-        self.export_status.setPlaceholderText("Export status messages will appear here.")
-        left_layout.addWidget(self.export_status)
-        splitter.addWidget(left)
-
-        right = QFrame(); right.setStyleSheet("QFrame { border:none; background:transparent; }")
-        right_layout = QVBoxLayout(right); right_layout.setContentsMargins(0,0,0,0); right_layout.setSpacing(8)
+        export_split = QHBoxLayout()
+        export_split.setSpacing(14)
+        left = QFrame()
+        left.setStyleSheet("QFrame { border:none; background:transparent; }")
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(8)
         self.export_plot_preview = QLabel("Run Feature Analysis, then use Export / Report to preview the manifest summary.")
         self.export_plot_preview.setAlignment(Qt.AlignCenter)
-        self.export_plot_preview.setMinimumHeight(360)
-        self.export_plot_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
-        right_layout.addWidget(self.export_plot_preview, 1)
+        self.export_plot_preview.setMinimumHeight(390)
+        self.export_plot_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; color:{MUTED}; padding:16px; }}")
+        left_layout.addWidget(self.export_plot_preview, 1)
         plot_buttons = QHBoxLayout()
         open_plot_btn = QPushButton("Open Current Plot")
         open_plot_btn.setProperty("secondary", True)
@@ -10095,28 +10139,98 @@ class FeatureAnalysisGUI(QMainWindow):
         open_report_btn.setProperty("secondary", True)
         open_report_btn.clicked.connect(self.open_html_report)
         plot_buttons.addWidget(open_report_btn)
-        open_folder_btn = QPushButton("Open Output Folder")
+        open_folder_btn = QPushButton("Open Latest Package")
         open_folder_btn.setProperty("secondary", True)
-        open_folder_btn.clicked.connect(self.open_output_folder)
+        open_folder_btn.clicked.connect(self.open_latest_export_folder)
         plot_buttons.addWidget(open_folder_btn)
-        right_layout.addLayout(plot_buttons)
-        splitter.addWidget(right)
-        splitter.setSizes([430, 720])
-        card.layout.addWidget(splitter)
+        plot_buttons.addStretch(1)
+        left_layout.addLayout(plot_buttons)
+        self.export_status = QTextEdit()
+        self.export_status.setReadOnly(True)
+        self.export_status.setMaximumHeight(105)
+        self.export_status.setPlaceholderText("Package validation and file-writing status will appear here.")
+        left_layout.addWidget(self.export_status)
+        export_split.addWidget(left, 1)
+
+        details = QFrame()
+        details.setFixedWidth(330)
+        details.setStyleSheet(f"QFrame {{ background:#F7FAFD; border:1px solid {LINE}; border-radius:8px; }}")
+        details_layout = QVBoxLayout(details)
+        details_layout.setContentsMargins(10, 10, 10, 10)
+        details_layout.setSpacing(8)
+        self.export_metric_grid = QGridLayout()
+        self.export_metric_grid.setHorizontalSpacing(8)
+        self.export_metric_grid.setVerticalSpacing(8)
+        details_layout.addLayout(self.export_metric_grid)
+        self.export_interpretation = QTextEdit()
+        self.export_interpretation.setReadOnly(True)
+        self.export_interpretation.setMinimumHeight(230)
+        details_layout.addWidget(self.export_interpretation, 1)
+        export_split.addWidget(details)
+        card.layout.addLayout(export_split)
 
         tabs = QTabWidget()
         self.export_manifest_table = self._simple_table()
+        self.export_package_table = self._simple_table()
         self.export_summary_table = self._simple_table()
         self.export_profile_table = self._simple_table()
         self.export_readme_table = self._simple_table()
         tabs.addTab(self.export_manifest_table, "Color-coded feature manifest")
+        tabs.addTab(self.export_package_table, "Package contents / status")
         tabs.addTab(self.export_summary_table, "Readiness summary")
-        tabs.addTab(self.export_profile_table, "Exported tables")
+        tabs.addTab(self.export_profile_table, "Profile comparison")
         tabs.addTab(self.export_readme_table, "Decision legend")
         card.layout.addWidget(tabs)
 
         layout.addWidget(card)
         return self._wrap_scroll(body)
+
+    def _refresh_export_task_combo(self) -> None:
+        combo = getattr(self, "export_task_combo", None)
+        if combo is None:
+            return
+        current = combo.currentText() or "All tasks"
+        base = getattr(self, "analysis_df", None)
+        if base is None or base.empty:
+            base = getattr(self, "feature_df", None)
+        tasks: list[str] = []
+        if base is not None and not base.empty:
+            try:
+                task_series = self._overview_series_for_role(base, "task").astype("string").fillna("").str.strip()
+                tasks = sorted(x for x in task_series.unique().tolist() if x)
+            except Exception:
+                tasks = []
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("All tasks")
+        combo.addItems(tasks)
+        initialized = bool(getattr(self, "_export_task_initialized", False))
+        if not initialized and tasks:
+            combo.setCurrentText(tasks[0])
+        elif current in ["All tasks"] + tasks:
+            combo.setCurrentText(current)
+        elif tasks:
+            combo.setCurrentText(tasks[0])
+        self._export_task_initialized = True
+        combo.blockSignals(False)
+
+    def _selected_export_task(self) -> str:
+        combo = getattr(self, "export_task_combo", None)
+        return combo.currentText().strip() if combo is not None and combo.count() else "All tasks"
+
+    def _export_scoped_frame(self, task: str) -> pd.DataFrame:
+        base = getattr(self, "analysis_df", None)
+        if base is None or base.empty:
+            base = getattr(self, "feature_df", None)
+        if base is None:
+            return pd.DataFrame()
+        if not task or task == "All tasks":
+            return base.copy()
+        scoped, _mask = self._recommendation_task_frame(task)
+        return scoped.copy() if scoped is not None else pd.DataFrame(columns=base.columns)
+
+    def _export_scoped_outputs(self, outputs: dict[str, pd.DataFrame]) -> dict[str, pd.DataFrame]:
+        return self._recommendation_outputs_for_task(outputs, self._selected_export_task())
 
     def _export_profile_key(self) -> str:
         label = self.export_profile_combo.currentText() if hasattr(self, "export_profile_combo") else ""
@@ -10163,27 +10277,35 @@ class FeatureAnalysisGUI(QMainWindow):
     def _build_export_preview_tables(self, outputs: dict[str, pd.DataFrame]) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         recs = outputs.get("feature_recommendations", pd.DataFrame()).copy() if outputs else pd.DataFrame()
         profile = self._export_profile_key()
+        task = self._selected_export_task()
+        task_rows = int(len(self._export_scoped_frame(task)))
         if recs.empty:
-            manifest = pd.DataFrame(columns=["feature", "final_include", "readiness_recommendation", "readiness_score", "primary_reasons", "recommended_action"])
+            manifest = pd.DataFrame(columns=["task_scope", "task_n_rows", "task_specific", "feature", "final_include", "readiness_recommendation", "readiness_score", "primary_reasons", "recommended_action"])
         else:
             mask = self._selected_export_features(recs, profile)
             manifest = recs.copy()
+            manifest["task_scope"] = task
+            manifest["task_n_rows"] = task_rows
+            manifest["task_specific"] = task != "All tasks"
             manifest["export_profile"] = self._export_profile_label(profile)
             manifest["final_include"] = mask.values if len(mask) == len(manifest) else False
             manifest["export_decision"] = manifest["final_include"].map({True: "include", False: "hold / exclude"})
             keep_cols = [c for c in [
-                "feature", "final_include", "export_decision", "readiness_recommendation", "readiness_score",
+                "task_scope", "task_n_rows", "task_specific", "feature", "final_include", "export_decision", "readiness_recommendation", "readiness_score",
                 "family_or_subsystem", "primary_reasons", "recommended_action", "missing_fraction",
                 "robust_outlier_fraction", "max_abs_qc_spearman", "max_abs_redundancy", "icc1_proxy",
                 "max_screening_effect", "export_profile"
             ] if c in manifest.columns]
-            manifest = manifest[keep_cols].sort_values(["final_include", "readiness_score"], ascending=[False, False])
+            manifest = manifest[keep_cols]
+            sort_cols = [c for c in ["final_include", "readiness_score"] if c in manifest.columns]
+            if sort_cols:
+                manifest = manifest.sort_values(sort_cols, ascending=[False] * len(sort_cols))
 
         n_total = int(len(recs))
         n_inc = int(manifest["final_include"].astype(bool).sum()) if "final_include" in manifest.columns else 0
         n_hold = int(n_total - n_inc)
         profile_table = pd.DataFrame([
-            {"export_profile": self._export_profile_label(profile), "n_total_features": n_total, "n_included_features": n_inc, "n_held_or_excluded_features": n_hold, "purpose": "Choose the feature matrix breadth before downstream ML."},
+            {"task_scope": task, "export_profile": self._export_profile_label(profile), "n_total_features": n_total, "n_included_features": n_inc, "n_held_or_excluded_features": n_hold, "purpose": "Current task/profile package."},
             {"export_profile": "recommended_only", "n_total_features": n_total, "n_included_features": int((recs.get("readiness_recommendation", pd.Series(dtype=str)).astype(str) == "recommended").sum()) if not recs.empty else 0, "n_held_or_excluded_features": "-", "purpose": "Strictest clean set."},
             {"export_profile": "recommended_plus_caution", "n_total_features": n_total, "n_included_features": int(recs.get("readiness_recommendation", pd.Series(dtype=str)).astype(str).isin(["recommended", "recommended_with_caution"]).sum()) if not recs.empty else 0, "n_held_or_excluded_features": "-", "purpose": "Default starting set for ML."},
             {"export_profile": "review_set", "n_total_features": n_total, "n_included_features": int(recs.get("readiness_recommendation", pd.Series(dtype=str)).astype(str).isin(["recommended", "recommended_with_caution", "review_before_use"]).sum()) if not recs.empty else 0, "n_held_or_excluded_features": "-", "purpose": "Broad sensitivity/review set."},
@@ -10191,17 +10313,45 @@ class FeatureAnalysisGUI(QMainWindow):
         summary = outputs.get("feature_recommendation_summary", pd.DataFrame()).copy() if outputs else pd.DataFrame()
         return manifest, summary, profile_table
 
+    def _export_package_contents(self, paths: dict[str, Path] | None = None) -> pd.DataFrame:
+        paths = paths or {}
+        rows = [
+            ("ml_ready_feature_matrix.csv", "identifiers/context plus included task-specific features"),
+            ("ml_target_table.csv", "identifiers/context plus mapped outcomes"),
+            ("ml_covariate_table.csv", "identifiers/context plus mapped covariates"),
+            ("ml_qc_covariate_table_from_feature_table.csv", "identifiers/context plus mapped QC covariates"),
+            ("feature_export_manifest.csv", "feature decisions, evidence, task scope, and profile"),
+            ("feature_recommendation_summary.csv", "task-scoped readiness counts"),
+            ("export_profile_summary.csv", "current and comparison profile counts"),
+            ("feature_recommendation_legend.csv", "decision meanings and actions"),
+            ("README.md", "human-readable handoff guidance"),
+            ("export_config.json", "machine-readable provenance and boundary metadata"),
+            ("vslp_feature_analysis_export_report.html", "reviewable HTML export report"),
+            ("export_zip", "portable archive of the package"),
+        ]
+        return pd.DataFrame([
+            {
+                "file": name if name != "export_zip" else "<package>.zip",
+                "status": "written" if name in paths else "planned",
+                "purpose": purpose,
+                "path": str(paths.get(name, "")),
+            }
+            for name, purpose in rows
+        ])
+
     def update_export_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
         if not hasattr(self, "export_metric_grid"):
             return
         outputs = outputs or getattr(self, "outputs", {}) or {}
-        manifest, summary, profile_table = self._build_export_preview_tables(outputs)
+        self._refresh_export_task_combo()
+        scoped_outputs = self._export_scoped_outputs(outputs)
+        manifest, summary, profile_table = self._build_export_preview_tables(scoped_outputs)
         while self.export_metric_grid.count():
             item = self.export_metric_grid.takeAt(0)
             w = item.widget()
             if w:
                 w.deleteLater()
-        recs = outputs.get("feature_recommendations", pd.DataFrame()) if outputs else pd.DataFrame()
+        recs = scoped_outputs.get("feature_recommendations", pd.DataFrame()) if scoped_outputs else pd.DataFrame()
         included = int(manifest["final_include"].astype(bool).sum()) if "final_include" in manifest.columns else 0
         total = int(len(recs))
         held = max(total - included, 0)
@@ -10210,35 +10360,58 @@ class FeatureAnalysisGUI(QMainWindow):
         review = int(recs.get("readiness_recommendation", pd.Series(dtype=str)).astype(str).eq("review_before_use").sum()) if not recs.empty else 0
         excluded = int(recs.get("readiness_recommendation", pd.Series(dtype=str)).astype(str).isin(["exclude_or_recompute", "exclude_by_default"]).sum()) if not recs.empty else 0
         tiles = [
-            ("Profile", self._export_profile_label(self._export_profile_key()).split("(")[0].strip(), "selected export rule"),
+            ("Task", self._selected_export_task(), "task-specific preferred" if self._selected_export_task() != "All tasks" else "audit mode only"),
             ("Included", included, "features in exported matrix"),
             ("Held", held, "review/exclude/audit only"),
             ("Recommended", strict, "green"),
             ("Caution", caution, "light green"),
             ("Review", review, "gold"),
             ("Excluded", excluded, "orange/red"),
-            ("Total", total, "feature recommendations"),
         ]
         for idx, (title, value, subtitle) in enumerate(tiles):
-            self.export_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx // 4, idx % 4)
+            self.export_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx, 0)
         self._fill_export_manifest_table(self.export_manifest_table, manifest)
+        self._fill_table(self.export_package_table, self._export_package_contents(getattr(self, "latest_export_paths", {})))
         self._fill_table(self.export_summary_table, summary)
         self._fill_table(self.export_profile_table, profile_table)
         self._fill_table(self.export_readme_table, self._export_decision_legend())
         self.export_interpretation.setHtml(self._export_interpretation_html(included, held, total))
-        path = None
-        if hasattr(self, "plot_paths"):
-            path = self.plot_paths.get("ml_export_manifest_summary") or self.plot_paths.get("recommendation_counts")
-        if path and Path(path).exists():
-            self.current_export_plot = Path(path)
-            pix = QPixmap(str(path))
-            if not pix.isNull():
-                self.export_plot_preview.setPixmap(pix.scaled(self.export_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-                self.export_plot_preview.setToolTip(str(path))
+        path = self._generate_export_plot(manifest)
+        if path is not None and path.exists():
+            self.current_export_plot = path
+            self._display_plot_image(self.export_plot_preview, path)
+        elif manifest.empty:
+            self.export_plot_preview.setText("No task-scoped recommendation manifest is available. Run Feature Analysis first.")
+
+    def _generate_export_plot(self, manifest: pd.DataFrame) -> Path | None:
+        if manifest is None or manifest.empty:
+            return None
+        self.output_dir, _tables_dir, _reports_dir, plots_dir = self._analysis_dirs()
+        task_slug = self._safe_task_slug(self._selected_export_task())
+        profile_slug = self._safe_task_slug(self._export_profile_key())
+        path = plots_dir / f"export_manifest_summary__{task_slug}__{profile_slug}.png"
+        included = int(manifest.get("final_include", pd.Series(dtype=bool)).astype(bool).sum())
+        score_total = float(pd.to_numeric(manifest.get("readiness_score", pd.Series(dtype=float)), errors="coerce").fillna(0).sum())
+        token = (task_slug, profile_slug, int(len(manifest)), included, round(score_total, 4))
+        if getattr(self, "_export_plot_token", None) == token and path.exists():
+            return path
+        result = Path(plot_ml_export_manifest_summary(manifest, path))
+        self._export_plot_token = token
+        if not hasattr(self, "plot_paths"):
+            self.plot_paths = {}
+        self.plot_paths["export_manifest_summary"] = str(result)
+        return result
 
     def _export_interpretation_html(self, included: int, held: int, total: int) -> str:
         profile = self._export_profile_label(self._export_profile_key())
+        task = self._selected_export_task()
+        scope_note = (
+            "This package is task-specific and suitable as a downstream ML handoff."
+            if task != "All tasks"
+            else "All tasks is an audit view only. Select a specific task before treating the package as an ML handoff."
+        )
         return f"""
+        <b>Task scope</b><br>{task}<br>{scope_note}<br><br>
         <b>Export profile</b><br>{profile}<br><br>
         <b>What this stage does</b><br>Creates transparent analysis and ML-preparation files from the completed Feature Analysis audit. The feature matrix includes <b>{included}</b> of <b>{total}</b> features under the selected rule; <b>{held}</b> features are held for review, recomputation, exclusion, or audit-only use.<br><br>
         <b>Why include a feature?</b><br>Green/light-green features have adequate support across missingness, distribution shape, QC sensitivity, redundancy, reliability, and integrated recommendation score. Caution features are included only because their risks are documented and can be handled later in sensitivity analyses or fold-safe ML pipelines.<br><br>
@@ -10280,12 +10453,16 @@ class FeatureAnalysisGUI(QMainWindow):
         if not getattr(self, "outputs", None):
             outputs, feature_cols = self._build_analysis_outputs()
             self.outputs = outputs
-        outputs = self.outputs
-        active_df = self.analysis_df if self.analysis_df is not None else self.feature_df
+        task = self._selected_export_task()
+        outputs = self._export_scoped_outputs(self.outputs)
+        active_df = self._export_scoped_frame(task)
+        if active_df.empty:
+            raise RuntimeError(f"No rows are available for task scope: {task}.")
         profile = self._export_profile_key()
         profile_slug = profile.replace("_", "-")
+        task_slug = self._safe_task_slug(task)
         base_dir = (self.output_dir if getattr(self, "output_dir", None) else Path(self.output_edit.text().strip()) / "feature_analysis")
-        export_dir = base_dir / "exports" / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{profile_slug}"
+        export_dir = base_dir / "exports" / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{task_slug}_{profile_slug}"
         export_dir.mkdir(parents=True, exist_ok=True)
         manifest, summary, profile_table = self._build_export_preview_tables(outputs)
         mapping = self.collect_mapping_from_table()
@@ -10294,6 +10471,11 @@ class FeatureAnalysisGUI(QMainWindow):
         target_cols = [c for c in roles.get(ROLE_TARGET, []) if c in active_df.columns]
         cov_cols = [c for c in roles.get(ROLE_COVARIATE, []) if c in active_df.columns]
         qc_cols = [c for c in roles.get(ROLE_QC, []) if c in active_df.columns]
+        context_cols = [c for c in [
+            "record_key", "file_name", "filename", "subject_id", "session_id", "visit_id",
+            "task", "task_code", "iteration", "recording_date", "protocol_id",
+        ] if c in active_df.columns]
+        id_cols = list(dict.fromkeys(id_cols + context_cols))
         include_features = manifest.loc[manifest.get("final_include", False).astype(bool), "feature"].astype(str).tolist() if not manifest.empty and "feature" in manifest.columns else []
         include_features = [c for c in include_features if c in active_df.columns]
         paths: dict[str, Path] = {}
@@ -10305,11 +10487,11 @@ class FeatureAnalysisGUI(QMainWindow):
         write_df("feature_recommendation_summary.csv", summary)
         write_df("export_profile_summary.csv", profile_table)
         write_df("feature_recommendation_legend.csv", self._export_decision_legend())
-        matrix_cols = id_cols + include_features
+        matrix_cols = list(dict.fromkeys(id_cols + include_features))
         write_df("ml_ready_feature_matrix.csv", active_df[matrix_cols].copy() if matrix_cols else pd.DataFrame())
-        write_df("ml_target_table.csv", active_df[id_cols + target_cols].copy() if target_cols else pd.DataFrame(columns=id_cols))
-        write_df("ml_covariate_table.csv", active_df[id_cols + cov_cols].copy() if cov_cols else pd.DataFrame(columns=id_cols))
-        write_df("ml_qc_covariate_table_from_feature_table.csv", active_df[id_cols + qc_cols].copy() if qc_cols else pd.DataFrame(columns=id_cols))
+        write_df("ml_target_table.csv", active_df[list(dict.fromkeys(id_cols + target_cols))].copy() if target_cols else active_df[id_cols].copy())
+        write_df("ml_covariate_table.csv", active_df[list(dict.fromkeys(id_cols + cov_cols))].copy() if cov_cols else active_df[id_cols].copy())
+        write_df("ml_qc_covariate_table_from_feature_table.csv", active_df[list(dict.fromkeys(id_cols + qc_cols))].copy() if qc_cols else active_df[id_cols].copy())
         if self.qc_df is not None:
             write_df("linked_qc_table.csv", self.qc_df.copy())
         if self.meta_df is not None:
@@ -10317,23 +10499,39 @@ class FeatureAnalysisGUI(QMainWindow):
         config = {
             "app_version": APP_VERSION,
             "created_at": datetime.now().isoformat(timespec="seconds"),
+            "task_scope": task,
+            "task_specific": task != "All tasks",
+            "task_n_rows": int(len(active_df)),
+            "all_tasks_warning": "Audit/review only; select a specific task for ML handoff." if task == "All tasks" else "",
             "export_profile": self._export_profile_label(profile),
             "n_total_features": int(len(outputs.get("feature_recommendations", pd.DataFrame()))),
             "n_included_features": int(len(include_features)),
+            "identifier_context_columns": id_cols,
+            "target_columns": target_cols,
+            "covariate_columns": cov_cols,
+            "qc_covariate_columns": qc_cols,
             "feature_table": self.feature_picker.path,
             "qc_table": self.qc_picker.path,
             "metadata_table": self.meta_picker.path,
             "registry_table": self.registry_picker.path,
             "boundary": "Feature Analysis export only; no model trained; ML preprocessing and feature selection must be fold-safe.",
         }
-        (export_dir / "export_config.json").write_text(json.dumps(config, indent=2), encoding="utf-8")
+        config_path = export_dir / "export_config.json"
+        config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+        paths["export_config.json"] = config_path
         readme = f"""# VSLP Feature Analysis Export Package
+
+Task scope: {task}
+
+Task-specific handoff: {task != "All tasks"}
 
 Export profile: {self._export_profile_label(profile)}
 
 Included feature count: {len(include_features)}
 
 This package is a downstream-analysis starting point, not a trained model and not final ML feature selection. The manifest documents why each feature was included or held. Imputation, scaling, transformations, feature selection, model fitting, and validation must occur inside the future ML pipeline to avoid leakage.
+
+{"WARNING: This is an all-task audit package. Build a task-specific package before ML modelling." if task == "All tasks" else "Recommendations and rows in this package are scoped to the selected task."}
 
 Core files:
 - `ml_ready_feature_matrix.csv`: identifiers plus selected feature columns.
@@ -10350,9 +10548,18 @@ Decision colors:
 - gold = review before use, hold from default ML unless justified.
 - orange/red = exclude, recompute, or audit-only by default.
 """
-        (export_dir / "README.md").write_text(readme, encoding="utf-8")
+        readme_path = export_dir / "README.md"
+        readme_path.write_text(readme, encoding="utf-8")
+        paths["README.md"] = readme_path
         report_path = export_dir / "vslp_feature_analysis_export_report.html"
-        self.write_report(report_path, outputs, export_manifest=manifest, export_profile=self._export_profile_label(profile))
+        self.write_report(
+            report_path,
+            outputs,
+            export_manifest=manifest,
+            export_profile=self._export_profile_label(profile),
+            task_scope=task,
+        )
+        paths["vslp_feature_analysis_export_report.html"] = report_path
         zip_base = shutil.make_archive(str(export_dir), "zip", root_dir=export_dir)
         paths["export_zip"] = Path(zip_base)
         return export_dir, paths
@@ -10360,14 +10567,28 @@ Decision colors:
     def create_export_package(self) -> None:
         try:
             export_dir, paths = self._make_export_package_tables()
+            self.latest_export_dir = export_dir
+            self.latest_export_paths = paths
             self.export_status.append(f"Export package created: {export_dir}")
             if "export_zip" in paths:
                 self.export_status.append(f"Zip package: {paths['export_zip']}")
+            self._fill_table(self.export_package_table, self._export_package_contents(paths))
             self.update_export_dashboard(getattr(self, "outputs", {}))
-            QMessageBox.information(self, "Export complete", f"Export package created:\n{export_dir}")
+            task = self._selected_export_task()
+            warning = "\n\nThis is an audit package. Select a specific task for ML handoff." if task == "All tasks" else ""
+            QMessageBox.information(self, "Export complete", f"Export package created:\n{export_dir}{warning}")
             self.open_file(export_dir)
         except Exception as exc:
+            if hasattr(self, "export_status"):
+                self.export_status.append(f"ERROR | Export package failed: {exc}")
             QMessageBox.critical(self, "Export failed", str(exc))
+
+    def open_latest_export_folder(self) -> None:
+        path = getattr(self, "latest_export_dir", None)
+        if path and Path(path).exists():
+            self.open_file(Path(path))
+            return
+        self.open_output_folder()
 
     def open_current_export_plot(self) -> None:
         path = getattr(self, "current_export_plot", None)
@@ -10377,6 +10598,10 @@ Decision colors:
         self.open_file(Path(path))
 
     def open_html_report(self) -> None:
+        latest = getattr(self, "latest_export_paths", {}).get("vslp_feature_analysis_export_report.html")
+        if latest and Path(latest).exists():
+            self.open_file(Path(latest))
+            return
         if not getattr(self, "output_dir", None):
             QMessageBox.information(self, "No report yet", "Run Feature Analysis first.")
             return
@@ -10436,6 +10661,12 @@ Decision colors:
             self.mapping_modified = False
             self.mapping_accepted = False
             self.analysis_ready = False
+            self.analysis_prompt_responded = False
+            self.analysis_navigation_notice_logged = False
+            self._export_task_initialized = False
+            self._export_plot_token = None
+            self.latest_export_paths = {}
+            self.latest_export_dir = None
             self.outputs = {}
             self.refresh_mapping_table()
             roles = summarize_roles(self.mapping_df)
@@ -10718,7 +10949,14 @@ Decision colors:
             if path and label is not None:
                 self._display_plot_image(label, Path(path))
 
-    def write_report(self, path: Path, outputs: dict[str, pd.DataFrame], export_manifest: pd.DataFrame | None = None, export_profile: str = "Default export") -> None:
+    def write_report(
+        self,
+        path: Path,
+        outputs: dict[str, pd.DataFrame],
+        export_manifest: pd.DataFrame | None = None,
+        export_profile: str = "Default export",
+        task_scope: str = "All tasks",
+    ) -> None:
         inv = outputs.get("dataset_inventory", pd.DataFrame()).to_html(index=False, escape=False)
         roles = outputs.get("feature_role_summary", summarize_roles(outputs.get("feature_column_mapping", pd.DataFrame()))).to_html(index=False, escape=False)
         design = outputs.get("dataset_design_overview", pd.DataFrame()).to_html(index=False, escape=False)
@@ -10746,8 +10984,9 @@ Decision colors:
         tr:has(td:nth-child(4):contains('recommended')){{background:#DDF6E8}}
         </style></head><body><div class='page'>
         <h1>VSLP Feature Analysis Report</h1>
-        <p><b>Version:</b> {APP_VERSION}. <b>Export profile:</b> {export_profile}.</p>
+        <p><b>Version:</b> {APP_VERSION}. <b>Task scope:</b> {task_scope}. <b>Export profile:</b> {export_profile}.</p>
         <div class='note'>This report is a descriptive feature audit and export-preparation report. It is not a diagnostic report and no machine-learning model has been trained.</div>
+        <div class='note'>{"Recommendations, manifest decisions, and exported rows are specific to this task." if task_scope != "All tasks" else "All-task output is intended for audit/review; create a task-specific package for ML handoff."}</div>
         <div class='warn'>Imputation, scaling, transformation, feature selection, and model training must occur inside the downstream ML pipeline to avoid data leakage.</div>
         <h2>Export decision summary</h2>{rec_summary}
         <h2>Dataset inventory</h2>{inv}

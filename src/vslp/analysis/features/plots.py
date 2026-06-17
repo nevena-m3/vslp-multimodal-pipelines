@@ -1900,18 +1900,51 @@ def plot_recommendation_family_summary(family: pd.DataFrame, path: Path) -> Path
 
 
 def plot_ml_export_manifest_summary(recs: pd.DataFrame, path: Path) -> Path:
-    if recs is None or recs.empty or "ml_export_default" not in recs.columns:
+    if recs is None or recs.empty:
         return _empty(path, "No export manifest was available.", "ML export manifest")
     df = recs.copy()
-    included = int(df["ml_export_default"].astype(bool).sum())
+    decision_col = "final_include" if "final_include" in df.columns else "ml_export_default"
+    if decision_col not in df.columns:
+        return _empty(path, "The export manifest did not include an include/hold decision.", "ML export manifest")
+    raw_decision = df[decision_col]
+    if pd.api.types.is_bool_dtype(raw_decision):
+        include_mask = raw_decision.fillna(False)
+    else:
+        include_mask = raw_decision.astype(str).str.strip().str.lower().isin(["true", "1", "yes", "include"])
+    included = int(include_mask.sum())
     excluded = int(len(df) - included)
-    fig, ax = plt.subplots(figsize=(7.2, 5.2))
-    ax.bar(["Default export", "Hold for review"], [included, excluded], color=[TEAL, GOLD])
+    categories = []
+    if "readiness_recommendation" in df.columns:
+        order = ["recommended", "recommended_with_caution", "review_before_use", "exclude_or_recompute", "exclude_by_default"]
+        labels = ["Recommended", "With caution", "Review", "Recompute/hold", "Exclude"]
+        counts = df["readiness_recommendation"].astype(str).value_counts()
+        categories = [(label, int(counts.get(key, 0))) for key, label in zip(order, labels)]
+
+    fig, axes = plt.subplots(1, 2 if categories else 1, figsize=(11.2 if categories else 7.2, 5.2))
+    if not isinstance(axes, np.ndarray):
+        axes = np.array([axes])
+    ax = axes[0]
+    values = [included, excluded]
+    ax.bar(["Include", "Hold"], values, color=[TEAL, GOLD])
     ax.set_ylabel("Number of features", color=MUTED)
-    _style(ax, "Transparent ML export manifest")
-    for i, v in enumerate([included, excluded]):
-        ax.text(i, v + max(1, len(df) * .02), str(v), ha="center", color=NAVY, fontweight="bold")
-    ax.text(.5, -.20, "Export labels are review defaults, not final ML feature selection.", transform=ax.transAxes, ha="center", color=MUTED, fontsize=9)
+    ax.set_ylim(0, max(1, max(values)) * 1.18)
+    _style(ax, "Current export decision")
+    for i, value in enumerate(values):
+        ax.text(i, value + max(.25, len(df) * .02), str(value), ha="center", color=NAVY, fontweight="bold")
+
+    if categories:
+        ax2 = axes[1]
+        labels, values = zip(*categories)
+        colors = [TEAL, "#8CBF75", GOLD, "#E89A4A", RED]
+        ax2.barh(labels[::-1], values[::-1], color=colors[::-1])
+        ax2.set_xlabel("Number of features", color=MUTED)
+        _style(ax2, "Readiness composition")
+        for i, value in enumerate(values[::-1]):
+            ax2.text(value + max(.15, len(df) * .01), i, str(value), va="center", color=NAVY, fontsize=9)
+
+    fig.suptitle("Task-aware feature export manifest", fontsize=15, fontweight="bold", color=NAVY, y=.98)
+    fig.text(.5, .02, "Decisions are transparent review defaults; downstream ML selection must remain fold-safe.", ha="center", color=MUTED, fontsize=9)
+    fig.subplots_adjust(bottom=.17, top=.84, wspace=.38)
     return _save(fig, path)
 
 
