@@ -1684,6 +1684,97 @@ def plot_selected_feature_reliability(df: pd.DataFrame, feature: str, path: Path
     return _save(fig, path)
 
 
+
+
+def plot_reliability_design_support(design: pd.DataFrame, subject_counts: pd.DataFrame, path: Path) -> Path:
+    """Plot whether the dataset design can support repeatability estimation."""
+    def _metric_value(name: str, default=0):
+        if design is None or design.empty or "metric" not in design.columns:
+            return default
+        row = design.loc[design["metric"].astype(str).eq(name)]
+        if row.empty:
+            return default
+        return row["value"].iloc[0]
+    rows = int(pd.to_numeric(pd.Series([_metric_value("rows", 0)]), errors="coerce").fillna(0).iloc[0])
+    subjects = int(pd.to_numeric(pd.Series([_metric_value("unique_subjects", 0)]), errors="coerce").fillna(0).iloc[0])
+    repeated = int(pd.to_numeric(pd.Series([_metric_value("subjects_with_repeats", 0)]), errors="coerce").fillna(0).iloc[0])
+    numeric = int(pd.to_numeric(pd.Series([_metric_value("numeric_features", 0)]), errors="coerce").fillna(0).iloc[0])
+    vals = pd.Series({"Rows": rows, "Subjects": subjects, "Repeated subjects": repeated, "Numeric features": numeric})
+    fig, ax = plt.subplots(figsize=(9.5, 5.4))
+    colors = [TEAL, TEAL, GOLD if repeated < max(3, subjects * .2) else TEAL, TEAL]
+    ax.bar(vals.index, vals.values, color=colors, edgecolor=NAVY, linewidth=.7)
+    ax.set_ylabel("Count", color=MUTED)
+    _style(ax, "Reliability design support")
+    for i, v in enumerate(vals.values):
+        ax.text(i, v + max(1, vals.max() * .025), str(int(v)), ha="center", va="bottom", color=NAVY, fontweight="bold")
+    ax.text(.5, -.18, "Reliability requires repeated recordings for the same subject; task-specific reliability should be reviewed when tasks differ.", transform=ax.transAxes, ha="center", color=MUTED, fontsize=9)
+    return _save(fig, path)
+
+
+def plot_reliability_measurement_error_landscape(repeatability: pd.DataFrame, path: Path) -> Path:
+    """ICC versus standardized MDC95/measurement-error screen."""
+    if repeatability is None or repeatability.empty:
+        return _empty(path, "No scoped repeatability table was available.", "Reliability measurement error")
+    df = repeatability.copy()
+    for c in ["icc1_proxy", "mdc95_standardized", "n_repeated_subjects"]:
+        df[c] = pd.to_numeric(df.get(c, np.nan), errors="coerce")
+    df = df.dropna(subset=["icc1_proxy", "mdc95_standardized"])
+    if df.empty:
+        return _empty(path, "No evaluable features had both ICC and measurement-error estimates.", "Reliability measurement error")
+    fig, ax = plt.subplots(figsize=(10.5, 6.2))
+    sizes = 35 + 12 * df["n_repeated_subjects"].fillna(0).clip(0, 35)
+    ax.scatter(df["icc1_proxy"], df["mdc95_standardized"], s=sizes, color=TEAL, alpha=.72, edgecolor=NAVY, linewidth=.5)
+    ax.axvline(.75, color=TEAL, linestyle="--", linewidth=1, alpha=.8)
+    ax.axvline(.50, color=GOLD, linestyle="--", linewidth=1, alpha=.8)
+    ax.axhline(1.0, color=GOLD, linestyle="--", linewidth=1, alpha=.8)
+    ax.axhline(2.0, color=RED, linestyle="--", linewidth=1, alpha=.75)
+    ax.set_xlim(-.03, 1.03)
+    ymax = max(2.2, float(np.nanpercentile(df["mdc95_standardized"], 95)) * 1.15)
+    ax.set_ylim(0, ymax)
+    ax.set_xlabel("ICC(1)-style repeatability proxy", color=MUTED)
+    ax.set_ylabel("MDC95 / total SD", color=MUTED)
+    _style(ax, "Repeatability versus detectable-change threshold")
+    top = df.sort_values(["icc1_proxy", "mdc95_standardized"], ascending=[False, True]).head(8)
+    for _, r in top.iterrows():
+        ax.text(r["icc1_proxy"], r["mdc95_standardized"], str(r.get("feature", ""))[:24], fontsize=7, color=NAVY)
+    ax.text(.01, .97, "Better region: high ICC + lower MDC", transform=ax.transAxes, ha="left", va="top", color=MUTED, fontsize=9)
+    return _save(fig, path)
+
+
+def plot_selected_feature_same_task_reliability(
+    records: pd.DataFrame,
+    feature: str,
+    path: Path,
+    title_suffix: str = "",
+) -> Path:
+    """Line plot for one feature across repeated same-task recordings."""
+    needed = {"subject", "record_order", "value"}
+    if records is None or records.empty or not needed.issubset(set(records.columns)):
+        return _empty(path, "No repeated same-task records were available for the selected feature.", "Selected feature reliability")
+    df = records.copy()
+    df["value"] = pd.to_numeric(df["value"], errors="coerce")
+    df["record_order"] = pd.to_numeric(df["record_order"], errors="coerce")
+    df = df.dropna(subset=["subject", "record_order", "value"])
+    counts = df.groupby("subject")["value"].count()
+    keep = counts[counts >= 2].sort_values(ascending=False).head(45).index
+    df = df[df["subject"].isin(keep)]
+    if df.empty:
+        return _empty(path, "The selected feature had fewer than two valid same-task records per subject.", "Selected feature reliability")
+    fig, ax = plt.subplots(figsize=(11.5, 6.4))
+    for sid, sub in df.groupby("subject", sort=False):
+        sub = sub.sort_values("record_order")
+        ax.plot(sub["record_order"], sub["value"], marker="o", markersize=3.8, linewidth=1.1, alpha=.55, label=str(sid)[:18])
+    ax.set_xlabel("Repeated same-task recording order", color=MUTED)
+    ax.set_ylabel(str(feature), color=MUTED)
+    title = f"{feature}: same-task repeated-record reliability"
+    if title_suffix:
+        title = f"{title} | {title_suffix}"
+    _style(ax, title)
+    if df["subject"].nunique() <= 10:
+        ax.legend(frameon=False, fontsize=7, loc="center left", bbox_to_anchor=(1.01, .5))
+    ax.text(.5, -.18, "Each line is one subject within the same task scope; large within-subject swings reduce reliability and increase detectable-change thresholds.", transform=ax.transAxes, ha="center", color=MUTED, fontsize=9)
+    return _save(fig, path)
+
 def plot_recommendation_counts(recs: pd.DataFrame, path: Path) -> Path:
     if recs is None or recs.empty or "readiness_recommendation" not in recs.columns:
         return _empty(path, "No feature recommendation table was available.", "Feature recommendations")
