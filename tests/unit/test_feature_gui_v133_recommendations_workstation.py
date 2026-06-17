@@ -104,7 +104,7 @@ def test_v133_recommendation_ui_has_decision_filters_and_tables():
     text = open("src/vslp/gui/features/app.py", encoding="utf-8").read()
     section = text[text.index("def _recommendations_page"):text.index("def _recommendation_decision_legend_rows")]
 
-    assert 'APP_VERSION = "v0.134.0"' in text
+    assert 'APP_VERSION = "v0.135.0"' in text
     assert "self.recommendation_task_combo" in text
     assert "self.recommendation_decision_combo" in text
     assert "self.recommendation_family_combo" in text
