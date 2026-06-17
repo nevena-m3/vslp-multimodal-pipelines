@@ -100,7 +100,7 @@ from vslp.analysis.features.plots import (
     plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.132.0"
+APP_VERSION = "v0.133.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -7974,8 +7974,8 @@ class FeatureAnalysisGUI(QMainWindow):
             "Run Feature Analysis, then choose one screening plot.",
             500,
         )
-        layout.addWidget(plot_card, 1)
         layout.addWidget(card)
+        layout.addWidget(plot_card, 1)
         return self._wrap_scroll(body)
 
     def update_screening_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
@@ -8949,23 +8949,62 @@ class FeatureAnalysisGUI(QMainWindow):
         )
         self.recommendation_metric_grid = QGridLayout()
         card.layout.addLayout(self.recommendation_metric_grid)
+
+        controls = QFrame()
+        controls.setStyleSheet(f"QFrame {{ background:#F8FBFE; border:1px solid {LINE}; border-radius:12px; }}")
+        controls_layout = QHBoxLayout(controls)
+        controls_layout.setContentsMargins(12, 10, 12, 10)
+        controls_layout.setSpacing(10)
+        controls_layout.addWidget(QLabel("Decision:"))
+        self.recommendation_decision_combo = QComboBox()
+        self.recommendation_decision_combo.addItem("All decisions", "__all__")
+        for label, _meaning, _action, _export in self._recommendation_decision_legend_rows():
+            self.recommendation_decision_combo.addItem(label.replace("_", " "), label)
+        self.recommendation_decision_combo.currentIndexChanged.connect(
+            lambda _i=0: self.update_recommendations_dashboard(getattr(self, "outputs", {}))
+        )
+        controls_layout.addWidget(self.recommendation_decision_combo)
+        controls_layout.addWidget(QLabel("Family:"))
+        self.recommendation_family_combo = QComboBox()
+        self.recommendation_family_combo.addItem("All families")
+        self.recommendation_family_combo.currentIndexChanged.connect(
+            lambda _i=0: self.update_recommendations_dashboard(getattr(self, "outputs", {}))
+        )
+        controls_layout.addWidget(self.recommendation_family_combo)
+        controls_layout.addWidget(QLabel("Find:"))
+        self.recommendation_search_edit = QLineEdit()
+        self.recommendation_search_edit.setPlaceholderText("feature, reason, action")
+        self.recommendation_search_edit.textChanged.connect(
+            lambda _txt="": self.update_recommendations_dashboard(getattr(self, "outputs", {}))
+        )
+        controls_layout.addWidget(self.recommendation_search_edit, 1)
+        card.layout.addWidget(controls)
+
         note = QLabel(
-            "Use this page after all diagnostic modules. Recommended features are default candidates for export, while caution/review/exclude labels document why a feature needs sensitivity checks, recomputation, or manual review."
+            "Recommendation labels are transparent review decisions. They tell the analyst whether to use a feature directly, use it with documented caution, review it before modeling, recompute it, or hold it out of default export."
         )
         note.setWordWrap(True)
         note.setStyleSheet(f"background:#F7FAFD; color:{INK}; border:1px solid {LINE}; border-radius:10px; padding:10px;")
         card.layout.addWidget(note)
         tabs = QTabWidget()
+        self.recommendation_action_table = self._simple_table()
+        self.recommendation_priority_table = self._simple_table()
         self.recommendation_summary_table = self._simple_table()
         self.recommendation_table = self._simple_table()
         self.recommendation_reasons_table = self._simple_table()
         self.recommendation_family_table = self._simple_table()
+        self.recommendation_handoff_table = self._simple_table()
+        self.recommendation_legend_table = self._simple_table()
         self.ml_export_manifest_table = self._simple_table()
         for title, tbl in [
+            ("Action plan", self.recommendation_action_table),
+            ("Priority review", self.recommendation_priority_table),
             ("Summary", self.recommendation_summary_table),
             ("Feature recommendations", self.recommendation_table),
             ("Reason counts", self.recommendation_reasons_table),
             ("Family summary", self.recommendation_family_table),
+            ("ML / export handoff", self.recommendation_handoff_table),
+            ("Decision legend", self.recommendation_legend_table),
             ("ML export manifest", self.ml_export_manifest_table),
         ]:
             tabs.addTab(tbl, title)
@@ -8974,28 +9013,207 @@ class FeatureAnalysisGUI(QMainWindow):
             "Recommendation plot board",
             "These plots explain the integrated readiness decision. Use them to document why features are exported, held for review, or excluded by default."
         )
-        self._add_standard_plot_gallery(
-            plot_card.layout,
-            "Recommendation plot",
-            "Feature Recommendation keeps only integrated readiness plots: category counts, readiness landscape, reason counts, family summary, and ML export manifest summary.",
-            "recommendation_plot_combo",
-            [
-                ("Readiness category counts", "recommendation_counts"),
-                ("Readiness landscape", "recommendation_score_landscape"),
-                ("Review reason counts", "recommendation_reason_counts"),
-                ("Readiness by family", "recommendation_family_summary"),
-                ("ML export manifest", "ml_export_manifest_summary"),
-            ],
-            "recommendation_plot_preview",
-            "recommendation_interpretation_label",
-            self.preview_recommendation_plot,
-            self.open_current_recommendation_plot,
-            "Run Feature Analysis, then choose one recommendation plot.",
-            500,
+        plot_panel = QFrame()
+        plot_panel.setStyleSheet(f"QFrame {{ background:#F8FBFE; border:1px solid {LINE}; border-radius:12px; }}")
+        plot_layout = QVBoxLayout(plot_panel)
+        plot_layout.setContentsMargins(14, 14, 14, 14)
+        plot_layout.setSpacing(10)
+        plot_header = QHBoxLayout()
+        plot_header.setSpacing(10)
+        plot_title = QLabel("Recommendation plot")
+        plot_title.setStyleSheet(f"font-weight:900; color:{NAVY}; font-size:14px; border:none; background:transparent;")
+        plot_header.addWidget(plot_title)
+        self.recommendation_plot_combo = QComboBox()
+        self.recommendation_plot_combo.setMinimumWidth(380)
+        for text, key in [
+            ("Readiness category counts", "recommendation_counts"),
+            ("Readiness landscape", "recommendation_score_landscape"),
+            ("Review reason counts", "recommendation_reason_counts"),
+            ("Readiness by family", "recommendation_family_summary"),
+            ("ML export manifest", "ml_export_manifest_summary"),
+        ]:
+            self.recommendation_plot_combo.addItem(text, key)
+        plot_header.addWidget(self.recommendation_plot_combo, 1)
+        show_btn = QPushButton("Show")
+        show_btn.setProperty("secondary", True)
+        show_btn.clicked.connect(lambda: self.preview_recommendation_plot(self.recommendation_plot_combo.currentData()))
+        plot_header.addWidget(show_btn)
+        regen = QPushButton("Regenerate")
+        regen.clicked.connect(lambda: self.preview_recommendation_plot(self.recommendation_plot_combo.currentData()))
+        plot_header.addWidget(regen)
+        plot_header.addStretch(1)
+        open_btn = QPushButton("Open current plot")
+        open_btn.setProperty("secondary", True)
+        open_btn.clicked.connect(self.open_current_recommendation_plot)
+        plot_header.addWidget(open_btn)
+        plot_layout.addLayout(plot_header)
+
+        caption = QLabel(
+            "Plots are generated directly from the current Recommendation tables and filters. They do not rerun Overview or overwrite completed Feature Analysis outputs."
         )
+        caption.setWordWrap(True)
+        caption.setStyleSheet(f"color:{MUTED}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:9px;")
+        plot_layout.addWidget(caption)
+
+        self.recommendation_plot_preview = QLabel("Run Feature Analysis, then choose one recommendation plot.")
+        self.recommendation_plot_preview.setAlignment(Qt.AlignCenter)
+        self.recommendation_plot_preview.setMinimumHeight(520)
+        self.recommendation_plot_preview.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.recommendation_plot_preview.setStyleSheet(f"QLabel {{ background:#FFFFFF; border:1px solid {LINE}; border-radius:10px; color:{MUTED}; padding:16px; }}")
+        plot_layout.addWidget(self.recommendation_plot_preview, 1)
+
+        self.recommendation_interpretation_label = QLabel("Select a plot to see structured interpretation guidance.")
+        self.recommendation_interpretation_label.setWordWrap(True)
+        self.recommendation_interpretation_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.recommendation_interpretation_label.setStyleSheet(f"QLabel {{ background:#FFFFFF; color:{INK}; border:1px solid {LINE}; border-radius:10px; padding:12px; font-size:12px; line-height:140%; }}")
+        plot_layout.addWidget(self.recommendation_interpretation_label)
+        plot_card.layout.addWidget(plot_panel, 1)
         layout.addWidget(plot_card, 1)
         layout.addWidget(card)
         return self._wrap_scroll(body)
+
+    def _recommendation_decision_legend_rows(self) -> list[tuple[str, str, str, str]]:
+        return [
+            ("recommended", "Clean default candidate", "Use as a default export feature after standard fold-safe ML preprocessing.", "include"),
+            ("recommended_with_caution", "Usable but carries documented risk", "Use with sensitivity checks; report the reason for caution.", "include_with_caution"),
+            ("review_before_use", "Needs analyst review before modeling", "Inspect source diagnostics and decide whether to retain, transform, stratify, or hold.", "hold_pending_review"),
+            ("exclude_or_recompute", "Current values are not analysis-ready", "Hold from default export; recompute or repair the upstream issue first.", "exclude_until_fixed"),
+            ("exclude_by_default", "Not useful or too unsupported by default", "Exclude from default export unless there is a documented scientific reason.", "exclude"),
+        ]
+
+    def _recommendation_decision_legend(self) -> pd.DataFrame:
+        return pd.DataFrame([
+            {
+                "readiness_recommendation": label,
+                "meaning": meaning,
+                "recommended_user_action": action,
+                "default_export_policy": export,
+            }
+            for label, meaning, action, export in self._recommendation_decision_legend_rows()
+        ])
+
+    def _recommendation_next_screen(self, reasons: str) -> str:
+        text = str(reasons).lower()
+        if "outlier" in text or "distribution shape" in text or "zero variance" in text:
+            return "Distributions / Outliers"
+        if "missing" in text or "small valid n" in text:
+            return "Missingness"
+        if "qc association" in text:
+            return "QC Integration"
+        if "redundan" in text:
+            return "Feature Relationships"
+        if "repeatability" in text:
+            return "Reliability"
+        return "Feature table"
+
+    def _filtered_recommendations(self, recs: pd.DataFrame) -> pd.DataFrame:
+        if recs is None or recs.empty:
+            return pd.DataFrame()
+        out = recs.copy()
+        combo = getattr(self, "recommendation_decision_combo", None)
+        decision = combo.currentData() if combo is not None and combo.count() else "__all__"
+        if decision and decision != "__all__" and "readiness_recommendation" in out.columns:
+            out = out.loc[out["readiness_recommendation"].astype(str).eq(str(decision))]
+        fam_combo = getattr(self, "recommendation_family_combo", None)
+        family = fam_combo.currentText() if fam_combo is not None and fam_combo.count() else "All families"
+        if family and family != "All families" and "family_or_subsystem" in out.columns:
+            out = out.loc[out["family_or_subsystem"].astype(str).eq(str(family))]
+        search = getattr(getattr(self, "recommendation_search_edit", None), "text", lambda: "")().strip().lower()
+        if search:
+            cols = [c for c in ["feature", "family_or_subsystem", "primary_reasons", "recommended_action", "readiness_recommendation"] if c in out.columns]
+            if cols:
+                haystack = out[cols].astype(str).agg(" | ".join, axis=1).str.lower()
+                out = out.loc[haystack.str.contains(re.escape(search), na=False)]
+        return out
+
+    def _recommendation_action_plan(self, recs: pd.DataFrame) -> pd.DataFrame:
+        legend = self._recommendation_decision_legend()
+        if recs is None:
+            recs = pd.DataFrame()
+        rows = []
+        for _, item in legend.iterrows():
+            label = str(item["readiness_recommendation"])
+            sub = recs.loc[recs.get("readiness_recommendation", pd.Series(dtype=str)).astype(str).eq(label)] if not recs.empty else pd.DataFrame()
+            top_reasons = ""
+            if not sub.empty and "primary_reasons" in sub.columns:
+                counts: dict[str, int] = {}
+                for txt in sub["primary_reasons"].fillna("").astype(str):
+                    for part in [p.strip() for p in txt.split(";") if p.strip() and p.strip() != "no major review flags detected"]:
+                        counts[part] = counts.get(part, 0) + 1
+                top_reasons = "; ".join(k for k, _v in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:3])
+            rows.append({
+                "decision": label,
+                "n_features": int(len(sub)),
+                "what_it_means": item["meaning"],
+                "recommended_user_action": item["recommended_user_action"],
+                "top_current_reasons": top_reasons or "no dominant review flag",
+                "default_export_policy": item["default_export_policy"],
+            })
+        return pd.DataFrame(rows)
+
+    def _recommendation_priority_review(self, recs: pd.DataFrame, max_rows: int = 80) -> pd.DataFrame:
+        if recs is None or recs.empty:
+            return pd.DataFrame(columns=["feature", "family_or_subsystem", "readiness_recommendation", "readiness_score", "next_screen", "primary_reasons", "recommended_action"])
+        df = recs.copy()
+        df["readiness_score"] = pd.to_numeric(df.get("readiness_score", np.nan), errors="coerce")
+        order = {"exclude_or_recompute": 0, "exclude_by_default": 1, "review_before_use": 2, "recommended_with_caution": 3, "recommended": 4}
+        df["_priority"] = df.get("readiness_recommendation", pd.Series(dtype=str)).astype(str).map(order).fillna(5)
+        if "primary_reasons" in df.columns:
+            df["next_screen"] = df["primary_reasons"].map(self._recommendation_next_screen)
+        else:
+            df["next_screen"] = "Feature table"
+        cols = [c for c in [
+            "feature", "family_or_subsystem", "readiness_recommendation", "readiness_score",
+            "next_screen", "primary_reasons", "recommended_action", "missing_fraction",
+            "max_abs_qc_spearman", "max_abs_redundancy", "icc1_proxy", "reliability_status",
+        ] if c in df.columns]
+        return df.sort_values(["_priority", "readiness_score", "feature"], ascending=[True, True, True])[cols].head(max_rows)
+
+    def _recommendation_handoff_summary(self, recs: pd.DataFrame) -> pd.DataFrame:
+        if recs is None or recs.empty:
+            return pd.DataFrame([{"handoff_item": "feature_matrix", "value": 0, "interpretation": "No recommendation table is available."}])
+        label = recs.get("readiness_recommendation", pd.Series(dtype=str)).astype(str)
+        default = recs.get("ml_export_default", pd.Series(dtype=bool)).astype(bool)
+        rows = [
+            {"handoff_item": "default_export_features", "value": int(default.sum()), "interpretation": "Features ready for the default Feature GUI export profile."},
+            {"handoff_item": "strict_recommended_only", "value": int(label.eq("recommended").sum()), "interpretation": "Cleanest starting set for conservative sensitivity analysis."},
+            {"handoff_item": "include_with_caution", "value": int(label.eq("recommended_with_caution").sum()), "interpretation": "Usable if caution reasons are documented and handled downstream."},
+            {"handoff_item": "manual_review_queue", "value": int(label.eq("review_before_use").sum()), "interpretation": "Needs analyst review before ML Builder or Export."},
+            {"handoff_item": "hold_or_recompute", "value": int(label.isin(["exclude_or_recompute", "exclude_by_default"]).sum()), "interpretation": "Hold from default export unless fixed or scientifically justified."},
+        ]
+        return pd.DataFrame(rows)
+
+    def _recommendation_outputs(self) -> dict[str, pd.DataFrame]:
+        outputs = getattr(self, "outputs", {}) or {}
+        needed = [
+            "feature_recommendations",
+            "feature_recommendation_summary",
+            "feature_recommendation_reason_counts",
+            "feature_recommendation_family_summary",
+            "ml_export_manifest",
+        ]
+        if any(k in outputs and isinstance(outputs.get(k), pd.DataFrame) and not outputs.get(k).empty for k in needed):
+            return outputs
+        candidates: list[Path] = []
+        if getattr(self, "output_dir", None):
+            candidates.append(Path(self.output_dir) / "tables")
+        if hasattr(self, "output_edit") and self.output_edit.text().strip():
+            candidates.append(Path(self.output_edit.text().strip()) / "feature_analysis" / "tables")
+        for tables_dir in candidates:
+            if not tables_dir.exists():
+                continue
+            loaded = dict(outputs)
+            for name in needed:
+                path = tables_dir / f"{name}.csv"
+                if path.exists():
+                    try:
+                        loaded[name] = pd.read_csv(path)
+                    except Exception as exc:
+                        self.log(f"WARN | Could not reload recommendation table {path}: {exc}")
+            if "feature_recommendations" in loaded and isinstance(loaded["feature_recommendations"], pd.DataFrame) and not loaded["feature_recommendations"].empty:
+                self.outputs = loaded
+                return loaded
+        return outputs
 
     def update_recommendations_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
         if not hasattr(self, "recommendation_table"):
@@ -9004,18 +9222,35 @@ class FeatureAnalysisGUI(QMainWindow):
             item = self.recommendation_metric_grid.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
+        outputs = outputs if outputs and "feature_recommendations" in outputs else self._recommendation_outputs()
         recs = outputs.get("feature_recommendations", pd.DataFrame())
         summary = outputs.get("feature_recommendation_summary", pd.DataFrame())
-        reasons = outputs.get("feature_recommendation_reason_counts", pd.DataFrame())
-        fam = outputs.get("feature_recommendation_family_summary", pd.DataFrame())
         manifest = outputs.get("ml_export_manifest", pd.DataFrame())
+        if hasattr(self, "recommendation_family_combo"):
+            current_family = self.recommendation_family_combo.currentText()
+            families = sorted([str(x) for x in recs.get("family_or_subsystem", pd.Series(dtype=str)).dropna().unique()]) if recs is not None and not recs.empty else []
+            self.recommendation_family_combo.blockSignals(True)
+            self.recommendation_family_combo.clear()
+            self.recommendation_family_combo.addItem("All families")
+            self.recommendation_family_combo.addItems(families)
+            if current_family and current_family in ["All families"] + families:
+                self.recommendation_family_combo.setCurrentText(current_family)
+            self.recommendation_family_combo.blockSignals(False)
+        filtered = self._filtered_recommendations(recs)
+        filtered_summary = feature_recommendation_summary(filtered)
+        reasons = feature_recommendation_reason_counts(filtered)
+        fam = feature_recommendation_family_summary(filtered)
+        action_plan = self._recommendation_action_plan(filtered)
+        priority = self._recommendation_priority_review(filtered)
+        handoff = self._recommendation_handoff_summary(filtered)
+        legend = self._recommendation_decision_legend()
         def m(metric: str, default: object = 0) -> object:
-            if summary is None or summary.empty or "metric" not in summary.columns:
+            if filtered_summary is None or filtered_summary.empty or "metric" not in filtered_summary.columns:
                 return default
-            row = summary.loc[summary["metric"].astype(str).eq(metric)]
+            row = filtered_summary.loc[filtered_summary["metric"].astype(str).eq(metric)]
             return row["value"].iloc[0] if not row.empty else default
         tiles = [
-            ("Features reviewed", m("features_reviewed", 0), "integrated audit"),
+            ("Visible features", m("features_reviewed", 0), "after filters"),
             ("Recommended", m("recommended", 0), "clean default candidates"),
             ("With caution", m("recommended_with_caution", 0), "export but document risk"),
             ("Review before use", m("review_before_use", 0), "manual review / sensitivity"),
@@ -9024,30 +9259,64 @@ class FeatureAnalysisGUI(QMainWindow):
         ]
         for idx, (title, value, subtitle) in enumerate(tiles):
             self.recommendation_metric_grid.addWidget(self._metric_tile(title, value, subtitle), idx // 3, idx % 3)
-        self._fill_table(self.recommendation_summary_table, summary)
-        self._fill_table(self.recommendation_table, recs)
+        self._fill_table(self.recommendation_action_table, action_plan)
+        self._fill_table(self.recommendation_priority_table, priority)
+        self._fill_table(self.recommendation_summary_table, filtered_summary)
+        self._fill_table(self.recommendation_table, filtered)
         self._fill_table(self.recommendation_reasons_table, reasons)
         self._fill_table(self.recommendation_family_table, fam)
+        self._fill_table(self.recommendation_handoff_table, handoff)
+        self._fill_table(self.recommendation_legend_table, legend)
         self._fill_table(self.ml_export_manifest_table, manifest)
 
+    def _generate_recommendation_plot(self, key: str) -> str | None:
+        outputs = self._recommendation_outputs()
+        recs = outputs.get("feature_recommendations", pd.DataFrame())
+        if recs is None or recs.empty:
+            return None
+        self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
+        if not hasattr(self, "plot_paths"):
+            self.plot_paths = {}
+        filtered = self._filtered_recommendations(recs)
+        reasons = feature_recommendation_reason_counts(filtered)
+        fam = feature_recommendation_family_summary(filtered)
+        manifest = outputs.get("ml_export_manifest", pd.DataFrame())
+        decision = "all"
+        combo = getattr(self, "recommendation_decision_combo", None)
+        if combo is not None and combo.count() and combo.currentData():
+            decision = str(combo.currentData())
+        family = "all_families"
+        fam_combo = getattr(self, "recommendation_family_combo", None)
+        if fam_combo is not None and fam_combo.count():
+            family = fam_combo.currentText() or "all_families"
+        search = getattr(getattr(self, "recommendation_search_edit", None), "text", lambda: "")().strip()
+        slug = self._safe_task_slug(f"{decision}__{family}__{search or 'all'}")
+        plot_map = {
+            "recommendation_counts": lambda p: plot_recommendation_counts(filtered, p),
+            "recommendation_score_landscape": lambda p: plot_recommendation_score_landscape(filtered, p),
+            "recommendation_reason_counts": lambda p: plot_recommendation_reason_counts(reasons, p),
+            "recommendation_family_summary": lambda p: plot_recommendation_family_summary(fam, p),
+            "ml_export_manifest_summary": lambda p: plot_ml_export_manifest_summary(manifest, p),
+        }
+        if key not in plot_map:
+            return None
+        path = plots_dir / f"{key}__{slug}.png"
+        result = plot_map[key](path)
+        self.plot_paths[key] = str(result)
+        return str(result)
+
     def preview_recommendation_plot(self, key: str) -> None:
-        if not hasattr(self, "plot_paths") or key not in self.plot_paths or not Path(self.plot_paths.get(key, "")).exists():
-            self.regenerate_overview_plots()
-        if not hasattr(self, "plot_paths") or key not in self.plot_paths:
-            QMessageBox.information(self, "Plot unavailable", "Run Feature Analysis first, or this recommendation plot could not be generated for the current dataset.")
+        path_str = self._generate_recommendation_plot(str(key))
+        if not path_str:
+            QMessageBox.information(self, "Plot unavailable", "Run Feature Analysis first, or no recommendation table was found for the current output folder.")
             return
-        path = Path(self.plot_paths[key])
+        path = Path(path_str)
         if not path.exists():
             QMessageBox.information(self, "Plot unavailable", f"Plot file not found:\n{path}")
             return
         self.current_recommendation_plot = path
         self.update_recommendation_interpretation(key)
-        pix = QPixmap(str(path))
-        if pix.isNull():
-            self.recommendation_plot_preview.setText(f"Could not load plot:\n{path}")
-            return
-        self.recommendation_plot_preview.setPixmap(pix.scaled(self.recommendation_plot_preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        self.recommendation_plot_preview.setToolTip(str(path))
+        self._display_plot_image(self.recommendation_plot_preview, path)
 
     def update_recommendation_interpretation(self, key: str) -> None:
         if not hasattr(self, "recommendation_interpretation_label"):
