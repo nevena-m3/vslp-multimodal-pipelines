@@ -1573,14 +1573,18 @@ def plot_reliability_icc_ranking(repeatability: pd.DataFrame, path: Path, top_n:
         return _empty(path, "No evaluable features had ICC-style estimates.", "ICC ranking")
     fig, ax = plt.subplots(figsize=(10, max(5.2, .32*len(df))))
     ax.barh(df["feature"].astype(str), df["icc1_proxy"], color=TEAL, edgecolor=NAVY, linewidth=.6)
-    ax.axvline(.75, color=NAVY, linestyle="--", linewidth=1, label="stable (.75)")
-    ax.axvline(.50, color=GOLD, linestyle="--", linewidth=1, label="moderate (.50)")
-    ax.axvline(.25, color=RED, linestyle="--", linewidth=1, label="variable (.25)")
+    ax.axvspan(0.75, 1.0, color=TEAL, alpha=.08, label="Stable: ICC >= .75")
+    ax.axvspan(0.50, 0.75, color=GOLD, alpha=.08, label="Moderate: .50-.75")
+    ax.axvspan(0.00, 0.50, color=RED, alpha=.055, label="Low: < .50")
+    ax.axvline(.75, color=NAVY, linestyle="--", linewidth=1)
+    ax.axvline(.50, color=GOLD, linestyle="--", linewidth=1)
+    ax.axvline(.25, color=RED, linestyle="--", linewidth=1)
     ax.invert_yaxis()
     ax.set_xlim(0, 1)
     ax.set_xlabel("ICC(1)-style variance-ratio proxy", color=MUTED)
-    ax.legend(frameon=False, fontsize=8, loc="lower right")
+    ax.legend(frameon=False, fontsize=8, loc="lower right", title="Interpretation bands", title_fontsize=8)
     _style(ax, "Most repeatable features")
+    ax.text(.5, -.12, "Higher ICC means more between-subject separation relative to within-subject repeat noise; review MDC95 before using a feature for change.", transform=ax.transAxes, ha="center", color=MUTED, fontsize=9)
     return _save(fig, path)
 
 
@@ -1618,11 +1622,15 @@ def plot_reliability_family_summary(family: pd.DataFrame, path: Path) -> Path:
         return _empty(path, "Family-level ICC estimates were not evaluable.", "Reliability by family")
     fig, ax = plt.subplots(figsize=(10, max(4.8, .42*len(df))))
     ax.barh(df["family_or_subsystem"].astype(str), df["median_icc1_proxy"], color=GOLD, edgecolor=NAVY, linewidth=.7)
+    ax.axvspan(0.75, 1.0, color=TEAL, alpha=.08, label="Stable median >= .75")
+    ax.axvspan(0.50, 0.75, color=GOLD, alpha=.08, label="Moderate median")
     ax.axvline(.75, color=NAVY, linestyle="--", linewidth=1)
     ax.axvline(.50, color=TEAL, linestyle="--", linewidth=1)
     ax.set_xlim(0, 1)
     ax.set_xlabel("Median ICC(1)-style proxy", color=MUTED)
+    ax.legend(frameon=False, fontsize=8, loc="lower right", title="Family-level screen", title_fontsize=8)
     _style(ax, "Repeatability by feature family")
+    ax.text(.5, -.13, "Family medians summarize screening only; individual features inside a family may still be unstable or high-error.", transform=ax.transAxes, ha="center", color=MUTED, fontsize=9)
     return _save(fig, path)
 
 
@@ -1699,7 +1707,7 @@ def plot_reliability_design_support(design: pd.DataFrame, subject_counts: pd.Dat
     subjects = int(pd.to_numeric(pd.Series([_metric_value("unique_subjects", 0)]), errors="coerce").fillna(0).iloc[0])
     repeated = int(pd.to_numeric(pd.Series([_metric_value("subjects_with_repeats", 0)]), errors="coerce").fillna(0).iloc[0])
     numeric = int(pd.to_numeric(pd.Series([_metric_value("numeric_features", 0)]), errors="coerce").fillna(0).iloc[0])
-    vals = pd.Series({"Rows": rows, "Subjects": subjects, "Repeated subjects": repeated, "Numeric features": numeric})
+    vals = pd.Series({"Rows": rows, "Subjects": subjects, "Repeated units": repeated, "Numeric metrics": numeric})
     fig, ax = plt.subplots(figsize=(9.5, 5.4))
     colors = [TEAL, TEAL, GOLD if repeated < max(3, subjects * .2) else TEAL, TEAL]
     ax.bar(vals.index, vals.values, color=colors, edgecolor=NAVY, linewidth=.7)
@@ -1707,7 +1715,7 @@ def plot_reliability_design_support(design: pd.DataFrame, subject_counts: pd.Dat
     _style(ax, "Reliability design support")
     for i, v in enumerate(vals.values):
         ax.text(i, v + max(1, vals.max() * .025), str(int(v)), ha="center", va="bottom", color=NAVY, fontweight="bold")
-    ax.text(.5, -.18, "Reliability requires repeated recordings for the same subject; task-specific reliability should be reviewed when tasks differ.", transform=ax.transAxes, ha="center", color=MUTED, fontsize=9)
+    ax.text(.5, -.18, "Reliability is estimated inside repeated same-task subject units. Select a task to avoid mixing task-specific measurement behavior.", transform=ax.transAxes, ha="center", color=MUTED, fontsize=9)
     return _save(fig, path)
 
 
@@ -1716,13 +1724,15 @@ def plot_reliability_measurement_error_landscape(repeatability: pd.DataFrame, pa
     if repeatability is None or repeatability.empty:
         return _empty(path, "No scoped repeatability table was available.", "Reliability measurement error")
     df = repeatability.copy()
-    for c in ["icc1_proxy", "mdc95_standardized", "n_repeated_subjects"]:
+    for c in ["icc1_proxy", "mdc95_standardized", "n_repeated_subject_task_units"]:
         df[c] = pd.to_numeric(df.get(c, np.nan), errors="coerce")
     df = df.dropna(subset=["icc1_proxy", "mdc95_standardized"])
     if df.empty:
         return _empty(path, "No evaluable features had both ICC and measurement-error estimates.", "Reliability measurement error")
     fig, ax = plt.subplots(figsize=(10.5, 6.2))
-    sizes = 35 + 12 * df["n_repeated_subjects"].fillna(0).clip(0, 35)
+    sizes = 35 + 12 * df["n_repeated_subject_task_units"].fillna(0).clip(0, 35)
+    ax.axvspan(.75, 1.03, color=TEAL, alpha=.06, label="Higher reliability")
+    ax.axhspan(0, 1.0, color=TEAL, alpha=.055, label="Lower detectable-change burden")
     ax.scatter(df["icc1_proxy"], df["mdc95_standardized"], s=sizes, color=TEAL, alpha=.72, edgecolor=NAVY, linewidth=.5)
     ax.axvline(.75, color=TEAL, linestyle="--", linewidth=1, alpha=.8)
     ax.axvline(.50, color=GOLD, linestyle="--", linewidth=1, alpha=.8)
@@ -1733,6 +1743,7 @@ def plot_reliability_measurement_error_landscape(repeatability: pd.DataFrame, pa
     ax.set_ylim(0, ymax)
     ax.set_xlabel("ICC(1)-style repeatability proxy", color=MUTED)
     ax.set_ylabel("MDC95 / total SD", color=MUTED)
+    ax.legend(frameon=False, fontsize=8, loc="upper right", title="Interpretation layer", title_fontsize=8)
     _style(ax, "Repeatability versus detectable-change threshold")
     top = df.sort_values(["icc1_proxy", "mdc95_standardized"], ascending=[False, True]).head(8)
     for _, r in top.iterrows():
