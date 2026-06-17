@@ -97,7 +97,7 @@ from vslp.analysis.features.plots import (
     plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.125.0"
+APP_VERSION = "v0.126.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
