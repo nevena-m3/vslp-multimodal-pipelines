@@ -2447,15 +2447,31 @@ def _plot_longitudinal_qc_lines(qc: pd.DataFrame, path: Path, *, source: str, ti
     height = max(5.8, min(11.0, 5.4 + 0.08 * n_metrics))
     fig, ax = plt.subplots(figsize=(14.4, height))
     is_manual = source.lower().startswith("manual")
+    manual_offsets = {}
+    if is_manual and n_metrics > 1:
+        spread = min(0.12, max(0.045, 0.018 * n_metrics))
+        if n_metrics == 1:
+            offset_values = [0.0]
+        else:
+            offset_values = np.linspace(-spread / 2.0, spread / 2.0, n_metrics)
+        manual_offsets = {metric: float(offset_values[i]) for i, metric in enumerate(metrics)}
+
     for metric in metrics:
         sub = d.loc[d["qc_metric"].astype(str).eq(metric)].sort_values("record_order")
         label = metric if len(metric) <= 46 else metric[:43] + "..."
         if is_manual:
-            y = sub["display_value"].clip(lower=0, upper=1)
-            ax.plot(sub["x"], y, marker="o", linewidth=1.4, markersize=4, alpha=0.9, drawstyle="steps-post", label=label)
+            raw_y = sub["display_value"].clip(lower=0, upper=1)
+            offset = manual_offsets.get(metric, 0.0)
+            y = raw_y + offset
+            # Manual QC is categorical, but a small within-band offset prevents
+            # multiple Yes/No traces from hiding each other when they share the
+            # same visit status. The table preserves exact Yes/No values.
+            ax.plot(sub["x"], y, marker="o", linewidth=1.65, markersize=5, alpha=0.92, label=label)
             # Make exact yes/no state visible even if several lines overlap.
             for _, rr in sub.iterrows():
-                ax.text(rr["x"], float(max(0, min(1, rr["display_value"]))), "Yes" if float(rr["display_value"]) > 0 else "No", fontsize=7, color=MUTED, ha="center", va="bottom" if float(rr["display_value"]) <= 0 else "top", alpha=0.8)
+                raw_val = float(max(0, min(1, rr["display_value"])))
+                y_text = raw_val + offset
+                ax.text(rr["x"], y_text, "Yes" if raw_val > 0 else "No", fontsize=7, color=MUTED, ha="center", va="bottom" if raw_val <= 0 else "top", alpha=0.82)
         else:
             ax.plot(sub["x"], sub["display_value"], marker="o", linewidth=1.35, markersize=4, alpha=0.88, label=label)
 
@@ -2466,11 +2482,11 @@ def _plot_longitudinal_qc_lines(qc: pd.DataFrame, path: Path, *, source: str, ti
     ax.tick_params(axis="y", labelsize=9, colors=MUTED)
     if is_manual:
         ax.set_ylabel("Manual QC flag status", color=MUTED)
-        ax.set_ylim(-0.15, 1.15)
+        ax.set_ylim(-0.20, 1.20)
         ax.set_yticks([0, 1])
         ax.set_yticklabels(["No", "Yes"], color=MUTED)
         ax.grid(axis="y", alpha=0.20)
-        note = "Manual QC flags are categorical. Lines connect Yes/No status across same-task visits for readability; they are not continuous scores."
+        note = "Manual QC flags are categorical. Lines connect exact Yes/No status across same-task visits. Small within-band offsets prevent overlapping flags from hiding each other; they are not continuous scores."
     else:
         ax.axhline(0, color="#687789", linewidth=1.0, linestyle="--", alpha=0.75)
         ax.set_ylabel("Standardized automated QC change from own baseline", color=MUTED)
