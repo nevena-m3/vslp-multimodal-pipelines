@@ -97,7 +97,7 @@ from vslp.analysis.features.plots import (
     plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.124.0"
+APP_VERSION = "v0.125.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -6560,10 +6560,16 @@ class FeatureAnalysisGUI(QMainWindow):
         selectors.addWidget(self.subject_focus_combo, 1)
         selectors.addWidget(QLabel("Feature family:"))
         self.longitudinal_family_combo = QComboBox()
-        self.longitudinal_family_combo.setMinimumWidth(260)
+        self.longitudinal_family_combo.setMinimumWidth(240)
         self.longitudinal_family_combo.addItem("All mapped features", "__all__")
         self.longitudinal_family_combo.currentIndexChanged.connect(lambda _=0: self.preview_longitudinal_plot(self.longitudinal_view_combo.currentData() if hasattr(self, "longitudinal_view_combo") else "longitudinal_readiness"))
         selectors.addWidget(self.longitudinal_family_combo, 1)
+        selectors.addWidget(QLabel("QC family:"))
+        self.longitudinal_qc_family_combo = QComboBox()
+        self.longitudinal_qc_family_combo.setMinimumWidth(240)
+        self.longitudinal_qc_family_combo.addItem("All QC families", "__all__")
+        self.longitudinal_qc_family_combo.currentIndexChanged.connect(lambda _=0: self.preview_longitudinal_plot(self.longitudinal_view_combo.currentData() if hasattr(self, "longitudinal_view_combo") else "longitudinal_readiness"))
+        selectors.addWidget(self.longitudinal_qc_family_combo, 1)
         selectors.addStretch(1)
         plot_panel_layout.addLayout(selectors)
 
@@ -7240,6 +7246,102 @@ class FeatureAnalysisGUI(QMainWindow):
                 combo.setCurrentIndex(ix)
         combo.blockSignals(False)
 
+    def _longitudinal_selected_qc_family(self) -> tuple[str | None, str | None]:
+        combo = getattr(self, "longitudinal_qc_family_combo", None)
+        if combo is None:
+            return None, None
+        value = combo.currentData()
+        if value in (None, "", "__all__"):
+            return None, None
+        txt = str(value)
+        if "||" in txt:
+            source, family = txt.split("||", 1)
+            return source or None, family or None
+        return None, txt
+
+    def _longitudinal_qc_numeric_columns(self, q: pd.DataFrame | None) -> list[str]:
+        if q is None or q.empty:
+            return []
+        id_tokens = {"id", "index", "subject", "participant", "file", "filename", "source", "path", "record", "task", "date", "session", "visit", "iteration"}
+        cols: list[str] = []
+        for c in q.columns:
+            n = normalize_name(c)
+            if any(n == tok or n.endswith("_" + tok) or n.startswith(tok + "_") for tok in id_tokens):
+                continue
+            x = pd.to_numeric(q[c], errors="coerce")
+            if x.notna().sum() >= 2 and x.nunique(dropna=True) > 1:
+                cols.append(str(c))
+        return cols
+
+    def _align_automated_qc_to_analysis(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Return automated QC rows indexed like the active analysis table.
+
+        Prefer explicit shared record/file keys.  If no shared key is available,
+        fall back to row order only when row counts match.  This makes
+        longitudinal automated QC behave like acoustic feature trajectories while
+        avoiding silent misalignment when the uploaded QC table has different rows.
+        """
+        q = getattr(self, "qc_df", None)
+        if q is None or q.empty or df is None or df.empty:
+            return pd.DataFrame(index=df.index if df is not None else None)
+        q = q.copy()
+        key_candidates = [
+            "record_key", "file_name", "filename", "source_file", "audio_file",
+            "Raw Media File name", "raw_media_file_name", "source_file_path",
+        ]
+        for key in key_candidates:
+            if key in df.columns and key in q.columns:
+                left = df[[key]].copy()
+                left["__row_index__"] = df.index
+                right = q.copy()
+                right["__join_key__"] = right[key].astype(str).map(lambda s: Path(s).name.lower().strip())
+                left["__join_key__"] = left[key].astype(str).map(lambda s: Path(s).name.lower().strip())
+                right = right.drop_duplicates("__join_key__", keep="first")
+                merged = left[["__row_index__", "__join_key__"]].merge(right.drop(columns=[key], errors="ignore"), on="__join_key__", how="left")
+                merged = merged.set_index("__row_index__")
+                merged = merged.reindex(df.index)
+                return merged.drop(columns=["__join_key__"], errors="ignore")
+        if len(q) == len(df):
+            q = q.reset_index(drop=True)
+            q.index = df.index
+            return q
+        return pd.DataFrame(index=df.index)
+
+    def _refresh_longitudinal_qc_family_combo(self) -> None:
+        combo = getattr(self, "longitudinal_qc_family_combo", None)
+        if combo is None:
+            return
+        df = self._longitudinal_scope_df()
+        current = combo.currentData()
+        manual_families: set[str] = set()
+        auto_families: set[str] = set()
+        try:
+            manual = self._manual_qc_dataframe(df) if hasattr(self, "_manual_qc_dataframe") else pd.DataFrame()
+            lookup = getattr(self, "_current_manual_qc_family_lookup", {}) or {}
+            manual_families = {str(v) for v in lookup.values() if str(v).strip()}
+        except Exception:
+            manual_families = set()
+        try:
+            aligned_qc = self._align_automated_qc_to_analysis(df)
+            for metric in self._longitudinal_qc_numeric_columns(aligned_qc):
+                fam = qc_family_from_name(metric)
+                if str(fam).strip() and fam != "unclassified":
+                    auto_families.add(str(fam))
+        except Exception:
+            auto_families = set()
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("All QC families", "__all__")
+        for fam in sorted(manual_families):
+            combo.addItem(f"Manual QC: {fam}", f"Manual QC||{fam}")
+        for fam in sorted(auto_families):
+            combo.addItem(f"Automated QC: {fam}", f"Automated QC||{fam}")
+        if current is not None:
+            ix = combo.findData(current)
+            if ix >= 0:
+                combo.setCurrentIndex(ix)
+        combo.blockSignals(False)
+
     def _longitudinal_readiness_table(self, df: pd.DataFrame) -> pd.DataFrame:
         if df is None or df.empty:
             return pd.DataFrame([{"status": "No analysis table available. Run Feature Analysis first."}])
@@ -7501,10 +7603,11 @@ class FeatureAnalysisGUI(QMainWindow):
     def _longitudinal_qc_change_table(self, df: pd.DataFrame) -> pd.DataFrame:
         """Selected subject-task QC audit table.
 
-        Manual QC is represented as 0/1 flag burden by visit. Automated QC, when
-        an uploaded QC table is row-aligned to the feature table, is represented
-        as standardized change from the selected subject's first same-task
-        recording. This table is same-task and same-subject only.
+        Manual QC and automated QC are both restricted to the selected subject's
+        repeated recordings of the same task.  Manual QC remains categorical
+        Yes/No.  Automated QC is treated like acoustic features: all numeric
+        metrics in the selected automated QC family are plotted as separate
+        standardized-change lines from the first same-task recording.
         """
         if df is None or df.empty:
             return pd.DataFrame([{"status": "No analysis table available. Run Feature Analysis first."}])
@@ -7537,91 +7640,124 @@ class FeatureAnalysisGUI(QMainWindow):
         if sort_cols:
             g = g.sort_values(sort_cols, na_position="last")
         first_date = g["__date"].dropna().min() if "__date" in g.columns else pd.NaT
+        selected_qc_source, selected_qc_family = self._longitudinal_selected_qc_family()
 
         rows = []
-        # Manual QC from accepted metadata roles; yes/no converted to 0/1 flag burden.
-        manual_qc = self._manual_qc_dataframe(df) if hasattr(self, "_manual_qc_dataframe") else pd.DataFrame()
-        if manual_qc is not None and not manual_qc.empty and len(manual_qc) == len(df):
-            manual_g = manual_qc.loc[g.index].copy()
-            manual_metrics = [c for c in manual_g.columns if str(c).startswith("manual_") and pd.to_numeric(manual_g[c], errors="coerce").notna().any()]
-            family_lookup = getattr(self, "_current_manual_qc_family_lookup", {}) or {}
-            for order, (idx, row) in enumerate(g.iterrows(), start=1):
-                date_value = row.get("__date", pd.NaT)
-                days_since_first = pd.NA
-                if pd.notna(date_value) and pd.notna(first_date):
-                    days_since_first = int((date_value - first_date).days)
-                for metric in manual_metrics:
-                    val = pd.to_numeric(pd.Series([manual_g.loc[idx, metric]]), errors="coerce").iloc[0]
-                    rows.append({
-                        "subject_id": selected_subject,
-                        "task": selected_task,
-                        "qc_source": "Manual QC",
-                        "qc_family": family_lookup.get(metric, "Manual QC"),
-                        "qc_metric": metric,
-                        "record_order": order,
-                        "date": date_value.date().isoformat() if pd.notna(date_value) else "",
-                        "days_since_first": days_since_first,
-                        "session_or_visit": str(row.get(session_col, "")) if session_col and session_col in g.columns else "",
-                        "iteration": str(row.get(iter_col, "")) if iter_col and iter_col in g.columns else "",
-                        "raw_value": float(val) if pd.notna(val) else pd.NA,
-                        "baseline_value": pd.NA,
-                        "change_from_baseline": pd.NA,
-                        "standardized_change_from_baseline": pd.NA,
-                        "display_value": float(val) if pd.notna(val) else pd.NA,
-                        "interpretation": "manual flag present" if pd.notna(val) and float(val) > 0 else ("manual flag absent" if pd.notna(val) else "manual flag missing"),
-                    })
-
-        # Automated QC from uploaded row-aligned QC table only.
-        q = getattr(self, "qc_df", None)
-        if q is not None and not q.empty and len(q) == len(df):
-            qg = q.loc[g.index].copy()
-            qtask = q.loc[df[task_col].astype(str).eq(str(selected_task))].copy()
-            numeric_metrics = []
-            for c in qg.columns:
-                ser = pd.to_numeric(qtask[c], errors="coerce")
-                if ser.notna().sum() >= 2 and ser.nunique(dropna=True) > 1:
-                    numeric_metrics.append(str(c))
-            # Keep all automated QC metrics available in the selected subject-task unit.
-            if numeric_metrics:
-                scales = qtask[numeric_metrics].apply(pd.to_numeric, errors="coerce").std(axis=0, ddof=0).replace(0, pd.NA)
-                values = qg[numeric_metrics].apply(pd.to_numeric, errors="coerce")
-                baseline = values.iloc[0]
+        # Manual QC: accepted metadata mapping roles only; values are categorical Yes/No flags.
+        if selected_qc_source in (None, "Manual QC"):
+            manual_qc = self._manual_qc_dataframe(df) if hasattr(self, "_manual_qc_dataframe") else pd.DataFrame()
+            if manual_qc is not None and not manual_qc.empty and len(manual_qc) == len(df):
+                manual_qc = manual_qc.copy()
+                manual_qc.index = df.index
+                manual_g = manual_qc.loc[g.index].copy()
+                family_lookup = getattr(self, "_current_manual_qc_family_lookup", {}) or {}
+                manual_metrics = []
+                for c in manual_g.columns:
+                    if not str(c).startswith("manual_"):
+                        continue
+                    fam = family_lookup.get(c, "Manual QC")
+                    if selected_qc_family and fam != selected_qc_family:
+                        continue
+                    x = pd.to_numeric(manual_g[c], errors="coerce")
+                    if x.notna().any():
+                        manual_metrics.append(str(c))
                 for order, (idx, row) in enumerate(g.iterrows(), start=1):
                     date_value = row.get("__date", pd.NaT)
                     days_since_first = pd.NA
                     if pd.notna(date_value) and pd.notna(first_date):
                         days_since_first = int((date_value - first_date).days)
-                    for metric in numeric_metrics:
-                        raw_value = values.loc[idx, metric]
-                        base_value = baseline.get(metric, pd.NA)
-                        scale = scales.get(metric, pd.NA)
-                        raw_change = pd.NA
-                        z_change = pd.NA
-                        if pd.notna(raw_value) and pd.notna(base_value):
-                            raw_change = float(raw_value - base_value)
-                        if pd.notna(raw_change) and pd.notna(scale) and float(scale) != 0:
-                            z_change = float(raw_change / float(scale))
+                    for metric in manual_metrics:
+                        val = pd.to_numeric(pd.Series([manual_g.loc[idx, metric]]), errors="coerce").iloc[0]
+                        status = "Missing"
+                        display_value = pd.NA
+                        if pd.notna(val):
+                            display_value = 1.0 if float(val) > 0 else 0.0
+                            status = "Yes" if float(val) > 0 else "No"
                         rows.append({
                             "subject_id": selected_subject,
                             "task": selected_task,
-                            "qc_source": "Automated QC",
-                            "qc_family": qc_family_from_name(metric),
+                            "qc_source": "Manual QC",
+                            "qc_family": family_lookup.get(metric, "Manual QC"),
                             "qc_metric": metric,
                             "record_order": order,
                             "date": date_value.date().isoformat() if pd.notna(date_value) else "",
                             "days_since_first": days_since_first,
                             "session_or_visit": str(row.get(session_col, "")) if session_col and session_col in g.columns else "",
                             "iteration": str(row.get(iter_col, "")) if iter_col and iter_col in g.columns else "",
-                            "raw_value": float(raw_value) if pd.notna(raw_value) else pd.NA,
-                            "baseline_value": float(base_value) if pd.notna(base_value) else pd.NA,
-                            "change_from_baseline": raw_change,
-                            "standardized_change_from_baseline": z_change,
-                            "display_value": z_change,
-                            "interpretation": "numeric QC change; higher/lower is not automatically better unless QC metric definition specifies direction",
+                            "raw_value": float(val) if pd.notna(val) else pd.NA,
+                            "baseline_value": pd.NA,
+                            "change_from_baseline": pd.NA,
+                            "standardized_change_from_baseline": pd.NA,
+                            "display_value": display_value,
+                            "manual_qc_status": status,
+                            "interpretation": "manual QC flag present" if status == "Yes" else ("manual QC flag absent" if status == "No" else "manual QC flag missing"),
                         })
+
+        # Automated QC: aligned uploaded QC table; numeric metrics plotted like acoustic features.
+        if selected_qc_source in (None, "Automated QC"):
+            q_aligned = self._align_automated_qc_to_analysis(df)
+            if q_aligned is not None and not q_aligned.empty:
+                qg = q_aligned.loc[g.index].copy()
+                qtask = q_aligned.loc[df[task_col].astype(str).eq(str(selected_task))].copy()
+                numeric_metrics = []
+                for c in self._longitudinal_qc_numeric_columns(qtask):
+                    fam = qc_family_from_name(c)
+                    if selected_qc_family and str(fam) != str(selected_qc_family):
+                        continue
+                    if c in qg.columns and pd.to_numeric(qg[c], errors="coerce").notna().any():
+                        numeric_metrics.append(str(c))
+                if numeric_metrics:
+                    cohort = qtask[numeric_metrics].apply(pd.to_numeric, errors="coerce")
+                    scales = cohort.std(axis=0, ddof=0).replace(0, pd.NA)
+                    q75 = cohort.quantile(0.75)
+                    q25 = cohort.quantile(0.25)
+                    iqr = (q75 - q25).replace(0, pd.NA)
+                    scales = scales.fillna(iqr).replace(0, pd.NA)
+                    usable = [m for m in numeric_metrics if pd.notna(scales.get(m, pd.NA))]
+                    values = qg[usable].apply(pd.to_numeric, errors="coerce") if usable else pd.DataFrame(index=qg.index)
+                    if not values.empty:
+                        baseline = values.iloc[0]
+                        for order, (idx, row) in enumerate(g.iterrows(), start=1):
+                            date_value = row.get("__date", pd.NaT)
+                            days_since_first = pd.NA
+                            if pd.notna(date_value) and pd.notna(first_date):
+                                days_since_first = int((date_value - first_date).days)
+                            for metric in usable:
+                                raw_value = values.loc[idx, metric]
+                                base_value = baseline.get(metric, pd.NA)
+                                scale = scales.get(metric, pd.NA)
+                                raw_change = pd.NA
+                                z_change = pd.NA
+                                pct_change = pd.NA
+                                if pd.notna(raw_value) and pd.notna(base_value):
+                                    raw_change = float(raw_value - base_value)
+                                    if float(base_value) != 0:
+                                        pct_change = float(100.0 * raw_change / abs(float(base_value)))
+                                if pd.notna(raw_change) and pd.notna(scale) and float(scale) != 0:
+                                    z_change = float(raw_change / float(scale))
+                                rows.append({
+                                    "subject_id": selected_subject,
+                                    "task": selected_task,
+                                    "qc_source": "Automated QC",
+                                    "qc_family": qc_family_from_name(metric),
+                                    "qc_metric": metric,
+                                    "record_order": order,
+                                    "date": date_value.date().isoformat() if pd.notna(date_value) else "",
+                                    "days_since_first": days_since_first,
+                                    "session_or_visit": str(row.get(session_col, "")) if session_col and session_col in g.columns else "",
+                                    "iteration": str(row.get(iter_col, "")) if iter_col and iter_col in g.columns else "",
+                                    "raw_value": float(raw_value) if pd.notna(raw_value) else pd.NA,
+                                    "baseline_value": float(base_value) if pd.notna(base_value) else pd.NA,
+                                    "change_from_baseline": raw_change,
+                                    "percent_change_from_baseline": pct_change,
+                                    "cohort_scale_within_task": float(scale) if pd.notna(scale) else pd.NA,
+                                    "standardized_change_from_baseline": z_change,
+                                    "display_value": z_change,
+                                    "interpretation": "automated QC numeric change; same plotting semantics as acoustic features; higher/lower is not automatically better",
+                                })
         out = pd.DataFrame(rows)
-        if out.empty or "display_value" not in out.columns or pd.to_numeric(out.get("display_value"), errors="coerce").notna().sum() < 2:
-            return pd.DataFrame([{"status": "No usable manual or row-aligned automated QC values were available for the selected subject-task unit."}])
+        if out.empty:
+            return pd.DataFrame([{"status": "No manual or aligned automated QC values were available for the selected subject-task unit and selected QC family."}])
         return out
 
     def _longitudinal_manual_qc_change_table(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -7666,6 +7802,7 @@ class FeatureAnalysisGUI(QMainWindow):
         readiness = self._longitudinal_readiness_table(df)
         self._refresh_longitudinal_subject_combo(readiness)
         self._refresh_longitudinal_family_combo()
+        self._refresh_longitudinal_qc_family_combo()
         total_units = len(readiness) if not readiness.empty and "status" not in readiness.columns else 0
         repeated_df = readiness.loc[pd.to_numeric(readiness.get("n_records", pd.Series(dtype=float)), errors="coerce").fillna(0) >= 2].copy() if total_units else pd.DataFrame()
         repeated_units = int(len(repeated_df))
