@@ -100,7 +100,7 @@ from vslp.analysis.features.plots import (
     plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.129.0"
+APP_VERSION = "v0.130.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -8152,25 +8152,25 @@ class FeatureAnalysisGUI(QMainWindow):
         self.reliability_source_combo.setMinimumWidth(210)
         self.reliability_source_combo.addItem("Acoustic features", "features")
         self.reliability_source_combo.addItem("Automated QC metrics", "automated_qc")
-        self.reliability_source_combo.currentIndexChanged.connect(lambda _=0: self._refresh_reliability_scope())
+        self.reliability_source_combo.currentIndexChanged.connect(self._on_reliability_source_changed)
         control_layout.addWidget(QLabel("Reliability source:"))
         control_layout.addWidget(self.reliability_source_combo)
 
         self.reliability_task_combo = QComboBox()
         self.reliability_task_combo.setMinimumWidth(240)
-        self.reliability_task_combo.currentIndexChanged.connect(lambda _=0: self._refresh_reliability_scope())
+        self.reliability_task_combo.currentIndexChanged.connect(self._on_reliability_task_changed)
         control_layout.addWidget(QLabel("Task focus:"))
         control_layout.addWidget(self.reliability_task_combo)
 
         self.reliability_family_combo = QComboBox()
         self.reliability_family_combo.setMinimumWidth(240)
-        self.reliability_family_combo.currentIndexChanged.connect(lambda _=0: self._refresh_reliability_feature_combo())
+        self.reliability_family_combo.currentIndexChanged.connect(self._on_reliability_family_changed)
         control_layout.addWidget(QLabel("Feature / QC family:"))
         control_layout.addWidget(self.reliability_family_combo)
 
         self.reliability_feature_combo = QComboBox()
         self.reliability_feature_combo.setMinimumWidth(340)
-        self.reliability_feature_combo.currentIndexChanged.connect(lambda _=0: self.preview_reliability_plot("selected_feature_same_task_reliability"))
+        self.reliability_feature_combo.currentIndexChanged.connect(self._on_reliability_feature_changed)
         control_layout.addWidget(QLabel("Selected feature / metric:"))
         control_layout.addWidget(self.reliability_feature_combo, 1)
         card.layout.addWidget(control_panel)
@@ -8397,8 +8397,19 @@ class FeatureAnalysisGUI(QMainWindow):
         }
 
     def _selected_reliability_task(self) -> str:
-        if hasattr(self, "reliability_task_combo") and self.reliability_task_combo.count() > 0:
-            return self.reliability_task_combo.currentText() or "All tasks"
+        """Return the task filter as an exact data value, not a display-only label.
+
+        Reliability is task-sensitive. Using itemData prevents no-op task filtering when
+        display labels are later shortened, duplicated, or visually normalized.
+        """
+        combo = getattr(self, "reliability_task_combo", None)
+        if combo is not None and combo.count() > 0:
+            data = combo.currentData()
+            if data is not None and str(data).strip():
+                return str(data).strip()
+            text = combo.currentText()
+            if text and str(text).strip():
+                return str(text).strip()
         return "All tasks"
 
     def _selected_reliability_family(self) -> str:
@@ -8453,8 +8464,9 @@ class FeatureAnalysisGUI(QMainWindow):
         design = pd.DataFrame([
             {"metric": "reliability_source", "value": self._reliability_source_label(), "interpretation": "Measurement source used for reliability estimates."},
             {"metric": "task_scope", "value": task_focus, "interpretation": "Reliability scope. All-tasks mode keeps repeated subject-task units separate."},
-            {"metric": "rows", "value": int(len(scoped)), "interpretation": "Rows/recordings included in this reliability scope."},
-            {"metric": "numeric_features", "value": int(len(feature_cols)), "interpretation": "Mapped numeric feature columns evaluated."},
+            {"metric": "task_filter_applied", "value": bool(task_focus != "All tasks"), "interpretation": "True when the reliability menu is filtered to one selected task."},
+            {"metric": "rows", "value": int(len(scoped)), "interpretation": "Rows/recordings included after the current task/source filter."},
+            {"metric": "numeric_features", "value": int(len(feature_cols)), "interpretation": "Mapped numeric feature columns evaluated in the current task/source scope."},
             {"metric": "unique_subjects", "value": int(subject.replace("", pd.NA).nunique(dropna=True)), "interpretation": "Subjects represented in this scope."},
             {"metric": "subjects_with_repeats", "value": int(subject_counts.loc[subject_counts.get("repeated_same_task", pd.Series(dtype=bool)).astype(bool), "subject"].nunique()) if not subject_counts.empty else 0, "interpretation": "Subjects with at least one repeated same-task unit."},
             {"metric": "repeated_subject_task_units", "value": repeated_units, "interpretation": "Subject-task units with at least two recordings; main reliability substrate."},
@@ -8538,6 +8550,32 @@ class FeatureAnalysisGUI(QMainWindow):
                 })
         family = pd.DataFrame(fam_rows).sort_values("median_icc1_proxy", ascending=False, na_position="last") if fam_rows else pd.DataFrame()
         return {"design": design, "repeatability": repeatability, "family": family, "subjects": subject_counts}
+
+    def _preview_current_reliability_plot(self) -> None:
+        key = "reliability_design_support"
+        combo = getattr(self, "reliability_plot_combo", None)
+        if combo is not None and combo.count() > 0 and combo.currentData():
+            key = str(combo.currentData())
+        self.preview_reliability_plot(key)
+
+    def _on_reliability_source_changed(self, _index: int = 0) -> None:
+        # Source changes can change the task list, available families, and selected metric list.
+        self.update_reliability_dashboard(getattr(self, "outputs", {}))
+        self._preview_current_reliability_plot()
+
+    def _on_reliability_task_changed(self, _index: int = 0) -> None:
+        # Recompute all reliability statistics after a task choice. This is not a cosmetic filter:
+        # ICC, SEM, MDC95, repeated-unit counts, families, and selected-feature lists are all scoped.
+        self._refresh_reliability_scope()
+
+    def _on_reliability_family_changed(self, _index: int = 0) -> None:
+        self._refresh_reliability_feature_combo()
+        self._preview_current_reliability_plot()
+
+    def _on_reliability_feature_changed(self, _index: int = 0) -> None:
+        # Only the selected-feature trajectory depends on the selected feature. For summary plots,
+        # leave the currently selected summary plot visible rather than forcing a trajectory view.
+        self._preview_current_reliability_plot()
 
     def _refresh_reliability_scope(self) -> None:
         outputs = self._build_scoped_reliability_outputs()
@@ -8626,10 +8664,15 @@ class FeatureAnalysisGUI(QMainWindow):
         if hasattr(self, "reliability_task_combo"):
             self.reliability_task_combo.blockSignals(True)
             self.reliability_task_combo.clear()
-            self.reliability_task_combo.addItem("All tasks")
-            self.reliability_task_combo.addItems(task_values)
+            self.reliability_task_combo.addItem("All tasks", "All tasks")
+            for task_value in task_values:
+                self.reliability_task_combo.addItem(str(task_value), str(task_value))
             if current_task and current_task in ["All tasks"] + task_values:
-                self.reliability_task_combo.setCurrentText(current_task)
+                idx = self.reliability_task_combo.findData(current_task)
+                if idx < 0:
+                    idx = self.reliability_task_combo.findText(current_task)
+                if idx >= 0:
+                    self.reliability_task_combo.setCurrentIndex(idx)
             self.reliability_task_combo.blockSignals(False)
         scoped = self._build_scoped_reliability_outputs()
         self._populate_reliability_from_scope(scoped)
