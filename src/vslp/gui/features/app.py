@@ -91,12 +91,13 @@ from vslp.analysis.features.plots import (
     plot_task_subject_coverage_summary, plot_task_feature_profile,
     plot_longitudinal_subject_records, plot_longitudinal_readiness,
     plot_longitudinal_visit_timeline, plot_longitudinal_feature_family_trajectory,
+    plot_longitudinal_manual_qc_change, plot_longitudinal_automated_qc_change,
     plot_longitudinal_qc_change_audit,
     plot_longitudinal_session_matrix, plot_longitudinal_iteration_counts,
     plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.123.0"
+APP_VERSION = "v0.124.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -6521,8 +6522,9 @@ class FeatureAnalysisGUI(QMainWindow):
         # v0.117: expose one safe longitudinal view only. Later trajectory plots will be added one at a time.
         self.longitudinal_view_combo.addItem("Repeated-record cohort summary", "longitudinal_readiness")
         self.longitudinal_view_combo.addItem("Selected subject-task visit timeline", "longitudinal_visit_timeline")
-        self.longitudinal_view_combo.addItem("Selected subject-task feature change audit", "longitudinal_feature_family_trajectory")
-        self.longitudinal_view_combo.addItem("Selected subject-task QC change audit", "longitudinal_qc_change_audit")
+        self.longitudinal_view_combo.addItem("Selected subject-task feature change", "longitudinal_feature_family_trajectory")
+        self.longitudinal_view_combo.addItem("Selected subject-task manual QC change", "longitudinal_manual_qc_change")
+        self.longitudinal_view_combo.addItem("Selected subject-task automated QC change", "longitudinal_automated_qc_change")
         plot_header.addWidget(self.longitudinal_view_combo, 1)
         show_btn = QPushButton("Show")
         show_btn.setProperty("secondary", True)
@@ -6538,7 +6540,7 @@ class FeatureAnalysisGUI(QMainWindow):
         plot_header.addWidget(open_btn)
         plot_panel_layout.addLayout(plot_header)
 
-        self.longitudinal_caption = QLabel("Step 1: quantify the repeated-record cohort. Step 2: verify one subject-task visit timeline. Step 3: audit individual feature changes within the same task; direction is numeric only unless a feature registry defines clinical direction.")
+        self.longitudinal_caption = QLabel("Step 1: quantify the repeated-record cohort. Step 2: verify one subject-task visit timeline. Step 3: review same-task feature-change lines for all selected-family features. Step 4: review manual QC Yes/No change and automated QC numeric change separately.")
         self.longitudinal_caption.setWordWrap(True)
         self.longitudinal_caption.setStyleSheet(f"color:{MUTED}; background:#FFFFFF; border:1px solid {LINE}; border-radius:8px; padding:9px;")
         plot_panel_layout.addWidget(self.longitudinal_caption)
@@ -6617,8 +6619,11 @@ class FeatureAnalysisGUI(QMainWindow):
         tabs.addTab(self.long_iteration_table, "Iteration support")
         tabs.addTab(self.long_date_table, "Date support")
         tabs.addTab(self.long_feature_change_table, "Feature change audit")
-        self.long_qc_change_table = self._simple_table()
-        tabs.addTab(self.long_qc_change_table, "QC change audit")
+        self.long_manual_qc_change_table = self._simple_table()
+        self.long_auto_qc_change_table = self._simple_table()
+        self.long_qc_change_table = self.long_manual_qc_change_table
+        tabs.addTab(self.long_manual_qc_change_table, "Manual QC change")
+        tabs.addTab(self.long_auto_qc_change_table, "Automated QC change")
         card.layout.addWidget(tabs)
 
         layout.addWidget(card)
@@ -7619,6 +7624,30 @@ class FeatureAnalysisGUI(QMainWindow):
             return pd.DataFrame([{"status": "No usable manual or row-aligned automated QC values were available for the selected subject-task unit."}])
         return out
 
+    def _longitudinal_manual_qc_change_table(self, df: pd.DataFrame) -> pd.DataFrame:
+        qc = self._longitudinal_qc_change_table(df)
+        if qc is None or qc.empty or "status" in qc.columns:
+            return qc
+        if "qc_source" not in qc.columns:
+            return pd.DataFrame([{"status": "Manual QC source column was not available."}])
+        manual = qc.loc[qc["qc_source"].astype(str).eq("Manual QC")].copy()
+        if manual.empty:
+            return pd.DataFrame([{"status": "No manual QC flags were available for the selected subject-task unit."}])
+        if "display_value" in manual.columns:
+            manual["manual_qc_status"] = pd.to_numeric(manual["display_value"], errors="coerce").map(lambda v: "Yes" if pd.notna(v) and float(v) > 0 else ("No" if pd.notna(v) else "Missing"))
+        return manual
+
+    def _longitudinal_automated_qc_change_table(self, df: pd.DataFrame) -> pd.DataFrame:
+        qc = self._longitudinal_qc_change_table(df)
+        if qc is None or qc.empty or "status" in qc.columns:
+            return qc
+        if "qc_source" not in qc.columns:
+            return pd.DataFrame([{"status": "Automated QC source column was not available."}])
+        auto = qc.loc[qc["qc_source"].astype(str).eq("Automated QC")].copy()
+        if auto.empty:
+            return pd.DataFrame([{"status": "No row-aligned automated QC metrics were available for the selected subject-task unit."}])
+        return auto
+
     def update_longitudinal_dashboard(self, outputs: dict[str, pd.DataFrame]) -> None:
         if not hasattr(self, "longitudinal_metric_grid"):
             return
@@ -7675,9 +7704,11 @@ class FeatureAnalysisGUI(QMainWindow):
         self._fill_table(self.long_iteration_table, iter_summary)
         self._fill_table(self.long_date_table, date_summary)
         self._fill_table(self.long_feature_change_table, self._longitudinal_feature_family_change_table(df))
-        if hasattr(self, "long_qc_change_table"):
-            self._fill_table(self.long_qc_change_table, self._longitudinal_qc_change_table(df))
-        self.longitudinal_note.setText("Repeated-record cohort summary generated. Later longitudinal plots will analyze only subject-task units with at least two recordings of the same task.")
+        if hasattr(self, "long_manual_qc_change_table"):
+            self._fill_table(self.long_manual_qc_change_table, self._longitudinal_manual_qc_change_table(df))
+        if hasattr(self, "long_auto_qc_change_table"):
+            self._fill_table(self.long_auto_qc_change_table, self._longitudinal_automated_qc_change_table(df))
+        self.longitudinal_note.setText("Repeated-record cohort summary generated. All longitudinal change plots analyze only subject-task units with at least two recordings of the same task.")
         self.generate_longitudinal_plots()
         self.preview_longitudinal_plot("longitudinal_readiness")
 
@@ -7699,10 +7730,14 @@ class FeatureAnalysisGUI(QMainWindow):
         if hasattr(self, "long_feature_change_table"):
             self._fill_table(self.long_feature_change_table, feature_family_change)
         self.plot_paths["longitudinal_feature_family_trajectory"] = str(plot_longitudinal_feature_family_trajectory(feature_family_change, plots_dir / "longitudinal_feature_family_trajectory.png"))
-        qc_change = self._longitudinal_qc_change_table(df)
-        if hasattr(self, "long_qc_change_table"):
-            self._fill_table(self.long_qc_change_table, qc_change)
-        self.plot_paths["longitudinal_qc_change_audit"] = str(plot_longitudinal_qc_change_audit(qc_change, plots_dir / "longitudinal_qc_change_audit.png"))
+        manual_qc_change = self._longitudinal_manual_qc_change_table(df)
+        if hasattr(self, "long_manual_qc_change_table"):
+            self._fill_table(self.long_manual_qc_change_table, manual_qc_change)
+        self.plot_paths["longitudinal_manual_qc_change"] = str(plot_longitudinal_manual_qc_change(manual_qc_change, plots_dir / "longitudinal_manual_qc_change.png"))
+        automated_qc_change = self._longitudinal_automated_qc_change_table(df)
+        if hasattr(self, "long_auto_qc_change_table"):
+            self._fill_table(self.long_auto_qc_change_table, automated_qc_change)
+        self.plot_paths["longitudinal_automated_qc_change"] = str(plot_longitudinal_automated_qc_change(automated_qc_change, plots_dir / "longitudinal_automated_qc_change.png"))
 
     def preview_longitudinal_plot(self, key: str | None = None) -> None:
         key = key or (self.longitudinal_view_combo.currentData() if hasattr(self, "longitudinal_view_combo") else "long_subject_records")
@@ -7720,8 +7755,9 @@ class FeatureAnalysisGUI(QMainWindow):
         captions = {
             "longitudinal_readiness": "Repeated-record cohort summary. Use this first to quantify how many subjects have repeated same-task recordings, typical recording depth, and typical dated follow-up span before reviewing feature change.",
             "longitudinal_visit_timeline": "Selected subject-task visit timeline. Use this to verify visit ordering, days since first recording, and spacing between repeated recordings before interpreting feature change.",
-            "longitudinal_feature_family_trajectory": "Selected subject-task feature change audit. This analyzes only repeated recordings of the same task for the selected subject. All selected-family features are shown separately. Better/worse is shown only when the registry explicitly defines direction; otherwise direction is numeric only.",
-            "longitudinal_qc_change_audit": "Selected subject-task QC change audit. Manual QC is shown as yes/no flag status by visit; row-aligned automated QC is shown as standardized numeric change from the first same-task recording."
+            "longitudinal_feature_family_trajectory": "Selected subject-task feature change. This analyzes only repeated recordings of the same task for the selected subject. Every selected-family feature is shown as its own line; no family composite score is computed. Better/worse is shown only when the registry explicitly defines direction; otherwise direction is numeric only.",
+            "longitudinal_manual_qc_change": "Selected subject-task manual QC change. Manual QC flags are categorical and are displayed explicitly as Yes/No across same-task visits.",
+            "longitudinal_automated_qc_change": "Selected subject-task automated QC change. Row-aligned automated QC metrics are displayed as numeric standardized change from the first same-task recording."
         }
         if hasattr(self, "longitudinal_interpretation"):
             self.longitudinal_interpretation.setText(captions.get(key, "Longitudinal review plot."))
