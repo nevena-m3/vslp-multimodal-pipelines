@@ -2292,16 +2292,53 @@ def plot_longitudinal_visit_timeline(visits: pd.DataFrame, path: Path) -> Path:
     fig.text(0.5, 0.03, f"{len(d)} recordings shown. Total displayed span: {total_span:.0f} {'days' if xlabel.startswith('Days') else 'recording-order units'}. Verify this timeline before interpreting feature trajectories.", ha="center", color=MUTED, fontsize=9)
     return _save(fig, path)
 
-def plot_longitudinal_feature_family_trajectory(traj: pd.DataFrame, path: Path) -> Path:
-    """Selected subject-task feature-level change audit.
 
-    All selected-family features are shown. The plot uses a compact feature x
-    visit heatmap rather than a family composite score because features within
-    one family can have different units, meanings, ranges, and clinical
-    direction. Better/worse is only interpreted when a registry direction field
-    is present and machine-readable.
+def _longitudinal_visit_labels(d: pd.DataFrame) -> dict:
+    """Build compact, ordered visit labels without crowding the bottom axis."""
+    label_lookup = {}
+    if d is None or d.empty or "record_order" not in d.columns:
+        return label_lookup
+    for order, g in d.groupby("record_order", sort=True):
+        try:
+            order_int = int(float(order))
+        except Exception:
+            order_int = len(label_lookup) + 1
+        bits = [f"V{order_int}"]
+        date_vals = g.get("date")
+        if date_vals is not None:
+            dates = pd.Series(date_vals).astype(str)
+            dates = dates.loc[dates.notna() & dates.ne("") & dates.ne("NaT")]
+            if not dates.empty:
+                bits.append(str(dates.iloc[0]))
+        days_vals = pd.to_numeric(g.get("days_since_first", pd.Series(dtype=float)), errors="coerce").dropna()
+        if not days_vals.empty:
+            bits.append(f"+{int(days_vals.iloc[0])}d")
+        label_lookup[order] = "\n".join(bits[:3])
+    return label_lookup
+
+
+def _line_legend(ax, n_items: int) -> None:
+    """Place legends outside the plotting panel to avoid bottom-label overlap."""
+    if n_items <= 0:
+        return
+    if n_items <= 18:
+        ax.legend(loc="center left", bbox_to_anchor=(1.01, 0.5), fontsize=8, frameon=False)
+    elif n_items <= 36:
+        ax.legend(loc="center left", bbox_to_anchor=(1.01, 0.5), fontsize=6.5, frameon=False, ncol=1)
+    else:
+        # With many family features, the plotted lines remain complete; labels stay in the audit table.
+        leg = ax.legend([], [], frameon=False)
+        leg.set_visible(False)
+
+
+def plot_longitudinal_feature_family_trajectory(traj: pd.DataFrame, path: Path) -> Path:
+    """All-feature line plot for selected subject-task feature change.
+
+    The selected feature family is used as a filter only. Every usable feature in
+    that family is plotted as its own line across repeated recordings of the same
+    task for the selected subject. No family-average score is computed.
     """
-    title = "Selected subject-task feature change audit"
+    title = "Selected subject-task feature change"
     if traj is None or traj.empty or "status" in traj.columns:
         msg = "Select one task, one repeated subject, and a feature family."
         if isinstance(traj, pd.DataFrame) and not traj.empty and "status" in traj.columns:
@@ -2309,162 +2346,166 @@ def plot_longitudinal_feature_family_trajectory(traj: pd.DataFrame, path: Path) 
         return _empty(path, msg, title)
     d = traj.copy()
     required = {"feature", "record_order", "standardized_change_from_baseline"}
-    if not required.issubset(set(d.columns)):
-        return _empty(path, "Feature-change audit table is missing required columns.", title)
+    if not required.issubset(d.columns):
+        return _empty(path, "Feature-change table is missing required columns.", title)
     d["record_order"] = pd.to_numeric(d["record_order"], errors="coerce")
     d["standardized_change_from_baseline"] = pd.to_numeric(d["standardized_change_from_baseline"], errors="coerce")
-    if "absolute_standardized_change" not in d.columns:
-        d["absolute_standardized_change"] = d["standardized_change_from_baseline"].abs()
-    d["absolute_standardized_change"] = pd.to_numeric(d["absolute_standardized_change"], errors="coerce")
-    if "days_since_first" in d.columns:
-        d["days_since_first"] = pd.to_numeric(d["days_since_first"], errors="coerce")
-    d = d.loc[d["standardized_change_from_baseline"].notna() & d["record_order"].notna()].copy()
+    d = d.loc[d["record_order"].notna()].copy()
     if d.empty or d["record_order"].nunique() < 2:
-        return _empty(path, "Fewer than two usable visit-level feature-change values are available.", title)
+        return _empty(path, "Fewer than two same-task recordings are available.", title)
+    if d["standardized_change_from_baseline"].notna().sum() < 2:
+        return _empty(path, "Fewer than two usable feature-change values are available.", title)
 
-    # All selected-family features are included. Sort by largest observed change
-    # so the most dynamic features remain visible even when many rows are shown.
-    feature_order = (
-        d.groupby("feature")["absolute_standardized_change"]
-        .max()
+    label_lookup = _longitudinal_visit_labels(d)
+    orders = sorted(d["record_order"].dropna().unique())
+    x_lookup = {order: idx for idx, order in enumerate(orders)}
+    d["x"] = d["record_order"].map(x_lookup)
+    xlabels = [label_lookup.get(order, f"V{int(order)}") for order in orders]
+
+    # Order features by the largest absolute change, but plot every selected-family feature.
+    change_strength = (
+        d.groupby("feature")["standardized_change_from_baseline"]
+        .apply(lambda s: np.nanmax(np.abs(pd.to_numeric(s, errors="coerce"))) if pd.to_numeric(s, errors="coerce").notna().any() else 0.0)
         .sort_values(ascending=False)
-        .index.astype(str)
-        .tolist()
     )
-    d["feature"] = pd.Categorical(d["feature"].astype(str), categories=feature_order, ordered=True)
-    def _visit_label(g: pd.DataFrame) -> str:
-        order = int(pd.to_numeric(g["record_order"], errors="coerce").dropna().iloc[0])
-        days = pd.to_numeric(g.get("days_since_first", pd.Series(dtype=float)), errors="coerce").dropna()
-        if not days.empty:
-            return f"V{order}\n+{int(days.iloc[0])}d"
-        return f"V{order}"
-    order_labels = []
-    for order, g in d.groupby("record_order", sort=True):
-        order_labels.append((order, _visit_label(g)))
-    label_lookup = {order: lab for order, lab in order_labels}
-    d["visit_label"] = d["record_order"].map(label_lookup)
-    mat = d.pivot_table(index="feature", columns="visit_label", values="standardized_change_from_baseline", aggfunc="mean", observed=False)
-    mat = mat.reindex(feature_order)
-    # Preserve visit order after pivot.
-    ordered_cols = [lab for _, lab in order_labels if lab in mat.columns]
-    mat = mat[ordered_cols]
-    if mat.empty:
-        return _empty(path, "No feature-change matrix could be built.", title)
-
+    features = [str(f) for f in change_strength.index]
+    n_features = len(features)
     subject = str(d["subject_id"].dropna().iloc[0]) if "subject_id" in d.columns and d["subject_id"].notna().any() else "selected subject"
     task = str(d["task"].dropna().iloc[0]) if "task" in d.columns and d["task"].notna().any() else "selected task"
     family = str(d["selected_family"].dropna().iloc[0]) if "selected_family" in d.columns and d["selected_family"].notna().any() else "selected family"
-    n_features = mat.shape[0]
-    height = max(6.0, min(24.0, 0.28 * n_features + 3.0))
-    fig, ax = plt.subplots(figsize=(12.8, height))
-    vals = mat.to_numpy(dtype=float)
-    vmax = np.nanmax(np.abs(vals)) if np.isfinite(vals).any() else 1.0
-    vmax = max(1.0, min(float(vmax), 8.0))
-    im = ax.imshow(vals, aspect="auto", interpolation="nearest", cmap="coolwarm", vmin=-vmax, vmax=vmax)
-    ax.set_title(title, fontsize=14, fontweight="bold", color=NAVY, pad=12)
-    ax.set_xlabel("Same-task recording", color=MUTED)
-    ax.set_ylabel("Feature", color=MUTED)
-    ax.set_xticks(range(mat.shape[1]))
-    ax.set_xticklabels(mat.columns.astype(str), fontsize=9, color=MUTED)
-    ax.set_yticks(range(mat.shape[0]))
-    ylabels = [str(x) if len(str(x)) <= 58 else str(x)[:55] + "..." for x in mat.index]
-    ax.set_yticklabels(ylabels, fontsize=7 if n_features > 35 else 8, color=MUTED)
-    cb = fig.colorbar(im, ax=ax, fraction=0.025, pad=0.02)
-    cb.set_label("Standardized change from own baseline", color=MUTED)
-    for spine in ax.spines.values():
-        spine.set_visible(False)
-    fig.subplots_adjust(left=0.34 if n_features > 20 else 0.28, right=0.90, bottom=0.14, top=0.86)
-    fig.suptitle(f"{subject} | {task} | {family}", fontsize=12, fontweight="bold", color=NAVY, y=0.985)
 
-    direction_col = d.get("direction_interpretation")
-    interpretable = 0
-    better = 0
-    worse = 0
-    if direction_col is not None:
-        direction_text = direction_col.astype(str).str.lower()
-        interpretable = int(direction_text.isin(["better", "worse"]).sum())
+    height = max(6.2, min(11.5, 5.8 + 0.06 * n_features))
+    fig, ax = plt.subplots(figsize=(14.4, height))
+    for feat in features:
+        sub = d.loc[d["feature"].astype(str).eq(feat)].sort_values("record_order")
+        if sub.empty:
+            continue
+        label = feat if len(feat) <= 46 else feat[:43] + "..."
+        ax.plot(sub["x"], sub["standardized_change_from_baseline"], marker="o", linewidth=1.35, markersize=4, alpha=0.88, label=label)
+
+    ax.axhline(0, color="#687789", linewidth=1.0, linestyle="--", alpha=0.75)
+    ax.set_title(title, fontsize=14, fontweight="bold", color=NAVY, pad=14)
+    ax.set_ylabel("Standardized change from own baseline", color=MUTED)
+    ax.set_xlabel("Same-task recording for selected subject", color=MUTED, labelpad=10)
+    ax.set_xticks(range(len(xlabels)))
+    ax.set_xticklabels(xlabels, fontsize=8.5, color=MUTED)
+    ax.tick_params(axis="y", labelsize=9, colors=MUTED)
+    ax.grid(axis="y", alpha=0.25)
+    for spine in ["top", "right"]:
+        ax.spines[spine].set_visible(False)
+    ax.spines["left"].set_color(GRID)
+    ax.spines["bottom"].set_color(GRID)
+    _line_legend(ax, n_features)
+
+    direction_text = d.get("direction_interpretation", pd.Series(dtype=str)).astype(str).str.lower() if "direction_interpretation" in d.columns else pd.Series(dtype=str)
+    interpretable = int(direction_text.isin(["better", "worse"]).sum()) if not direction_text.empty else 0
+    if interpretable:
         better = int(direction_text.eq("better").sum())
         worse = int(direction_text.eq("worse").sum())
-    note = f"All {n_features} selected-family features are shown. Values are standardized numeric change, not a composite score."
-    if interpretable:
-        note += f" Registry direction available for {interpretable} feature-visit values ({better} better, {worse} worse)."
+        direction_note = f"Registry-defined direction available for {interpretable} values: {better} better, {worse} worse."
     else:
-        note += " Better/worse is not inferred because registry direction is unavailable or not machine-readable."
-    fig.text(0.5, 0.035, note, ha="center", color=MUTED, fontsize=9)
+        direction_note = "Better/worse is not inferred; line direction is numeric change only."
+    legend_note = " Full feature labels and raw values are in the table." if n_features > 36 else ""
+    fig.suptitle(f"{subject} | {task} | {family} | {n_features} features", fontsize=12, fontweight="bold", color=NAVY, y=0.985)
+    fig.text(0.5, 0.045, f"Every selected-family feature is plotted as a separate line; no composite family score is computed. {direction_note}{legend_note}", ha="center", va="bottom", color=MUTED, fontsize=9, wrap=True)
+    fig.subplots_adjust(left=0.08, right=0.74 if n_features <= 36 else 0.96, bottom=0.25, top=0.84)
     return _save(fig, path)
 
 
-def plot_longitudinal_qc_change_audit(qc: pd.DataFrame, path: Path) -> Path:
-    """Selected subject-task QC change audit.
-
-    Manual QC is plotted as yes/no flag status; automated QC is plotted as
-    standardized numeric change from the first same-task recording. Both are
-    restricted to the selected subject and selected task.
-    """
-    title = "Selected subject-task QC change audit"
+def _plot_longitudinal_qc_lines(qc: pd.DataFrame, path: Path, *, source: str, title: str) -> Path:
     if qc is None or qc.empty or "status" in qc.columns:
-        msg = "Select one task and one repeated subject. Manual QC and/or row-aligned automated QC must be available."
+        msg = f"Select one task and one repeated subject. {source} values must be available."
         if isinstance(qc, pd.DataFrame) and not qc.empty and "status" in qc.columns:
             msg = str(qc["status"].iloc[0])
         return _empty(path, msg, title)
     d = qc.copy()
-    required = {"qc_metric", "qc_source", "record_order", "display_value"}
+    if "qc_source" in d.columns:
+        d = d.loc[d["qc_source"].astype(str).eq(source)].copy()
+    required = {"qc_metric", "record_order", "display_value"}
+    if d.empty:
+        return _empty(path, f"No {source.lower()} values are available for this selected subject-task unit.", title)
     if not required.issubset(d.columns):
-        return _empty(path, "QC-change audit table is missing required columns.", title)
+        return _empty(path, f"{source} table is missing required columns.", title)
     d["record_order"] = pd.to_numeric(d["record_order"], errors="coerce")
     d["display_value"] = pd.to_numeric(d["display_value"], errors="coerce")
     d = d.loc[d["record_order"].notna() & d["display_value"].notna()].copy()
     if d.empty or d["record_order"].nunique() < 2:
-        return _empty(path, "Fewer than two visit-level QC values are available.", title)
-    if "days_since_first" in d.columns:
-        d["days_since_first"] = pd.to_numeric(d["days_since_first"], errors="coerce")
-    def _visit_label(g: pd.DataFrame) -> str:
-        order = int(pd.to_numeric(g["record_order"], errors="coerce").dropna().iloc[0])
-        days = pd.to_numeric(g.get("days_since_first", pd.Series(dtype=float)), errors="coerce").dropna()
-        if not days.empty:
-            return f"V{order}\n+{int(days.iloc[0])}d"
-        return f"V{order}"
-    label_lookup = {}
-    for order, g in d.groupby("record_order", sort=True):
-        label_lookup[order] = _visit_label(g)
-    d["visit_label"] = d["record_order"].map(label_lookup)
-    d["metric_label"] = d["qc_source"].astype(str) + " | " + d["qc_metric"].astype(str)
-    order = (
-        d.groupby("metric_label")["display_value"].apply(lambda s: np.nanmax(np.abs(pd.to_numeric(s, errors="coerce"))))
+        return _empty(path, f"Fewer than two visit-level {source.lower()} values are available.", title)
+
+    label_lookup = _longitudinal_visit_labels(d)
+    orders = sorted(d["record_order"].dropna().unique())
+    x_lookup = {order: idx for idx, order in enumerate(orders)}
+    d["x"] = d["record_order"].map(x_lookup)
+    xlabels = [label_lookup.get(order, f"V{int(order)}") for order in orders]
+    metrics = (
+        d.groupby("qc_metric")["display_value"].apply(lambda s: np.nanmax(np.abs(pd.to_numeric(s, errors="coerce"))) if pd.to_numeric(s, errors="coerce").notna().any() else 0.0)
         .sort_values(ascending=False).index.astype(str).tolist()
     )
-    d["metric_label"] = pd.Categorical(d["metric_label"].astype(str), categories=order, ordered=True)
-    mat = d.pivot_table(index="metric_label", columns="visit_label", values="display_value", aggfunc="mean", observed=False).reindex(order)
-    ordered_cols = [label_lookup[o] for o in sorted(label_lookup) if label_lookup[o] in mat.columns]
-    mat = mat[ordered_cols]
-    if mat.empty:
-        return _empty(path, "No QC-change matrix could be built.", title)
     subject = str(d["subject_id"].dropna().iloc[0]) if "subject_id" in d.columns and d["subject_id"].notna().any() else "selected subject"
     task = str(d["task"].dropna().iloc[0]) if "task" in d.columns and d["task"].notna().any() else "selected task"
-    n_metrics = mat.shape[0]
-    height = max(5.5, min(22.0, 0.30 * n_metrics + 3.0))
-    fig, ax = plt.subplots(figsize=(12.8, height))
-    vals = mat.to_numpy(dtype=float)
-    vmax = np.nanmax(np.abs(vals)) if np.isfinite(vals).any() else 1.0
-    vmax = max(1.0, min(float(vmax), 8.0))
-    im = ax.imshow(vals, aspect="auto", interpolation="nearest", cmap="coolwarm", vmin=-vmax, vmax=vmax)
-    ax.set_title(title, fontsize=14, fontweight="bold", color=NAVY, pad=12)
-    ax.set_xlabel("Same-task recording", color=MUTED)
-    ax.set_ylabel("QC metric / flag", color=MUTED)
-    ax.set_xticks(range(mat.shape[1])); ax.set_xticklabels(mat.columns.astype(str), fontsize=9, color=MUTED)
-    ax.set_yticks(range(mat.shape[0]))
-    labels = [str(x) if len(str(x)) <= 62 else str(x)[:59] + "..." for x in mat.index]
-    ax.set_yticklabels(labels, fontsize=7 if n_metrics > 35 else 8, color=MUTED)
-    cb = fig.colorbar(im, ax=ax, fraction=0.025, pad=0.02)
-    cb.set_label("Manual: flag status; automated: standardized change", color=MUTED)
-    for spine in ax.spines.values():
-        spine.set_visible(False)
-    fig.subplots_adjust(left=0.36 if n_metrics > 20 else 0.30, right=0.90, bottom=0.14, top=0.86)
-    fig.suptitle(f"{subject} | {task}", fontsize=12, fontweight="bold", color=NAVY, y=0.985)
-    manual_n = int(d["qc_source"].astype(str).eq("Manual QC").sum())
-    auto_n = int(d["qc_source"].astype(str).eq("Automated QC").sum())
-    fig.text(0.5, 0.035, f"Manual QC yes/no flags: {manual_n} values. Automated QC numeric values: {auto_n} values. This plot audits quality changes only; it does not decide whether feature change is clinical signal or artifact.", ha="center", color=MUTED, fontsize=9)
+    n_metrics = len(metrics)
+    height = max(5.8, min(11.0, 5.4 + 0.08 * n_metrics))
+    fig, ax = plt.subplots(figsize=(14.4, height))
+    is_manual = source.lower().startswith("manual")
+    for metric in metrics:
+        sub = d.loc[d["qc_metric"].astype(str).eq(metric)].sort_values("record_order")
+        label = metric if len(metric) <= 46 else metric[:43] + "..."
+        if is_manual:
+            y = sub["display_value"].clip(lower=0, upper=1)
+            ax.plot(sub["x"], y, marker="o", linewidth=1.4, markersize=4, alpha=0.9, drawstyle="steps-post", label=label)
+            # Make exact yes/no state visible even if several lines overlap.
+            for _, rr in sub.iterrows():
+                ax.text(rr["x"], float(max(0, min(1, rr["display_value"]))), "Yes" if float(rr["display_value"]) > 0 else "No", fontsize=7, color=MUTED, ha="center", va="bottom" if float(rr["display_value"]) <= 0 else "top", alpha=0.8)
+        else:
+            ax.plot(sub["x"], sub["display_value"], marker="o", linewidth=1.35, markersize=4, alpha=0.88, label=label)
+
+    ax.set_title(title, fontsize=14, fontweight="bold", color=NAVY, pad=14)
+    ax.set_xlabel("Same-task recording for selected subject", color=MUTED, labelpad=10)
+    ax.set_xticks(range(len(xlabels)))
+    ax.set_xticklabels(xlabels, fontsize=8.5, color=MUTED)
+    ax.tick_params(axis="y", labelsize=9, colors=MUTED)
+    if is_manual:
+        ax.set_ylabel("Manual QC flag status", color=MUTED)
+        ax.set_ylim(-0.15, 1.15)
+        ax.set_yticks([0, 1])
+        ax.set_yticklabels(["No", "Yes"], color=MUTED)
+        ax.grid(axis="y", alpha=0.20)
+        note = "Manual QC flags are categorical. Lines connect Yes/No status across same-task visits for readability; they are not continuous scores."
+    else:
+        ax.axhline(0, color="#687789", linewidth=1.0, linestyle="--", alpha=0.75)
+        ax.set_ylabel("Standardized automated QC change from own baseline", color=MUTED)
+        ax.grid(axis="y", alpha=0.25)
+        note = "Automated QC metrics are numeric and are shown as standardized change from the first same-task recording. Higher/lower is not automatically better."
+    for spine in ["top", "right"]:
+        ax.spines[spine].set_visible(False)
+    ax.spines["left"].set_color(GRID)
+    ax.spines["bottom"].set_color(GRID)
+    _line_legend(ax, n_metrics)
+    legend_note = " Full QC metric names and values are in the table." if n_metrics > 36 else ""
+    fig.suptitle(f"{subject} | {task} | {n_metrics} {source.lower()} metrics", fontsize=12, fontweight="bold", color=NAVY, y=0.985)
+    fig.text(0.5, 0.045, f"{note}{legend_note}", ha="center", va="bottom", color=MUTED, fontsize=9, wrap=True)
+    fig.subplots_adjust(left=0.08, right=0.74 if n_metrics <= 36 else 0.96, bottom=0.25, top=0.84)
     return _save(fig, path)
+
+
+def plot_longitudinal_manual_qc_change(qc: pd.DataFrame, path: Path) -> Path:
+    """Manual QC yes/no line plot for the selected subject-task unit."""
+    return _plot_longitudinal_qc_lines(qc, path, source="Manual QC", title="Selected subject-task manual QC change")
+
+
+def plot_longitudinal_automated_qc_change(qc: pd.DataFrame, path: Path) -> Path:
+    """Automated QC numeric line plot for the selected subject-task unit."""
+    return _plot_longitudinal_qc_lines(qc, path, source="Automated QC", title="Selected subject-task automated QC change")
+
+
+def plot_longitudinal_qc_change_audit(qc: pd.DataFrame, path: Path) -> Path:
+    """Backward-compatible combined QC audit entry point.
+
+    The GUI now exposes manual and automated QC as separate plots. This function
+    remains for older calls and points to the manual/automated availability text
+    instead of rendering a heatmap.
+    """
+    return _plot_longitudinal_qc_lines(qc, path, source="Manual QC", title="Selected subject-task manual QC change")
 
 
 def plot_longitudinal_session_matrix(df: pd.DataFrame, subject_col: str | None, session_col: str | None, path: Path) -> Path:
