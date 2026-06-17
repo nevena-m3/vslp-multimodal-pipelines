@@ -100,7 +100,7 @@ from vslp.analysis.features.plots import (
     plot_longitudinal_date_timeline
 )
 
-APP_VERSION = "v0.127.0"
+APP_VERSION = "v0.128.0"
 
 NAVY = "#071A33"
 NAVY2 = "#0B2442"
@@ -8139,6 +8139,14 @@ class FeatureAnalysisGUI(QMainWindow):
         card.layout.addLayout(self.reliability_metric_grid)
 
         controls = QHBoxLayout()
+        self.reliability_source_combo = QComboBox()
+        self.reliability_source_combo.setMinimumWidth(210)
+        self.reliability_source_combo.addItem("Acoustic features", "features")
+        self.reliability_source_combo.addItem("Automated QC metrics", "automated_qc")
+        self.reliability_source_combo.currentIndexChanged.connect(lambda _=0: self._refresh_reliability_scope())
+        controls.addWidget(QLabel("Reliability source:"))
+        controls.addWidget(self.reliability_source_combo)
+
         self.reliability_task_combo = QComboBox()
         self.reliability_task_combo.setMinimumWidth(220)
         self.reliability_task_combo.currentIndexChanged.connect(lambda _=0: self._refresh_reliability_scope())
@@ -8186,7 +8194,7 @@ class FeatureAnalysisGUI(QMainWindow):
         self._add_standard_plot_gallery(
             plot_card.layout,
             "Reliability plot",
-            "Reliability uses same-task repeated recordings, ICC-style repeatability, and measurement-error / detectable-change thresholds.",
+            "Reliability uses same-task repeated recordings, ICC-style repeatability, and measurement-error / detectable-change thresholds. Choose acoustic features or aligned automated QC metrics as the reliability source.",
             "reliability_plot_combo",
             [
                 ("Design support for reliability", "reliability_design_support"),
@@ -8206,13 +8214,43 @@ class FeatureAnalysisGUI(QMainWindow):
         layout.addWidget(card)
         return self._wrap_scroll(body)
 
+    def _selected_reliability_source(self) -> str:
+        combo = getattr(self, "reliability_source_combo", None)
+        if combo is not None and combo.count() > 0:
+            data = combo.currentData()
+            if data:
+                return str(data)
+        return "features"
+
+    def _reliability_source_label(self) -> str:
+        return "Automated QC metrics" if self._selected_reliability_source() == "automated_qc" else "Acoustic features"
+
     def _reliability_source_frame(self) -> pd.DataFrame:
         base = self.analysis_df if getattr(self, "analysis_df", None) is not None and not self.analysis_df.empty else self.feature_df
         if base is None:
             return pd.DataFrame()
-        return self._ensure_unique_columns(base.copy(), "Reliability source table").reset_index(drop=True)
+        base = self._ensure_unique_columns(base.copy(), "Reliability base feature table").reset_index(drop=True)
+        if self._selected_reliability_source() != "automated_qc":
+            return base
+        # Automated QC reliability is meaningful when QC rows can be aligned to the active feature rows.
+        # The values are still analyzed inside same-subject/same-task repeated units, exactly like acoustic features.
+        aligned = self._align_automated_qc_to_analysis(base) if hasattr(self, "_align_automated_qc_to_analysis") else pd.DataFrame(index=base.index)
+        if aligned is None or aligned.empty:
+            return pd.DataFrame()
+        aligned = self._ensure_unique_columns(aligned.copy(), "Reliability automated QC table").reset_index(drop=True)
+        ctx = self._reliability_context(base)
+        if len(ctx.get("subject", [])) == len(aligned):
+            aligned["__reliability_subject"] = ctx["subject"].reset_index(drop=True)
+            aligned["__reliability_task"] = ctx["task"].reset_index(drop=True)
+            aligned["__reliability_session"] = ctx["session"].reset_index(drop=True)
+            aligned["__reliability_date"] = ctx["date"].reset_index(drop=True)
+        return aligned
 
     def _reliability_feature_cols(self, df: pd.DataFrame) -> list[str]:
+        if df is None or df.empty:
+            return []
+        if self._selected_reliability_source() == "automated_qc":
+            return self._longitudinal_qc_numeric_columns(df) if hasattr(self, "_longitudinal_qc_numeric_columns") else []
         mapping = self.collect_mapping_from_table() if getattr(self, "mapping_df", None) is not None else pd.DataFrame()
         roles = role_lists(mapping) if mapping is not None and not mapping.empty else {}
         candidates = [str(c) for c in roles.get("Feature", []) if str(c) in df.columns]
@@ -8229,14 +8267,44 @@ class FeatureAnalysisGUI(QMainWindow):
                 seen.add(c)
         return out
 
+    def _infer_acoustic_family_from_feature_name(self, name: str) -> str:
+        n = normalize_name(str(name))
+        if any(tok in n for tok in ["speech_rate", "total_dur", "speech_dur", "pause", "phrase", "duration", "dur"]):
+            return "respiratory_timing"
+        if any(tok in n for tok in ["jitter", "shimmer", "hnr", "cpp", "f0", "voicebreak", "phonation"]):
+            return "phonatory_voice_quality"
+        if any(tok in n for tok in ["formant", "f1", "f2", "f3", "f4", "f5", "bandwidth", "bw", "d_dx"]):
+            return "articulatory_formants"
+        if any(tok in n for tok in ["h1", "h2", "a1", "a3", "p0", "p1", "spectral", "fft", "centroid", "rolloff", "tilt", "reson", "comp"]):
+            return "resonatory_spectral_balance"
+        if any(tok in n for tok in ["rms", "intensity", "energy", "nrj", "amp", "ampli", "loud", "level"]):
+            return "intensity_energy"
+        return "Other mapped numeric feature"
+
     def _reliability_family_lookup(self) -> dict[str, str]:
+        if self._selected_reliability_source() == "automated_qc":
+            df = self._reliability_source_frame()
+            return {str(c): qc_family_from_name(str(c)) for c in self._reliability_feature_cols(df)}
         reg = getattr(self, "registry_df", None)
         lookup: dict[str, str] = {}
+        norm_lookup: dict[str, str] = {}
         if reg is not None and not reg.empty:
             fcol = next((c for c in ["feature", "feature_name", "name", "column"] if c in reg.columns), None)
             fam_col = next((c for c in ["family", "feature_family", "subsystem", "domain", "group"] if c in reg.columns), None)
             if fcol and fam_col:
-                lookup.update(dict(zip(reg[fcol].astype(str), reg[fam_col].astype(str))))
+                for f, fam in zip(reg[fcol].astype(str), reg[fam_col].astype(str)):
+                    if f and fam and fam.lower() not in {"nan", "none"}:
+                        lookup[f] = fam
+                        norm_lookup[normalize_name(f)] = fam
+        df = self._reliability_source_frame()
+        for c in self._reliability_feature_cols(df):
+            if c in lookup:
+                continue
+            nf = normalize_name(c)
+            if nf in norm_lookup:
+                lookup[c] = norm_lookup[nf]
+            else:
+                lookup[c] = self._infer_acoustic_family_from_feature_name(c)
         return lookup
 
     def _reliability_context(self, df: pd.DataFrame) -> dict[str, pd.Series]:
@@ -8244,6 +8312,13 @@ class FeatureAnalysisGUI(QMainWindow):
         if df is None or df.empty:
             empty = pd.Series(pd.NA, index=range(n), dtype="object")
             return {"subject": empty, "task": empty, "session": empty, "date": empty}
+        if "__reliability_subject" in df.columns:
+            return {
+                "subject": df["__reliability_subject"].astype("string").fillna("").str.strip(),
+                "task": df.get("__reliability_task", pd.Series("", index=df.index)).astype("string").fillna("").str.strip(),
+                "session": df.get("__reliability_session", pd.Series("", index=df.index)).astype("string").fillna("").str.strip(),
+                "date": df.get("__reliability_date", pd.Series("", index=df.index)).astype("string").fillna("").str.strip(),
+            }
         return {
             "subject": self._overview_series_for_role(df, "subject").astype("string").fillna("").str.strip(),
             "task": self._overview_series_for_role(df, "task").astype("string").fillna("").str.strip(),
@@ -8306,6 +8381,7 @@ class FeatureAnalysisGUI(QMainWindow):
         subject_counts = pd.DataFrame(subject_count_rows)
         repeated_units = int(subject_counts.loc[subject_counts.get("repeated_same_task", pd.Series(dtype=bool)).astype(bool)].shape[0]) if not subject_counts.empty else 0
         design = pd.DataFrame([
+            {"metric": "reliability_source", "value": self._reliability_source_label(), "interpretation": "Measurement source used for reliability estimates."},
             {"metric": "task_scope", "value": task_focus, "interpretation": "Reliability scope. All-tasks mode keeps repeated subject-task units separate."},
             {"metric": "rows", "value": int(len(scoped)), "interpretation": "Rows/recordings included in this reliability scope."},
             {"metric": "numeric_features", "value": int(len(feature_cols)), "interpretation": "Mapped numeric feature columns evaluated."},
@@ -8355,7 +8431,7 @@ class FeatureAnalysisGUI(QMainWindow):
                     status = "unstable"; interp = "Low same-task repeatability; likely session/acquisition/noise sensitive."
             rows.append({
                 "feature": feat,
-                "family_or_subsystem": family_lookup.get(feat, "unclassified"),
+                "family_or_subsystem": family_lookup.get(feat, qc_family_from_name(feat) if self._selected_reliability_source() == "automated_qc" else self._infer_acoustic_family_from_feature_name(feat)),
                 "task_scope": task_focus,
                 "n_valid": n_valid,
                 "n_repeated_subject_task_units": n_repeated,
@@ -8454,6 +8530,7 @@ class FeatureAnalysisGUI(QMainWindow):
         moderate = int(rep["reliability_status"].astype(str).eq("moderate").sum()) if rep is not None and not rep.empty and "reliability_status" in rep.columns else 0
         med_icc = pd.to_numeric(rep.get("icc1_proxy", pd.Series(dtype=float)), errors="coerce").median() if rep is not None and not rep.empty else np.nan
         tiles = [
+            ("Source", metric("reliability_source"), "features or automated QC"),
             ("Task scope", metric("task_scope"), "same-task reliability scope"),
             ("Repeated subject-task units", metric("repeated_subject_task_units", 0), "minimum substrate"),
             ("Evaluable features", evaluable, "ICC + error estimates"),
@@ -8561,7 +8638,7 @@ class FeatureAnalysisGUI(QMainWindow):
                 key = str(data)
         path_str = self._generate_reliability_plot(key)
         if not path_str:
-            QMessageBox.information(self, "Plot unavailable", "Run Feature Analysis first, select a repeated task/feature if needed, or this reliability plot could not be generated for the current dataset.")
+            QMessageBox.information(self, "Plot unavailable", "Run Feature Analysis first, choose a reliability source, select a repeated task/feature if needed, or this plot could not be generated for the current dataset. Automated QC requires an aligned QC table.")
             return
         path = Path(path_str)
         if not path.exists():
@@ -8579,7 +8656,7 @@ class FeatureAnalysisGUI(QMainWindow):
         captions = {
             "reliability_design_support": (
                 "<b>What it shows</b><br>Whether this task scope has enough repeated same-task recordings to estimate reliability.<br><br>"
-                "<b>Statistical rule</b><br>Reliability must be estimated inside repeated subject-task units, not by mixing different tasks.<br><br>"
+                "<b>Statistical rule</b><br>Reliability must be estimated inside repeated subject-task units, not by mixing different tasks. Automated QC reliability is supported when the QC table is aligned to the active recordings.<br><br>"
                 "<b>Next check</b><br>If repeated support is low, ICC and detectable-change estimates are fragile."
             ),
             "reliability_icc_ranking": (
