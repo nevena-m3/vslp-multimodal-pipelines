@@ -2226,6 +2226,74 @@ def plot_longitudinal_readiness(readiness: pd.DataFrame, path: Path) -> Path:
     fig.text(0.5, 0.018, "Interpretation: later longitudinal feature-change plots should be restricted to repeated subject-task units. This screen quantifies how large and how temporally deep that analyzable cohort is.", ha="center", color=MUTED, fontsize=9)
     return _save(fig, path)
 
+def plot_longitudinal_visit_timeline(visits: pd.DataFrame, path: Path) -> Path:
+    """Selected subject-task visit timeline for longitudinal review.
+
+    This plot is intentionally subject-level and only becomes active after the
+    user selects one repeated subject in the Longitudinal menu. It verifies
+    visit ordering and temporal spacing before feature-change plots are added.
+    """
+    title = "Selected subject-task visit timeline"
+    if visits is None or visits.empty or "status" in visits.columns:
+        msg = "Select one repeated subject to view their visit timeline."
+        if isinstance(visits, pd.DataFrame) and not visits.empty and "status" in visits.columns:
+            msg = str(visits["status"].iloc[0])
+        return _empty(path, msg, title)
+    d = visits.copy()
+    if "record_order" not in d.columns:
+        d["record_order"] = np.arange(1, len(d) + 1)
+    order_values = pd.to_numeric(d["record_order"], errors="coerce")
+    fallback_order = pd.Series(np.arange(1, len(d) + 1), index=d.index)
+    d["record_order"] = order_values.where(order_values.notna(), fallback_order).astype(int)
+    if "days_since_first" in d.columns:
+        d["days_since_first"] = pd.to_numeric(d["days_since_first"], errors="coerce")
+    else:
+        d["days_since_first"] = np.nan
+    if d["days_since_first"].notna().sum() >= 2:
+        x = d["days_since_first"].astype(float)
+        xlabel = "Days since first dated recording"
+    else:
+        x = d["record_order"].astype(float)
+        xlabel = "Recording order (dates unavailable or incomplete)"
+    subject = str(d["subject_id"].dropna().iloc[0]) if "subject_id" in d.columns and d["subject_id"].notna().any() else "selected subject"
+    task = str(d["task"].dropna().iloc[0]) if "task" in d.columns and d["task"].notna().any() else "selected task"
+    fig, ax = plt.subplots(figsize=(12.5, 4.8))
+    y = np.zeros(len(d))
+    ax.plot(x, y, color=GRID, linewidth=3, zorder=1)
+    ax.scatter(x, y, s=95, color=TEAL, edgecolor="white", linewidth=1.5, zorder=3)
+    for _, row in d.iterrows():
+        xv = float(row["days_since_first"]) if pd.notna(row.get("days_since_first", np.nan)) and d["days_since_first"].notna().sum() >= 2 else float(row["record_order"])
+        order = int(row.get("record_order", 0))
+        date_txt = str(row.get("date", "")).strip()
+        interval = row.get("interval_from_previous_days", np.nan)
+        session = str(row.get("session_or_visit", "")).strip()
+        iteration = str(row.get("iteration", "")).strip()
+        label_lines = [f"#{order}"]
+        if date_txt:
+            label_lines.append(date_txt)
+        if pd.notna(interval):
+            label_lines.append(f"+{int(interval)} d")
+        elif order == 1:
+            label_lines.append("baseline")
+        context = ", ".join([v for v in [f"visit {session}" if session else "", f"iter {iteration}" if iteration else ""] if v])
+        if context:
+            label_lines.append(context[:28])
+        va = "bottom" if order % 2 else "top"
+        dy = 0.08 if order % 2 else -0.08
+        ax.text(xv, dy, "\n".join(label_lines), ha="center", va=va, fontsize=8, color=NAVY)
+    ax.set_yticks([])
+    ax.set_xlabel(xlabel, color=MUTED)
+    ax.set_ylim(-0.42, 0.42)
+    xmin, xmax = float(np.nanmin(x)), float(np.nanmax(x))
+    pad = max((xmax - xmin) * 0.08, 1.0)
+    ax.set_xlim(xmin - pad, xmax + pad)
+    _style(ax, title)
+    ax.grid(axis="x", color=GRID, alpha=0.75, linewidth=0.8)
+    total_span = xmax - xmin if len(d) > 1 else 0
+    fig.suptitle(f"{subject} | {task}", fontsize=12, fontweight="bold", color=NAVY, y=0.98)
+    fig.text(0.5, 0.03, f"{len(d)} recordings shown. Total displayed span: {total_span:.0f} {'days' if xlabel.startswith('Days') else 'recording-order units'}. Verify this timeline before interpreting feature trajectories.", ha="center", color=MUTED, fontsize=9)
+    return _save(fig, path)
+
 def plot_longitudinal_session_matrix(df: pd.DataFrame, subject_col: str | None, session_col: str | None, path: Path) -> Path:
     if df is None or df.empty or not subject_col or subject_col not in df.columns:
         return _empty(path, "No subject_id column was available for session/visit review.", "Session / visit")
