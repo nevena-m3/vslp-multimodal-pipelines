@@ -106,6 +106,7 @@ from vslp.analysis.kinematics import (
     write_inspector_inventory,
 )
 from vslp.analysis.kinematics.schemas import DEFAULT_VIDEO_EXTENSIONS, parse_int_list
+from vslp.core.project import register_project_component
 
 APP_VERSION = "v0.87"
 BRAND_DIR = Path(__file__).resolve().parent / "assets" / "branding"
@@ -1028,14 +1029,14 @@ class KinematicsPipelineWindow(QMainWindow):
 
         layout.addWidget(self._info_panel(
             "Project dashboard",
-            "Define the raw video dataset and output project folder, then run structural ingest. This stage checks video readability, format consistency, FPS, duration, resolution, and early warnings before landmark extraction.",
+            "Define the raw video dataset and shared study workspace, then run structural ingest. Kinematics outputs stay isolated under the workspace's kinematics folder.",
         ))
 
         paths_group = QGroupBox("1. Project definition")
         form = QGridLayout(paths_group)
         self.input_edit = QLineEdit()
         self.output_edit = QLineEdit()
-        self.project_name_edit = QLineEdit("VSLP Kinematics Project")
+        self.project_name_edit = QLineEdit("VSLP Study")
         self.task_name_edit = QLineEdit()
         self.task_name_edit.setPlaceholderText("e.g., Bamboo passage video, DDK-pa, DDK-pataka, smile, mouth open-close")
         self._set_tooltip(self.input_edit, "Folder containing raw participant videos. Subfolders are searched recursively.")
@@ -1048,7 +1049,7 @@ class KinematicsPipelineWindow(QMainWindow):
         form.addWidget(QLabel("Input video folder"), 0, 0)
         form.addWidget(self.input_edit, 0, 1)
         form.addWidget(browse_in, 0, 2)
-        form.addWidget(QLabel("Output project folder"), 1, 0)
+        form.addWidget(QLabel("Study workspace folder"), 1, 0)
         form.addWidget(self.output_edit, 1, 1)
         form.addWidget(browse_out, 1, 2)
         form.addWidget(QLabel("Project name"), 2, 0)
@@ -2390,7 +2391,7 @@ class KinematicsPipelineWindow(QMainWindow):
             self.input_edit.setText(path); self.input_root = Path(path)
 
     def browse_output_dir(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Select output project folder")
+        path = QFileDialog.getExistingDirectory(self, "Select shared VSLP study workspace")
         if path:
             self.output_edit.setText(path); self.output_root = Path(path)
 
@@ -2409,6 +2410,18 @@ class KinematicsPipelineWindow(QMainWindow):
         if out is None:
             return
         self.output_root = out
+        requested_name = self.project_name_edit.text().strip() or "VSLP Study"
+        workspace = register_project_component(
+            output_root=out,
+            component="kinematics",
+            project_name=requested_name,
+            details={
+                "gui_version": APP_VERSION,
+                "primary_task": self.task_name_edit.text().strip(),
+                "input_folder": self.input_edit.text().strip(),
+            },
+        )
+        workspace_manifest = json.loads(workspace.manifest.read_text(encoding="utf-8"))
         project_dir = out / "kinematics"
         for sub in ["000_ingest", "001_metadata", "002_landmarks", "003_selection", "004_normalization", "005_video_qc", "006_features", "007_aggregation", "008_inspector", "009_reports"]:
             (project_dir / sub).mkdir(parents=True, exist_ok=True)
@@ -2417,7 +2430,7 @@ class KinematicsPipelineWindow(QMainWindow):
             "schema": "vslp_kinematics_project_v0.71",
             "app_version": APP_VERSION,
             "created_at_utc": datetime.now(timezone.utc).isoformat(),
-            "project_name": self.project_name_edit.text().strip() or "VSLP Kinematics Project",
+            "project_name": workspace_manifest.get("project_name", requested_name),
             "task": self.task_name_edit.text().strip(),
             "input_video_folder": self.input_edit.text().strip(),
             "output_project_folder": str(out),
@@ -2431,8 +2444,11 @@ class KinematicsPipelineWindow(QMainWindow):
         self.stage_records["project"] = StageRecord(status="completed", manifest_path=str(manifest))
         self._refresh_stage_cards()
         if hasattr(self, "project_gate_message"):
-            self.project_gate_message.setText(f"Project initialized. Manifest: {manifest}")
-        self._log(f"Initialized kinematics project: {project_dir}")
+            self.project_gate_message.setText(
+                f"Shared workspace initialized. Kinematics manifest: {manifest}"
+            )
+        self._log(f"Initialized shared workspace: {out}")
+        self._log(f"Kinematics outputs are isolated under: {project_dir}")
 
     def run_ingest_stage(self) -> None:
         inp = self._path_or_warn(self.input_edit, "an input video folder")

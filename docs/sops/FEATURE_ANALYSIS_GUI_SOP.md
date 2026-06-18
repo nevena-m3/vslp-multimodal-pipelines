@@ -8,7 +8,7 @@ The GUI does not train models. Its canonical handoff is the task-specific packag
 
 ## 2. Scope and Responsibilities
 
-- Use one modality per Feature Analysis project.
+- Use one modality per Feature Analysis run. Acoustic and kinematic runs may share a study workspace because their outputs are isolated by modality.
 - Confirm that rows represent the intended recording or analysis unit.
 - Review all automatically proposed column roles before analysis.
 - Use accepted metadata as the primary source of subject, task, visit, outcome, and covariate context.
@@ -51,7 +51,7 @@ For a visible terminal and diagnostic output, use `python.exe` instead of `pytho
 
 1. Select the primary feature table.
 2. Add QC, metadata, and registry tables when available.
-3. Select the output folder.
+3. Select Acoustic, Kinematic, or Generic as the modality, then select the shared VSLP study workspace. Results are written under `feature_analysis/<modality>/`.
 4. Load the tables.
 5. Confirm the Run Log reports the expected row and column counts.
 

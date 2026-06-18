@@ -11,7 +11,7 @@ The pipeline does not recover true millimeter biomechanics from ordinary video, 
 Required:
 
 - source videos readable by OpenCV/MediaPipe;
-- a writable output root outside the source-video directory;
+- a writable shared VSLP study workspace outside the source-video directory;
 - Python 3.11 environment with GUI and kinematic dependencies;
 - compatible MediaPipe Face Landmarker `.task` model;
 - defined task, row/video unit, and landmark policy.
@@ -33,7 +33,7 @@ vslp gui kinematics
 
 ### Step 1: Setup and Video Ingest
 
-1. Select the source-video folder and separate output project folder.
+1. Select the source-video folder and the shared VSLP study workspace. Kinematics artifacts will be written under `kinematics/`.
 2. Initialize the project.
 3. Run Video Ingest.
 4. Review format, FPS, duration, resolution, readability, and warnings.

@@ -23,6 +23,8 @@ Video recordings  -> Kinematics Pipeline --+
 
 Run Feature Analysis separately for each modality. The Feature Analysis GUI does not combine raw acoustic and kinematic engineering tables and does not train models. Its Advanced ML Export Builder may align completed modality exports when a safe shared recording key exists.
 
+Use one output workspace per study. The GUIs write to isolated component folders within that shared root; see the [project workspace layout](docs/reference/project_workspace.md).
+
 ## Requirements
 
 - Python 3.11
