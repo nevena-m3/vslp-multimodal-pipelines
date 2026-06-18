@@ -11,7 +11,7 @@ The pipeline is not a diagnostic system. QC warnings are review evidence, not au
 Required:
 
 - source audio or audio-bearing media readable by FFmpeg/FFprobe;
-- a writable output root outside the source-media directory;
+- a writable shared VSLP study workspace outside the source-media directory;
 - a defined task and row/recording unit;
 - Python 3.11 VSLP environment with GUI dependencies.
 
@@ -35,7 +35,7 @@ vslp gui acoustic
 ### Step 1: Setup
 
 1. Select the input media folder.
-2. Select a separate output project folder.
+2. Select the shared VSLP study workspace. Acoustic artifacts will be written under `acoustic/`.
 3. Enter a stable project name and task fallback.
 4. Confirm recursive discovery is appropriate for the folder structure.
 5. Initialize the project and review discovered file counts.

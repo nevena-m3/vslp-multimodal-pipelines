@@ -56,6 +56,7 @@ from vslp.analysis.features.audit import (
     qc_family_from_name
 )
 from vslp.analysis.features.ml_export_builder import build_ml_export_package
+from vslp.core.project import register_project_component
 from vslp.analysis.features.plots import (
     plot_role_counts, plot_group_counts, plot_feature_family_counts,
     plot_missingness, plot_feature_availability_heatmap,
@@ -763,13 +764,13 @@ class FeatureAnalysisGUI(QMainWindow):
         layout.setContentsMargins(24, 22, 24, 24)
         layout.setSpacing(14)
 
-        intro = Card("Project setup", "Load source tables and choose analysis output. Filename-derived context is configured in Metadata Mapping when no metadata table is provided.")
+        intro = Card("Project setup", "Load one modality's source tables and select the shared VSLP study workspace. Feature Analysis keeps each modality in a separate output area.")
         intro.layout.setSpacing(16)
 
         step_row = QHBoxLayout()
         step_row.setSpacing(12)
         step_row.addWidget(self._project_step_label(1, "Tables", "Feature table required; QC, metadata, registry optional."))
-        step_row.addWidget(self._project_step_label(2, "Output", "Select modality and analysis folder."))
+        step_row.addWidget(self._project_step_label(2, "Workspace", "Select modality and the shared study folder."))
         step_row.addWidget(self._project_step_label(3, "Map context", "Use Feature Mapping and Metadata Mapping before analysis."))
         intro.layout.addLayout(step_row)
 
@@ -794,12 +795,14 @@ class FeatureAnalysisGUI(QMainWindow):
         modality_label = QLabel("Modality")
         modality_label.setStyleSheet(f"color:{NAVY}; font-weight:800; border:none; background:transparent;")
         self.modality_combo = QComboBox()
-        self.modality_combo.addItems(["Auto-detect", "Acoustic", "Kinematic", "Mixed acoustic + kinematic", "Generic"])
+        self.modality_combo.addItems(["Select modality (required)", "Acoustic", "Kinematic", "Generic"])
         self.modality_combo.setMinimumWidth(290)
-        output_label = QLabel("Output folder")
+        output_label = QLabel("Study workspace folder")
         output_label.setStyleSheet(f"color:{NAVY}; font-weight:800; border:none; background:transparent;")
         self.output_edit = QLineEdit()
-        self.output_edit.setPlaceholderText("Required output folder for analysis results")
+        self.output_edit.setPlaceholderText("Shared root used by the Acoustic and Kinematics GUIs")
+        self.modality_combo.currentTextChanged.connect(self._project_output_context_changed)
+        self.output_edit.textChanged.connect(self._project_output_context_changed)
         out_button = QPushButton("Browse")
         out_button.setProperty("secondary", True)
         out_button.clicked.connect(self.pick_output_folder)
@@ -1670,7 +1673,7 @@ class FeatureAnalysisGUI(QMainWindow):
             self._refresh_focus_combos()
         if parsed_context is not None and not parsed_context.empty:
             try:
-                out_dir = self._output_dir() / "feature_analysis" / "tables"
+                out_dir = self._analysis_dirs()[1]
                 out_dir.mkdir(parents=True, exist_ok=True)
                 parsed_context.to_csv(out_dir / "filename_context_parse_preview.csv", index=False)
                 self.log(f"Filename context preview saved: {out_dir / 'filename_context_parse_preview.csv'}")
@@ -1831,10 +1834,10 @@ class FeatureAnalysisGUI(QMainWindow):
         self.collect_metadata_mapping_from_table()
 
     def _metadata_mapping_path(self) -> Path | None:
-        out = self.output_edit.text().strip() if hasattr(self, "output_edit") else ""
-        if not out:
+        analysis_dir = self._configured_analysis_dir()
+        if analysis_dir is None:
             return None
-        tables_dir = Path(out) / "feature_analysis" / "tables"
+        tables_dir = analysis_dir / "tables"
         tables_dir.mkdir(parents=True, exist_ok=True)
         return tables_dir / "accepted_metadata_mapping.csv"
 
@@ -2249,9 +2252,31 @@ class FeatureAnalysisGUI(QMainWindow):
             return pd.Series(series.to_numpy(), index=frame.index, dtype="string")
         return pd.Series(pd.NA, index=frame.index, dtype="string")
 
+    def _configured_analysis_dir(self) -> Path | None:
+        workspace_text = self.output_edit.text().strip()
+        scope = self._analysis_scope_key()
+        if not workspace_text or not scope:
+            return None
+        return Path(workspace_text).expanduser().resolve() / "feature_analysis" / scope
+
+    def _project_output_context_changed(self, *_args) -> None:
+        """Invalidate output-specific state when workspace or modality changes."""
+        self.output_dir = None
+        self.analysis_ready = False
+        self.outputs = {}
+        self.plot_paths = {}
+        self.latest_export_dir = None
+        self.latest_export_paths = {}
+
     def _analysis_dirs(self) -> tuple[Path, Path, Path, Path]:
-        if not getattr(self, "output_dir", None):
-            self.output_dir = Path(self.output_edit.text().strip()) / "feature_analysis"
+        analysis_dir = self._configured_analysis_dir()
+        if analysis_dir is None and getattr(self, "output_dir", None):
+            analysis_dir = Path(self.output_dir)
+        if analysis_dir is None:
+            if not self.output_edit.text().strip():
+                raise RuntimeError("Select the shared VSLP study workspace before writing analysis outputs.")
+            raise RuntimeError("Select Acoustic, Kinematic, or Generic as the project modality.")
+        self.output_dir = analysis_dir
         tables_dir = self.output_dir / "tables"
         reports_dir = self.output_dir / "reports"
         plots_dir = self.output_dir / "plots"
@@ -3102,10 +3127,10 @@ class FeatureAnalysisGUI(QMainWindow):
             self.mapping_summary_label.setText((self.mapping_summary_label.text() or "Current mapping") + "  | unsaved edits")
 
     def _accepted_mapping_path(self) -> Path | None:
-        out = self.output_edit.text().strip() if hasattr(self, "output_edit") else ""
-        if not out:
+        analysis_dir = self._configured_analysis_dir()
+        if analysis_dir is None:
             return None
-        tables_dir = Path(out) / "feature_analysis" / "tables"
+        tables_dir = analysis_dir / "tables"
         tables_dir.mkdir(parents=True, exist_ok=True)
         return tables_dir / "accepted_column_mapping.csv"
 
@@ -5410,7 +5435,12 @@ class FeatureAnalysisGUI(QMainWindow):
             return "mixed"
         if "generic" in n:
             return "generic"
-        return "auto"
+        return ""
+
+    def _analysis_scope_key(self) -> str:
+        """Return the stable workspace folder for the selected modality."""
+        modality = self._project_modality_mode()
+        return "kinematics" if modality == "kinematic" else modality
 
     def _selected_qc_source_mode(self) -> str:
         if hasattr(self, "qc_source_combo"):
@@ -8136,7 +8166,9 @@ class FeatureAnalysisGUI(QMainWindow):
         if getattr(self, "output_dir", None):
             candidates.append(Path(self.output_dir) / "tables")
         if hasattr(self, "output_edit") and self.output_edit.text().strip():
-            candidates.append(Path(self.output_edit.text().strip()) / "feature_analysis" / "tables")
+            configured = self._configured_analysis_dir()
+            if configured is not None:
+                candidates.append(configured / "tables")
         for tables_dir in candidates:
             if not tables_dir.exists():
                 continue
@@ -9714,7 +9746,9 @@ class FeatureAnalysisGUI(QMainWindow):
         if getattr(self, "output_dir", None):
             candidates.append(Path(self.output_dir) / "tables")
         if hasattr(self, "output_edit") and self.output_edit.text().strip():
-            candidates.append(Path(self.output_edit.text().strip()) / "feature_analysis" / "tables")
+            configured = self._configured_analysis_dir()
+            if configured is not None:
+                candidates.append(configured / "tables")
         for tables_dir in candidates:
             if not tables_dir.exists():
                 continue
@@ -10461,7 +10495,9 @@ class FeatureAnalysisGUI(QMainWindow):
         profile = self._export_profile_key()
         profile_slug = profile.replace("_", "-")
         task_slug = self._safe_task_slug(task)
-        base_dir = (self.output_dir if getattr(self, "output_dir", None) else Path(self.output_edit.text().strip()) / "feature_analysis")
+        base_dir = Path(self.output_dir) if getattr(self, "output_dir", None) else self._configured_analysis_dir()
+        if base_dir is None:
+            raise RuntimeError("Select the shared workspace and modality before creating an export package.")
         export_dir = base_dir / "exports" / f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{task_slug}_{profile_slug}"
         export_dir.mkdir(parents=True, exist_ok=True)
         manifest, summary, profile_table = self._build_export_preview_tables(outputs)
@@ -10612,7 +10648,7 @@ Decision colors:
         self.open_file(report)
 
     def pick_output_folder(self) -> None:
-        p = QFileDialog.getExistingDirectory(self, "Select output folder")
+        p = QFileDialog.getExistingDirectory(self, "Select shared VSLP study workspace")
         if p:
             self.output_edit.setText(p)
 
@@ -10825,6 +10861,14 @@ Decision colors:
             QMessageBox.warning(self, "Output folder required", "Please select an output folder before accepting mapping so the accepted mapping can be saved.")
             self.show_page("project")
             return
+        if not self._analysis_scope_key():
+            QMessageBox.warning(
+                self,
+                "Modality required",
+                "Select Acoustic, Kinematic, or Generic on the Project page before accepting the mapping.",
+            )
+            self.show_page("project")
+            return
         n_changed = self._n_mapping_changes_from_proposal()
         if n_changed > 0:
             reply = QMessageBox.question(
@@ -10862,13 +10906,22 @@ Decision colors:
             if not self.output_edit.text().strip():
                 QMessageBox.warning(self, "Missing output folder", "Please select an output folder for the Feature Analysis results.")
                 return
-            self.output_dir = Path(self.output_edit.text().strip()) / "feature_analysis"
-            tables_dir = self.output_dir / "tables"
-            reports_dir = self.output_dir / "reports"
-            plots_dir = self.output_dir / "plots"
-            tables_dir.mkdir(parents=True, exist_ok=True)
-            reports_dir.mkdir(parents=True, exist_ok=True)
-            plots_dir.mkdir(parents=True, exist_ok=True)
+            scope = self._analysis_scope_key()
+            if not scope:
+                QMessageBox.warning(
+                    self,
+                    "Modality required",
+                    "Select Acoustic, Kinematic, or Generic before running Feature Analysis. "
+                    "The modality determines the isolated output folder in the shared workspace.",
+                )
+                return
+            workspace_root = Path(self.output_edit.text().strip()).expanduser().resolve()
+            register_project_component(
+                workspace_root,
+                "feature_analysis",
+                details={"gui_version": APP_VERSION, "last_analysis_modality": scope},
+            )
+            self.output_dir, tables_dir, reports_dir, plots_dir = self._analysis_dirs()
 
             try:
                 outputs, feature_cols = self._build_analysis_outputs()

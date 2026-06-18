@@ -20,6 +20,8 @@ Before processing data, define:
 
 Use separate output projects for distinct studies or incompatible processing configurations. Never write generated outputs over raw source media.
 
+Use the same study workspace root in all three GUIs. VSLP separates Acoustic, Kinematics, and modality-specific Feature Analysis outputs inside that root. See the [project workspace layout](../reference/project_workspace.md).
+
 ## Acoustic Workflow
 
 ```text

@@ -73,7 +73,7 @@ from vslp.acoustic.quality.stage import (
     quality_feature_registry,
     run_acoustic_quality_control,
 )
-from vslp.core.project import initialize_project
+from vslp.core.project import register_project_component
 from vslp.core.schemas import ArtifactRef, StageManifest, StageResult
 from vslp.gui.common.utils import open_in_browser, open_path
 
@@ -364,12 +364,12 @@ class AcousticPipelineWindow(QMainWindow):
 
         self.input_edit = QLineEdit()
         self.output_edit = QLineEdit()
-        self.project_name_edit = QLineEdit("VSLP Acoustic Project")
+        self.project_name_edit = QLineEdit("VSLP Study")
         self.task_name_edit = QLineEdit()
         self.task_name_edit.setPlaceholderText("e.g., Bamboo passage, DDK-pa, DDK-pataka, sustained vowel /a/, Buy Bobby a Puppy")
         self._set_tooltip(self.input_edit, "Folder containing raw audio/video files. Subfolders are searched recursively. Recommendation: process one speech task at a time when possible.")
-        self._set_tooltip(self.output_edit, "Root folder where VSLP writes all outputs: tables, plots, reports, logs, errors, artifacts, and manifests.")
-        self._set_tooltip(self.project_name_edit, "Human-readable project label stored in project_manifest.json.")
+        self._set_tooltip(self.output_edit, "Shared VSLP study workspace. Acoustic outputs are isolated under its acoustic folder.")
+        self._set_tooltip(self.project_name_edit, "Shared study label stored once in the workspace project_manifest.json.")
         self._set_tooltip(self.task_name_edit, "Optional but recommended when the input folder contains one task. Used as a metadata fallback only when task cannot be linked or parsed.")
 
         browse_in = QPushButton("Browse Input Folder")
@@ -380,7 +380,7 @@ class AcousticPipelineWindow(QMainWindow):
         form.addWidget(QLabel("Input audio folder"), 0, 0)
         form.addWidget(self.input_edit, 0, 1)
         form.addWidget(browse_in, 0, 2)
-        form.addWidget(QLabel("Output project folder"), 1, 0)
+        form.addWidget(QLabel("Study workspace folder"), 1, 0)
         form.addWidget(self.output_edit, 1, 1)
         form.addWidget(browse_out, 1, 2)
         form.addWidget(QLabel("Project name"), 2, 0)
@@ -1915,17 +1915,23 @@ class AcousticPipelineWindow(QMainWindow):
         task = self.task_name_edit.text().strip() if hasattr(self, "task_name_edit") else ""
         return task or None
 
-    def _initialize_project_with_task(self, output_root: Path, project_name: str, task_fallback: str | None = None):
-        result = initialize_project(output_root=output_root, project_name=project_name)
-        manifest_path = Path(output_root) / "project_manifest.json"
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except Exception:
-            manifest = {"project_name": project_name}
-        manifest["primary_task"] = task_fallback or ""
-        manifest["pipeline_gui_version"] = "0.38"
-        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-        return result
+    def _initialize_project_with_task(
+        self,
+        output_root: Path,
+        project_name: str,
+        task_fallback: str | None = None,
+        input_folder: str = "",
+    ):
+        return register_project_component(
+            output_root=output_root,
+            component="acoustic",
+            project_name=project_name,
+            details={
+                "gui_version": "0.38",
+                "primary_task": task_fallback or "",
+                "input_folder": input_folder,
+            },
+        )
 
     def run_project_init(self) -> None:
         paths = self._require_paths()
@@ -1936,8 +1942,9 @@ class AcousticPipelineWindow(QMainWindow):
             self._initialize_project_with_task,
             {
                 "output_root": output_root,
-                "project_name": self.project_name_edit.text().strip() or "VSLP Acoustic Project",
+                "project_name": self.project_name_edit.text().strip() or "VSLP Study",
                 "task_fallback": self._task_fallback_from_gui(),
+                "input_folder": self.input_edit.text().strip(),
             },
         )
 
