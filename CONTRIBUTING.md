@@ -12,7 +12,7 @@ VSLP is research software for clinical speech and facial-movement analysis. Cont
 ## Development
 
 1. Create a branch from the current development branch.
-2. Install the development environment described in `docs/DEVELOPMENT.md`.
+2. Install the development environment described in `docs/development/DEVELOPMENT.md`.
 3. Follow existing backend/GUI boundaries.
 4. Add or update tests.
 5. Update durable documentation when behavior, outputs, or scientific interpretation changes.
