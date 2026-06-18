@@ -1,198 +1,152 @@
 # VSLP Multimodal Pipelines
 
-**VSLP Multimodal Pipelines** is a local research software platform for reproducible acoustic and facial-kinematic analysis in clinical speech and motor-assessment studies. The current completed application is the **VSLP Acoustic Pipeline GUI**, designed for local processing of speech recordings from remote or lab-based clinical research workflows.
+VSLP is a local-first research software suite for reproducible acoustic, facial-kinematic, and feature-readiness analysis in clinical speech and motor-assessment studies.
 
-This repository is currently for **research use only**. It is not a validated medical device and must not be used for clinical decision-making without formal validation, documentation lock, risk management, and the appropriate regulatory pathway.
+The repository currently contains three working desktop applications:
 
-## Current acoustic GUI workflow
+| Application | Status | Purpose | Primary handoff |
+|---|---|---|---|
+| Acoustic Pipeline GUI | Workflow complete; validation ongoing | Audio ingest, preprocessing, segmentation, QC, and acoustic feature extraction | Per-recording acoustic feature and QC tables |
+| Kinematics Pipeline GUI | Workflow complete; validation ongoing | Video ingest, face landmarks, normalization, QC, kinematic features, and temporal aggregation | Per-video kinematic feature and QC tables |
+| Feature Analysis GUI | Workflow complete; validation ongoing | Modality-specific audit, task review, reliability, recommendations, and ML-ready export | Task-specific feature package for the future ML GUI |
+| ML GUI | In development | Leakage-safe dataset design, validation, modelling, and interpretation | Not yet release-ready |
 
-The Acoustic Pipeline GUI currently supports this workflow:
+VSLP is research software, not a validated medical device. It must not be used for diagnosis, treatment decisions, or regulated clinical claims without independent validation, locked specifications, risk management, and the appropriate regulatory pathway.
 
-```text
-Setup
-→ Metadata
-→ Preprocess
-→ Data Segmentation
-→ Quality Control
-→ Feature Extraction
-→ Inspector
-→ Reports & Outputs
-```
-
-The removed Aggregation tab is intentional. Feature Extraction now performs feature-specific scalar reduction from each feature's native measurement scale into one file-level value. Cross-file, cross-session, longitudinal, or ML-oriented aggregation should be handled later in the Feature Analysis GUI or ML GUI.
-
-## What each stage does
-
-### Setup
-
-Selects the input audio folder, output project folder, project name, and task being analyzed. Subfolders are searched recursively. One task per input folder is recommended when possible. The task field is used only as a fallback when task information is not available from metadata or filename parsing.
-
-### Metadata
-
-Optionally links recordings to a metadata CSV. The metadata table may contain many more rows than the uploaded audio subset. VSLP detects flexible column names such as `SubjectID`, `ID`, `Clinical Visit ID`, `Protocol ID`, `Task Name`, `Recording date`, `ALSFRS total score`, and related variants. If no metadata CSV is supplied, VSLP continues with filename parsing and leaves clinical labels blank when they cannot be inferred.
-
-### Preprocess
-
-Creates non-destructive processed audio derivatives. Originals are never modified. The default behavior removes DC offset, creates a 16 kHz segmentation WAV for Silero, and creates a feature WAV while preserving the source sample rate unless the user explicitly enables resampling. Optional peak normalization, Butterworth high-pass/low-pass/band-pass filtering, and 50/60 Hz notch filtering are available but off by default.
-
-Preprocess outputs include estimated SNR, clipping, DC offset before/after correction, powerline flags, generated WAV paths, plots, and reports.
-
-### Data Segmentation
-
-Runs speech/pause segmentation. Silero VAD is currently implemented. SPA, Energy/RMS, and custom segmentation are reserved plugin slots for future methods. Segmentation outputs speech regions, pause regions, segment summaries, plots, and reports.
-
-### Quality Control
-
-Computes segmentation-informed audio-quality features after segmentation and before feature extraction. It includes six artifact families: additive interference, gain dynamics, reverberation/echo, channel/device, nonlinear distortion, and temporal discontinuity. Outputs include QC feature tables, warnings, recommendations, family scores, review rankings, descriptive plots, and reports. These are screening aids, not automatic exclusion rules.
-
-### Feature Extraction
-
-Computes acoustic features by subsystem:
+## System Workflow
 
 ```text
-respiratory/timing
-rhythm / envelope modulation
-phonatory
-articulatory / formant
-resonatory / nasality
-coordination
+Audio recordings  -> Acoustic Pipeline  --+
+                                            +-> Feature Analysis -> Task-specific ML handoff
+Video recordings  -> Kinematics Pipeline --+
 ```
 
-The Feature Extraction stage outputs one row per file, but each scalar is produced by a documented feature-specific computation policy. The GUI and audit tables record native scale, analysis region, scalar reduction, computation mode, validity warnings, and implementation status.
+Run Feature Analysis separately for each modality. The Feature Analysis GUI does not combine raw acoustic and kinematic engineering tables and does not train models. Its Advanced ML Export Builder may align completed modality exports when a safe shared recording key exists.
 
-Examples:
+## Requirements
 
-```text
-Timing/respiratory: speech/pause event summaries
-Rhythm/EMS: effective task region, preserving internal pauses
-Phonatory: voiced-frame support
-Articulatory/formant: valid LPC formant trajectories
-Resonatory/nasality: valid spectral frames
-Coordination: aligned CPP/F1/F2 trajectories and lagged eigenspectrum summaries
+- Python 3.11
+- Windows 10/11, macOS, or Linux
+- FFmpeg and FFprobe for acoustic workflows
+- A local writable project/output directory
+- MediaPipe runtime and a Face Landmarker model for kinematic landmark extraction
+
+See [Installation](docs/INSTALLATION.md) for platform-specific setup and verification.
+
+## Quick Start
+
+### Windows PowerShell
+
+```powershell
+git clone https://github.com/nevena-m3/vslp-multimodal-pipelines.git
+cd vslp-multimodal-pipelines
+py -3.11 -m venv .venv-win
+.\.venv-win\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -e ".[gui,silero,kinematic,dev]"
+vslp doctor
 ```
 
-### Inspector
-
-Provides in-GUI preview of key tables and plots.
-
-### Reports & Outputs
-
-Opens generated reports, primary tables, stage folders, and creates the final run-summary manifest.
-
-## Installation
-
-Recommended Python version: **3.11**.
+### macOS or Linux
 
 ```bash
+git clone https://github.com/nevena-m3/vslp-multimodal-pipelines.git
+cd vslp-multimodal-pipelines
 python3.11 -m venv .venv
 source .venv/bin/activate
-pip install -e '.[dev,gui,silero]'
+python -m pip install --upgrade pip
+pip install -e '.[gui,silero,kinematic,dev]'
+vslp doctor
 ```
 
-Install FFmpeg/FFprobe before running the pipeline.
+## Launch the Applications
 
-macOS:
-
-```bash
-brew install ffmpeg
-```
-
-Windows users should install FFmpeg/FFprobe using a trusted package manager or a vetted binary distribution.
-
-## Launching the Acoustic GUI
-
-From the repository root:
-
-```bash
-source .venv/bin/activate
+```text
 vslp gui acoustic
+vslp gui kinematics
+vslp gui features
 ```
 
-## Full-pipeline behavior
-
-The **Run Full Acoustic Workflow** button runs:
+Dedicated aliases are also installed:
 
 ```text
-Metadata
-→ Ingest
-→ Preprocess
-→ Data Segmentation
-→ Quality Control
-→ Feature Extraction
-→ Run Summary
+vslp-acoustic-gui
+vslp-kinematics-gui
+vslp-features-gui
 ```
 
-If no metadata CSV is selected, the GUI asks whether the user wants to select metadata or continue without it. The pipeline can run without metadata, but diagnosis, severity, and other clinical labels remain blank unless they can be parsed or are provided later.
+Windows users may alternatively run the module commands from the repository environment:
 
-## Primary output folders
-
-Each project output folder contains stage-organized outputs under:
-
-```text
-acoustic/000_metadata/
-acoustic/001_ingest/
-acoustic/002_preprocess/
-acoustic/003_segmentation/
-acoustic/003_quality_control/
-acoustic/004_features/
-acoustic/007_run_summary/
+```powershell
+python -m vslp.gui.acoustic_app.app
+python -m vslp.gui.kinematics.app
+python -m vslp.gui.features.app
 ```
 
-Each stage writes some combination of:
+## Recommended Operating Sequence
+
+1. Process audio in the Acoustic Pipeline or video in the Kinematics Pipeline.
+2. Inspect stage reports, QC outputs, errors, and manifests.
+3. Load one modality's completed feature table into Feature Analysis.
+4. Map identifiers, task context, outcomes, covariates, QC variables, and predictors.
+5. Run Feature Analysis and review quality, structure, task support, screening, and reliability.
+6. Review task-specific recommendations.
+7. Create one task-specific Export / Report package per intended ML task.
+8. Preserve all transformations and feature selection for the future ML workflow, inside training or cross-validation folds.
+
+## Documentation
+
+- [Documentation index](docs/README.md)
+- [Installation and environment verification](docs/INSTALLATION.md)
+- [Suite user guide](docs/USER_GUIDE.md)
+- [Acoustic Pipeline SOP](docs/ACOUSTIC_PIPELINE_SOP.md)
+- [Kinematics Pipeline SOP](docs/KINEMATICS_PIPELINE_SOP.md)
+- [Feature Analysis SOP](docs/FEATURE_ANALYSIS_GUI_SOP.md)
+- [Data contract and dictionary](docs/data_dictionary.md)
+- [Architecture](docs/architecture.md)
+- [Development and testing](docs/DEVELOPMENT.md)
+- [Contributing](CONTRIBUTING.md)
+- [Security and sensitive-data handling](SECURITY.md)
+
+Files in `docs/` whose names include a GUI version are implementation history. They are useful for provenance but are not the current operating instructions.
+
+## Repository Layout
 
 ```text
-tables/
-plots/
-reports/
-logs/
-errors/
-manifests/
-artifacts/
-```
-
-## Main acoustic feature outputs
-
-The most important feature outputs are:
-
-```text
-acoustic/004_features/tables/acoustic_features_per_file.csv
-acoustic/004_features/tables/acoustic_feature_status_long.csv
-acoustic/004_features/tables/acoustic_feature_scalar_reduction_audit.csv
-acoustic/004_features/tables/acoustic_feature_computation_policy.csv
-acoustic/004_features/reports/acoustic_feature_report.html
-```
-
-## Project principles
-
-1. Local processing of sensitive data.
-2. Non-destructive audio handling.
-3. Explicit stage inputs and outputs.
-4. Reproducibility through manifests and audit tables.
-5. Conservative preprocessing defaults.
-6. Segmentation-informed QC.
-7. Feature-specific computation policies.
-8. No automatic clinical interpretation or exclusion.
-9. GUI usability with CLI reproducibility.
-
-## Repository layout
-
-```text
-src/vslp/core              Shared schemas, manifests, project utilities
-src/vslp/acoustic          Acoustic metadata, ingest, preprocess, segmentation, QC, features
-src/vslp/gui               PySide6 GUI applications
+src/vslp/acoustic          Acoustic backend stages
+src/vslp/analysis/kinematics Kinematic backend stages
+src/vslp/analysis/features Feature audit and export logic
+src/vslp/gui               PySide6 desktop applications
 src/vslp/cli               Command-line interface
-configs                    Task and feature configuration files
-docs                       User and developer documentation
+src/vslp/core              Shared project, schema, and manifest utilities
+configs                    Versioned default configuration
+docs                       User, SOP, architecture, and historical documentation
 tests                      Unit and integration tests
 ```
 
-## Citation / attribution
+## Reproducibility and Safety Principles
 
-Current GUI attribution:
+- Local processing of sensitive data
+- Non-destructive source-media handling
+- Explicit stage inputs, outputs, configurations, and manifests
+- File-level errors without silent data loss
+- Conservative preprocessing defaults
+- QC as review evidence, not automatic exclusion
+- Stable subject identifiers and subject-grouped ML splitting
+- Task-specific feature review and export
+- No learned preprocessing or feature selection before ML validation folds
 
-```text
-© 2026 Nevena Musikic & Yana Yunusova
-Speech Production Lab, University of Toronto
+## Testing
+
+```powershell
+python -m pytest -q
+python -m ruff check src tests
 ```
 
-Final ownership, licensing, distribution, and release wording should be confirmed with the Speech Production Lab and University of Toronto policies before public release.
+Focused GUI smoke tests and platform notes are described in [Development](docs/DEVELOPMENT.md).
+
+## Attribution and License
+
+Copyright 2026 Nevena Musikic and Yana Yunusova, Speech Production Lab, University of Toronto.
+
+The current repository license is research-use-only and pending final institutional approval. See [LICENSE](LICENSE). Confirm ownership, distribution, data-governance, and release terms with the Speech Production Lab and University of Toronto before public or clinical deployment.

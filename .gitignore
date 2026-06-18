@@ -16,3 +16,4 @@ examples/test_data/audio_inputs/*
 !examples/test_data/audio_inputs/.gitkeep
 
 .venv-win/
+README_v*.md

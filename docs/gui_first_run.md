@@ -1,52 +1,13 @@
-# VSLP Acoustic GUI - First Run
+# GUI First Run
 
-This is the first working desktop GUI for the acoustic backend.
+This legacy entry point is retained for existing links.
 
-## Install GUI dependencies
+Use the current documents:
 
-From the root of your local repo:
+1. [Installation and environment verification](INSTALLATION.md)
+2. [Desktop suite user guide](USER_GUIDE.md)
+3. [Acoustic Pipeline SOP](ACOUSTIC_PIPELINE_SOP.md)
+4. [Kinematics Pipeline SOP](KINEMATICS_PIPELINE_SOP.md)
+5. [Feature Analysis SOP](FEATURE_ANALYSIS_GUI_SOP.md)
 
-```bash
-source .venv/bin/activate
-pip install -e '.[gui,silero]'
-```
-
-If PyTorch/Torchaudio need to be installed separately on your machine, run:
-
-```bash
-pip install torch torchaudio
-pip install -e '.[gui]'
-```
-
-## Launch the GUI
-
-```bash
-vslp gui acoustic
-```
-
-## In the GUI
-
-1. Select your **input audio folder**.
-2. Select your **output project folder**.
-3. Optionally edit the **project name**.
-4. Click **Initialize Project**.
-5. Click **Run Ingest**.
-6. Click **Run Preprocess**.
-7. Click **Run Silero Segmentation**.
-8. Use the **Reports & Outputs** tab to open generated CSV and HTML outputs.
-
-## Current GUI scope
-
-The GUI currently wraps these backend stages:
-- acoustic ingest
-- acoustic preprocessing
-- Silero segmentation
-
-It does **not** yet include:
-- demographics table integration
-- feature extraction
-- kinematic workflows
-- feature analysis GUI
-- ML GUI
-
-Those will be added incrementally after the acoustic GUI workflow is stable.
+The previous page described an early acoustic-only scaffold and is no longer an accurate operating guide.
