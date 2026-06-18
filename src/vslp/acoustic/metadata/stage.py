@@ -583,7 +583,12 @@ def _write_metadata_report(
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     completeness_html = completeness_df.to_html(index=False, escape=True)
-    selected_mapping_html = mapping_df[mapping_df.get("selected", False) == True].to_html(index=False, escape=True) if not mapping_df.empty else "<p>No metadata CSV supplied.</p>"
+    selected_mask = mapping_df.get("selected", pd.Series(False, index=mapping_df.index)).astype(bool)
+    selected_mapping_html = (
+        mapping_df.loc[selected_mask].to_html(index=False, escape=True)
+        if not mapping_df.empty
+        else "<p>No metadata CSV supplied.</p>"
+    )
     status_counts = index_df["metadata_status"].value_counts(dropna=False).to_frame("count").reset_index().rename(columns={"index": "metadata_status"})
     status_html = status_counts.to_html(index=False, escape=True)
     match_counts = linkage_df["metadata_match_type"].value_counts(dropna=False).to_frame("count").reset_index().rename(columns={"index": "metadata_match_type"}).to_html(index=False, escape=True) if not linkage_df.empty else "<p>No linkage table.</p>"

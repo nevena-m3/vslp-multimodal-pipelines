@@ -14,7 +14,7 @@ def _plots():
 
 def test_v101_version_and_missingness_plot_labels_are_readable():
     src = _app()
-    assert 'APP_VERSION = "v0.102.0"' in src
+    assert 'APP_VERSION = "v0.108.0"' in (read(APP) if 'read' in globals() else APP.read_text(encoding='utf-8'))
     assert 'Feature availability summary' in src
     assert 'Co-missingness pair summary' in src
     assert 'self.missing_plot_combo.addItem("Feature availability heatmap"' not in src

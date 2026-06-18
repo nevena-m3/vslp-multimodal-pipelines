@@ -1079,7 +1079,7 @@ def _plot_family_score_distributions(family_scores: pd.DataFrame, path: Path) ->
     fig, ax = plt.subplots(figsize=(11.5, 5.8))
     vals = [pd.to_numeric(family_scores[c], errors="coerce").dropna().values for c in score_cols]
     labels = [QC_FAMILIES[c.replace("qfamily_", "").replace("_score", "")]["label"] for c in score_cols]
-    vals_nonempty = [(v, l) for v, l in zip(vals, labels, strict=False) if len(v)]
+    vals_nonempty = [(values, label) for values, label in zip(vals, labels, strict=False) if len(values)]
     if not vals_nonempty:
         ax.text(0.5, 0.5, "No family scores available", ha="center", va="center"); ax.axis("off")
     else:

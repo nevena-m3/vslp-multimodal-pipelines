@@ -226,6 +226,36 @@ def gui_acoustic():
         raise typer.Exit(code=1)
 
 
+@gui_app.command("kinematics")
+def gui_kinematics():
+    """Launch the facial-kinematics pipeline desktop GUI."""
+    try:
+        from vslp.gui.kinematics.app import launch_kinematics_gui
+        raise typer.Exit(code=launch_kinematics_gui())
+    except (ModuleNotFoundError, RuntimeError) as exc:
+        typer.echo(
+            "The kinematics GUI requires the GUI and kinematic optional dependencies. "
+            "Activate your VSLP environment and run: pip install -e '.[gui,kinematic]'"
+        )
+        typer.echo(str(exc))
+        raise typer.Exit(code=1)
+
+
+@gui_app.command("features")
+def gui_features():
+    """Launch the modality-neutral Feature Analysis desktop GUI."""
+    try:
+        from vslp.gui.features.app import main as launch_feature_analysis_gui
+        raise typer.Exit(code=launch_feature_analysis_gui())
+    except (ModuleNotFoundError, RuntimeError) as exc:
+        typer.echo(
+            "The Feature Analysis GUI requires the GUI optional dependencies. "
+            "Activate your VSLP environment and run: pip install -e '.[gui]'"
+        )
+        typer.echo(str(exc))
+        raise typer.Exit(code=1)
+
+
 @features_app.command("registry")
 def features_registry(output_csv: Path = Path("acoustic_feature_registry.csv")):
     """Export the acoustic feature registry."""

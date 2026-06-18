@@ -11009,7 +11009,8 @@ Decision colors:
         if not self.output_dir or not self.output_dir.exists():
             QMessageBox.information(self, "No output folder", "Run Feature Analysis first.")
             return
-        import subprocess, platform
+        import platform
+        import subprocess
         if platform.system() == "Darwin":
             subprocess.run(["open", str(self.output_dir)], check=False)
         elif platform.system() == "Windows":

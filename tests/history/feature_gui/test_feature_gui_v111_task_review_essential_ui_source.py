@@ -1,7 +1,7 @@
 from pathlib import Path
 
-APP = Path('src/vslp/gui/features/app.py').read_text()
-PLOTS = Path('src/vslp/analysis/features/plots.py').read_text()
+APP = Path('src/vslp/gui/features/app.py').read_text(encoding='utf-8')
+PLOTS = Path('src/vslp/analysis/features/plots.py').read_text(encoding='utf-8')
 
 
 def test_version_updated_to_v111():
