@@ -29,7 +29,7 @@ Setup -> Metadata -> Preprocess -> Segmentation -> Quality Control
 
 Use the Acoustic Pipeline GUI for audio. Review each stage before proceeding. The final handoff is the per-file acoustic feature table, selected feature registry, QC outputs, manifests, and reports.
 
-Detailed procedure: [Acoustic Pipeline SOP](ACOUSTIC_PIPELINE_SOP.md).
+Detailed procedure: [Acoustic Pipeline SOP](../sops/ACOUSTIC_PIPELINE_SOP.md).
 
 ## Kinematics Workflow
 
@@ -41,7 +41,7 @@ Setup -> Metadata -> Face Landmarks -> Landmark Selection -> Normalization
 
 Use the Kinematics Pipeline GUI for videos. Confirm real-frame landmark overlays and normalization anchors before computing features. The final handoff is the canonical per-video feature table, wide engineering export, column manifest, QC outputs, and reports.
 
-Detailed procedure: [Kinematics Pipeline SOP](KINEMATICS_PIPELINE_SOP.md).
+Detailed procedure: [Kinematics Pipeline SOP](../sops/KINEMATICS_PIPELINE_SOP.md).
 
 ## Feature Analysis Workflow
 
@@ -55,7 +55,7 @@ Load/Map -> Overview -> Missingness -> Distributions -> QC -> Relationships
 
 Recommendations and export decisions are task-specific. Build one Export / Report package per intended task. Use All Tasks only for audit review.
 
-Detailed procedure: [Feature Analysis SOP](FEATURE_ANALYSIS_GUI_SOP.md).
+Detailed procedure: [Feature Analysis SOP](../sops/FEATURE_ANALYSIS_GUI_SOP.md).
 
 ## Cross-Application Data Handoff
 
@@ -97,4 +97,4 @@ Each application exposes status, logs, tables, and reports. A completed button p
 
 ## Data Protection
 
-Keep identifiable media and metadata in approved local storage. Do not commit data, generated project outputs, credentials, participant identifiers, or model files containing sensitive information to Git. See [Security](../SECURITY.md).
+Keep identifiable media and metadata in approved local storage. Do not commit data, generated project outputs, credentials, participant identifiers, or model files containing sensitive information to Git. See [Security](../../SECURITY.md).

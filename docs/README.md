@@ -1,19 +1,26 @@
 # VSLP Documentation
 
-This index identifies the current authoritative documentation for the VSLP desktop suite.
+This directory separates current operating guidance from technical references and implementation history.
 
 ## Start Here
 
 | Document | Audience | Purpose |
 |---|---|---|
-| [Installation](INSTALLATION.md) | All users | Supported Python version, optional dependencies, FFmpeg, MediaPipe, verification, and troubleshooting |
-| [User Guide](USER_GUIDE.md) | Researchers and clinicians | End-to-end workflow across the three completed GUIs |
-| [Acoustic Pipeline SOP](ACOUSTIC_PIPELINE_SOP.md) | Acoustic operators | Controlled audio-processing procedure and acceptance checks |
-| [Kinematics Pipeline SOP](KINEMATICS_PIPELINE_SOP.md) | Kinematic operators | Controlled video/landmark procedure and acceptance checks |
-| [Feature Analysis SOP](FEATURE_ANALYSIS_GUI_SOP.md) | Analysts | Task-specific audit, recommendations, and ML handoff procedure |
-| [Data Dictionary](data_dictionary.md) | Analysts and developers | Canonical identifiers, context, targets, covariates, QC, and feature roles |
-| [Architecture](architecture.md) | Developers and reviewers | Component boundaries, stage contracts, provenance, and leakage controls |
-| [Development](DEVELOPMENT.md) | Developers | Environment setup, tests, quality checks, and release procedure |
+| [Installation](getting-started/INSTALLATION.md) | All users | Environment setup, optional dependencies, verification, and troubleshooting |
+| [User Guide](getting-started/USER_GUIDE.md) | Researchers and clinicians | End-to-end workflow across the completed GUIs |
+| [Acoustic Pipeline SOP](sops/ACOUSTIC_PIPELINE_SOP.md) | Acoustic operators | Controlled audio-processing procedure and acceptance checks |
+| [Kinematics Pipeline SOP](sops/KINEMATICS_PIPELINE_SOP.md) | Kinematic operators | Controlled video/landmark procedure and acceptance checks |
+| [Feature Analysis SOP](sops/FEATURE_ANALYSIS_GUI_SOP.md) | Analysts | Task-specific audit, recommendations, and ML handoff procedure |
+
+## Documentation Map
+
+| Section | Contents |
+|---|---|
+| [`getting-started/`](getting-started/) | Installation and suite-level use instructions |
+| [`sops/`](sops/) | Controlled operating procedures for each completed GUI |
+| [`reference/`](reference/) | Data dictionary, feature definitions, policies, registries, and ML handoff contract |
+| [`development/`](development/) | Architecture, contributor environment, tests, and plugin development |
+| [`history/`](history/) | Versioned engineering records retained for provenance |
 
 ## Policies
 
@@ -21,8 +28,4 @@ This index identifies the current authoritative documentation for the VSLP deskt
 - [Security and sensitive-data handling](../SECURITY.md)
 - [Research-use license](../LICENSE)
 
-## Historical Documents
-
-Version-labelled files such as `acoustic_gui_v038_final_polish.md`, `kinematics_gui_v087_feature_exports.md`, and `feature_gui_v133_recommendations_workstation.md` are engineering history. They record incremental implementation decisions and are retained for provenance.
-
-Historical files are not authoritative installation or operating instructions. When a historical note conflicts with a durable document listed above, follow the durable document.
+Only the documents linked under **Start Here**, `reference/`, and `development/` are maintained as current guidance. Historical records may describe superseded behavior and must not be used as operating instructions.

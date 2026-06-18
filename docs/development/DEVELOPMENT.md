@@ -8,7 +8,7 @@ Use Python 3.11 in a dedicated environment and install the full development prof
 pip install -e '.[gui,silero,kinematic,dev]'
 ```
 
-See [Installation](INSTALLATION.md) for platform details.
+See [Installation](../getting-started/INSTALLATION.md) for platform details.
 
 ## Source Layout
 
@@ -72,8 +72,8 @@ Real media workflows still require manual platform testing. Unit tests do not va
 ## Documentation Rules
 
 - `README.md` is the suite entry point.
-- Durable instructions live in the non-versioned documents linked from `docs/README.md`.
-- Version-labelled documents are historical implementation records.
+- Durable instructions live in the sections linked from `docs/README.md`.
+- Version-labelled documents belong under `docs/history/` and are not operating instructions.
 - Update the relevant SOP and data contract when workflow or output semantics change.
 - Commands must be tested on the platform they claim to support.
 
@@ -86,7 +86,7 @@ Real media workflows still require manual platform testing. Unit tests do not va
 5. Use a focused commit message.
 6. Push the branch and review the remote diff.
 
-Do not update source by copying a ZIP over a working checkout. See [Updating with Git](update_existing_repo_from_zip.md).
+Do not update source by copying a ZIP over a working checkout. See [Updating with Git](../history/shared/update_existing_repo_from_zip.md).
 
 ## Release Checklist
 

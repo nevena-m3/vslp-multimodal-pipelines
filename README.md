@@ -31,7 +31,7 @@ Run Feature Analysis separately for each modality. The Feature Analysis GUI does
 - A local writable project/output directory
 - MediaPipe runtime and a Face Landmarker model for kinematic landmark extraction
 
-See [Installation](docs/INSTALLATION.md) for platform-specific setup and verification.
+See [Installation](docs/getting-started/INSTALLATION.md) for platform-specific setup and verification.
 
 ## Quick Start
 
@@ -97,18 +97,16 @@ python -m vslp.gui.features.app
 ## Documentation
 
 - [Documentation index](docs/README.md)
-- [Installation and environment verification](docs/INSTALLATION.md)
-- [Suite user guide](docs/USER_GUIDE.md)
-- [Acoustic Pipeline SOP](docs/ACOUSTIC_PIPELINE_SOP.md)
-- [Kinematics Pipeline SOP](docs/KINEMATICS_PIPELINE_SOP.md)
-- [Feature Analysis SOP](docs/FEATURE_ANALYSIS_GUI_SOP.md)
-- [Data contract and dictionary](docs/data_dictionary.md)
-- [Architecture](docs/architecture.md)
-- [Development and testing](docs/DEVELOPMENT.md)
+- [Installation and environment verification](docs/getting-started/INSTALLATION.md)
+- [Suite user guide](docs/getting-started/USER_GUIDE.md)
+- [Standard operating procedures](docs/sops/)
+- [Data contracts and technical references](docs/reference/)
+- [Architecture and development](docs/development/)
+- [Historical implementation records](docs/history/)
 - [Contributing](CONTRIBUTING.md)
 - [Security and sensitive-data handling](SECURITY.md)
 
-Files in `docs/` whose names include a GUI version are implementation history. They are useful for provenance but are not the current operating instructions.
+Current guidance is separated from versioned implementation history. Start with the documentation index and use historical records only for provenance.
 
 ## Repository Layout
 
@@ -120,7 +118,7 @@ src/vslp/gui               PySide6 desktop applications
 src/vslp/cli               Command-line interface
 src/vslp/core              Shared project, schema, and manifest utilities
 configs                    Versioned default configuration
-docs                       User, SOP, architecture, and historical documentation
+docs                       Structured user, SOP, reference, development, and history documentation
 tests                      Unit and integration tests
 ```
 
@@ -143,7 +141,7 @@ python -m pytest -q
 python -m ruff check src tests
 ```
 
-Focused GUI smoke tests and platform notes are described in [Development](docs/DEVELOPMENT.md).
+Focused GUI smoke tests and platform notes are described in [Development](docs/development/DEVELOPMENT.md).
 
 ## Attribution and License
 
