@@ -8,6 +8,7 @@ This directory separates current operating guidance from technical references an
 |---|---|---|
 | [Installation](getting-started/INSTALLATION.md) | All users | Environment setup, optional dependencies, verification, and troubleshooting |
 | [User Guide](getting-started/USER_GUIDE.md) | Researchers and clinicians | End-to-end workflow across the completed GUIs |
+| [Demo Runbook](getting-started/DEMO_RUNBOOK.md) | Demonstrators and reviewers | Preflight, live upstream workflow, and acceptance checks |
 | [Acoustic Pipeline SOP](sops/ACOUSTIC_PIPELINE_SOP.md) | Acoustic operators | Controlled audio-processing procedure and acceptance checks |
 | [Kinematics Pipeline SOP](sops/KINEMATICS_PIPELINE_SOP.md) | Kinematic operators | Controlled video/landmark procedure and acceptance checks |
 | [Feature Analysis SOP](sops/FEATURE_ANALYSIS_GUI_SOP.md) | Analysts | Task-specific audit, recommendations, and ML handoff procedure |

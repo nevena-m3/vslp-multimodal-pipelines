@@ -117,7 +117,7 @@ def mask_from_segments(
     sr: int,
     segments,
     region: str = "speech_only",
-    min_pause_duration_sec: float = 0.15,
+    min_pause_duration_sec: float = 0.30,
 ) -> np.ndarray:
     """Build a sample mask from Silero speech/nonspeech segments.
 
@@ -185,7 +185,7 @@ def read_region_audio(
     wav_path: Path,
     segments_csv: Path | None,
     region: str = "speech_only",
-    min_pause_duration_sec: float = 0.15,
+    min_pause_duration_sec: float = 0.30,
 ) -> tuple[np.ndarray, int, str]:
     """Read canonical audio and return the selected analysis region.
 

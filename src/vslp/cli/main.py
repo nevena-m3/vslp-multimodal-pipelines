@@ -191,7 +191,7 @@ def acoustic_quality_control(
 def acoustic_extract_features(
     segmentation_summary_csv: Path,
     output_root: Path,
-    minimum_pause_duration_sec: float = 0.15,
+    minimum_pause_duration_sec: float = 0.30,
     metadata_csv: Path | None = None,
     acoustic_region_policy: str = "speech_only",
     computation_mode: str = "validated_default",

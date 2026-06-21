@@ -17,6 +17,8 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 
+from vslp.core.feature_contract import build_feature_delivery
+
 from .schemas import AGGREGATION_PROFILES
 
 
@@ -358,6 +360,19 @@ def run_temporal_aggregation(
             continue
         try:
             row, mv = aggregate_timeseries_file(ts_path, cfg, video_id=video_id)
+            for context_col in (
+                "recording_id", "source_file", "source_path", "subject_id",
+                "session_id", "protocol_id", "iteration", "task", "task_guess",
+                "recording_date", "modality",
+            ):
+                row[context_col] = rec.get(context_col, "")
+                for movement in mv:
+                    movement[context_col] = rec.get(context_col, "")
+            row["aggregation_level"] = "recording_task"
+            row["aggregation_method"] = cfg.profile
+            for movement in mv:
+                movement["aggregation_level"] = "movement"
+                movement["aggregation_method"] = cfg.profile
             row["feature_status"] = str(rec.get("status", ""))
             row["feature_qc_flags"] = str(rec.get("feature_qc_flags", ""))
             rows.append(row)
@@ -396,11 +411,27 @@ def run_temporal_aggregation(
     }
     manifest_json = tables / "aggregation_manifest.json"
     manifest_json.write_text(json.dumps(manifest, indent=2, default=str), encoding="utf-8")
+    feature_tables = features_root / "tables"
+    delivery = build_feature_delivery(
+        root,
+        "kinematic",
+        {
+            "feature_values_csv": feature_tables / "feature_values.csv",
+            "feature_registry_csv": feature_tables / "feature_registry.csv",
+            "feature_status_csv": feature_tables / "feature_status.csv",
+            "feature_export_manifest_json": feature_tables / "feature_export_manifest.json",
+        },
+        optional_main={
+            "qc_features.csv": root / "kinematics" / "005_video_qc" / "tables" / "landmark_video_qc_summary.csv",
+            "metadata_context.csv": root / "kinematics" / "001_metadata" / "tables" / "metadata_link_preview.csv",
+        },
+    )
     return {
         "aggregated_features_csv": agg_csv,
         "movement_level_features_csv": movement_csv,
         "config_json": config_json,
         "manifest_json": manifest_json,
+        "delivery_manifest_json": delivery["delivery_manifest_json"],
         **guide_outputs,
         **{k: manifest[k] for k in ["n_videos", "n_ok", "n_qc_flagged", "n_error", "status_counts"]},
     }

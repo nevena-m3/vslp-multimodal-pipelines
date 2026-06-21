@@ -52,6 +52,7 @@ def test_phonatory_plugin_computes_full_registered_group_on_stable_tone(tmp_path
     out = PhonatoryPlugin().compute(ctx)
     assert set(PHONATORY_FEATURES).issubset(out.keys())
     assert all(out[name].status == "computed" for name in ["f0_mean", "f0_std", "HNR", "localJitter", "localShimmer"])
+    assert "praat_parselmouth_pointprocess" in out["localJitter"].note
     assert abs(float(out["f0_mean"].value) - f0) < 3.0
     assert float(out["f0_std"].value) < 3.0
     assert float(out["localJitter"].value) < 2.0

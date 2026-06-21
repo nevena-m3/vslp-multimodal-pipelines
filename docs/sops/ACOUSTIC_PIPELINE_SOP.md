@@ -104,7 +104,32 @@ Inspect representative tables and plots. Confirm that row counts, filenames, tas
 
 Generate or refresh the run summary. Preserve configuration, manifests, errors, tables, plots, and reports with the study record.
 
-## 5. Primary Outputs
+## 5. Main and Supplementary Outputs
+
+In **Reports & Outputs**, use **Open Main Feature GUI Handoff** for downstream Feature Analysis. Use **Open Supplementary Outputs** for audit, diagnostics, plots, reports, and troubleshooting.
+
+Main downstream folder:
+
+```text
+acoustic/feature_handoff/main/
+|-- feature_values.csv
+|-- feature_registry.csv
+|-- feature_status.csv
+|-- feature_export_manifest.json
+|-- qc_features.csv              # when available
+|-- metadata_context.csv         # when available
+`-- README.md
+```
+
+The four canonical files are required. QC and metadata context are optional because they may be supplied separately in Feature Analysis.
+
+Supplementary index:
+
+```text
+acoustic/feature_handoff/supplementary/artifact_catalog.csv
+```
+
+The established stage outputs remain in place:
 
 ```text
 acoustic/000_metadata/
@@ -116,7 +141,7 @@ acoustic/004_features/
 acoustic/007_run_summary/
 ```
 
-Feature Analysis handoff files normally include:
+Legacy and detailed feature-stage files include:
 
 ```text
 acoustic/004_features/tables/acoustic_features_per_file.csv
@@ -126,7 +151,7 @@ acoustic/004_features/tables/acoustic_feature_computation_policy.csv
 acoustic/004_features/tables/acoustic_feature_scalar_reduction_audit.csv
 ```
 
-Include relevant QC and metadata outputs. Do not use report HTML as a data input.
+Do not use report HTML, plots, identifiers, file paths, or processing status as predictor inputs.
 
 ## 6. Stop Conditions
 
@@ -151,4 +176,6 @@ Stop and resolve the issue when:
 - Feature policy and status audited.
 - File-level errors resolved or documented.
 - Run summary and manifests generated.
-- Acoustic feature, registry, QC, and metadata handoff verified.
+- Main handoff opened and its four canonical files verified.
+- Optional QC and metadata context presence or absence documented.
+- Supplementary artifact catalog retained with the study record.

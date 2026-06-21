@@ -8,7 +8,7 @@ from vslp.acoustic.features.plugins.timing import TimingPlugin
 
 
 class TimingConfig:
-    minimum_pause_duration_sec = 0.15
+    minimum_pause_duration_sec = 0.30
     task_word_counts = {"bamboo": 10, "buy_bobby_a_puppy": 4}
 
 
@@ -76,3 +76,22 @@ def test_timing_features_fail_cleanly_without_speech(tmp_path: Path):
     out = TimingPlugin().compute(ctx)
     assert out["speech_dur"].status == "failed"
     assert np.isnan(out["speech_dur"].value)
+
+
+def test_timing_uses_sample_cv_and_excludes_sub_300ms_phrases(tmp_path: Path):
+    segments = tmp_path / "segments.csv"
+    _write_segments(
+        segments,
+        [
+            {"segment_type": "speech", "start_sec": 0.0, "end_sec": 1.0, "duration_sec": 1.0},
+            {"segment_type": "nonspeech", "start_sec": 1.0, "end_sec": 1.3, "duration_sec": 0.3},
+            {"segment_type": "speech", "start_sec": 1.3, "end_sec": 1.5, "duration_sec": 0.2},
+            {"segment_type": "nonspeech", "start_sec": 1.5, "end_sec": 2.1, "duration_sec": 0.6},
+            {"segment_type": "speech", "start_sec": 2.1, "end_sec": 4.1, "duration_sec": 2.0},
+        ],
+    )
+    ctx = FeatureContext(file_name="x.wav", row=pd.Series({}), segments_csv=segments, duration_sec=4.1, config=TimingConfig())
+    out = TimingPlugin().compute(ctx)
+    assert np.isclose(out["mean_phrase_dur"].value, 1.5)
+    assert np.isclose(out["cv_phrase_dur"].value, np.std([1.0, 2.0], ddof=1) / 1.5)
+    assert np.isclose(out["cv_pause_dur"].value, np.std([0.3, 0.6], ddof=1) / 0.45)

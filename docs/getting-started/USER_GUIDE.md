@@ -29,7 +29,7 @@ Setup -> Metadata -> Preprocess -> Segmentation -> Quality Control
       -> Feature Extraction -> Inspector -> Reports & Outputs
 ```
 
-Use the Acoustic Pipeline GUI for audio. Review each stage before proceeding. The final handoff is the per-file acoustic feature table, selected feature registry, QC outputs, manifests, and reports.
+Use the Acoustic Pipeline GUI for audio. Review each stage before proceeding. The final downstream folder is `acoustic/feature_handoff/main`; detailed stage artifacts remain indexed under `supplementary`.
 
 Detailed procedure: [Acoustic Pipeline SOP](../sops/ACOUSTIC_PIPELINE_SOP.md).
 
@@ -41,7 +41,7 @@ Setup -> Metadata -> Face Landmarks -> Landmark Selection -> Normalization
       -> Inspector -> Reports & Outputs
 ```
 
-Use the Kinematics Pipeline GUI for videos. Confirm real-frame landmark overlays and normalization anchors before computing features. The final handoff is the canonical per-video feature table, wide engineering export, column manifest, QC outputs, and reports.
+Use the Kinematics Pipeline GUI for videos. Confirm real-frame landmark overlays and normalization anchors before computing features. The final downstream folder is `kinematics/feature_handoff/main`; timeseries, engineering exports, and audit evidence remain indexed under `supplementary`.
 
 Detailed procedure: [Kinematics Pipeline SOP](../sops/KINEMATICS_PIPELINE_SOP.md).
 
@@ -63,16 +63,11 @@ Detailed procedure: [Feature Analysis SOP](../sops/FEATURE_ANALYSIS_GUI_SOP.md).
 
 ### Acoustic to Feature Analysis
 
-Prefer:
-
-- `acoustic_features_per_file.csv`
-- selected acoustic feature registry
-- acoustic QC feature/summary tables
-- metadata file or accepted source context
+Select `acoustic/feature_handoff/main` with **Load Main Handoff Folder**. Use Direct Table Import only for legacy or independently prepared tables.
 
 ### Kinematics to Feature Analysis
 
-Prefer the canonical ML-ready/per-video feature export and its column manifest. Include kinematic QC and metadata when available. Do not treat every wide engineering column as a predictor.
+Select `kinematics/feature_handoff/main` with **Load Main Handoff Folder**. Include separately curated metadata if optional mapped context was unavailable during extraction. Do not treat every wide engineering column as a predictor.
 
 ### Feature Analysis to Future ML
 

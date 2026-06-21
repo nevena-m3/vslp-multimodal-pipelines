@@ -89,7 +89,7 @@ python -m vslp.gui.features.app
 
 1. Process audio in the Acoustic Pipeline or video in the Kinematics Pipeline.
 2. Inspect stage reports, QC outputs, errors, and manifests.
-3. Load one modality's completed feature table into Feature Analysis.
+3. In Feature Analysis, load one modality's `feature_handoff/main` folder; use direct table import only for legacy inputs.
 4. Map identifiers, task context, outcomes, covariates, QC variables, and predictors.
 5. Run Feature Analysis and review quality, structure, task support, screening, and reliability.
 6. Review task-specific recommendations.

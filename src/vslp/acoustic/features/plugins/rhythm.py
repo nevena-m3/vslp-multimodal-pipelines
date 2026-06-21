@@ -141,6 +141,34 @@ def _band_energy(freqs: np.ndarray, power: np.ndarray, lo: float, hi: float, den
     return float(np.sum(power[mask]) / denom)
 
 
+def _speech_intensity_cv(context: FeatureContext, min_pause: float) -> tuple[float, str]:
+    """Return sample CV of frame intensity over speech-only audio.
+
+    WAV samples are interpreted using the conventional 20-uPa reference used for
+    acoustic intensity. Consumer recordings are not pressure calibrated, so the
+    result is suitable for within-protocol variability analysis, not absolute SPL.
+    """
+    x, sr, note = read_region_audio(
+        context.segmentation_wav_path,
+        context.segments_csv,
+        region="speech_only",
+        min_pause_duration_sec=min_pause,
+    )
+    if x.size == 0 or sr <= 0:
+        return np.nan, note + "; intensity_cv_unavailable"
+    _times, rms = rms_envelope(x, sr, frame_ms=25.0, hop_ms=10.0)
+    rms = rms[np.isfinite(rms) & (rms > 0)]
+    if rms.size < 2:
+        return np.nan, note + "; intensity_cv_too_few_frames"
+    reference_pressure_pa = 20e-6
+    intensity_db = 20.0 * np.log10(np.maximum(rms, 1e-12) / reference_pressure_pa)
+    mean_db = float(np.mean(intensity_db))
+    if not np.isfinite(mean_db) or abs(mean_db) < 1e-12:
+        return np.nan, note + "; intensity_cv_zero_mean_db"
+    cv = float(np.std(intensity_db, ddof=1) / abs(mean_db))
+    return cv, note + "; frames=25ms; hop=10ms; sample_sd; nominal_20uPa_reference; recording_not_spl_calibrated"
+
+
 @dataclass(frozen=True)
 class RhythmPlugin(AcousticFeaturePlugin):
     subsystem: str = "rhythm"
@@ -151,7 +179,7 @@ class RhythmPlugin(AcousticFeaturePlugin):
             return _nan_map("segmentation_wav_missing")
 
         cfg = context.config
-        min_pause = _safe_float(getattr(cfg, "minimum_pause_duration_sec", 0.15), 0.15)
+        min_pause = _safe_float(getattr(cfg, "minimum_pause_duration_sec", 0.30), 0.30)
         rhythm_region = str(getattr(cfg, "rhythm_region_policy", "effective_task") or "effective_task")
 
         # Rhythm should preserve pauses inside the task; speech_only concatenation
@@ -168,14 +196,7 @@ class RhythmPlugin(AcousticFeaturePlugin):
         if not np.isfinite(duration_sec) or duration_sec < 1.0:
             return _nan_map(f"too_short_for_rhythm_features; duration_sec={duration_sec}; {region_note}")
 
-        # Intensity CV is computed on effective-task frame RMS so pauses and
-        # within-utterance level fluctuations are represented.
-        _t_rms, rms = rms_envelope(x, sr, frame_ms=30.0, hop_ms=10.0)
-        finite_rms = rms[np.isfinite(rms)] if rms.size else np.array([])
-        if finite_rms.size >= 2 and float(np.mean(finite_rms)) > 0:
-            intensity_cv = float(np.std(finite_rms, ddof=0) / np.mean(finite_rms))
-        else:
-            intensity_cv = np.nan
+        intensity_cv, intensity_note = _speech_intensity_cv(context, min_pause)
 
         env, env_sr, env_note = _hilbert_envelope_modulation(x, sr, cfg)
         if env.size < 16:
@@ -197,13 +218,10 @@ class RhythmPlugin(AcousticFeaturePlugin):
         power = vs ** 2
         denom = float(np.sum(power)) if np.sum(power) > 0 else np.nan
 
-        # Peak search is performed over the same 0--10 Hz EMS spectrum. Very low
-        # frequencies are allowed because slow phrase/stress rhythm is itself a
-        # clinically meaningful rhythm component, but the DC bin is excluded.
-        peak_freqs, peak_amps_raw = _top_two_peaks(vf, vs)
-        # Normalize amplitudes by RMS spectral magnitude to reduce level dependence.
-        amp_norm = float(np.sqrt(np.mean(power))) if power.size and np.mean(power) > 0 else np.nan
-        peak_amps = [float(a / amp_norm) if np.isfinite(a) and np.isfinite(amp_norm) and amp_norm > 0 else np.nan for a in peak_amps_raw]
+        # The specification defines the peak search over 0.5--10 Hz.
+        peak_mask = vf >= 0.5
+        peak_freqs, peak_amps_raw = _top_two_peaks(vf[peak_mask], vs[peak_mask])
+        peak_amps = [float(a**2) if np.isfinite(a) else np.nan for a in peak_amps_raw]
 
         below = _band_energy(vf, power, 0.0, 4.0, denom)
         above = _band_energy(vf, power, 4.0, 10.0, denom)
@@ -212,15 +230,16 @@ class RhythmPlugin(AcousticFeaturePlugin):
 
         note = (
             "validated_rhythm_v0.27; envelope_modulation_spectrum; "
-            "modulation_band=0_to_10_hz; boundary=4_hz; energy_units=proportion_of_0_to_10hz_power; "
+            "modulation_band=0.5_to_10_hz_for_peaks; boundary=4_hz; "
+            "energy_units=proportion_of_0_to_10hz_power_excluding_dc; peak_amplitude_units=relative_power; "
             f"{region_note}; {env_note}"
         )
         return {
-            "intensity_CV": FeatureValue("intensity_CV", intensity_cv, "computed", note + "; frame_rms_cv_over_rhythm_region"),
+            "intensity_CV": FeatureValue("intensity_CV", intensity_cv, "computed_with_warning", note + "; " + intensity_note),
             "fft_peaks1": FeatureValue("fft_peaks1", peak_freqs[0], "computed", note),
             "fft_peaks2": FeatureValue("fft_peaks2", peak_freqs[1], "computed", note),
-            "fft_ampli1": FeatureValue("fft_ampli1", peak_amps[0], "computed", note + "; normalized_by_rms_modulation_magnitude"),
-            "fft_ampli2": FeatureValue("fft_ampli2", peak_amps[1], "computed", note + "; normalized_by_rms_modulation_magnitude"),
+            "fft_ampli1": FeatureValue("fft_ampli1", peak_amps[0], "computed", note),
+            "fft_ampli2": FeatureValue("fft_ampli2", peak_amps[1], "computed", note),
             "nrj_below_boundary": FeatureValue("nrj_below_boundary", below, "computed", note),
             "nrj_above_boundary": FeatureValue("nrj_above_boundary", above, "computed", note),
             "nrj_3_6": FeatureValue("nrj_3_6", band36, "computed", note),

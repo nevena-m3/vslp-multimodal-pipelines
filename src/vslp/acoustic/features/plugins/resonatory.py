@@ -203,7 +203,7 @@ class ResonatoryPlugin(AcousticFeaturePlugin):
             return _all_nan("failed", "segmentation_wav_missing")
 
         cfg = context.config
-        min_pause = float(getattr(cfg, "minimum_pause_duration_sec", 0.15))
+        min_pause = float(getattr(cfg, "minimum_pause_duration_sec", 0.30))
         region = str(getattr(cfg, "resonatory_region_policy", "speech_only"))
         if region not in {"speech_only", "effective_task", "full_file"}:
             region = "speech_only"

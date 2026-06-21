@@ -18,6 +18,10 @@ The GUI does not train models. Its canonical handoff is the task-specific packag
 
 ## 3. Required Inputs
 
+### Recommended modality handoff
+
+Preferred. Select `acoustic/feature_handoff/main` or `kinematics/feature_handoff/main` with **Load Main Handoff Folder**. The GUI validates the contract, fills feature/registry/QC/metadata paths, infers modality, selects the shared workspace, and loads the tables. This is the demo and routine operating path.
+
 ### Primary feature table
 
 Required. One row per recording or analysis unit, with numeric extracted features and enough identifiers to trace each row.
@@ -49,11 +53,10 @@ For a visible terminal and diagnostic output, use `python.exe` instead of `pytho
 
 ### Step 1: Project
 
-1. Select the primary feature table.
-2. Add QC, metadata, and registry tables when available.
-3. Select Acoustic, Kinematic, or Generic as the modality, then select the shared VSLP study workspace. Results are written under `feature_analysis/<modality>/`.
-4. Load the tables.
-5. Confirm the Run Log reports the expected row and column counts.
+1. Prefer **Load Main Handoff Folder** and select the Acoustic or Kinematic `feature_handoff/main` folder.
+2. Confirm the detected modality, workspace, optional QC, and optional metadata shown in the Run Log.
+3. For legacy or independent tables, use Direct Table Import, select the primary table and optional QC/metadata/registry, then select modality and workspace manually.
+4. Confirm the Run Log reports the expected row and column counts.
 
 Stop if the feature table is empty, the row unit is unclear, or duplicate columns cannot be explained.
 

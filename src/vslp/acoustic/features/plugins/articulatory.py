@@ -8,9 +8,9 @@ valid frames survive explicit plausibility filters.
 
 Implemented features
 --------------------
-- f1..f5: median formant frequencies.
+- f1..f5: arithmetic mean formant frequencies.
 - f1_bw..f5_bw: median LPC bandwidths.
-- f1/f2/f3 robust ranges: P95 - P5 of frame tracks.
+- f1/f2/f3 ranges: maximum minus minimum of valid frame tracks.
 - f1/f2/f3 velocity summaries: median, P5, P95, P95-P5 of dF/dt.
 
 Important validation note
@@ -209,12 +209,18 @@ def _median_or_nan(x: np.ndarray) -> float:
     return float(np.median(vals)) if vals.size else np.nan
 
 
-def _range_95_5(x: np.ndarray) -> float:
+def _mean_or_nan(x: np.ndarray) -> float:
+    vals = np.asarray(x, dtype=float)
+    vals = vals[np.isfinite(vals)]
+    return float(np.mean(vals)) if vals.size else np.nan
+
+
+def _range_max_min(x: np.ndarray) -> float:
     vals = np.asarray(x, dtype=float)
     vals = vals[np.isfinite(vals)]
     if vals.size < 2:
         return np.nan
-    return float(np.percentile(vals, 95) - np.percentile(vals, 5))
+    return float(np.max(vals) - np.min(vals))
 
 
 def _velocity_stats(values: np.ndarray, times: np.ndarray, max_abs_velocity_hz_s: float) -> dict[str, float]:
@@ -236,7 +242,8 @@ def _velocity_stats(values: np.ndarray, times: np.ndarray, max_abs_velocity_hz_s
         vals_s = signal.medfilt(vals, kernel_size=5)
     else:
         vals_s = vals
-    dv = np.gradient(vals_s, t)
+    # The supplied protocol defines slope as (F_start - F_end) / duration.
+    dv = -np.gradient(vals_s, t)
     dv = dv[np.isfinite(dv) & (np.abs(dv) <= max_abs_velocity_hz_s)]
     if dv.size < 2:
         return {"median": np.nan, "p5": np.nan, "p95": np.nan, "p5_95": np.nan}
@@ -260,7 +267,7 @@ class ArticulatoryPlugin(AcousticFeaturePlugin):
             return _all_nan("failed", "segmentation_wav_missing")
 
         cfg = context.config
-        min_pause = float(getattr(cfg, "minimum_pause_duration_sec", 0.15))
+        min_pause = float(getattr(cfg, "minimum_pause_duration_sec", 0.30))
         # Formants should be computed on speech regions; effective_task/full_file can contaminate LPC with pauses.
         requested_region = str(getattr(cfg, "articulatory_region_policy", "speech_only"))
         region = requested_region if requested_region in {"speech_only", "full_file"} else "speech_only"
@@ -323,12 +330,12 @@ class ArticulatoryPlugin(AcousticFeaturePlugin):
 
         for i in range(1, 6):
             col = i - 1
-            features[f"f{i}"] = FeatureValue(f"f{i}", _median_or_nan(freqs[:, col]), status, note)
+            features[f"f{i}"] = FeatureValue(f"f{i}", _mean_or_nan(freqs[:, col]), status, note)
             features[f"f{i}_bw"] = FeatureValue(f"f{i}_bw", _median_or_nan(bws[:, col]), status, note)
 
         for i in range(1, 4):
             col = i - 1
-            rng = _range_95_5(freqs[:, col])
+            rng = _range_max_min(freqs[:, col])
             features[f"f{i}_range"] = FeatureValue(f"f{i}_range", rng, status, note)
             stats = _velocity_stats(freqs[:, col], times, max_abs_velocity_hz_s=max_abs_velocity)
             features[f"f{i}_d_dx_median"] = FeatureValue(f"f{i}_d_dx_median", stats["median"], status, note)
