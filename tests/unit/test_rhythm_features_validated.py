@@ -11,7 +11,7 @@ from vslp.acoustic.features.plugins.rhythm import RhythmPlugin
 
 
 class RhythmConfig:
-    minimum_pause_duration_sec = 0.15
+    minimum_pause_duration_sec = 0.30
     rhythm_region_policy = "effective_task"
     rhythm_envelope_bandpass_low_hz = 300.0
     rhythm_envelope_bandpass_high_hz = 1000.0
@@ -80,7 +80,8 @@ def test_rhythm_features_preserve_internal_pause_region_by_default(tmp_path: Pat
     )
     ctx = FeatureContext(file_name="x.wav", row=pd.Series({}), segmentation_wav_path=wav, segments_csv=segments, config=RhythmConfig())
     out = RhythmPlugin().compute(ctx)
-    assert out["intensity_CV"].status == "computed"
+    assert out["intensity_CV"].status == "computed_with_warning"
+    assert "recording_not_spl_calibrated" in out["intensity_CV"].note
     assert "region=effective_task" in out["intensity_CV"].note
     # Effective task = 0.5 to 3.5 sec = 3.0 seconds; internal pause is preserved.
     assert "selected_sec=3." in out["intensity_CV"].note

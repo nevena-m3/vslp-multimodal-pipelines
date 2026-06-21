@@ -64,7 +64,7 @@ def build_acoustic_feature_registry() -> pd.DataFrame:
     # Formants and articulatory dynamics.
     for i in range(1, 6):
         lo_hi = {1: (150, 1200), 2: (500, 3500), 3: (1200, 4500), 4: (2500, 6000), 5: (3500, 7500)}[i]
-        add_feature(f"f{i}", "articulatory", f"Median F{i}; vocal-tract resonance related to articulatory configuration", "Hz", "Implemented v0.29 with conservative LPC root tracking on speech regions, downsampled to ~10 kHz when appropriate, Hamming-windowed pre-emphasized frames, autocorrelation LPC coefficients, root-derived frequencies/bandwidths, and broad plausibility filters. External Praat/reference validation remains recommended before clinical interpretation.", "F_k = fs/(2π) angle(z_k)", "vowel/sentence/passage speech regions", "B" if i <= 2 else "C", lo_hi[0], lo_hi[1], "centralization/compression", "implemented")
+        add_feature(f"f{i}", "articulatory", f"Mean F{i}; vocal-tract resonance related to articulatory configuration", "Hz", "Computed with conservative LPC root tracking on valid speech frames; the file-level value is the arithmetic mean required by the supplied protocol.", "mean(F_k(t)); F_k = fs/(2π) angle(z_k)", "vowel/sentence/passage speech regions", "B" if i <= 2 else "C", lo_hi[0], lo_hi[1], "centralization/compression", "implemented")
     for i in range(1, 6):
         add_feature(f"f{i}_bw", "articulatory", f"Median F{i} bandwidth; damping/coupling proxy", "Hz", "Implemented v0.29 from LPC root radius-derived bandwidths with broad plausibility filters. F1 bandwidth may also reflect nasality/damping; external reference validation remains recommended.", "B_k = -fs/π log|z_k|", "vowel/sentence/passage speech regions", "C" if i == 1 else "D", 0, 1000, "may broaden", "implemented")
     for i in range(1, 4):
@@ -76,14 +76,17 @@ def build_acoustic_feature_registry() -> pd.DataFrame:
         ]:
             add_feature(f"f{i}_{suffix}", "articulatory", f"F{i} {meaning}", "Hz/s", "Implemented v0.29 from smoothed LPC formant trajectories over speech regions; velocity values use dF/dt with outlier velocity clipping and should be interpreted cautiously when valid-frame fraction is low.", formula, "passage/sentence trajectories", "B" if i <= 2 and "5_95" in suffix else "C", None, None, "reduced absolute slope/range", "implemented")
     for i in range(1, 4):
-        add_feature(f"f{i}_range", "articulatory", f"Robust F{i} range: 95th minus 5th percentile", "Hz", "Implemented v0.29 as robust 95th-minus-5th percentile range over valid speech-region LPC formant tracks.", "P95(F)-P5(F)", "passage/sentence trajectories", "B" if i <= 2 else "C", 0, None, "decreases", "implemented")
+        add_feature(f"f{i}_range", "articulatory", f"F{i} range: maximum minus minimum", "Hz", "Computed over valid speech-region LPC formant tracks. This statistic is sensitive to residual tracking errors, which remain visible through formant-validity provenance.", "max(F)-min(F)", "passage/sentence trajectories", "B" if i <= 2 else "C", 0, None, "decreases", "implemented")
+
+    add_feature("DDKrate", "articulatory", "Diadochokinetic syllable-nucleus rate", "syllables/s", "Task-scoped automatic RMS-envelope nucleus detection with fixed physiological spacing and prominence constraints; manual event validation is required before clinical use.", "N_syllable_nuclei / task_duration", "DDK/AMR/SMR only", "B", 0, 15, "decreases", "implemented_with_validation_warning")
+    add_feature("DDKregularity", "articulatory", "Coefficient of variation of inter-syllable intervals", "unitless", "Computed from automatically detected DDK syllable nuclei using sample standard deviation.", "sample_SD(ISI) / mean(ISI)", "DDK/AMR/SMR only", "B", 0, None, "increases", "implemented_with_validation_warning")
 
     # Phonatory — implemented with transparent local algorithms in v0.28.
     phonatory_note = (
         "Implemented v0.28 with local auditable signal processing: frame autocorrelation F0/HNR, "
-        "line-normalized cepstral peak prominence, perturbation features from voiced-frame period and RMS-amplitude tracks, "
-        "and H1/H2 harmonic estimates from voiced-frame spectra. Formulas are explicit and internally tested; "
-        "external Praat/MDVP/reference validation is still recommended before clinical interpretation, especially for jitter/shimmer."
+        "line-normalized cepstral peak prominence, Praat PointProcess cycle-based perturbation measures, "
+        "and H1/H2 amplitudes sampled at exact F0 and 2*F0 locations. Jitter, shimmer, and voice breaks use "
+        "Praat-Parselmouth with explicit period and amplitude constraints recorded in feature provenance."
     )
     add_feature("f0_mean", "phonatory", "Mean voiced fundamental frequency", "Hz", phonatory_note, "mean(f0(t))", "vowel/speech voiced regions", "C", 60, 400, "mean is sex/age confounded", "implemented")
     add_feature("f0_std", "phonatory", "Standard deviation of voiced F0", "Hz", phonatory_note + " Semitone scaling is recommended for cross-speaker analysis.", "std(f0(t))", "vowel/speech voiced regions", "B", 0, 120, "decreases with monopitch", "implemented")
@@ -99,7 +102,7 @@ def build_acoustic_feature_registry() -> pd.DataFrame:
     add_feature("apq3Shimmer", "phonatory", "Three-point amplitude perturbation quotient", "%", phonatory_note, "mean(|A_i - mean(A_{i-1:i+1})|)/mean(A)*100", "sustained vowel preferred", "C", 0, 50, "may increase with amplitude instability", "implemented")
     add_feature("apq5Shimmer", "phonatory", "Five-point amplitude perturbation quotient", "%", phonatory_note, "mean(|A_i - mean(A_{i-2:i+2})|)/mean(A)*100", "sustained vowel preferred", "C", 0, 50, "may increase with amplitude instability", "implemented")
     add_feature("apq11Shimmer", "phonatory", "Eleven-point amplitude perturbation quotient", "%", phonatory_note, "mean(|A_i - mean(A_{i-5:i+5})|)/mean(A)*100", "sustained vowel preferred; requires longer stable phonation", "C", 0, 50, "may increase with sustained amplitude instability", "implemented")
-    add_feature("num_voicebreaks", "phonatory", "Number of internal unvoiced breaks inside voiced phonation region", "count", phonatory_note, "count(unvoiced_runs_between_voiced_regions >= threshold)", "sustained vowel preferred", "C", 0, 100, "may increase with phonatory instability", "implemented")
+    add_feature("num_voicebreaks", "phonatory", "Number of internal inter-pulse gaps exceeding the maximum period", "count", phonatory_note, "count(inter-pulse gaps > 1.25/pitch_floor)", "sustained vowel preferred", "C", 0, 100, "may increase with phonatory instability", "implemented")
     add_feature("H1freq", "phonatory", "First harmonic frequency estimate", "Hz", phonatory_note, "frequency near f0 with local spectral maximum", "voiced speech/sentence/nasality support", "C", 60, 400, "anchors H1/H2 spectral tilt", "implemented")
     add_feature("H1amp", "phonatory", "First harmonic amplitude estimate", "dB", phonatory_note, "spectral amplitude near f0", "voiced speech/sentence/nasality support", "C", -160, 20, "supports H1-H2 spectral tilt", "implemented")
     add_feature("H2freq", "phonatory", "Second harmonic frequency estimate", "Hz", phonatory_note, "frequency near 2*f0 with local spectral maximum", "voiced speech/sentence/nasality support", "C", 120, 800, "supports H1-H2 spectral tilt", "implemented")
@@ -107,11 +110,11 @@ def build_acoustic_feature_registry() -> pd.DataFrame:
 
     # Rhythm / envelope modulation — validated v0.27.
     rhythm = [
-        ("intensity_CV", "Coefficient of variation of frame RMS intensity over the effective task interval", "unitless", "std(RMS_frames)/mean(RMS_frames)", 0, 5, "increases with loudness instability or pause-heavy delivery"),
-        ("fft_peaks1", "Dominant 0--10 Hz envelope-modulation frequency", "Hz", "argmax_f |FFT(envelope)(f)|, f in (0,10]", 0, 10, "slows/shifts toward lower modulation rates"),
-        ("fft_peaks2", "Second dominant 0--10 Hz envelope-modulation frequency", "Hz", "second-largest local maximum of |FFT(envelope)|", 0, 10, "varies"),
-        ("fft_ampli1", "Normalized amplitude at the dominant modulation peak", "normalized", "peak_amplitude / RMS_modulation_magnitude", 0, None, "decreases when rhythmic modulation weakens"),
-        ("fft_ampli2", "Normalized amplitude at the second modulation peak", "normalized", "peak_amplitude_2 / RMS_modulation_magnitude", 0, None, "varies"),
+        ("intensity_CV", "Sample coefficient of variation of 25-ms frame intensity in dB over speech-only audio", "unitless", "sample_SD(I_dB)/abs(mean(I_dB))", 0, 5, "increases with loudness instability"),
+        ("fft_peaks1", "Dominant 0.5--10 Hz envelope-modulation frequency", "Hz", "argmax_f |FFT(envelope)(f)|, f in [0.5,10]", 0.5, 10, "slows/shifts toward lower modulation rates"),
+        ("fft_peaks2", "Second dominant 0.5--10 Hz envelope-modulation frequency", "Hz", "second-largest local maximum of |FFT(envelope)|", 0.5, 10, "varies"),
+        ("fft_ampli1", "Relative spectral power at the dominant modulation peak", "relative power", "|FFT(envelope)(f_peak1)|^2", 0, None, "decreases when rhythmic modulation weakens"),
+        ("fft_ampli2", "Relative spectral power at the second modulation peak", "relative power", "|FFT(envelope)(f_peak2)|^2", 0, None, "varies"),
         ("nrj_below_boundary", "Proportion of envelope-modulation energy below 4 Hz", "proportion", "sum(power_0_to_4Hz) / sum(power_0_to_10Hz)", 0, 1, "increases with slowed/phrase-level modulation"),
         ("nrj_above_boundary", "Proportion of envelope-modulation energy from 4 to 10 Hz", "proportion", "sum(power_4_to_10Hz) / sum(power_0_to_10Hz)", 0, 1, "decreases when fast syllabic modulation weakens"),
         ("nrj_3_6", "Proportion of envelope-modulation energy in the 3--6 Hz syllabic band", "proportion", "sum(power_3_to_6Hz) / sum(power_0_to_10Hz)", 0, 1, "varies with syllabic rhythmic concentration"),
@@ -121,7 +124,7 @@ def build_acoustic_feature_registry() -> pd.DataFrame:
         "Validated v0.27 EMS implementation. Default analysis region is effective_task rather than concatenated speech_only "
         "because internal pauses are part of connected-speech rhythm. Envelope is extracted after 300--1000 Hz "
         "Butterworth speech-band prefilter, Hilbert magnitude, 100 Hz envelope resampling, Tukey windowing, and 0--10 Hz FFT. "
-        "Band energies are proportions of total 0--10 Hz modulation power; boundary is 4 Hz. Not a syllable/DDK counter."
+        "Peak search is restricted to 0.5--10 Hz. Band energies are proportions of non-DC 0--10 Hz modulation power; boundary is 4 Hz. Not a syllable/DDK counter."
     )
     for name, meaning, unit, formula, lo, hi, direction in rhythm:
         add_feature(name, "rhythm", meaning, unit, rhythm_note, formula, "passage/connected speech", "B" if name in {"nrj_below_boundary", "nrj_above_boundary", "ratio_below_above", "fft_peaks1"} else "C", lo, hi, direction, "implemented")
@@ -152,7 +155,7 @@ def build_acoustic_feature_registry() -> pd.DataFrame:
         "F1freq": "Hz", "F2freq": "Hz", "F3freq": "Hz",
         "F1amp": "dB", "F2amp": "dB", "F3amp": "dB",
         "F1width": "Hz", "F2width": "Hz", "F3width": "Hz",
-        "RMSamp": "a.u.",
+        "RMSamp": "full-scale normalized amplitude",
     }
     support_formula = {
         "F1freq": "spectral/LPC support peak in F1 band", "F2freq": "spectral/LPC support peak in F2 band", "F3freq": "spectral/LPC support peak in F3 band",

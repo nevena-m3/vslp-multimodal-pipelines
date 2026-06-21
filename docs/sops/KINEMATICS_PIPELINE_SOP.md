@@ -103,7 +103,32 @@ Refresh the Inspector and verify stage status, readiness checklist, artifact inv
 
 Generate the report package and verify the report checklist and manifest. Reports summarize evidence; they are not data inputs and do not replace QC review.
 
-## 5. Primary Outputs
+## 5. Main and Supplementary Outputs
+
+In **Reports & Outputs**, use **Open Main Feature GUI Handoff** for downstream Feature Analysis. Use **Open Supplementary Outputs** for audit, diagnostics, timeseries, reports, and troubleshooting.
+
+Main downstream folder:
+
+```text
+kinematics/feature_handoff/main/
+|-- feature_values.csv
+|-- feature_registry.csv
+|-- feature_status.csv
+|-- feature_export_manifest.json
+|-- qc_features.csv              # when available
+|-- metadata_context.csv         # when available
+`-- README.md
+```
+
+The four canonical files are required. Metadata is recommended but extraction may proceed without it; absent metadata is recorded as `no_metadata_provided` and can be supplied in Feature Analysis.
+
+Supplementary index:
+
+```text
+kinematics/feature_handoff/supplementary/artifact_catalog.csv
+```
+
+The established stage outputs remain in place:
 
 ```text
 kinematics/000_ingest/
@@ -118,7 +143,7 @@ kinematics/008_inspector/
 kinematics/009_reports/
 ```
 
-Preferred Feature Analysis inputs:
+Legacy and detailed feature-stage outputs include:
 
 ```text
 kinematics/006_features/tables/kinematic_features_canonical65.csv
@@ -127,7 +152,7 @@ kinematics/006_features/tables/kinematic_feature_manifest.csv
 kinematics/005_video_qc/tables/landmark_video_qc_summary.csv
 ```
 
-Audit outputs include the full `kinematic_features.csv`, normalized landmark manifest, per-frame timeseries, aggregation outputs, readiness checklist, and report manifest.
+Audit outputs include the full `kinematic_features.csv`, normalized landmark manifest, per-frame timeseries, aggregation outputs, readiness checklist, and report manifest. They remain supplementary because scalar feature handoff must not replace timeseries or visual QC review.
 
 ## 6. Stop Conditions
 
@@ -154,4 +179,6 @@ Stop and resolve the issue when:
 - Canonical feature and timeseries outputs audited.
 - Aggregation policy recorded if used.
 - Inspector readiness checklist reviewed.
-- Feature, manifest, QC, metadata, and report handoff verified.
+- Main handoff opened and its four canonical files verified.
+- Optional QC and metadata context presence or absence documented.
+- Supplementary artifact catalog retained with the study record.

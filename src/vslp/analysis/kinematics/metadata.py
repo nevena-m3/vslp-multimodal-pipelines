@@ -27,14 +27,25 @@ def infer_link_columns(video_manifest: pd.DataFrame, metadata: pd.DataFrame) -> 
     return None, None, "manual_required"
 
 
-def link_metadata(manifest_csv: Path, metadata_path: Path, output_dir: Path) -> dict[str, Path | int | str]:
+def link_metadata(manifest_csv: Path, metadata_path: Path | None, output_dir: Path) -> dict[str, Path | int | str]:
     manifest = pd.read_csv(manifest_csv)
-    metadata = load_metadata(metadata_path)
-    video_col, meta_col, mode = infer_link_columns(manifest, metadata)
     out = Path(output_dir) / "kinematics" / "001_metadata" / "tables"
     out.mkdir(parents=True, exist_ok=True)
     meta_out = out / "metadata_loaded.csv"
     linked_out = out / "metadata_link_preview.csv"
+    if metadata_path is None:
+        metadata = pd.DataFrame(columns=("metadata_status",))
+        metadata.to_csv(meta_out, index=False)
+        manifest.to_csv(linked_out, index=False)
+        return {
+            "metadata_loaded": meta_out,
+            "link_preview": linked_out,
+            "n_metadata_rows": 0,
+            "link_mode": "no_metadata_provided",
+        }
+
+    metadata = load_metadata(metadata_path)
+    video_col, meta_col, mode = infer_link_columns(manifest, metadata)
     metadata.to_csv(meta_out, index=False)
     if video_col and meta_col:
         linked = manifest.merge(metadata, left_on=video_col, right_on=meta_col, how="left", suffixes=("", "_meta"))

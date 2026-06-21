@@ -25,6 +25,8 @@ import numpy as np
 import pandas as pd
 from scipy.signal import butter, filtfilt, find_peaks
 
+from vslp.core.feature_contract import build_feature_delivery, normalize_feature_registry, write_feature_handoff
+
 from .schemas import LANDMARK_PRESETS
 
 
@@ -557,13 +559,59 @@ def write_feature_framework_catalog(output_root: Path | str) -> dict[str, Path]:
     return {"framework_csv": framework_csv, "audit_csv": audit_csv, "framework_json": framework_json}
 
 def feature_registry_dataframe():
-    """Return the kinematic feature registry as a pandas DataFrame."""
+    """Return the canonical registry with formulas and source traceability."""
     rows = []
     for spec in KINEMATIC_FEATURE_SPECS:
         row = asdict(spec)
         row["landmarks"] = ", ".join(map(str, spec.landmarks))
+        row.update({
+            "feature": spec.feature_id,
+            "family": spec.group,
+            "meaning": spec.label,
+            "formula": _canonical_formula(spec.feature_id),
+            "computation_note": spec.native_signal,
+            "task_scope": "repeated oral-motor task; whole-file fallback is explicitly flagged",
+            "required_inputs": row["landmarks"],
+            "evidence_tier": spec.tier,
+            "implementation_status": spec.status,
+            "source_document": "Kinematic Feature Validation.xlsx",
+            "source_location": "Main/Summary; mapped by feature family",
+        })
         rows.append(row)
-    return pd.DataFrame(rows)
+    rows.extend(WORKBOOK_VALIDATED_FEATURE_ROWS)
+    return normalize_feature_registry(pd.DataFrame(rows), "kinematic")
+
+
+def _canonical_formula(feature_id: str) -> str:
+    """Express the implemented statistic; source workbook TBD rows remain explicit."""
+    if feature_id.startswith("path_"):
+        return "median or IQR across movements of sum(|x[i]-x[i-1]|)"
+    if feature_id.startswith("rom_"):
+        return "median or IQR across movements of P95(x)-P05(x)"
+    if feature_id.startswith("sLL_"):
+        return "requested summary of |dx/dt|; derivative uses timestamps"
+    if feature_id.startswith("aLL_"):
+        return "requested summary of |d2x/dt2|; derivative uses signed dx/dt"
+    if feature_id.startswith("aspect_"):
+        return "requested summary of mouth_opening/lip_width"
+    if feature_id.startswith("jaw_lat_"):
+        return "requested summary of lower-face left-reference/right-reference distance ratio"
+    if feature_id.startswith("lip_symm_ratio_"):
+        return "requested summary of left/right commissure-to-midline distance ratio"
+    if feature_id == "lat_xcorr":
+        return "max_lag normalized cross-correlation(left_commissure, right_commissure)"
+    return "See computation_note; unresolved source formulas are not treated as clinical definitions"
+
+
+WORKBOOK_VALIDATED_FEATURE_ROWS: tuple[dict[str, object], ...] = (
+    {"feature": "lip_eccentricity_mean", "family": "combined_mouth", "meaning": "Mean mouth-ellipse eccentricity", "unit": "unitless", "formula": "mean(sqrt(1-(min(O,W)/max(O,W))^2))", "computation_note": "O is mouth opening and W is commissure width", "task_scope": "speech or non-speech oral movement", "aggregation": "mean within recording-task", "required_inputs": "UL, LL, RC, LC: 0,17,61,291", "normalization": "ratio; scale invariant", "evidence_tier": "B", "implementation_status": "implemented-workbook-validated", "interpretation": "0 is circular; approaches 1 as either axis dominates", "source_document": "Kinematic Feature Validation.xlsx", "source_location": "Main: Lip eccentricity"},
+    {"feature": "lip_eccentricity_range", "family": "combined_mouth", "meaning": "Range of mouth-ellipse eccentricity", "unit": "unitless", "formula": "max(e)-min(e)", "computation_note": "Range within the recording-task", "task_scope": "speech or non-speech oral movement", "aggregation": "max-min", "required_inputs": "0,17,61,291", "normalization": "ratio; scale invariant", "evidence_tier": "B", "implementation_status": "implemented-workbook-validated", "interpretation": "Change in lip roundedness", "source_document": "Kinematic Feature Validation.xlsx", "source_location": "Main: Lip eccentricity"},
+    {"feature": "mouth_area_right_mean", "family": "area_symmetry", "meaning": "Mean right half-mouth triangular area", "unit": "ICD^2", "formula": "mean(0.5*abs(cross(UL-RC,LL-RC)))", "computation_note": "2D normalized-coordinate triangle", "task_scope": "speech or non-speech oral movement", "aggregation": "mean", "required_inputs": "RC,UL,LL: 61,0,17", "normalization": "intercanthal-normalized squared units", "evidence_tier": "B", "implementation_status": "implemented-workbook-validated", "interpretation": "Right labial fissure area", "source_document": "Kinematic Feature Validation.xlsx", "source_location": "Main: Area of mouth (right)"},
+    {"feature": "mouth_area_left_mean", "family": "area_symmetry", "meaning": "Mean left half-mouth triangular area", "unit": "ICD^2", "formula": "mean(0.5*abs(cross(UL-LC,LL-LC)))", "computation_note": "2D normalized-coordinate triangle", "task_scope": "speech or non-speech oral movement", "aggregation": "mean", "required_inputs": "LC,UL,LL: 291,0,17", "normalization": "intercanthal-normalized squared units", "evidence_tier": "B", "implementation_status": "implemented-workbook-validated", "interpretation": "Left labial fissure area", "source_document": "Kinematic Feature Validation.xlsx", "source_location": "Main: Area of mouth (left)"},
+    {"feature": "mouth_area_total_mean", "family": "area_symmetry", "meaning": "Mean total mouth area", "unit": "ICD^2", "formula": "mean(right_area+left_area)", "computation_note": "Sum of non-overlapping half-mouth triangles", "task_scope": "speech or non-speech oral movement", "aggregation": "mean", "required_inputs": "0,17,61,291", "normalization": "intercanthal-normalized squared units", "evidence_tier": "B", "implementation_status": "implemented-workbook-operational-definition", "interpretation": "Total labial fissure area", "source_document": "Kinematic Feature Validation.xlsx", "source_location": "Main: Area of mouth (total)"},
+    {"feature": "mouth_area_abs_asymmetry_mean", "family": "area_symmetry", "meaning": "Mean absolute left-right mouth area difference", "unit": "ICD^2", "formula": "mean(abs(right_area-left_area))", "computation_note": "Bandini 2018b Aabsdiff definition", "task_scope": "speech or non-speech oral movement", "aggregation": "mean", "required_inputs": "0,17,61,291", "normalization": "intercanthal-normalized squared units", "evidence_tier": "B", "implementation_status": "implemented-workbook-validated", "interpretation": "Higher values indicate greater area asymmetry", "source_document": "Kinematic Feature Validation.xlsx", "source_location": "Main: Mouth area symmetry"},
+    {"feature": "lower_lip_lateralization_range", "family": "area_symmetry", "meaning": "Robust horizontal lower-lip excursion around mouth midpoint", "unit": "ICD", "formula": "P95(x_LL-(x_LC+x_RC)/2)-P05(...) ", "computation_note": "Signed frame signal summarized as robust range", "task_scope": "open/close oral-motor tasks", "aggregation": "P95-P05", "required_inputs": "LL,LC,RC: 17,291,61", "normalization": "intercanthal-normalized coordinate", "evidence_tier": "B", "implementation_status": "implemented-workbook-validated", "interpretation": "Magnitude of lateral lower-lip excursion", "source_document": "Kinematic Feature Validation.xlsx", "source_location": "Main: Lateralization (when open & closing)"},
+)
 
 
 def selected_specs(feature_ids: Iterable[str]) -> tuple[KinematicFeatureSpec, ...]:
@@ -573,7 +621,11 @@ def selected_specs(feature_ids: Iterable[str]) -> tuple[KinematicFeatureSpec, ..
 
 
 CANONICAL_FEATURE_IDS: tuple[str, ...] = tuple(spec.feature_id for spec in KINEMATIC_FEATURE_SPECS)
-FEATURE_EXPORT_ID_COLUMNS: tuple[str, ...] = ("video_id", "task_guess")
+FEATURE_EXPORT_ID_COLUMNS: tuple[str, ...] = (
+    "recording_id", "video_id", "source_file", "source_path", "subject_id",
+    "session_id", "protocol_id", "iteration", "task", "task_guess",
+    "recording_date", "modality", "aggregation_level",
+)
 FEATURE_EXPORT_QC_COLUMNS: tuple[str, ...] = (
     "status",
     "normalization_status",
@@ -865,6 +917,30 @@ _FEATURE_DEFINITIONS: dict[str, dict] = {
         "family": "bilateral_coordination",
         "description": "Right commissure distance to forehead/reference point for bilateral coordination.",
     },
+    "lip_eccentricity": {
+        "kind": "ellipse_eccentricity", "axes": ("mouth_aperture", "outer_lip_spread"),
+        "family": "combined_mouth", "description": "Ellipse eccentricity from mouth opening and width.",
+    },
+    "mouth_area_right": {
+        "kind": "triangle_area", "points": (61, 0, 17), "family": "area_symmetry",
+        "description": "Right half-mouth triangle area from RC, UL, and LL.",
+    },
+    "mouth_area_left": {
+        "kind": "triangle_area", "points": (291, 0, 17), "family": "area_symmetry",
+        "description": "Left half-mouth triangle area from LC, UL, and LL.",
+    },
+    "mouth_area_total": {
+        "kind": "sum_signals", "signals": ("mouth_area_right", "mouth_area_left"),
+        "family": "area_symmetry", "description": "Sum of right and left half-mouth areas.",
+    },
+    "mouth_area_abs_asymmetry": {
+        "kind": "abs_difference_signals", "signals": ("mouth_area_right", "mouth_area_left"),
+        "family": "area_symmetry", "description": "Absolute right-left half-mouth area difference.",
+    },
+    "lower_lip_lateralization": {
+        "kind": "midpoint_axis_excursion", "point": 17, "reference_points": (61, 291), "axis": "x_norm",
+        "family": "area_symmetry", "description": "Signed horizontal LL displacement from the commissure midpoint.",
+    },
 }
 
 
@@ -982,6 +1058,13 @@ def _point_matrix(df: pd.DataFrame, idx: int) -> np.ndarray:
 
 def _distance(df: pd.DataFrame, a: int, b: int) -> np.ndarray:
     return np.sqrt(np.nansum((_point_matrix(df, a) - _point_matrix(df, b)) ** 2, axis=1))
+
+
+def _triangle_area_xy(df: pd.DataFrame, a: int, b: int, c: int) -> np.ndarray:
+    ax, ay = _axis(df, a, "x_norm"), _axis(df, a, "y_norm")
+    bx, by = _axis(df, b, "x_norm"), _axis(df, b, "y_norm")
+    cx, cy = _axis(df, c, "x_norm"), _axis(df, c, "y_norm")
+    return 0.5 * np.abs((bx - ax) * (cy - ay) - (by - ay) * (cx - ax))
 
 
 def _distance_first_available(df: pd.DataFrame, pairs: Iterable[tuple[int, int]]) -> tuple[np.ndarray | None, tuple[int, int] | None]:
@@ -1133,6 +1216,35 @@ def compute_feature_timeseries(df: pd.DataFrame, cfg: FeatureComputationConfig) 
                     missing_feature_inputs.add(name)
                     continue
                 raw_signals[name] = np.abs(np.abs(_axis(df, a, axis)) - np.abs(_axis(df, b, axis)))
+            elif kind == "ellipse_eccentricity":
+                first, second = (raw_signals.get(v) for v in definition["axes"])
+                if first is None or second is None:
+                    missing_feature_inputs.add(name)
+                    continue
+                major = np.maximum(np.abs(first), np.abs(second))
+                minor = np.minimum(np.abs(first), np.abs(second))
+                ratio = _safe_ratio(minor, major)
+                raw_signals[name] = np.sqrt(np.clip(1.0 - ratio**2, 0.0, 1.0))
+            elif kind == "triangle_area":
+                a, b, c = definition["points"]
+                if not all(_has_point(df, p) for p in (a, b, c)):
+                    missing_feature_inputs.add(name)
+                    continue
+                raw_signals[name] = _triangle_area_xy(df, a, b, c)
+            elif kind in {"sum_signals", "abs_difference_signals"}:
+                first, second = (raw_signals.get(v) for v in definition["signals"])
+                if first is None or second is None:
+                    missing_feature_inputs.add(name)
+                    continue
+                raw_signals[name] = first + second if kind == "sum_signals" else np.abs(first - second)
+            elif kind == "midpoint_axis_excursion":
+                point = definition["point"]
+                left, right = definition["reference_points"]
+                axis = definition["axis"]
+                if not all(f"{p}_{axis}" in df.columns for p in (point, left, right)):
+                    missing_feature_inputs.add(name)
+                    continue
+                raw_signals[name] = _axis(df, point, axis) - 0.5 * (_axis(df, left, axis) + _axis(df, right, axis))
         except Exception:
             missing_feature_inputs.add(name)
 
@@ -1140,7 +1252,11 @@ def compute_feature_timeseries(df: pd.DataFrame, cfg: FeatureComputationConfig) 
         cleaned, stats = clean_signal(values, fps, cfg)
         out[f"{name}_raw"] = values
         out[name] = cleaned
-        out[f"{name}_velocity"] = _velocity(cleaned, t)
+        velocity = _velocity(cleaned, t)
+        acceleration = _velocity(velocity, t)
+        out[f"{name}_velocity"] = velocity
+        out[f"{name}_acceleration"] = acceleration
+        out[f"{name}_jerk"] = _velocity(acceleration, t)
         for k, v in stats.items():
             cleaning_rows[k + "_total"] = cleaning_rows.get(k + "_total", 0) + int(v)
 
@@ -1262,14 +1378,16 @@ def _add_legacy65_features(row: dict[str, object], ts: pd.DataFrame) -> None:
         if "mouth_aperture_velocity" in ts.columns:
             row["_tmp_sLL_vert_source"] = "mouth_aperture_velocity"
             _add_level_family_features(row, ts.assign(_sLL_vert=np.abs(ts["mouth_aperture_velocity"].to_numpy(dtype=float))), "_sLL_vert", "sLL_vert")
-            acc = _velocity(np.abs(ts["mouth_aperture_velocity"].to_numpy(dtype=float)), ts["time_s"].to_numpy(dtype=float) if "time_s" in ts else np.arange(len(ts)))
-            _add_level_family_features(row, ts.assign(_aLL_vert=np.abs(acc)), "_aLL_vert", "aLL_vert")
+            acc = ts.get("mouth_aperture_acceleration")
+            if acc is not None:
+                _add_level_family_features(row, ts.assign(_aLL_vert=np.abs(pd.to_numeric(acc, errors="coerce"))), "_aLL_vert", "aLL_vert")
     if "outer_lip_spread" in ts.columns:
         _add_path_rom_features(row, ts, "outer_lip_spread", "path_horz", "rom_horz")
         if "outer_lip_spread_velocity" in ts.columns:
             _add_level_family_features(row, ts.assign(_sLL_horz=np.abs(ts["outer_lip_spread_velocity"].to_numpy(dtype=float))), "_sLL_horz", "sLL_horz")
-            acc = _velocity(np.abs(ts["outer_lip_spread_velocity"].to_numpy(dtype=float)), ts["time_s"].to_numpy(dtype=float) if "time_s" in ts else np.arange(len(ts)))
-            _add_level_family_features(row, ts.assign(_aLL_horz=np.abs(acc)), "_aLL_horz", "aLL_horz")
+            acc = ts.get("outer_lip_spread_acceleration")
+            if acc is not None:
+                _add_level_family_features(row, ts.assign(_aLL_horz=np.abs(pd.to_numeric(acc, errors="coerce"))), "_aLL_horz", "aLL_horz")
     if "lip_aspect_ratio" in ts.columns:
         _add_level_family_features(row, ts, "lip_aspect_ratio", "aspect")
     if "jaw_lateralization" in ts.columns:
@@ -1294,7 +1412,14 @@ def summarize_timeseries(ts: pd.DataFrame, meta: dict) -> dict:
         vcol = f"{col}_velocity"
         if vcol in ts.columns:
             row.update(_summaries(np.abs(ts[vcol].to_numpy(dtype=float)), f"{col}_speed_abs"))
-            row[f"{col}_path_length"] = float(np.trapezoid(np.abs(ts[vcol].to_numpy(dtype=float)))) if np.isfinite(ts[vcol]).any() else math.nan
+            times = ts.get("time_s", pd.Series(np.arange(len(ts), dtype=float))).to_numpy(dtype=float)
+            row[f"{col}_path_length"] = float(np.trapezoid(np.abs(ts[vcol].to_numpy(dtype=float)), x=times)) if np.isfinite(ts[vcol]).any() else math.nan
+        acol = f"{col}_acceleration"
+        jcol = f"{col}_jerk"
+        if acol in ts.columns:
+            row.update(_summaries(np.abs(ts[acol].to_numpy(dtype=float)), f"{col}_acceleration_abs"))
+        if jcol in ts.columns:
+            row.update(_summaries(np.abs(ts[jcol].to_numpy(dtype=float)), f"{col}_jerk_abs"))
     if "movement_id" in ts.columns and signal_cols:
         for col in signal_cols:
             ranges: list[float] = []
@@ -1309,6 +1434,15 @@ def summarize_timeseries(ts: pd.DataFrame, meta: dict) -> dict:
                 row[f"{col}_movement_range_median"] = math.nan
                 row[f"{col}_movement_range_iqr"] = math.nan
     _add_legacy65_features(row, ts)
+    if "lip_eccentricity" in ts:
+        row["lip_eccentricity_mean"] = float(np.nanmean(ts["lip_eccentricity"]))
+        row["lip_eccentricity_range"] = float(np.nanmax(ts["lip_eccentricity"]) - np.nanmin(ts["lip_eccentricity"]))
+    for signal in ("mouth_area_right", "mouth_area_left", "mouth_area_total", "mouth_area_abs_asymmetry"):
+        if signal in ts:
+            row[f"{signal}_mean"] = float(np.nanmean(ts[signal]))
+    if "lower_lip_lateralization" in ts:
+        vals = ts["lower_lip_lateralization"].to_numpy(dtype=float)
+        row["lower_lip_lateralization_range"] = float(np.nanpercentile(vals, 95) - np.nanpercentile(vals, 5))
     legacy_ids = [spec.feature_id for spec in KINEMATIC_FEATURE_SPECS]
     row["n_legacy65_features_expected"] = len(legacy_ids)
     row["n_legacy65_features_computed"] = int(sum(1 for fid in legacy_ids if fid in row and pd.notna(row.get(fid))))
@@ -1359,9 +1493,19 @@ def run_feature_computation(
         if not input_csv.exists():
             input_csv = manifest_path.parent / f"{video_id}-norm-lmks.csv"
         row = {
+            "recording_id": video_id,
             "video_id": video_id,
+            "source_file": Path(str(rec.get("source_path", ""))).name,
             "source_path": rec.get("source_path", ""),
+            "subject_id": rec.get("subject_id", ""),
+            "session_id": rec.get("session_id", ""),
+            "protocol_id": rec.get("protocol_id", ""),
+            "iteration": rec.get("iteration", ""),
+            "task": rec.get("task", rec.get("task_guess", "")),
             "task_guess": rec.get("task_guess", ""),
+            "recording_date": rec.get("recording_date", ""),
+            "modality": "kinematic",
+            "aggregation_level": "recording_task",
             "normalization_status": rec.get("status", ""),
         }
         try:
@@ -1377,12 +1521,34 @@ def run_feature_computation(
     features_csv = out_root / "tables" / "kinematic_features.csv"
     features_df.to_csv(features_csv, index=False)
     clean_exports = write_features_only_exports(features_df, root)
-    registry = pd.DataFrame([
-        {"feature": name, "family": d.get("family"), "definition": d.get("description"), "required_inputs": ",".join(map(str, d.get("points", ())))}
-        for name, d in _FEATURE_DEFINITIONS.items()
-    ])
+    registry = feature_registry_dataframe()
     registry_csv = out_root / "tables" / "kinematic_feature_registry.csv"
     registry.to_csv(registry_csv, index=False)
+    status_rows = []
+    for _, rec in features_df.iterrows():
+        for feature in CANONICAL_FEATURE_IDS:
+            value = rec.get(feature, np.nan)
+            status_rows.append({
+                "recording_id": rec.get("recording_id", rec.get("video_id", "")),
+                "task": rec.get("task", rec.get("task_guess", "")),
+                "modality": "kinematic",
+                "feature": feature,
+                "status": "computed" if pd.notna(value) else "missing_or_not_computable",
+                "note": rec.get("feature_qc_flags", ""),
+            })
+    handoff = write_feature_handoff(
+        out_root / "tables", features_df, registry, pd.DataFrame(status_rows),
+        "kinematic", features_csv, registry_csv,
+    )
+    delivery = build_feature_delivery(
+        root,
+        "kinematic",
+        handoff,
+        optional_main={
+            "qc_features.csv": root / "kinematics" / "005_video_qc" / "tables" / "landmark_video_qc_summary.csv",
+            "metadata_context.csv": root / "kinematics" / "001_metadata" / "tables" / "metadata_link_preview.csv",
+        },
+    )
     framework_paths = write_feature_framework_catalog(root)
     manifest_json = out_root / "tables" / "feature_computation_manifest.json"
     status_counts = features_df.get("status", pd.Series(dtype=str)).value_counts(dropna=False).to_dict() if not features_df.empty else {}
@@ -1391,6 +1557,8 @@ def run_feature_computation(
         "input_normalized_manifest": str(manifest_path),
         "features_csv": str(features_csv),
         "feature_registry_csv": str(registry_csv),
+        "canonical_handoff": {k: str(v) for k, v in handoff.items()},
+        "delivery": {k: str(v) for k, v in delivery.items()},
         "feature_framework_csv": str(framework_paths["framework_csv"]),
         "feature_implementation_audit_csv": str(framework_paths["audit_csv"]),
         "feature_framework_json": str(framework_paths["framework_json"]),

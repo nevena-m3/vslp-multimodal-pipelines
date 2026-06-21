@@ -9,7 +9,7 @@ def _app():
 
 def test_v102_version_and_scope_output_helpers_exist():
     src = _app()
-    assert 'APP_VERSION = "v0.108.0"' in (read(APP) if 'read' in globals() else APP.read_text(encoding='utf-8'))
+    assert 'APP_VERSION = "v0.108.0"' in APP.read_text(encoding='utf-8')
     assert 'def _missingness_scope_outputs' in src
     assert 'def _update_missingness_snapshot' in src
     assert 'def _update_missingness_tables' in src

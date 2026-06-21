@@ -134,6 +134,8 @@ def test_v135_task_scoped_export_writes_complete_handoff_package(tmp_path):
     gui.analysis_df = gui.feature_df.copy()
     gui.qc_df = None
     gui.meta_df = None
+    gui.metadata_mapping_df = pd.DataFrame()
+    gui.metadata_mapping_accepted = False
     gui.registry_df = None
     gui.outputs = {
         "feature_recommendations": _recommendations(),
@@ -156,6 +158,7 @@ def test_v135_task_scoped_export_writes_complete_handoff_package(tmp_path):
     gui.collect_mapping_from_table = lambda: gui.mapping_df
     gui._export_scoped_outputs = lambda _outputs: gui.outputs
     gui._export_scoped_frame = lambda task: gui.analysis_df.loc[gui.analysis_df["task"].eq(task)].copy()
+    gui._project_modality_mode = lambda: "acoustic"
     gui.write_report = lambda path, *_args, **_kwargs: Path(path).write_text("<html>report</html>", encoding="utf-8")
 
     export_dir, paths = gui._make_export_package_tables()
@@ -185,6 +188,48 @@ def test_v135_task_scoped_export_writes_complete_handoff_package(tmp_path):
     assert set(manifest["task_scope"]) == {"READ"}
     assert config["task_specific"] is True
     assert config["task_n_rows"] == 2
+    assert config["schema"] == "vslp_feature_analysis_handoff"
+    assert config["modality"] == "acoustic"
+
+
+def test_v135_export_includes_canonical_mapped_metadata(tmp_path):
+    gui = _gui()
+    gui.feature_df = pd.DataFrame({"subject_id": ["P01"], "task": ["READ"], "speech_rate": [1.1]})
+    gui.analysis_df = gui.feature_df.copy()
+    gui.qc_df = None
+    gui.meta_df = pd.DataFrame({"Participant": ["P01"], "Dx": ["ALS"]})
+    gui.registry_df = None
+    gui.metadata_mapping_df = pd.DataFrame({
+        "column": ["Participant", "Dx"],
+        "role": ["Subject identifier", "Diagnosis / group"],
+        "canonical_field": ["subject_id", "diagnosis"],
+    })
+    gui.metadata_mapping_accepted = True
+    gui.outputs = {"feature_recommendations": _recommendations(), "feature_recommendation_summary": pd.DataFrame()}
+    gui.output_dir = tmp_path / "feature_analysis"
+    gui.output_edit = type("Edit", (), {"text": lambda self: str(tmp_path)})()
+    gui.export_task_combo = _Combo("READ")
+    gui.export_profile_combo = _Combo("Recommended + caution (default ML starting set)")
+    gui.feature_picker = _Picker()
+    gui.qc_picker = _Picker()
+    gui.meta_picker = _Picker()
+    gui.registry_picker = _Picker()
+    gui.mapping_df = pd.DataFrame({"column": ["subject_id", "task", "speech_rate"], "role": [ROLE_IDENTIFIER, ROLE_COVARIATE, ROLE_FEATURE]})
+    gui.collect_mapping_from_table = lambda: gui.mapping_df
+    gui._export_scoped_outputs = lambda _outputs: gui.outputs
+    gui._export_scoped_frame = lambda _task: gui.analysis_df.copy()
+    gui._project_modality_mode = lambda: "acoustic"
+    gui.write_report = lambda path, *_args, **_kwargs: Path(path).write_text("<html>report</html>", encoding="utf-8")
+
+    export_dir, _paths = gui._make_export_package_tables()
+
+    mapped = pd.read_csv(export_dir / "mapped_metadata_table.csv")
+    mapping = pd.read_csv(export_dir / "metadata_mapping_manifest.csv")
+    config = json.loads((export_dir / "export_config.json").read_text(encoding="utf-8"))
+    assert list(mapped.columns) == ["subject_id", "diagnosis"]
+    assert set(mapping["canonical_field"]) == {"subject_id", "diagnosis"}
+    assert config["metadata_mapping_accepted"] is True
+    assert config["mapped_metadata_file"] == "mapped_metadata_table.csv"
 
 
 def test_v135_advanced_builder_keeps_ml_preprocessing_out_of_scope():

@@ -15,10 +15,14 @@ study_workspace/
 |-- acoustic/
 |   |-- 000_metadata/
 |   |-- 001_ingest/
+|   |-- feature_handoff/main/
+|   |-- feature_handoff/supplementary/
 |   `-- ...
 |-- kinematics/
 |   |-- project_manifest.json
 |   |-- 000_ingest/
+|   |-- feature_handoff/main/
+|   |-- feature_handoff/supplementary/
 |   `-- ...
 |-- feature_analysis/
 |   |-- acoustic/

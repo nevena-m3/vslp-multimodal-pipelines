@@ -219,7 +219,7 @@ class CoordinationPlugin(AcousticFeaturePlugin):
 
         cfg = context.config
         region = getattr(cfg, "coordination_region_policy", "effective_task") if cfg is not None else "effective_task"
-        min_pause = float(getattr(cfg, "minimum_pause_duration_sec", 0.15)) if cfg is not None else 0.15
+        min_pause = float(getattr(cfg, "minimum_pause_duration_sec", 0.30)) if cfg is not None else 0.30
         x, sr, region_note = read_region_audio(context.segmentation_wav_path, context.segments_csv, region=region, min_pause_duration_sec=min_pause)
         if x.size < int(max(sr, 1) * 0.5):
             return _all_nan("low_validity", f"selected_region_too_short; {region_note}")

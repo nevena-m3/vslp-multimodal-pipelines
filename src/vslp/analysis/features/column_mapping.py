@@ -56,6 +56,7 @@ _IDENTIFIER_EXACT = {
     "relative_path", "absolute_path", "record_key", "recording_id", "sample_id",
     "subject_id", "participant_id", "patient_id", "session_id", "visit_id",
     "clinical_visit_id", "protocol_id", "iteration", "trial", "project", "project_name",
+    "video_id", "audio_id", "media_id", "raw_media_file_name",
 }
 _TASK_EXACT = {"task", "task_name", "prompt", "elicitation", "passage_name"}
 _TIME_EXACT = {
@@ -77,11 +78,13 @@ _AUDIT_PATTERNS = [
     r"(^|_)status($|_)", r"(^|_)warning", r"(^|_)flag", r"(^|_)reason",
     r"implementation_status", r"feature_status", r"computed_proxy", r"validity",
     r"manifest", r"hash", r"sha256", r"version", r"path", r"error", r"message",
+    r"^n_frames$", r"^n_signals_aggregated$", r"^aggregation_profile$",
 ]
 _QC_PATTERNS = [
     r"(^|_)qc($|_)", r"quality", r"snr", r"clip", r"clipping", r"noise",
     r"hum", r"interference", r"reverb", r"echo", r"dropout", r"gain",
     r"distortion", r"powerline", r"saturation", r"artifact", r"contamination",
+    r"valid_fraction", r"face_detected_fraction", r"tracking_fraction", r"detection_fraction",
 ]
 _FEATURE_NAME_PATTERNS = [
     r"^f0", r"^cpp", r"^hnr", r"jitter", r"shimmer", r"voicebreak",

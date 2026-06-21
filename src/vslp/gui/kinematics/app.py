@@ -2332,8 +2332,29 @@ class KinematicsPipelineWindow(QMainWindow):
         layout.setSpacing(12)
         layout.addWidget(self._info_panel(
             "Reports & Outputs",
-            "Package the current kinematics run into reviewable reports. Reports summarize provenance and outputs; they do not replace QC review and they are not clinical diagnostic reports.",
+            "Use Main Feature GUI Handoff for downstream analysis. Supplementary outputs preserve reports, diagnostics, plots, logs, and audit evidence.",
         ))
+
+        handoff_group = QGroupBox("Feature GUI handoff")
+        handoff_layout = QVBoxLayout(handoff_group)
+        handoff_note = QLabel(
+            "Main contains the same downstream contract as the Acoustic GUI: feature values, registry, status, optional QC covariates, and mapped recording context. "
+            "Supplementary indexes detailed kinematic stage outputs."
+        )
+        handoff_note.setWordWrap(True)
+        handoff_note.setObjectName("SubtitleLabel")
+        handoff_buttons = QHBoxLayout()
+        open_main = QPushButton("Open Main Feature GUI Handoff")
+        open_main.setObjectName("RunButton")
+        open_main.clicked.connect(lambda: self.open_feature_handoff("main"))
+        open_supplementary = QPushButton("Open Supplementary Outputs")
+        open_supplementary.setObjectName("OpenButton")
+        open_supplementary.clicked.connect(lambda: self.open_feature_handoff("supplementary"))
+        handoff_buttons.addWidget(open_main)
+        handoff_buttons.addWidget(open_supplementary)
+        handoff_layout.addWidget(handoff_note)
+        handoff_layout.addLayout(handoff_buttons)
+        layout.addWidget(handoff_group)
 
         card_row = QHBoxLayout()
         self.report_status_cards: dict[str, QLabel] = {}
@@ -3885,6 +3906,18 @@ class KinematicsPipelineWindow(QMainWindow):
         import webbrowser
         webbrowser.open(path.as_uri())
 
+    def open_feature_handoff(self, section: str = "main") -> None:
+        path_text = self.output_edit.text().strip()
+        if not path_text:
+            QMessageBox.information(self, "No output folder", "Select an output folder first.")
+            return
+        path = Path(path_text).expanduser().resolve() / "kinematics" / "feature_handoff" / section
+        if not path.exists():
+            QMessageBox.information(self, "Handoff not available", "Run Kinematic Feature Computation first.")
+            return
+        import webbrowser
+        webbrowser.open(path.as_uri())
+
     def open_report(self) -> None:
         if self.last_report_html and self.last_report_html.exists():
             import webbrowser
@@ -3893,16 +3926,120 @@ class KinematicsPipelineWindow(QMainWindow):
             QMessageBox.information(self, "No report", "Create the report first.")
 
     def run_all(self) -> None:
+        inp = self._path_or_warn(self.input_edit, "an input video folder")
+        out = self._path_or_warn(self.output_edit, "an output project folder")
+        if inp is None or out is None:
+            return
+        runtime = mediapipe_environment_status()
+        if not runtime.opencv_available or not runtime.mediapipe_available:
+            QMessageBox.critical(
+                self,
+                "MediaPipe runtime missing",
+                "Install or verify the MediaPipe runtime on the Landmarks page before running the full workflow.",
+            )
+            return
+        try:
+            landmark_cfg = self._landmark_config()
+            selected_landmarks = tuple(parse_int_list(self.landmark_text.toPlainText()))
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "Invalid landmark configuration", str(exc))
+            return
+        if not selected_landmarks:
+            QMessageBox.warning(self, "No landmarks selected", "Select a validated landmark preset before running the workflow.")
+            return
+
         self.run_project_init()
-        self.run_ingest_stage()
-        self.run_metadata_stage()
-        self.run_landmark_plan_stage()
-        self.run_selection_stage()
-        self.run_normalization_stage()
-        self.run_video_qc_stage()
-        self.run_feature_computation_stage()
-        self.run_temporal_aggregation_stage()
-        self.run_report_stage()
+        metadata_text = self.metadata_edit.text().strip()
+        metadata_path = Path(metadata_text).expanduser().resolve() if metadata_text else None
+        feature_cfg = FeatureComputationConfig(
+            selected_landmarks=selected_landmarks,
+            selected_preset=self.selection_preset_combo.currentText() if hasattr(self, "selection_preset_combo") else "custom",
+            smoothing_cutoff_hz=float(self.feature_smoothing_cutoff.value()),
+            outlier_sigma_extreme=float(self.feature_sigma_extreme.value()),
+            outlier_sigma_tight=float(self.feature_sigma_tight.value()),
+            onset_frac=float(self.feature_onset_frac.value()),
+            offset_frac=float(self.feature_offset_frac.value()),
+            use_smoothed_signals=bool(self.feature_use_smoothing.isChecked()),
+            overwrite=True,
+        )
+        aggregation_cfg = TemporalAggregationConfig(
+            profile=self.agg_combo.currentText() if hasattr(self, "agg_combo") else "robust_default",
+            include_raw_signals=bool(self.agg_include_raw.isChecked()) if hasattr(self, "agg_include_raw") else False,
+            include_velocity_signals=bool(self.agg_include_velocity.isChecked()) if hasattr(self, "agg_include_velocity") else True,
+            min_valid_fraction=float(self.agg_min_valid.value()) if hasattr(self, "agg_min_valid") else 0.50,
+            min_detected_fraction=float(self.agg_min_detected.value()) if hasattr(self, "agg_min_detected") else 0.60,
+            overwrite=True,
+        )
+        normalization_method = self.norm_combo.currentText()
+        normalization_center = int(self.center_landmark_spin.value())
+        normalization_overwrite = bool(self.norm_overwrite_check.isChecked())
+        preset_name = self.preset_combo.currentText()
+
+        def full_workflow(input_root: Path, output_root: Path) -> dict[str, object]:
+            ingest = run_ingest(VideoIngestConfig(input_root=input_root, output_root=output_root, recursive=True, extensions=DEFAULT_VIDEO_EXTENSIONS))
+            ingest_manifest = Path(ingest["manifest_csv"])
+            metadata = link_metadata(ingest_manifest, metadata_path, output_root)
+            plan = write_landmark_plan(output_root, landmark_cfg, manifest_csv=ingest_manifest)
+            landmarks = run_mediapipe_landmarks(output_root, landmark_cfg, ingest_manifest)
+            selection = write_selected_landmarks(output_root, selected_landmarks, preset=preset_name, app_version=APP_VERSION)
+            normalization = run_normalization_from_selection(
+                output_root,
+                normalization_method,
+                selected_landmarks=selected_landmarks,
+                preset=preset_name,
+                center_landmark=normalization_center,
+                overwrite=normalization_overwrite,
+            )
+            qc = run_video_qc(output_root, landmarks_manifest_csv=landmarks["manifest_csv"])
+            features = run_feature_computation(output_root, cfg=feature_cfg)
+            aggregation = run_temporal_aggregation(output_root, cfg=aggregation_cfg)
+            inspector = write_inspector_inventory(output_root)
+            report = write_pipeline_summary_report(output_root)
+            return {
+                "ingest": ingest, "metadata": metadata, "plan": plan, "landmarks": landmarks,
+                "selection": selection, "normalization": normalization, "qc": qc,
+                "features": features, "aggregation": aggregation, "inspector": inspector, "report": report,
+            }
+
+        self._start_worker(
+            "Full kinematics workflow",
+            full_workflow,
+            {"input_root": inp, "output_root": out},
+            self._finish_full_workflow,
+        )
+
+    def _finish_full_workflow(self, result: object) -> None:
+        res = dict(result)
+        ingest = dict(res["ingest"])
+        self.ingest_manifest_csv = Path(ingest["manifest_csv"])
+        self.stage_records["ingest"] = StageRecord(status="completed", manifest_path=str(self.ingest_manifest_csv), summary_path=str(ingest.get("summary_csv", "")))
+        self.stage_records["metadata"] = StageRecord(status="completed", manifest_path=str(res["metadata"]))
+        landmark_result = dict(res["landmarks"])
+        landmark_manifest = Path(landmark_result["manifest_csv"])
+        self.stage_records["landmarks"] = StageRecord(status="completed" if int(landmark_result.get("n_error", 0)) == 0 else "completed_with_warnings", manifest_path=str(landmark_manifest))
+        self.stage_records["selection"] = StageRecord(status="completed", manifest_path=str(dict(res["selection"]).get("selected_json", "")))
+        normalization = dict(res["normalization"])
+        self.stage_records["normalization"] = StageRecord(status="completed" if int(normalization.get("n_error", 0)) == 0 else "completed_with_warnings", manifest_path=str(normalization.get("manifest_csv", "")))
+        self._finish_video_qc_stage(res["qc"])
+        self._finish_feature_computation_stage(res["features"])
+        self._finish_temporal_aggregation_stage(res["aggregation"])
+        report = Path(dict(res["report"])["report_html"])
+        self.last_report_html = report
+        self.stage_records["inspector"] = StageRecord(status="completed", manifest_path=str(dict(res["inspector"]).get("inspector_manifest_json", "")))
+        self.stage_records["reports"] = StageRecord(status="completed", report_path=str(report), manifest_path=str(dict(res["report"]).get("manifest_json", "")))
+        self._load_ingest_summary()
+        self._load_landmark_summary(landmark_manifest)
+        self._load_normalization_results(normalization.get("manifest_csv"))
+        self._load_report_checklist(Path(self.output_edit.text()).expanduser().resolve())
+        self.report_box.setHtml(report.read_text(encoding="utf-8"))
+        self._refresh_stage_cards()
+        main_handoff = Path(self.output_edit.text()).expanduser().resolve() / "kinematics" / "feature_handoff" / "main"
+        self._log(f"Full kinematics workflow completed. Main Feature GUI handoff: {main_handoff}")
+        QMessageBox.information(
+            self,
+            "Kinematics workflow complete",
+            f"The workflow completed successfully.\n\nMain Feature GUI handoff:\n{main_handoff}",
+        )
 
 
 def launch_kinematics_gui() -> int:

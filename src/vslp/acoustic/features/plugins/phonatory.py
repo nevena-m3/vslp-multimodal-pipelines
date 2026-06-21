@@ -5,16 +5,15 @@ transparent local signal processing:
 - F0 track from normalized autocorrelation;
 - HNR from autocorrelation peak ratio;
 - CPP from line-normalized cepstral peak prominence;
-- jitter/shimmer perturbation families from voiced-frame period/amplitude tracks;
-- voice-break counts from internal unvoiced runs;
+- jitter/shimmer perturbation families from Praat periodic PointProcess cycles;
+- voice-break counts from PointProcess inter-pulse gaps;
 - H1/H2 harmonic frequency/amplitude estimates from voiced-frame spectra.
 
 Important validation note
 -------------------------
-These formulas are implemented explicitly and tested on synthetic signals, but perturbation
-features are not bit-for-bit Praat/MDVP measures because VSLP does not yet perform glottal
-cycle boundary marking. They should be treated as local, auditable implementations pending
-external reference validation before clinical interpretation.
+Cycle perturbation measures use Praat-Parselmouth directly with all period and amplitude
+constraints recorded in feature provenance. CPP and HNR remain transparent local
+implementations and require task- and protocol-specific external validation before clinical use.
 """
 
 from __future__ import annotations
@@ -24,6 +23,13 @@ from typing import Iterable
 
 import numpy as np
 from scipy import signal
+
+try:
+    import parselmouth
+    from parselmouth.praat import call as praat_call
+except ImportError:  # pragma: no cover - dependency failure is reported in feature status
+    parselmouth = None
+    praat_call = None
 
 from vslp.acoustic.features.plugins.audio_utils import frame_signal, read_region_audio
 from vslp.acoustic.features.plugins.base import AcousticFeaturePlugin, FeatureContext, FeatureValue
@@ -111,22 +117,20 @@ def _line_normalized_cpp(frame: np.ndarray, sr: int, fmin: float, fmax: float) -
     frame = (frame - np.mean(frame)) * np.hanning(len(frame))
     nfft = int(2 ** np.ceil(np.log2(max(len(frame), 1024))))
     spec = np.abs(np.fft.rfft(frame, n=nfft)) + 1e-12
-    log_power = np.log(spec**2)
-    cep = np.fft.irfft(log_power, n=nfft)
+    log_power_db = 10.0 * np.log10(spec**2)
+    cep = np.abs(np.fft.irfft(log_power_db, n=nfft))
     qmin = max(1, int(np.floor(sr / fmax)))
     qmax = min(len(cep) - 1, int(np.ceil(sr / fmin)))
     if qmax <= qmin + 3:
         return np.nan
     q = np.arange(qmin, qmax + 1, dtype=float) / sr
-    y = cep[qmin : qmax + 1]
+    y = 20.0 * np.log10(np.maximum(cep[qmin : qmax + 1], 1e-12))
     if y.size < 4 or not np.isfinite(y).all():
         return np.nan
     # Linear baseline in the quefrency search region; CPP is peak height above the line.
     coef = np.polyfit(q, y, 1)
     baseline = np.polyval(coef, q)
-    prominence = float(np.max(y - baseline))
-    # Use dB-like scaling relative to cepstral baseline magnitude; stable for synthetic + real speech.
-    return float(20.0 * np.log10(max(prominence, 1e-12)))
+    return float(np.max(y - baseline))
 
 
 def _harmonic_estimates(frame: np.ndarray, sr: int, f0: float) -> tuple[float, float, float, float]:
@@ -138,19 +142,13 @@ def _harmonic_estimates(frame: np.ndarray, sr: int, f0: float) -> tuple[float, f
     freqs = np.fft.rfftfreq(nfft, 1.0 / sr)
     spec_db = 20.0 * np.log10(np.abs(np.fft.rfft(frame, n=nfft)) + 1e-12)
 
-    def _peak_near(target: float) -> tuple[float, float]:
+    def _at_harmonic(target: float) -> tuple[float, float]:
         if target <= 0 or target >= sr / 2:
             return np.nan, np.nan
-        half_width = max(15.0, target * 0.08)
-        mask = (freqs >= target - half_width) & (freqs <= target + half_width)
-        if not mask.any():
-            return np.nan, np.nan
-        idxs = np.flatnonzero(mask)
-        idx = idxs[int(np.argmax(spec_db[mask]))]
-        return float(freqs[idx]), float(spec_db[idx])
+        return float(target), float(np.interp(target, freqs, spec_db))
 
-    h1f, h1a = _peak_near(f0)
-    h2f, h2a = _peak_near(2.0 * f0)
+    h1f, h1a = _at_harmonic(f0)
+    h2f, h2a = _at_harmonic(2.0 * f0)
     return h1f, h1a, h2f, h2a
 
 
@@ -224,6 +222,53 @@ def _count_voice_breaks(voiced: np.ndarray, hop_sec: float, min_break_sec: float
     return int(sum((e - s) * hop_sec >= min_break_sec for s, e in zip(starts, ends, strict=False)))
 
 
+def _praat_cycle_features(x: np.ndarray, sr: int, fmin: float, fmax: float) -> tuple[dict[str, float], str]:
+    names = (
+        "localJitter", "localabsoluteJitter", "rapJitter", "ppq5Jitter", "ddpJitter",
+        "localShimmer", "localdbShimmer", "apq3Shimmer", "apq5Shimmer", "apq11Shimmer",
+        "num_voicebreaks",
+    )
+    missing = {name: np.nan for name in names}
+    if parselmouth is None or praat_call is None:
+        return missing, "praat_cycle_backend_unavailable"
+    try:
+        sound = parselmouth.Sound(np.asarray(x, dtype=float), sampling_frequency=float(sr))
+        point = praat_call(sound, "To PointProcess (periodic, cc)", float(fmin), float(fmax))
+        period_floor = 0.8 / float(fmax)
+        period_ceiling = 1.25 / float(fmin)
+        maximum_period_factor = 1.3
+        maximum_amplitude_factor = 1.6
+        args = (0.0, 0.0, period_floor, period_ceiling, maximum_period_factor)
+        shimmer_args = args + (maximum_amplitude_factor,)
+        values = {
+            "localJitter": 100.0 * float(praat_call(point, "Get jitter (local)", *args)),
+            "localabsoluteJitter": float(praat_call(point, "Get jitter (local, absolute)", *args)),
+            "rapJitter": 100.0 * float(praat_call(point, "Get jitter (rap)", *args)),
+            "ppq5Jitter": 100.0 * float(praat_call(point, "Get jitter (ppq5)", *args)),
+            "ddpJitter": 100.0 * float(praat_call(point, "Get jitter (ddp)", *args)),
+            "localShimmer": 100.0 * float(praat_call([sound, point], "Get shimmer (local)", *shimmer_args)),
+            "localdbShimmer": float(praat_call([sound, point], "Get shimmer (local_dB)", *shimmer_args)),
+            "apq3Shimmer": 100.0 * float(praat_call([sound, point], "Get shimmer (apq3)", *shimmer_args)),
+            "apq5Shimmer": 100.0 * float(praat_call([sound, point], "Get shimmer (apq5)", *shimmer_args)),
+            "apq11Shimmer": 100.0 * float(praat_call([sound, point], "Get shimmer (apq11)", *shimmer_args)),
+        }
+        n_points = int(praat_call(point, "Get number of points"))
+        pulse_times = np.asarray(
+            [float(praat_call(point, "Get time from index", i)) for i in range(1, n_points + 1)],
+            dtype=float,
+        )
+        values["num_voicebreaks"] = float(np.sum(np.diff(pulse_times) > period_ceiling)) if pulse_times.size >= 2 else 0.0
+        note = (
+            "cycle_backend=praat_parselmouth_pointprocess_periodic_cc; "
+            f"period_floor={period_floor:.8g}s; period_ceiling={period_ceiling:.8g}s; "
+            "maximum_period_factor=1.3; maximum_amplitude_factor=1.6; "
+            f"pulse_count={n_points}"
+        )
+        return values, note
+    except Exception as exc:  # noqa: BLE001
+        return missing, f"praat_cycle_backend_failed:{type(exc).__name__}:{exc}"
+
+
 @dataclass(frozen=True)
 class PhonatoryPlugin(AcousticFeaturePlugin):
     subsystem: str = "phonatory"
@@ -233,13 +278,12 @@ class PhonatoryPlugin(AcousticFeaturePlugin):
         if context.segmentation_wav_path is None or not context.segmentation_wav_path.exists():
             return {name: _nan_feature(name, "failed", "segmentation_wav_missing") for name in self.feature_names}
 
-        min_pause = float(getattr(context.config, "minimum_pause_duration_sec", 0.15))
+        min_pause = float(getattr(context.config, "minimum_pause_duration_sec", 0.30))
         fmin = float(getattr(context.config, "phonatory_f0_min_hz", 60.0))
         fmax = float(getattr(context.config, "phonatory_f0_max_hz", 400.0))
         min_peak_ratio = float(getattr(context.config, "phonatory_min_autocorr_peak", 0.30))
         frame_ms = float(getattr(context.config, "phonatory_frame_ms", 40.0))
         hop_ms = float(getattr(context.config, "phonatory_hop_ms", 10.0))
-        min_voice_break = float(getattr(context.config, "phonatory_min_voice_break_sec", 0.10))
 
         x, sr, region_note = read_region_audio(
             context.segmentation_wav_path,
@@ -303,12 +347,12 @@ class PhonatoryPlugin(AcousticFeaturePlugin):
         apq3 = _amplitude_perturbation(amps, 3)
         apq5 = _amplitude_perturbation(amps, 5)
         apq11 = _amplitude_perturbation(amps, 11)
-        voicebreaks = _count_voice_breaks(voiced_arr, hop_sec=hop_sec, min_break_sec=min_voice_break)
+        cycle_values, cycle_note = _praat_cycle_features(x, sr, fmin=fmin, fmax=fmax)
 
         voice_fraction = float(np.mean(voiced_arr)) if voiced_arr.size else 0.0
         note = (
             "validated_local_phonatory_v0.28; frame_autocorrelation_f0; line_normalized_cpp; "
-            "perturbation_from_voiced_frame_period_and_rms_tracks; external_praat_mdvp_validation_recommended; "
+            f"{cycle_note}; "
             f"voiced_frames={int(np.sum(voiced_arr))}/{len(voiced_arr)}; voice_fraction={voice_fraction:.3f}; "
             f"f0_range={fmin:.1f}-{fmax:.1f}Hz; {region_note}"
         )
@@ -320,20 +364,25 @@ class PhonatoryPlugin(AcousticFeaturePlugin):
             "f0_std": _safe_std(f0_arr),
             "CPP_mean": _safe_mean(cpp_vals),
             "HNR": _safe_mean(hnr_vals),
-            "localJitter": local_jitter,
-            "localabsoluteJitter": abs_jitter,
-            "rapJitter": rap,
-            "ppq5Jitter": ppq5,
-            "ddpJitter": ddp,
-            "localShimmer": local_shim,
-            "localdbShimmer": local_db_shim,
-            "apq3Shimmer": apq3,
-            "apq5Shimmer": apq5,
-            "apq11Shimmer": apq11,
-            "num_voicebreaks": float(voicebreaks),
+            **cycle_values,
             "H1freq": _safe_mean(h1f_vals),
             "H1amp": _safe_mean(h1a_vals),
             "H2freq": _safe_mean(h2f_vals),
             "H2amp": _safe_mean(h2a_vals),
         }
-        return {name: FeatureValue(name, value, status, low_voicing_note if status != "computed" else note) for name, value in values.items()}
+        cycle_features = {
+            "localJitter", "localabsoluteJitter", "rapJitter", "ppq5Jitter", "ddpJitter",
+            "localShimmer", "localdbShimmer", "apq3Shimmer", "apq5Shimmer", "apq11Shimmer",
+            "num_voicebreaks",
+        }
+        return {
+            name: FeatureValue(
+                name,
+                value,
+                ("computed" if np.isfinite(value) else "failed_dependency")
+                if name in cycle_features and status == "computed"
+                else status,
+                low_voicing_note if status != "computed" else note,
+            )
+            for name, value in values.items()
+        }

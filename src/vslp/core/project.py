@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import time
 from typing import Any
 from uuid import uuid4
 
@@ -59,8 +60,24 @@ def _read_manifest(path: Path) -> dict[str, Any]:
 
 def _write_manifest(path: Path, payload: dict[str, Any]) -> None:
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-    temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    temporary.replace(path)
+    try:
+        temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        for attempt in range(6):
+            try:
+                temporary.replace(path)
+                return
+            except OSError as exc:
+                retryable = isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in {5, 32, 33}
+                if not retryable:
+                    raise
+                if attempt == 5:
+                    raise PermissionError(
+                        f"Could not update the project manifest after 6 attempts: {path}. "
+                        "Close other VSLP windows or file previews using this project."
+                    ) from exc
+                time.sleep(0.15 * (attempt + 1))
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def initialize_project(output_root: str | Path, project_name: str = "VSLP Study") -> ProjectPaths:

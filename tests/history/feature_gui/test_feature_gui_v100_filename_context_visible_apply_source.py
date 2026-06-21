@@ -10,7 +10,7 @@ def _src():
 
 def test_v100_version_and_apply_has_visible_side_effects():
     src = _src()
-    assert 'APP_VERSION = "v0.108.0"' in (read(APP) if 'read' in globals() else APP.read_text(encoding='utf-8'))
+    assert 'APP_VERSION = "v0.108.0"' in APP.read_text(encoding='utf-8')
     body = src[src.index('def apply_filename_context_from_metadata_mapping'):src.index('def _style_metadata_role_combo')]
     assert 'Applying filename context from Metadata Mapping fallback using selected column' in body
     assert 'self.filename_context_applied = True' in body

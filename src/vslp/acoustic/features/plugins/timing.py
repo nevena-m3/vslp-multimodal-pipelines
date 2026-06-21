@@ -30,7 +30,7 @@ TIMING_FEATURES = (
 
 
 def _cv(values: pd.Series | np.ndarray) -> float:
-    """Population coefficient of variation, undefined for <2 finite observations."""
+    """Sample coefficient of variation, undefined for <2 finite observations."""
     arr = np.asarray(values, dtype=float)
     arr = arr[np.isfinite(arr)]
     if arr.size < 2:
@@ -38,7 +38,7 @@ def _cv(values: pd.Series | np.ndarray) -> float:
     mean = float(np.mean(arr))
     if abs(mean) < 1e-12:
         return np.nan
-    return float(np.std(arr, ddof=0) / mean)
+    return float(np.std(arr, ddof=1) / mean)
 
 
 def _normalize_task_name(task: object) -> str:
@@ -108,7 +108,7 @@ class TimingPlugin(AcousticFeaturePlugin):
 
     def compute(self, context: FeatureContext) -> dict[str, FeatureValue]:
         cfg = context.config
-        min_pause = float(getattr(cfg, "minimum_pause_duration_sec", 0.15))
+        min_pause = float(getattr(cfg, "minimum_pause_duration_sec", 0.30))
         task_word_counts = getattr(cfg, "task_word_counts", {}) or {}
 
         if context.segments_csv is None or not context.segments_csv.exists():
@@ -142,6 +142,7 @@ class TimingPlugin(AcousticFeaturePlugin):
 
         internal_pause = _internal_pauses(segs, start, end, min_pause)
         speech_dur = float(speech["duration_sec"].sum())
+        phrases = speech.loc[speech["duration_sec"] > min_pause].copy()
         total_pause_dur = float(internal_pause["duration_sec"].sum()) if not internal_pause.empty else 0.0
         percent_pause = float(100.0 * total_pause_dur / effective_dur) if effective_dur > 0 else np.nan
 
@@ -156,14 +157,15 @@ class TimingPlugin(AcousticFeaturePlugin):
             "percent_pause": percent_pause,
             "num_pause": float(len(internal_pause)),
             "mean_pause_dur": float(internal_pause["duration_sec"].mean()) if not internal_pause.empty else np.nan,
-            "mean_phrase_dur": float(speech["duration_sec"].mean()) if not speech.empty else np.nan,
+            "mean_phrase_dur": float(phrases["duration_sec"].mean()) if not phrases.empty else np.nan,
             "cv_pause_dur": _cv(internal_pause["duration_sec"]) if not internal_pause.empty else np.nan,
-            "cv_phrase_dur": _cv(speech["duration_sec"]),
+            "cv_phrase_dur": _cv(phrases["duration_sec"]),
             "speech_rate": speech_rate,
         }
         note = (
             "validated_timing_v0.26; computed_from_segmentation_segments; "
-            f"minimum_internal_pause_sec={min_pause}; {interval_note}; {speech_rate_note}; "
+            f"minimum_internal_pause_sec={min_pause}; minimum_phrase_sec_exclusive={min_pause}; "
+            f"{interval_note}; {speech_rate_note}; "
             "percent_pause_units=percent_0_to_100"
         )
         return as_feature_values(features, note=note)

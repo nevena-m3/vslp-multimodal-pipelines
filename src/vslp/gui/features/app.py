@@ -774,7 +774,22 @@ class FeatureAnalysisGUI(QMainWindow):
         step_row.addWidget(self._project_step_label(3, "Map context", "Use Feature Mapping and Metadata Mapping before analysis."))
         intro.layout.addLayout(step_row)
 
-        intro.layout.addWidget(self._project_section_title("Source tables"))
+        intro.layout.addWidget(self._project_section_title(
+            "Recommended handoff",
+            "Load the Main Feature GUI Handoff folder produced by the Acoustic or Kinematics GUI. Files and modality are mapped automatically.",
+        ))
+        handoff_actions = QHBoxLayout()
+        handoff_actions.setSpacing(10)
+        handoff_btn = QPushButton("Load Main Handoff Folder")
+        handoff_btn.clicked.connect(self.pick_feature_handoff_folder)
+        handoff_actions.addWidget(handoff_btn)
+        handoff_actions.addStretch(1)
+        intro.layout.addLayout(handoff_actions)
+
+        intro.layout.addWidget(self._project_section_title(
+            "Direct table import",
+            "Use this compatibility path for legacy exports or independently prepared tables.",
+        ))
         grid = QGridLayout()
         grid.setHorizontalSpacing(18)
         grid.setVerticalSpacing(12)
@@ -2253,6 +2268,8 @@ class FeatureAnalysisGUI(QMainWindow):
         return pd.Series(pd.NA, index=frame.index, dtype="string")
 
     def _configured_analysis_dir(self) -> Path | None:
+        if not hasattr(self, "output_edit"):
+            return None
         workspace_text = self.output_edit.text().strip()
         scope = self._analysis_scope_key()
         if not workspace_text or not scope:
@@ -10354,6 +10371,8 @@ class FeatureAnalysisGUI(QMainWindow):
             ("ml_target_table.csv", "identifiers/context plus mapped outcomes"),
             ("ml_covariate_table.csv", "identifiers/context plus mapped covariates"),
             ("ml_qc_covariate_table_from_feature_table.csv", "identifiers/context plus mapped QC covariates"),
+            ("mapped_metadata_table.csv", "canonical metadata produced from the accepted Feature GUI mapping"),
+            ("metadata_mapping_manifest.csv", "accepted source-to-canonical metadata role mapping"),
             ("feature_export_manifest.csv", "feature decisions, evidence, task scope, and profile"),
             ("feature_recommendation_summary.csv", "task-scoped readiness counts"),
             ("export_profile_summary.csv", "current and comparison profile counts"),
@@ -10532,9 +10551,17 @@ class FeatureAnalysisGUI(QMainWindow):
             write_df("linked_qc_table.csv", self.qc_df.copy())
         if self.meta_df is not None:
             write_df("linked_metadata_table.csv", self.meta_df.copy())
+            mapped_metadata = self._apply_metadata_mapping_to_table(self.meta_df.copy())
+            write_df("mapped_metadata_table.csv", mapped_metadata)
+        metadata_mapping = getattr(self, "metadata_mapping_df", pd.DataFrame())
+        if metadata_mapping is not None and not metadata_mapping.empty:
+            write_df("metadata_mapping_manifest.csv", metadata_mapping.copy())
         config = {
+            "schema": "vslp_feature_analysis_handoff",
+            "schema_version": "1.0.0",
             "app_version": APP_VERSION,
             "created_at": datetime.now().isoformat(timespec="seconds"),
+            "modality": self._project_modality_mode() or "generic",
             "task_scope": task,
             "task_specific": task != "All tasks",
             "task_n_rows": int(len(active_df)),
@@ -10549,6 +10576,9 @@ class FeatureAnalysisGUI(QMainWindow):
             "feature_table": self.feature_picker.path,
             "qc_table": self.qc_picker.path,
             "metadata_table": self.meta_picker.path,
+            "metadata_mapping_accepted": bool(getattr(self, "metadata_mapping_accepted", False)),
+            "mapped_metadata_file": "mapped_metadata_table.csv" if "mapped_metadata_table.csv" in paths else "",
+            "metadata_mapping_manifest": "metadata_mapping_manifest.csv" if "metadata_mapping_manifest.csv" in paths else "",
             "registry_table": self.registry_picker.path,
             "boundary": "Feature Analysis export only; no model trained; ML preprocessing and feature selection must be fold-safe.",
         }
@@ -10575,6 +10605,8 @@ Core files:
 - `ml_covariate_table.csv`: identifiers plus mapped covariates, if available.
 - `ml_qc_covariate_table_from_feature_table.csv`: identifiers plus QC columns from the feature table, if available.
 - `linked_qc_table.csv`: optional externally loaded QC table.
+- `mapped_metadata_table.csv`: canonical metadata produced from the accepted Feature GUI metadata mapping.
+- `metadata_mapping_manifest.csv`: source-column roles and canonical-field assignments accepted in Feature GUI.
 - `feature_export_manifest.csv`: color-coded decision logic in table form.
 - `export_config.json`: reproducibility metadata.
 
@@ -10651,6 +10683,72 @@ Decision colors:
         p = QFileDialog.getExistingDirectory(self, "Select shared VSLP study workspace")
         if p:
             self.output_edit.setText(p)
+
+    @staticmethod
+    def resolve_feature_handoff_folder(selected: Path | str) -> dict[str, object]:
+        """Validate a modality handoff folder and resolve its canonical inputs."""
+        selected_path = Path(selected).expanduser().resolve()
+        candidates = (
+            selected_path,
+            selected_path / "main",
+            selected_path / "feature_handoff" / "main",
+        )
+        main_dir = next((path for path in candidates if (path / "feature_values.csv").is_file()), None)
+        if main_dir is None:
+            raise ValueError(
+                "This folder does not contain feature_values.csv. Select the modality's "
+                "feature_handoff/main folder, its feature_handoff folder, or the modality folder."
+            )
+
+        required = ("feature_values.csv", "feature_registry.csv", "feature_export_manifest.json")
+        missing = [name for name in required if not (main_dir / name).is_file()]
+        if missing:
+            raise ValueError("Main handoff is incomplete. Missing: " + ", ".join(missing))
+
+        manifest = json.loads((main_dir / "feature_export_manifest.json").read_text(encoding="utf-8"))
+        raw_modality = str(manifest.get("modality", "")).strip().lower()
+        modality = {"acoustic": "Acoustic", "kinematic": "Kinematic", "kinematics": "Kinematic"}.get(raw_modality)
+        if modality is None:
+            folder_hint = main_dir.parent.parent.name.lower()
+            modality = {"acoustic": "Acoustic", "kinematic": "Kinematic", "kinematics": "Kinematic"}.get(folder_hint, "Generic")
+
+        modality_dir = main_dir.parent.parent
+        workspace = modality_dir.parent
+        optional = {
+            "qc": main_dir / "qc_features.csv",
+            "metadata": main_dir / "metadata_context.csv",
+            "status": main_dir / "feature_status.csv",
+        }
+        return {
+            "main_dir": main_dir,
+            "workspace": workspace,
+            "modality": modality,
+            "feature": main_dir / "feature_values.csv",
+            "registry": main_dir / "feature_registry.csv",
+            **{name: path if path.is_file() else None for name, path in optional.items()},
+        }
+
+    def pick_feature_handoff_folder(self) -> None:
+        selected = QFileDialog.getExistingDirectory(self, "Select Acoustic or Kinematic Main Feature GUI Handoff")
+        if not selected:
+            return
+        try:
+            resolved = self.resolve_feature_handoff_folder(selected)
+            self.feature_picker.path_edit.setText(str(resolved["feature"]))
+            self.registry_picker.path_edit.setText(str(resolved["registry"]))
+            self.qc_picker.path_edit.setText(str(resolved["qc"] or ""))
+            self.meta_picker.path_edit.setText(str(resolved["metadata"] or ""))
+            self.modality_combo.setCurrentText(str(resolved["modality"]))
+            self.output_edit.setText(str(resolved["workspace"]))
+            self.log(
+                f"Validated {resolved['modality']} main handoff: {resolved['main_dir']} | "
+                f"QC: {'included' if resolved['qc'] else 'not provided'} | "
+                f"metadata: {'included' if resolved['metadata'] else 'not provided'}"
+            )
+            self.load_and_map()
+        except Exception as exc:
+            self.log_error("Main handoff load failed", exc)
+            QMessageBox.critical(self, "Invalid Feature GUI handoff", str(exc))
 
     def log(self, text: str) -> None:
         stamp = datetime.now().strftime("%H:%M:%S")

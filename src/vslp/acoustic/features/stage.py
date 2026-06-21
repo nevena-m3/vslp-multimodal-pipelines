@@ -4,7 +4,7 @@ V0.7/V0.8 introduces a plugin architecture and computes the first validated-safe
 feature families:
 - respiratory/timing features from Silero segments;
 - rhythm/envelope modulation features from canonical segmentation WAVs;
-- phonatory engineering proxies for F0 and CPP;
+- phonatory F0/HNR/CPP plus Praat PointProcess cycle perturbation measures;
 - global RMS amplitude.
 
 Features still requiring formula-level validation against the uploaded notebook remain
@@ -28,6 +28,7 @@ import pandas as pd
 from vslp.acoustic.features.plugins import build_default_plugins, implemented_feature_names
 from vslp.acoustic.features.plugins.base import FeatureContext, FeatureValue
 from vslp.acoustic.features.registry import build_acoustic_feature_registry
+from vslp.core.feature_contract import build_feature_delivery, write_feature_handoff
 from vslp.acoustic.features.scales import build_feature_computation_policy, build_feature_scale_registry
 from vslp.core.project import ensure_stage_folders
 from vslp.core.provenance import python_environment
@@ -58,7 +59,7 @@ class FeatureExtractionConfig:
     selected_features: list[str] = field(default_factory=list)
     task_word_counts: dict[str, float] = field(default_factory=dict)
     metadata_csv: str | None = None
-    minimum_pause_duration_sec: float = 0.15
+    minimum_pause_duration_sec: float = 0.30
     acoustic_region_policy: str = "speech_only"  # speech_only, effective_task, full_file
     # v0.35: explicit computation/reduction policy controls.
     # validated_default keeps family-specific defaults. Other modes are applied only
@@ -278,7 +279,7 @@ def _build_reduction_audit(registry: pd.DataFrame, cfg: FeatureExtractionConfig)
         elif family == "articulatory_formant":
             native = "valid LPC formant-frame trajectories"
             region = str(getattr(cfg, "acoustic_region_policy", "speech_only"))
-            reducer = "median formants/bandwidths, 5-95 ranges, slope percentiles"
+            reducer = "mean formants, median bandwidths, max-min ranges, slope percentiles"
             applied = str(getattr(cfg, "formant_mode", "valid_frame_default"))
             warning = "requires valid LPC frames; low-validity tracks must be reviewed"
         elif family == "resonatory_nasality":
@@ -385,6 +386,35 @@ def run_acoustic_feature_extraction(
     pd.DataFrame(rows).to_csv(features_path, index=False)
     pd.DataFrame(long_status_rows).to_csv(status_path, index=False)
     registry.to_csv(registry_path, index=False)
+    handoff_values = pd.DataFrame(rows).copy()
+    if not handoff_values.empty:
+        handoff_values.insert(0, "recording_id", handoff_values.get("record_key", handoff_values.get("file_name", "")))
+        handoff_values["source_file"] = handoff_values.get("file_name", "")
+        handoff_values["modality"] = "acoustic"
+        handoff_values["aggregation_level"] = "recording_task"
+    handoff_status = pd.DataFrame(long_status_rows).copy()
+    if not handoff_status.empty:
+        handoff_status.insert(0, "recording_id", handoff_status["file_name"])
+        handoff_status["modality"] = "acoustic"
+    handoff_registry = registry.copy()
+    handoff_registry["aggregation"] = "file-level scalar; see acoustic_feature_computation_policy.csv"
+    handoff_registry["normalization"] = "feature-specific native scale; see acoustic_feature_measurement_scale_registry.csv"
+    handoff_registry["required_inputs"] = "segmentation and/or task-scoped waveform; see computation_note"
+    handoff_registry["source_document"] = "Features Formulas (2).docx; Features Research  (2).xlsx"
+    handoff_registry["source_location"] = "docs/reference/ACOUSTIC_FEATURE_SOURCE_TRACEABILITY.md"
+    handoff = write_feature_handoff(
+        folders["tables"], handoff_values, handoff_registry, handoff_status,
+        "acoustic", features_path, registry_path,
+    )
+    delivery = build_feature_delivery(
+        output_root,
+        "acoustic",
+        handoff,
+        optional_main={
+            "qc_features.csv": Path(output_root) / "acoustic" / "003_quality_control" / "tables" / "acoustic_quality_processed_features.csv",
+            "metadata_context.csv": Path(output_root) / "acoustic" / "000_metadata" / "tables" / "project_file_index.csv",
+        },
+    )
     build_feature_scale_registry(registry).to_csv(scale_registry_path, index=False)
     build_feature_computation_policy(registry).to_csv(computation_policy_path, index=False)
     _build_reduction_audit(registry, cfg).to_csv(reduction_audit_path, index=False)
@@ -449,6 +479,10 @@ def run_acoustic_feature_extraction(
             ArtifactRef(path=str(features_path), role="features_per_file", media_type="text/csv"),
             ArtifactRef(path=str(status_path), role="feature_status_long", media_type="text/csv"),
             ArtifactRef(path=str(registry_path), role="selected_feature_registry", media_type="text/csv"),
+            ArtifactRef(path=str(handoff["feature_values_csv"]), role="canonical_feature_values", media_type="text/csv"),
+            ArtifactRef(path=str(handoff["feature_registry_csv"]), role="canonical_feature_registry", media_type="text/csv"),
+            ArtifactRef(path=str(handoff["feature_status_csv"]), role="canonical_feature_status", media_type="text/csv"),
+            ArtifactRef(path=str(delivery["delivery_manifest_json"]), role="feature_delivery_manifest", media_type="application/json"),
             ArtifactRef(path=str(scale_registry_path), role="feature_measurement_scale_registry", media_type="text/csv"),
             ArtifactRef(path=str(computation_policy_path), role="feature_computation_policy", media_type="text/csv"),
             ArtifactRef(path=str(native_segments_path), role="native_segment_events", media_type="text/csv"),
@@ -826,7 +860,7 @@ img {{ max-width:100%; border-radius:10px; border:1px solid #315D7C; background:
 </style></head><body>
 <h1>VSLP Acoustic Feature Extraction Report</h1>
 <div class='card'><span class='badge'>Files OK: {files_ok}</span><span class='badge'>Files failed: {failed}</span><span class='badge'>Computed feature values: {computed}</span><span class='badge'>Proxy values: {proxies}</span><span class='badge'>Pending placeholders: {pending}</span></div>
-<div class='card'><h2>Current implementation scope</h2><p>V0.12 uses a region-aware plugin architecture. Timing and rhythm features are computed from validated segmentation/preprocessed audio outputs. F0 and CPP are currently local engineering proxies and must be validated against the reference notebook/Praat-style definitions before clinical interpretation.</p><p class='warning'>Registered features that are not yet implemented remain explicit <code>NaN</code> placeholders with status <code>not_implemented_yet</code>.</p></div>
+<div class='card'><h2>Current implementation scope</h2><p>The region-aware plugin architecture records task region, estimator settings, and feature status. Cycle-based jitter, shimmer, and voice breaks use Praat PointProcess measures; local CPP/HNR, LPC formants, nasality, EMS, and automatic DDK event detection retain explicit validation notes.</p><p class='warning'>Registered features that are not yet implemented remain explicit <code>NaN</code> placeholders with status <code>not_implemented_yet</code>.</p></div>
 <div class='card'><h2>Computed feature names</h2><pre>{json.dumps(implemented, indent=2)}</pre></div>
 {img_block('Feature missingness', missingness_plot)}
 {img_block('Subsystem implementation status', subsystem_plot)}

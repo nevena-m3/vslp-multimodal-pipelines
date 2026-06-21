@@ -55,5 +55,5 @@ def test_phonatory_and_rhythm_plugins_on_synthetic_audio(tmp_path: Path):
     rh = RhythmPlugin().compute(ctx)
     assert ph["f0_mean"].status in {"computed", "computed_with_warning"}
     assert np.isfinite(ph["f0_mean"].value)
-    assert rh["intensity_CV"].status == "computed"
+    assert rh["intensity_CV"].status == "computed_with_warning"
     assert np.isfinite(rh["fft_peaks1"].value)

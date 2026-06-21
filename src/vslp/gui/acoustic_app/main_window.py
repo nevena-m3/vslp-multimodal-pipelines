@@ -1060,8 +1060,8 @@ class AcousticPipelineWindow(QMainWindow):
         right_layout.addWidget(self.feature_detail_box)
         param_group = QGroupBox("Feature parameters")
         form = QFormLayout(param_group)
-        self.min_pause_feature_spin = QDoubleSpinBox(); self.min_pause_feature_spin.setDecimals(2); self.min_pause_feature_spin.setRange(0.0, 5.0); self.min_pause_feature_spin.setSingleStep(0.05); self.min_pause_feature_spin.setValue(0.15)
-        self._set_tooltip(self.min_pause_feature_spin, "Minimum internal nonspeech duration counted as a pause. 150 ms is a conservative starting point for speech pause analysis.")
+        self.min_pause_feature_spin = QDoubleSpinBox(); self.min_pause_feature_spin.setDecimals(2); self.min_pause_feature_spin.setRange(0.0, 5.0); self.min_pause_feature_spin.setSingleStep(0.05); self.min_pause_feature_spin.setValue(0.30)
+        self._set_tooltip(self.min_pause_feature_spin, "Minimum internal nonspeech duration counted as a pause and minimum phrase duration. The supplied VSLP feature protocol specifies 300 ms.")
         self.computation_mode_combo = QComboBox(); self.computation_mode_combo.addItems([
             "validated_default",
             "speech_only_concatenated",
@@ -1272,8 +1272,28 @@ class AcousticPipelineWindow(QMainWindow):
         layout.setSpacing(12)
         layout.addWidget(self._info_panel(
             "Info",
-            "Review generated outputs, open stage reports, and create a compact run-level summary. Quality Control remains a dedicated stage after segmentation; this screen only organizes outputs."
+            "Use Main Feature GUI Handoff for downstream analysis. Supplementary outputs preserve stage reports, diagnostics, plots, logs, and audit evidence."
         ))
+
+        handoff_group = QGroupBox("Feature GUI handoff")
+        handoff_layout = QVBoxLayout(handoff_group)
+        handoff_note = QLabel(
+            "Main contains the feature values, registry, per-feature status, optional QC covariates, and mapped recording context. "
+            "Supplementary indexes detailed stage outputs and is intended for review and troubleshooting."
+        )
+        handoff_note.setWordWrap(True)
+        handoff_note.setObjectName("SubtitleLabel")
+        handoff_buttons = QHBoxLayout()
+        open_main = QPushButton("Open Main Feature GUI Handoff")
+        open_main.setObjectName("RunButton")
+        open_main.clicked.connect(lambda: self._open_feature_handoff("main"))
+        open_supplementary = QPushButton("Open Supplementary Outputs")
+        open_supplementary.setObjectName("OpenButton")
+        open_supplementary.clicked.connect(lambda: self._open_feature_handoff("supplementary"))
+        handoff_buttons.addWidget(open_main)
+        handoff_buttons.addWidget(open_supplementary)
+        handoff_layout.addWidget(handoff_note)
+        handoff_layout.addLayout(handoff_buttons)
 
         generate_group = QGroupBox("Run summary")
         generate_layout = QVBoxLayout(generate_group)
@@ -1300,7 +1320,7 @@ class AcousticPipelineWindow(QMainWindow):
             btn = QPushButton(label); btn.setObjectName("OpenButton"); btn.clicked.connect(callback)
             stage_grid.addWidget(btn, i // 2, i % 2)
 
-        primary_tables = QGroupBox("Primary tables")
+        primary_tables = QGroupBox("Stage and audit tables (supplementary)")
         table_grid = QGridLayout(primary_tables)
         table_buttons = [
             ("Project file index", lambda: self._open_stage_file("metadata", "summary")),
@@ -1330,12 +1350,20 @@ class AcousticPipelineWindow(QMainWindow):
         folder_layout.addWidget(open_acoustic)
         folder_layout.addWidget(open_plots)
 
+        layout.addWidget(handoff_group)
         layout.addWidget(generate_group)
         layout.addWidget(stage_reports)
         layout.addWidget(primary_tables)
         layout.addWidget(folders)
         layout.addStretch(1)
         return self._scrollable(container)
+
+    def _open_feature_handoff(self, section: str) -> None:
+        path = self._output_root() / "acoustic" / "feature_handoff" / section
+        if not path.exists():
+            QMessageBox.information(self, "Handoff not available", "Run Acoustic Feature Extraction first.")
+            return
+        open_path(path)
 
     # ---------------------------- FEATURE TREE ----------------------------
     def _feature_status(self, name: str) -> str:
