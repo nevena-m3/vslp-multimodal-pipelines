@@ -1,3 +1,0 @@
-subject_id,session_id,iteration,task,recording_date,diagnosis,severity_score,severity_bin,file_name
-SUBJ001,SESSION01,1,bamboo,2026-01-01,ALS,30,mild,SUBJ001_SESSION01_ITERATION01_BAMBOO_true_wav.wav
-SUBJ002,SESSION01,1,ddk,2026-01-02,ALS,35,moderate,SUBJ002_SESSION01_ITERATION01_DDK_webm_content.wav
