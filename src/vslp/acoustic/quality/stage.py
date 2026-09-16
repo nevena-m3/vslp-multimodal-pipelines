@@ -35,6 +35,7 @@ except Exception:  # pragma: no cover - optional at runtime
     PCA = None
     StandardScaler = None
 
+from vslp.acoustic.context import cleanup_stage
 from vslp.core.project import ensure_stage_folders
 from vslp.core.provenance import python_environment, sha256_file
 from vslp.core.schemas import ArtifactRef, StageManifest, StageResult
@@ -485,6 +486,7 @@ def _compute_one(row: pd.Series, cfg: QualityControlConfig, families: list[str])
     frames_path=Path(str(row.get("frame_csv_path", "")))
     segments_path=Path(str(row.get("segments_csv_path", "")))
     out={"file_name":file_name, "segmentation_wav_path":str(wav), "frame_csv_path":str(frames_path), "segments_csv_path":str(segments_path)}
+    out.update({key: row.get(key) for key in ("recording_id", "source_file_path", "source_sha256", "project_name", "task_name", "run_id", "run_created_at_local", "run_created_at_utc")})
     status_rows=[]
     if not wav.exists(): raise FileNotFoundError(f"Missing segmentation WAV: {wav}")
     if not frames_path.exists(): raise FileNotFoundError(f"Missing frame CSV: {frames_path}")
@@ -591,7 +593,7 @@ def _quality_recommendations(warnings_df: pd.DataFrame, n_files: int) -> pd.Data
             "family": "overall",
             "n_files_flagged": 0,
             "fraction_files_flagged": 0.0,
-            "recommendation": "No QC warning thresholds were triggered. Continue feature extraction, but still inspect plots and metadata.",
+            "recommendation": "No QC warning thresholds were triggered. Continue feature extraction and inspect acoustic QC plots.",
         }])
     for fam, grp in warnings_df.groupby("family"):
         n = int(grp["file_name"].nunique())
@@ -604,18 +606,19 @@ def _quality_recommendations(warnings_df: pd.DataFrame, n_files: int) -> pd.Data
     return pd.DataFrame(rows)
 
 
+@cleanup_stage
 def run_acoustic_quality_control(segmentation_summary_csv: str | Path, output_root: str | Path, config: QualityControlConfig | None=None) -> StageResult:
     cfg=config or QualityControlConfig()
     families=cfg.selected_families or list(QC_FAMILIES.keys())
     families=[f for f in families if f in QC_FAMILIES]
     output_root=Path(output_root); segmentation_summary_csv=Path(segmentation_summary_csv)
     stage_dir=output_root/"acoustic"/"003_quality_control"
-    folders=ensure_stage_folders(stage_dir)
+    folders=ensure_stage_folders(stage_dir, lazy=True)
     rows=[]; status_rows=[]; errors=[]
     seg=pd.read_csv(segmentation_summary_csv) if segmentation_summary_csv.exists() else pd.DataFrame()
     for _, row in seg.iterrows():
         try:
-            vals, st=_compute_one(row, cfg, families); rows.append(vals); status_rows.extend(st)
+            vals, st=_compute_one(row, cfg, families); rows.append(vals); status_rows.extend([{**item, **{key: row.get(key) for key in ("recording_id", "task_name", "run_id")}} for item in st])
         except Exception as exc:
             errors.append({"file_name":row.get("file_name", ""), "status":"failed", "error":str(exc)})
     features_csv=folders["tables"]/"acoustic_quality_features.csv"
@@ -633,7 +636,6 @@ def run_acoustic_quality_control(segmentation_summary_csv: str | Path, output_ro
     review_rank_csv=folders["tables"]/"acoustic_quality_recording_review_rank.csv"
     pca_variance_csv=folders["tables"]/"acoustic_quality_pca_variance.csv"
     pca_scores_csv=folders["tables"]/"acoustic_quality_pca_scores.csv"
-    group_counts_csv=folders["tables"]/"acoustic_quality_group_counts.csv"
     errors_csv=folders["errors"]/"acoustic_quality_errors.csv"
 
     feat_df=pd.DataFrame(rows)
@@ -664,12 +666,12 @@ def run_acoustic_quality_control(segmentation_summary_csv: str | Path, output_ro
     registry_df.to_csv(registry_csv,index=False)
     warnings_df.to_csv(warnings_csv,index=False)
     recommendations_df.to_csv(recommendations_csv,index=False)
-    status_df=pd.DataFrame(status_rows, columns=["file_name","family","family_label","status","flags"])
+    status_df=pd.DataFrame(status_rows, columns=["file_name","recording_id","task_name","run_id","family","family_label","status","flags"])
     status_df.to_csv(status_csv,index=False)
     pd.DataFrame(errors).to_csv(errors_csv,index=False)
     fam_summary=status_df.groupby(["family","family_label","status"]).size().reset_index(name="count") if not status_df.empty else pd.DataFrame(columns=["family","family_label","status","count"])
     fam_summary.to_csv(family_csv,index=False)
-    main_cols=["file_name","quality_review_level","quality_n_warnings","quality_warning_families","duration_sec","sample_rate_hz","qadd_pause_rms_db_median","qadd_speech_pause_level_diff_db","qgain_speech_rms_db_std","qrev_post_offset_tail_db_above_floor","qchan_speech_centroid_hz","qdist_near_clipped_sample_fraction","qtemp_waveform_continuity_break_score"]
+    main_cols=["recording_id","file_name","source_file_path","source_sha256","project_name","task_name","run_id","run_created_at_local","run_created_at_utc","quality_review_level","quality_n_warnings","quality_warning_families","duration_sec","sample_rate_hz","qadd_pause_rms_db_median","qadd_speech_pause_level_diff_db","qgain_speech_rms_db_std","qrev_post_offset_tail_db_above_floor","qchan_speech_centroid_hz","qdist_near_clipped_sample_fraction","qtemp_waveform_continuity_break_score"]
     for c in main_cols:
         if c not in feat_df.columns: feat_df[c]=np.nan
     feat_df[main_cols].to_csv(main_csv,index=False)
@@ -685,7 +687,6 @@ def run_acoustic_quality_control(segmentation_summary_csv: str | Path, output_ro
     analysis["review_rank"].to_csv(review_rank_csv, index=False)
     analysis["pca_variance"].to_csv(pca_variance_csv, index=False)
     analysis["pca_scores"].to_csv(pca_scores_csv, index=False)
-    analysis["group_counts"].to_csv(group_counts_csv, index=False)
 
     # plots
     p1=folders["plots"]/"quality_family_status.png"
@@ -700,7 +701,6 @@ def run_acoustic_quality_control(segmentation_summary_csv: str | Path, output_ro
     p10=folders["plots"]/"quality_missingness_feature_coverage.png"
     p11=folders["plots"]/"quality_pca_scree.png"
     p12=folders["plots"]/"quality_pca_embedding.png"
-    p13=folders["plots"]/"quality_group_stratified_family_scores.png"
     _plot_family_status(status_df,p1); _plot_overview(feat_df,p2)
     _plot_feature_distributions(feat_df,p3); _plot_warning_heatmap(warnings_df, feat_df, p4); _plot_recommendations(recommendations_df,p5)
     _plot_family_score_distributions(analysis["family_scores"], p6)
@@ -710,9 +710,8 @@ def run_acoustic_quality_control(segmentation_summary_csv: str | Path, output_ro
     _plot_missingness_coverage(analysis["distribution_summary"], p10)
     _plot_pca_scree(analysis["pca_variance"], p11)
     _plot_pca_embedding(analysis["pca_scores"], p12)
-    _plot_group_family_scores(analysis["family_scores"], analysis["group_counts"], p13)
     report=folders["reports"]/"acoustic_quality_control_report.html"
-    _write_report(report, feat_df, fam_summary, cfg, p1, p2, p3, p4, p5, recommendations_df, extra_plots=[p6,p7,p8,p9,p10,p11,p12,p13])
+    _write_report(report, feat_df, fam_summary, cfg, p1, p2, p3, p4, p5, recommendations_df, extra_plots=[p6,p7,p8,p9,p10,p11,p12])
     manifest=StageManifest(
         stage_name="acoustic_quality_control",
         stage_version="0.23.0",
@@ -872,7 +871,7 @@ def _write_report(path: Path, feat_df: pd.DataFrame, fam_summary: pd.DataFrame, 
 # -----------------------------------------------------------------------------
 
 def _selected_numeric_quality_features(df: pd.DataFrame) -> list[str]:
-    """Return numeric QC feature columns, excluding metadata/status/support fields."""
+    """Return numeric QC feature columns, excluding identity/status/support fields."""
     cols: list[str] = []
     registry = quality_feature_registry()
     eligible = set(registry.loc[registry["role"].eq("quality_feature"), "feature"].astype(str))
@@ -937,11 +936,11 @@ def _build_quality_analysis_tables(feat_df: pd.DataFrame, warnings_df: pd.DataFr
     This mirrors the uploaded notebooks conceptually: transform skewed variables,
     winsorize extremes, robust-scale, aggregate family scores, then inspect
     correlation/PCA structure. It deliberately avoids inferential hypothesis tests
-    because clinical groups may be imbalanced and sample sizes may be small.
+    in this acoustic-only pipeline.
     """
     numeric_features = _selected_numeric_quality_features(feat_df)
     dist_rows: list[dict[str, Any]] = []
-    processed = feat_df[[c for c in ["file_name", "subject_id", "session_id", "iteration", "task", "diagnosis", "severity_score", "severity_bin", "quality_review_level", "quality_n_warnings"] if c in feat_df.columns]].copy() if not feat_df.empty else pd.DataFrame()
+    processed = feat_df[[c for c in ["recording_id", "file_name", "task_name", "run_id", "quality_review_level", "quality_n_warnings"] if c in feat_df.columns]].copy() if not feat_df.empty else pd.DataFrame()
 
     processed_blocks: list[pd.DataFrame] = []
     for feature in numeric_features:
@@ -990,7 +989,7 @@ def _build_quality_analysis_tables(feat_df: pd.DataFrame, warnings_df: pd.DataFr
 
     distribution = pd.DataFrame(dist_rows)
 
-    family_scores = feat_df[[c for c in ["file_name", "subject_id", "session_id", "iteration", "task", "diagnosis", "severity_score", "severity_bin", "quality_review_level", "quality_n_warnings", "quality_warning_families"] if c in feat_df.columns]].copy() if not feat_df.empty else pd.DataFrame(columns=["file_name"])
+    family_scores = feat_df[[c for c in ["recording_id", "file_name", "task_name", "run_id", "quality_review_level", "quality_n_warnings", "quality_warning_families"] if c in feat_df.columns]].copy() if not feat_df.empty else pd.DataFrame(columns=["file_name"])
     for fam in QC_FAMILIES:
         feats = [f for f in numeric_features if _feature_family(f) == fam and f"{f}_proc" in processed.columns]
         proc_cols = [f"{f}_proc" for f in feats]
@@ -1022,7 +1021,7 @@ def _build_quality_analysis_tables(feat_df: pd.DataFrame, warnings_df: pd.DataFr
     if not family_scores.empty:
         burden_cols = [c for c in family_scores.columns if c.endswith("_score")]
         burden = family_scores[burden_cols].abs().median(axis=1, skipna=True) if burden_cols else pd.Series(np.nan, index=family_scores.index)
-        review_rank = family_scores[[c for c in ["file_name", "subject_id", "session_id", "iteration", "task", "diagnosis", "quality_review_level", "quality_n_warnings", "quality_warning_families"] if c in family_scores.columns]].copy()
+        review_rank = family_scores[[c for c in ["recording_id", "file_name", "task_name", "run_id", "quality_review_level", "quality_n_warnings", "quality_warning_families"] if c in family_scores.columns]].copy()
         review_rank["quality_burden_score"] = burden
         review_rank = review_rank.sort_values(["quality_n_warnings", "quality_burden_score"], ascending=[False, False], na_position="last").reset_index(drop=True)
         review_rank.insert(0, "review_rank", np.arange(1, len(review_rank) + 1))
@@ -1048,17 +1047,9 @@ def _build_quality_analysis_tables(feat_df: pd.DataFrame, warnings_df: pd.DataFr
                         "variance_explained": pca.explained_variance_ratio_,
                         "cumulative_variance_explained": np.cumsum(pca.explained_variance_ratio_),
                     })
-                    pca_scores = processed[[c for c in ["file_name", "subject_id", "session_id", "iteration", "task", "diagnosis", "quality_review_level", "quality_n_warnings"] if c in processed.columns]].copy()
+                    pca_scores = processed[[c for c in ["recording_id", "file_name", "task_name", "run_id", "quality_review_level", "quality_n_warnings"] if c in processed.columns]].copy()
                     for i in range(n_components):
                         pca_scores[f"PC{i+1}"] = scores[:, i]
-
-    group_rows: list[dict[str, Any]] = []
-    for col in ["diagnosis", "severity_bin", "task"]:
-        if col in family_scores.columns:
-            vc = family_scores[col].fillna("missing").astype(str).value_counts(dropna=False)
-            for group, n in vc.items():
-                group_rows.append({"grouping_variable": col, "group": group, "n_recordings": int(n), "plotting_note": "descriptive_only; no inferential test applied"})
-    group_counts = pd.DataFrame(group_rows, columns=["grouping_variable", "group", "n_recordings", "plotting_note"])
 
     return {
         "distribution_summary": distribution,
@@ -1069,7 +1060,6 @@ def _build_quality_analysis_tables(feat_df: pd.DataFrame, warnings_df: pd.DataFr
         "review_rank": review_rank,
         "pca_variance": pca_variance,
         "pca_scores": pca_scores,
-        "group_counts": group_counts,
     }
 
 
@@ -1184,39 +1174,4 @@ def _plot_pca_embedding(pca_scores: pd.DataFrame, path: Path) -> None:
         ax.set_xlabel("PC1") ; ax.set_ylabel("PC2")
         ax.set_title("PCA embedding of QC feature space")
         cbar = fig.colorbar(sc, ax=ax, shrink=0.80); cbar.set_label("QC warning count")
-    fig.tight_layout(); fig.savefig(path, dpi=220); plt.close(fig)
-
-
-def _plot_group_family_scores(family_scores: pd.DataFrame, group_counts: pd.DataFrame, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fig, axes = plt.subplots(2, 3, figsize=(13.5, 8.0), sharey=True)
-    axes = axes.ravel()
-    score_cols = [(fam, f"qfamily_{fam}_score") for fam in QC_FAMILIES if f"qfamily_{fam}_score" in family_scores.columns]
-    group_col = None
-    for cand in ["diagnosis", "severity_bin", "task"]:
-        if cand in family_scores.columns and family_scores[cand].nunique(dropna=True) >= 2:
-            counts = family_scores[cand].fillna("missing").astype(str).value_counts()
-            if (counts >= 2).sum() >= 2:
-                group_col = cand
-                break
-    if not score_cols or group_col is None:
-        for ax in axes: ax.axis("off")
-        axes[0].text(0.5, 0.5, "Group-stratified plots not available\nNeed at least two groups with n≥2", ha="center", va="center")
-    else:
-        groups = family_scores[group_col].fillna("missing").astype(str).value_counts().index.tolist()[:6]
-        for ax, (fam, col) in zip(axes, score_cols, strict=False):
-            data = [pd.to_numeric(family_scores.loc[family_scores[group_col].fillna("missing").astype(str).eq(g), col], errors="coerce").dropna().values for g in groups]
-            nonempty = [(g, d) for g, d in zip(groups, data, strict=False) if len(d)]
-            if not nonempty:
-                ax.axis("off"); continue
-            labels, vals = zip(*nonempty)
-            ax.violinplot(vals, showmedians=True, widths=0.75)
-            rng = np.random.default_rng(22)
-            for i, v in enumerate(vals, start=1):
-                ax.scatter(np.full(len(v), i) + rng.normal(0, 0.04, len(v)), v, s=20, alpha=0.72)
-            ax.set_title(QC_FAMILIES[fam]["label"], fontsize=10)
-            ax.set_xticks(range(1, len(labels) + 1)); ax.set_xticklabels([f"{g}\n(n={len(v)})" for g, v in zip(labels, vals, strict=False)], rotation=0, fontsize=8)
-            ax.grid(axis="y", alpha=0.20)
-        for ax in axes[len(score_cols):]: ax.axis("off")
-        fig.suptitle(f"Descriptive QC family scores by {group_col} (no inferential testing)", fontsize=13)
     fig.tight_layout(); fig.savefig(path, dpi=220); plt.close(fig)

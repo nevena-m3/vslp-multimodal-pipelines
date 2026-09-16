@@ -142,7 +142,8 @@ def build_feature_delivery(
         "- `feature_status.csv`: per-recording feature availability and warnings.\n"
         "- `feature_export_manifest.json`: machine-readable schema and provenance.\n"
         "- `qc_features.csv`: optional modality QC covariates when available.\n"
-        "- `metadata_context.csv`: optional mapped recording context when available.\n\n"
+        + ("- `metadata_context.csv`: optional mapped context when available.\n" if modality != "acoustic" else "")
+        + "\n"
         "Do not use identifiers, paths, or QC fields as disease predictors by default.\n",
         encoding="utf-8",
     )

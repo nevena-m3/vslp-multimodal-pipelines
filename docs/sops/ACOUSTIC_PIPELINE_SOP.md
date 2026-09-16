@@ -111,7 +111,7 @@ acoustic/feature_handoff/main/
 `-- README.md
 ```
 
-The four canonical files are required. QC is optional. Clinical metadata should be supplied in Feature Analysis.
+The four canonical files are required. QC is optional. Clinical metadata, participant identity, diagnosis, outcomes, and visit structure are joined in Feature Analysis. Acoustic handoff carries only SHA-based recording identity, Setup task/run provenance, measured features, registry, status, and optional acoustic QC.
 
 Supplementary index:
 
@@ -122,12 +122,12 @@ acoustic/feature_handoff/supplementary/artifact_catalog.csv
 The established stage outputs remain in place:
 
 ```text
-acoustic/001_ingest/
-acoustic/002_preprocess/
-acoustic/003_segmentation/
+acoustic/000_ingest/
+acoustic/001_preprocess/
+acoustic/002_segmentation/
 acoustic/003_quality_control/
 acoustic/004_features/
-acoustic/007_run_summary/
+acoustic/005_run_summary/
 ```
 
 Legacy and detailed feature-stage files include:

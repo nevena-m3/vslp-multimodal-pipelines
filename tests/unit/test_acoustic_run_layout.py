@@ -67,8 +67,28 @@ def test_setup_rejects_invalid_paths_and_names(tmp_path: Path):
 
 def test_prune_empty_stage_folders_preserves_acoustic_root(tmp_path: Path):
     component = tmp_path / "acoustic"
-    empty = component / "001_ingest" / "plots"
+    empty = component / "000_ingest" / "plots"
     empty.mkdir(parents=True)
     prune_empty_acoustic_directories(tmp_path)
     assert component.is_dir()
     assert not empty.exists()
+
+
+def test_operational_context_and_lazy_stage_folders(tmp_path: Path):
+    from vslp.acoustic.context import run_context
+    from vslp.core.project import ensure_stage_folders
+
+    source = tmp_path / "input"
+    source.mkdir()
+    run = initialize_acoustic_run(project_name="Study", task_name="Passage", input_folder=source, output_parent=tmp_path / "output", setup_values={}, now=WHEN)
+    context = run_context(run.root)
+    assert context["task_name"] == "Passage"
+    assert context["run_id"] == run.run_id
+    stage = run.root / "acoustic" / "000_ingest"
+    folders = ensure_stage_folders(stage, lazy=True)
+    assert not stage.exists()
+    table = folders["tables"] / "summary.csv"
+    assert table.parent.is_dir()
+    assert not (stage / "plots").exists()
+    prune_empty_acoustic_directories(run.root)
+    assert not stage.exists()

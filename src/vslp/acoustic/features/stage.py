@@ -30,6 +30,7 @@ from vslp.acoustic.features.plugins.base import FeatureContext, FeatureValue
 from vslp.acoustic.features.registry import build_acoustic_feature_registry
 from vslp.core.feature_contract import build_feature_delivery, write_feature_handoff
 from vslp.acoustic.features.scales import build_feature_computation_policy, build_feature_scale_registry
+from vslp.acoustic.context import cleanup_stage
 from vslp.core.project import ensure_stage_folders
 from vslp.core.provenance import python_environment
 from vslp.core.schemas import ArtifactRef, StageManifest, StageResult
@@ -49,8 +50,6 @@ class FeatureExtractionConfig:
     task_word_counts
         Optional map from task name to known word count. Used only for speech_rate.
         If absent, speech_rate is emitted as NaN rather than guessed.
-    metadata_csv
-        Optional metadata/file index CSV with file_name as key.
     minimum_pause_duration_sec
         Internal nonspeech runs shorter than this are ignored for pause summary features.
     """
@@ -58,8 +57,6 @@ class FeatureExtractionConfig:
     selected_subsystems: list[str] = field(default_factory=list)
     selected_features: list[str] = field(default_factory=list)
     task_word_counts: dict[str, float] = field(default_factory=dict)
-    metadata_csv: str | None = None
-    task_name: str | None = None
     minimum_pause_duration_sec: float = 0.30
     acoustic_region_policy: str = "speech_only"  # speech_only, effective_task, full_file
     # v0.35: explicit computation/reduction policy controls.
@@ -99,43 +96,6 @@ def _select_registry(cfg: FeatureExtractionConfig) -> pd.DataFrame:
     return registry.reset_index(drop=True)
 
 
-def _merge_metadata_if_available(seg_summary: pd.DataFrame, metadata_csv: str | None) -> pd.DataFrame:
-    if not metadata_csv:
-        return seg_summary
-    metadata_path = Path(metadata_csv).expanduser()
-    if not metadata_path.exists():
-        raise FileNotFoundError(f"metadata_csv was provided but does not exist: {metadata_path}")
-    meta = pd.read_csv(metadata_path)
-    if "file_name" not in meta.columns:
-        raise ValueError("metadata_csv must contain a file_name column")
-    keep_cols = [
-        c
-        for c in [
-            "file_name",
-            "subject_id",
-            "session_id",
-            "iteration",
-            "task",
-            "recording_date",
-            "diagnosis",
-            "severity_score",
-            "severity_bin",
-            "record_key",
-        ]
-        if c in meta.columns
-    ]
-    out = seg_summary.merge(meta[keep_cols], on="file_name", how="left", suffixes=("", "_metadata"))
-    for col in ["subject_id", "session_id", "iteration", "task", "recording_date", "diagnosis", "severity_score", "severity_bin", "record_key"]:
-        mcol = f"{col}_metadata"
-        if mcol in out.columns:
-            if col in out.columns:
-                out[col] = out[col].combine_first(out[mcol])
-            else:
-                out[col] = out[mcol]
-            out = out.drop(columns=[mcol])
-    return out
-
-
 def _make_context(row: pd.Series, cfg: FeatureExtractionConfig) -> FeatureContext:
     segments_raw = row.get("segments_csv_path", "")
     wav_raw = row.get("segmentation_wav_path", "")
@@ -158,24 +118,24 @@ def _make_context(row: pd.Series, cfg: FeatureExtractionConfig) -> FeatureContex
     )
 
 
-def _metadata_prefix(row: pd.Series) -> dict[str, Any]:
+def _operational_prefix(row: pd.Series, run: dict[str, Any]) -> dict[str, Any]:
+    source_sha = row.get("source_sha256", "")
+    if not isinstance(source_sha, str) or len(source_sha) != 64:
+        raise ValueError("Segmentation summary must retain the original source SHA-256")
     return {
+        "recording_id": source_sha,
         "file_name": row.get("file_name", ""),
         "source_file_path": row.get("source_file_path", row.get("file_path")),
+        "source_sha256": source_sha,
         "segmentation_wav_path": row.get("segmentation_wav_path"),
-        "subject_id": row.get("subject_id", np.nan),
-        "session_id": row.get("session_id", np.nan),
-        "iteration": row.get("iteration", np.nan),
-        "task": row.get("task", np.nan),
-        "recording_date": row.get("recording_date", np.nan),
-        "diagnosis": row.get("diagnosis", np.nan),
-        "severity_score": row.get("severity_score", np.nan),
-        "severity_bin": row.get("severity_bin", np.nan),
-        "record_key": row.get("record_key", np.nan),
+        "project_name": run["project_name"],
+        "task_name": run["task_name"],
+        "task": run["task_name"],
+        "run_id": run["run_id"],
+        "run_created_at_local": run["created_at_local"],
+        "run_created_at_utc": run["created_at_utc"],
         "duration_sec": row.get("duration_sec", np.nan),
     }
-
-
 
 
 def _normalize_computation_mode(value: str | None) -> str:
@@ -308,6 +268,7 @@ def _build_reduction_audit(registry: pd.DataFrame, cfg: FeatureExtractionConfig)
         })
     return pd.DataFrame(rows)
 
+@cleanup_stage
 def run_acoustic_feature_extraction(
     segmentation_summary_csv: str | Path,
     output_root: str | Path,
@@ -317,14 +278,15 @@ def run_acoustic_feature_extraction(
     cfg = _apply_computation_mode_defaults(config or FeatureExtractionConfig())
     segmentation_summary_csv = Path(segmentation_summary_csv)
     stage_dir = Path(output_root) / "acoustic" / "004_features"
-    folders = ensure_stage_folders(stage_dir)
+    folders = ensure_stage_folders(stage_dir, lazy=True)
 
     registry = _select_registry(cfg)
     selected_names = set(registry["feature"].astype(str).tolist())
     seg_summary = pd.read_csv(segmentation_summary_csv)
-    seg_summary = _merge_metadata_if_available(seg_summary, cfg.metadata_csv)
-    if cfg.task_name:
-        seg_summary["task"] = cfg.task_name
+    run = json.loads((Path(output_root) / "project_manifest.json").read_text(encoding="utf-8"))
+    if not run.get("task_name") or not run.get("run_id") or not run.get("project_name"):
+        raise ValueError("Acoustic feature extraction requires initialized Setup provenance")
+    seg_summary["task"] = run["task_name"]
 
     plugins = [p for p in build_default_plugins() if selected_names.intersection(set(p.feature_names))]
 
@@ -334,7 +296,7 @@ def run_acoustic_feature_extraction(
 
     for _, row in seg_summary.iterrows():
         file_name = str(row.get("file_name", ""))
-        out_row: dict[str, Any] = _metadata_prefix(row)
+        out_row: dict[str, Any] = _operational_prefix(row, run)
         feature_results: dict[str, FeatureValue] = {}
         context = _make_context(row, cfg)
         try:
@@ -364,6 +326,12 @@ def run_acoustic_feature_extraction(
                 long_status_rows.append(
                     {
                         "file_name": file_name,
+                        "recording_id": out_row["recording_id"],
+                        "project_name": run["project_name"],
+                        "task_name": run["task_name"],
+                        "run_id": run["run_id"],
+                        "run_created_at_local": run["created_at_local"],
+                        "run_created_at_utc": run["created_at_utc"],
                         "feature": name,
                         "subsystem": subsystem,
                         "status": status,
@@ -391,13 +359,11 @@ def run_acoustic_feature_extraction(
     registry.to_csv(registry_path, index=False)
     handoff_values = pd.DataFrame(rows).copy()
     if not handoff_values.empty:
-        handoff_values.insert(0, "recording_id", handoff_values.get("record_key", handoff_values.get("file_name", "")))
         handoff_values["source_file"] = handoff_values.get("file_name", "")
         handoff_values["modality"] = "acoustic"
         handoff_values["aggregation_level"] = "recording_task"
     handoff_status = pd.DataFrame(long_status_rows).copy()
     if not handoff_status.empty:
-        handoff_status.insert(0, "recording_id", handoff_status["file_name"])
         handoff_status["modality"] = "acoustic"
     handoff_registry = registry.copy()
     handoff_registry["aggregation"] = "file-level scalar; see acoustic_feature_computation_policy.csv"
@@ -502,7 +468,7 @@ def run_acoustic_feature_extraction(
             "Rhythm/EMS features were validated in v0.27 from effective-task envelope modulation spectrum.",
             f"Computed feature families in this pass: {computed_features}",
             "Coordination features were validated in v0.31 as time-delay cross-correlation eigenspectrum complexity over CPP/F1/F2 trajectories.",
-            "Feature measurement scale metadata is written to document the native physiologic scale and recommended reducers.",
+            "Feature measurement scale registry documents the native physiologic scale and recommended reducers.",
             "Feature computation policy is written to define, for each feature, the default analysis region and exact file-level scalar reduction strategy.",
             "Scalar reduction audit is written to document the requested mode, applied family mode, and native measurement scale for every selected feature.",
             "Native segment-event measurements are preserved for timing features; frame/trajectory persistence for signal features is planned as the next architecture extension.",
@@ -534,8 +500,7 @@ def _write_native_segment_events(seg_summary: pd.DataFrame, output_path: Path) -
     output_path.parent.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, Any]] = []
     meta_cols = [
-        "file_name", "subject_id", "session_id", "iteration", "task",
-        "recording_date", "diagnosis", "severity_score", "severity_bin", "record_key",
+        "recording_id", "file_name", "source_file_path", "source_sha256", "project_name", "task_name", "run_id", "task",
     ]
     for _, file_row in seg_summary.iterrows():
         seg_path_raw = file_row.get("segments_csv_path", "")

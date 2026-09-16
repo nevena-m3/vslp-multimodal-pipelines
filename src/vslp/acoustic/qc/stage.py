@@ -42,8 +42,8 @@ def run_acoustic_qc_dashboard(output_root: str | Path, config: AcousticQCConfig 
     stage_dir = output_root / "acoustic" / "006_qc_dashboard"
     folders = ensure_stage_folders(stage_dir)
 
-    preprocess_csv = output_root / "acoustic" / "002_preprocess" / "tables" / "acoustic_preprocess_summary.csv"
-    segmentation_csv = output_root / "acoustic" / "003_segmentation" / "tables" / "acoustic_segmentation_summary.csv"
+    preprocess_csv = output_root / "acoustic" / "001_preprocess" / "tables" / "acoustic_preprocess_summary.csv"
+    segmentation_csv = output_root / "acoustic" / "002_segmentation" / "tables" / "acoustic_segmentation_summary.csv"
     feature_status_csv = output_root / "acoustic" / "004_features" / "tables" / "acoustic_feature_status_long.csv"
 
     warnings: list[str] = []

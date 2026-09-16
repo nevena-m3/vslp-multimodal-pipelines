@@ -29,6 +29,8 @@ def test_delivery_separates_main_from_supplementary_outputs(tmp_path: Path) -> N
     assert all((main / name).exists() for name in (
         "feature_values.csv", "feature_registry.csv", "feature_status.csv", "feature_export_manifest.json", "README.md"
     ))
+    assert not (main / "metadata_context.csv").exists()
+    assert "metadata_context.csv" not in (main / "README.md").read_text(encoding="utf-8")
     catalog = pd.read_csv(delivery["catalog_csv"])
     assert "acoustic/003_quality_control/plots/qc.png" in catalog["relative_path"].str.replace("\\", "/").tolist()
     manifest = json.loads(delivery["delivery_manifest_json"].read_text(encoding="utf-8"))

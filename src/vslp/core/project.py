@@ -172,9 +172,20 @@ def prune_empty_acoustic_directories(output_root: str | Path) -> None:
             pass
 
 
-def ensure_stage_folders(stage_dir: str | Path) -> dict[str, Path]:
-    """Create standard subdirectories for a stage and return them."""
+class _LazyStageFolders(dict[str, Path]):
+    """Create a category when a stage first requests a path within it."""
+
+    def __getitem__(self, key: str) -> Path:
+        path = super().__getitem__(key)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+
+def ensure_stage_folders(stage_dir: str | Path, *, lazy: bool = False) -> dict[str, Path]:
+    """Return standard stage subdirectories, optionally creating them on demand."""
     stage_dir = Path(stage_dir)
+    if lazy:
+        return _LazyStageFolders({sub: stage_dir / sub for sub in STAGE_SUBDIRS})
     stage_dir.mkdir(parents=True, exist_ok=True)
     out = {}
     for sub in STAGE_SUBDIRS:
