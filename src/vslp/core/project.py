@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import re
 import time
 from typing import Any
 from uuid import uuid4
@@ -22,6 +23,17 @@ WORKSPACE_DIRS = {
 }
 WORKSPACE_SCHEMA = "vslp_workspace"
 WORKSPACE_SCHEMA_VERSION = "1.0.0"
+ACOUSTIC_ONLY_DIRS = {key: WORKSPACE_DIRS[key] for key in ("configs", "acoustic", "logs")}
+
+
+def task_run_folder_name(task_name: str, when: datetime | None = None) -> str:
+    """Return a filesystem-safe task name followed by a local timestamp."""
+    task = re.sub(r"[^\w.-]+", "_", task_name.strip(), flags=re.UNICODE).strip("._-")
+    if not task or not any(char.isalnum() for char in task):
+        raise ValueError("Enter a task name containing letters or numbers.")
+    task = task[:80].rstrip("._-")
+    stamp = (when or datetime.now()).strftime("%Y%m%d_%H%M%S")
+    return f"{task}_{stamp}"
 
 
 @dataclass(frozen=True)
@@ -80,7 +92,12 @@ def _write_manifest(path: Path, payload: dict[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def initialize_project(output_root: str | Path, project_name: str = "VSLP Study") -> ProjectPaths:
+def initialize_project(
+    output_root: str | Path,
+    project_name: str = "VSLP Study",
+    *,
+    layout: dict[str, str] | None = None,
+) -> ProjectPaths:
     """Create or safely reopen a shared VSLP study workspace.
 
     All desktop applications receive the same workspace root. Each application
@@ -90,7 +107,8 @@ def initialize_project(output_root: str | Path, project_name: str = "VSLP Study"
     root = Path(output_root).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
 
-    for top in WORKSPACE_DIRS.values():
+    active_layout = layout or WORKSPACE_DIRS
+    for top in active_layout.values():
         (root / top).mkdir(exist_ok=True)
 
     manifest_path = root / "project_manifest.json"
@@ -105,7 +123,7 @@ def initialize_project(output_root: str | Path, project_name: str = "VSLP Study"
         "updated_at_utc": now,
         "mode": existing.get("mode") or "research_use_only",
         "privacy": existing.get("privacy") or "local_only",
-        "layout": WORKSPACE_DIRS,
+        "layout": {**(existing.get("layout") or {}), **active_layout},
         "components": existing.get("components") if isinstance(existing.get("components"), dict) else {},
     }
     _write_manifest(manifest_path, manifest)
@@ -118,9 +136,10 @@ def register_project_component(
     details: dict[str, Any] | None = None,
     *,
     project_name: str = "VSLP Study",
+    layout: dict[str, str] | None = None,
 ) -> ProjectPaths:
     """Register one GUI/component in the shared workspace manifest."""
-    paths = initialize_project(output_root, project_name=project_name)
+    paths = initialize_project(output_root, project_name=project_name, layout=layout)
     if component not in WORKSPACE_DIRS:
         raise ValueError(f"Unknown VSLP workspace component: {component}")
     manifest = _read_manifest(paths.manifest)
@@ -138,6 +157,19 @@ def register_project_component(
     manifest["updated_at_utc"] = now
     _write_manifest(paths.manifest, manifest)
     return paths
+
+
+def prune_empty_acoustic_directories(output_root: str | Path) -> None:
+    """Remove only empty directories within this run's acoustic component."""
+    component = Path(output_root).expanduser().resolve() / WORKSPACE_DIRS["acoustic"]
+    if not component.is_dir() or component.is_symlink():
+        return
+    directories = [p for p in component.rglob("*") if p.is_dir() and not p.is_symlink()]
+    for directory in sorted(directories, key=lambda p: len(p.parts), reverse=True):
+        try:
+            directory.rmdir()
+        except OSError:
+            pass
 
 
 def ensure_stage_folders(stage_dir: str | Path) -> dict[str, Path]:

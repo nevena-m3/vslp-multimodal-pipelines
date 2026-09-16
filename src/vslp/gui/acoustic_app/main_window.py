@@ -63,7 +63,7 @@ from vslp.acoustic.features.stage import (
     run_acoustic_feature_extraction,
 )
 from vslp.acoustic.ingest.stage import run_acoustic_ingest
-from vslp.acoustic.metadata.stage import MetadataConfig, run_acoustic_metadata
+from vslp.acoustic.run_setup import initialize_acoustic_run
 from vslp.acoustic.preprocess.stage import FilterConfig, PreprocessConfig, run_acoustic_preprocess
 from vslp.acoustic.segment.stage import run_acoustic_segmentation_silero
 from vslp.acoustic.quality.stage import (
@@ -73,7 +73,7 @@ from vslp.acoustic.quality.stage import (
     quality_feature_registry,
     run_acoustic_quality_control,
 )
-from vslp.core.project import register_project_component
+from vslp.core.project import prune_empty_acoustic_directories, task_run_folder_name
 from vslp.core.schemas import ArtifactRef, StageManifest, StageResult
 from vslp.gui.common.utils import open_in_browser, open_path
 
@@ -98,6 +98,7 @@ class Worker(QObject):
         self.name = name
         self.func = func
         self.kwargs = kwargs
+        self.output_root = kwargs.get("output_root")
 
     def run(self) -> None:
         self.started.emit(self.name)
@@ -106,8 +107,12 @@ class Worker(QObject):
             result = self.func(**self.kwargs)
         except Exception as exc:  # noqa: BLE001
             tb = traceback.format_exc()
+            if self.output_root is not None:
+                prune_empty_acoustic_directories(self.output_root)
             self.failed.emit(self.name, f"{exc}\n\n{tb}")
             return
+        if self.output_root is not None:
+            prune_empty_acoustic_directories(self.output_root)
         self.message.emit(f"Finished {self.name}: {getattr(result, 'status', 'ok')}")
         self.finished.emit(self.name, result)
 
@@ -118,6 +123,7 @@ class AcousticPipelineWindow(QMainWindow):
         self.setWindowTitle("VSLP - Acoustic Pipeline")
         self.resize(1480, 900)
         self.setMinimumSize(1180, 760)
+        self._run_root: Path | None = None
         self._current_preview_pixmap: QPixmap | None = None
         self._current_preview_path: Path | None = None
 
@@ -125,7 +131,6 @@ class AcousticPipelineWindow(QMainWindow):
         self._updating_feature_tree = False
         self.stage_records: dict[str, StageRecord] = {
             "project": StageRecord(),
-            "metadata": StageRecord(),
             "ingest": StageRecord(),
             "preprocess": StageRecord(),
             "segment": StageRecord(),
@@ -172,7 +177,6 @@ class AcousticPipelineWindow(QMainWindow):
         self.stage_cards: dict[str, QFrame] = {}
         for key, label in [
             ("project", "Project"),
-            ("metadata", "Metadata"),
             ("ingest", "Ingest"),
             ("preprocess", "Preprocess"),
             ("segment", "Data Segmentation"),
@@ -224,7 +228,6 @@ class AcousticPipelineWindow(QMainWindow):
         tabs.setUsesScrollButtons(True)
         tabs.setElideMode(Qt.ElideRight)
         tabs.addTab(self._build_setup_tab(), "Setup")
-        tabs.addTab(self._build_metadata_tab(), "Metadata")
         tabs.addTab(self._build_preprocess_tab(), "Preprocess")
         tabs.addTab(self._build_segment_tab(), "Segmentation")
         tabs.addTab(self._build_quality_tab(), "Quality Control")
@@ -364,34 +367,34 @@ class AcousticPipelineWindow(QMainWindow):
 
         self.input_edit = QLineEdit()
         self.output_edit = QLineEdit()
-        self.project_name_edit = QLineEdit("VSLP Study")
+        self.project_name_edit = QLineEdit()
+        self.project_name_edit.setPlaceholderText("Required project name")
         self.task_name_edit = QLineEdit()
-        self.task_name_edit.setPlaceholderText("e.g., Bamboo passage, DDK-pa, DDK-pataka, sustained vowel /a/, Buy Bobby a Puppy")
         self._set_tooltip(self.input_edit, "Folder containing raw audio/video files. Subfolders are searched recursively. Recommendation: process one speech task at a time when possible.")
-        self._set_tooltip(self.output_edit, "Shared VSLP study workspace. Acoustic outputs are isolated under its acoustic folder.")
-        self._set_tooltip(self.project_name_edit, "Shared study label stored once in the workspace project_manifest.json.")
-        self._set_tooltip(self.task_name_edit, "Optional but recommended when the input folder contains one task. Used as a metadata fallback only when task cannot be linked or parsed.")
+        self._set_tooltip(self.output_edit, "Parent folder for a new acoustic run. It is never used as a stage output root.")
+        self._set_tooltip(self.project_name_edit, "Required. Stored in the immutable run manifest and setup config.")
+        self._set_tooltip(self.task_name_edit, "Required. The human-readable name is preserved; a safe slug names the run folder.")
 
-        browse_in = QPushButton("Browse Input Folder")
-        browse_in.clicked.connect(self.browse_input_dir)
-        browse_out = QPushButton("Browse Output Folder")
-        browse_out.clicked.connect(self.browse_output_dir)
+        self.browse_input_btn = QPushButton("Browse Input Folder")
+        self.browse_input_btn.clicked.connect(self.browse_input_dir)
+        self.browse_output_btn = QPushButton("Browse Output Folder")
+        self.browse_output_btn.clicked.connect(self.browse_output_dir)
 
         form.addWidget(QLabel("Input audio folder"), 0, 0)
         form.addWidget(self.input_edit, 0, 1)
-        form.addWidget(browse_in, 0, 2)
-        form.addWidget(QLabel("Study workspace folder"), 1, 0)
+        form.addWidget(self.browse_input_btn, 0, 2)
+        form.addWidget(QLabel("Output parent folder"), 1, 0)
         form.addWidget(self.output_edit, 1, 1)
-        form.addWidget(browse_out, 1, 2)
+        form.addWidget(self.browse_output_btn, 1, 2)
         form.addWidget(QLabel("Project name"), 2, 0)
         form.addWidget(self.project_name_edit, 2, 1, 1, 2)
-        form.addWidget(QLabel("Task being analyzed"), 3, 0)
+        form.addWidget(QLabel("Task name"), 3, 0)
         form.addWidget(self.task_name_edit, 3, 1, 1, 2)
-        task_hint = QLabel("Examples: Bamboo passage, DDK-pa, DDK-pataka, sustained vowel /a/, Buy Bobby a Puppy")
-        task_hint.setObjectName("SubtitleLabel")
-        task_hint.setWordWrap(True)
-        form.addWidget(task_hint, 4, 1, 1, 2)
-
+        self.run_root_edit = QLineEdit()
+        self.run_root_edit.setReadOnly(True)
+        self.run_root_edit.setPlaceholderText("Created after Initialize Project")
+        form.addWidget(QLabel("Generated run folder"), 4, 0)
+        form.addWidget(self.run_root_edit, 4, 1, 1, 2)
         workflow_group = QGroupBox("2. Project gate")
         workflow_layout = QVBoxLayout(workflow_group)
         self.project_gate_label = QLabel("")
@@ -428,44 +431,6 @@ class AcousticPipelineWindow(QMainWindow):
         layout.addWidget(paths_group)
         layout.addWidget(workflow_group)
         layout.addWidget(ingest_group)
-        layout.addStretch(1)
-        return self._scrollable(container)
-
-    def _build_metadata_tab(self) -> QWidget:
-        container = QWidget()
-        layout = QVBoxLayout(container)
-
-        layout.addWidget(self._info_panel(
-            "Info",
-            "The minimum clinically useful identity is subject_id, session_id, iteration, task, recording_date, diagnosis, severity_score, severity_bin, and file_name. If no CSV is provided, VSLP parses filenames conservatively and leaves clinical labels blank."
-        ))
-
-        group = QGroupBox("Demographics / metadata CSV")
-        grid = QGridLayout(group)
-        self.demographics_csv_edit = QLineEdit()
-        self._set_tooltip(self.demographics_csv_edit, "Optional CSV with one row per recording. VSLP detects flexible column names and links only ingested files to matching metadata rows.")
-        self.demographics_csv_edit.setPlaceholderText("optional CSV; flexible column names are detected automatically")
-        browse_demo = QPushButton("Browse CSV")
-        browse_demo.clicked.connect(self.browse_demographics_csv)
-        grid.addWidget(QLabel("Metadata CSV"), 0, 0)
-        grid.addWidget(self.demographics_csv_edit, 0, 1)
-        grid.addWidget(browse_demo, 0, 2)
-        layout.addWidget(group)
-
-        required = QPlainTextEdit()
-        required.setReadOnly(True)
-        required.setMaximumHeight(135)
-        required.setPlainText(
-            "Metadata CSV can contain more rows than uploaded files. VSLP links only the ingested files.\n"
-            "Column names are detected flexibly, for example: Raw Media File name, SubjectID, Protocol ID, Iteration, Task Name, Recording date, Visit date, ALSFRS total score, ALSFRS bulbar subscore.\n\n"
-            "Outputs include a project file index, column-mapping table, linkage summary, unmatched ingested files, and unused metadata row sample."
-        )
-        layout.addWidget(required)
-
-        run_btn = QPushButton("Run Metadata Indexing")
-        run_btn.setObjectName("RunButton")
-        run_btn.clicked.connect(self.run_metadata)
-        layout.addWidget(run_btn)
         layout.addStretch(1)
         return self._scrollable(container)
 
@@ -1126,10 +1091,6 @@ class AcousticPipelineWindow(QMainWindow):
         table_layout = QVBoxLayout(table_group)
         table_layout.setSpacing(7)
         table_buttons = [
-            ("Metadata file index", lambda: self.preview_csv(self._metadata_index_path())),
-            ("Metadata column mapping", lambda: self.preview_csv(self._stage_path("metadata", "column_mapping"))),
-            ("Metadata linkage", lambda: self.preview_csv(self._stage_path("metadata", "linkage"))),
-            ("Metadata unmatched files", lambda: self.preview_csv(self._stage_path("metadata", "unmatched"))),
             ("Ingest summary", lambda: self.preview_csv(self._stage_path("ingest", "summary"))),
             ("Preprocess main summary", lambda: self.preview_csv(self._stage_path("preprocess", "main_summary"))),
             ("Preprocess detailed summary", lambda: self.preview_csv(self._stage_path("preprocess", "summary"))),
@@ -1309,7 +1270,6 @@ class AcousticPipelineWindow(QMainWindow):
         stage_reports = QGroupBox("Stage reports")
         stage_grid = QGridLayout(stage_reports)
         stage_buttons = [
-            ("Metadata report", lambda: self._open_stage_file("metadata", "report")),
             ("Preprocess report", lambda: self._open_stage_file("preprocess", "report")),
             ("Segmentation report", lambda: self._open_stage_file("segment", "report")),
             ("Quality Control report", lambda: self._open_stage_file("quality", "report")),
@@ -1323,8 +1283,6 @@ class AcousticPipelineWindow(QMainWindow):
         primary_tables = QGroupBox("Stage and audit tables (supplementary)")
         table_grid = QGridLayout(primary_tables)
         table_buttons = [
-            ("Project file index", lambda: self._open_stage_file("metadata", "summary")),
-            ("Metadata column mapping", lambda: self._open_stage_file("metadata", "column_mapping")),
             ("Ingest summary", lambda: self._open_stage_file("ingest", "summary")),
             ("Preprocess summary", lambda: self._open_stage_file("preprocess", "main_summary")),
             ("Segmentation summary", lambda: self._open_stage_file("segment", "main_summary")),
@@ -1507,16 +1465,26 @@ class AcousticPipelineWindow(QMainWindow):
 
     # ---------------------------- PATHS/PREVIEWS ----------------------------
     def _output_root(self) -> Path:
-        return Path(self.output_edit.text().strip()).expanduser()
-
+        if self._run_root is None:
+            raise RuntimeError("Initialize an acoustic run before accessing stage outputs.")
+        return self._run_root
 
     def _project_manifest_path(self) -> Path:
         return self._output_root() / "project_manifest.json"
 
     def _is_project_initialized(self) -> bool:
+        if self._run_root is None:
+            return False
         try:
-            return self._project_manifest_path().exists()
-        except Exception:
+            manifest = json.loads(self._project_manifest_path().read_text(encoding="utf-8"))
+            return (
+                manifest.get("modality") == "acoustic"
+                and manifest.get("run_root") == str(self._run_root)
+                and manifest.get("project_name") == self.project_name_edit.text().strip()
+                and manifest.get("task_name") == self.task_name_edit.text().strip()
+                and (self._run_root / "acoustic").is_dir()
+            )
+        except (OSError, ValueError, TypeError):
             return False
 
     def _require_project_initialized(self) -> bool:
@@ -1551,6 +1519,8 @@ class AcousticPipelineWindow(QMainWindow):
             return
         try:
             df = pd.read_csv(summary_path)
+        except pd.errors.EmptyDataError:
+            df = pd.DataFrame()
         except Exception as exc:  # noqa: BLE001
             self.ingest_summary_label.setText(f"Ingest summary exists but could not be read: {exc}")
             return
@@ -1578,7 +1548,7 @@ class AcousticPipelineWindow(QMainWindow):
         suffix_counts = df["suffix"].astype(str).value_counts().to_dict() if "suffix" in df.columns else {}
         suffix_txt = ", ".join(f"{k}: {v}" for k, v in suffix_counts.items()) if suffix_counts else "not available"
         self.ingest_summary_label.setText(
-            f"Loaded/probed files: {n_ok} | Failed files: {n_failed} | Duplicate files skipped: {duplicate_skipped_count} | Subfolders represented: {subfolder_count}\n"
+            f"Discovered: {n_ok + n_failed + duplicate_skipped_count} | Accepted: {n_ok} | Duplicate-skipped: {duplicate_skipped_count} | Failed: {n_failed} | Subfolders represented: {subfolder_count}\n"
             f"File extensions found: {suffix_txt}"
         )
 
@@ -1601,17 +1571,8 @@ class AcousticPipelineWindow(QMainWindow):
     def _segmentation_summary_path(self) -> Path:
         return self._output_root() / "acoustic" / "003_segmentation" / "tables" / "acoustic_segmentation_summary.csv"
 
-    def _metadata_index_path(self) -> Path:
-        return self._output_root() / "acoustic" / "000_metadata" / "tables" / "project_file_index.csv"
-
     def _stage_path(self, stage: str, kind: str) -> Path:
         mapping = {
-            ("metadata", "summary"): self._metadata_index_path(),
-            ("metadata", "report"): self._output_root() / "acoustic" / "000_metadata" / "reports" / "metadata_report.html",
-            ("metadata", "column_mapping"): self._output_root() / "acoustic" / "000_metadata" / "tables" / "metadata_column_mapping.csv",
-            ("metadata", "linkage"): self._output_root() / "acoustic" / "000_metadata" / "tables" / "metadata_linkage_summary.csv",
-            ("metadata", "unmatched"): self._output_root() / "acoustic" / "000_metadata" / "tables" / "metadata_unmatched_ingested_files.csv",
-            ("metadata", "unused"): self._output_root() / "acoustic" / "000_metadata" / "tables" / "metadata_unused_rows_sample.csv",
             ("ingest", "summary"): self._output_root() / "acoustic" / "001_ingest" / "tables" / "audio_ingest_summary.csv",
             ("preprocess", "summary"): self._preprocess_summary_path(),
             ("preprocess", "main_summary"): self._output_root() / "acoustic" / "002_preprocess" / "tables" / "acoustic_preprocess_main_summary.csv",
@@ -1654,13 +1615,12 @@ class AcousticPipelineWindow(QMainWindow):
         return self._output_root() / "acoustic" / "004_features" / "plots" / name
 
     def refresh_latest_outputs(self) -> None:
-        if not self.output_edit.text().strip():
-            QMessageBox.information(self, "No output folder", "Select an output project folder first.")
+        if self._run_root is None:
+            QMessageBox.information(self, "No run folder", "Initialize an acoustic run first.")
             return
         if self._project_manifest_path().exists():
             self.stage_records["project"].status = "detected"
         known = {
-            "metadata": (self._stage_path("metadata", "summary"), self._stage_path("metadata", "report")),
             "ingest": (self._stage_path("ingest", "summary"), None),
             "preprocess": (self._stage_path("preprocess", "summary"), self._stage_path("preprocess", "report")),
             "segment": (self._stage_path("segment", "summary"), self._stage_path("segment", "report")),
@@ -1841,12 +1801,10 @@ class AcousticPipelineWindow(QMainWindow):
         self.log_box.appendPlainText(text)
 
     def _require_paths(self) -> tuple[Path, Path] | None:
-        input_text = self.input_edit.text().strip()
-        output_text = self.output_edit.text().strip()
-        if not input_text or not output_text:
-            QMessageBox.warning(self, "Missing paths", "Please select both the input audio folder and the output project folder.")
+        if self._run_root is None:
+            QMessageBox.warning(self, "Initialize run first", "Complete Setup and initialize an acoustic run first.")
             return None
-        return Path(input_text).expanduser(), Path(output_text).expanduser()
+        return Path(self.input_edit.text().strip()).expanduser(), self._run_root
 
     def browse_input_dir(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Select input audio folder")
@@ -1857,12 +1815,6 @@ class AcousticPipelineWindow(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, "Select output project folder")
         if folder:
             self.output_edit.setText(folder)
-            self.refresh_latest_outputs()
-
-    def browse_demographics_csv(self) -> None:
-        file_path, _ = QFileDialog.getOpenFileName(self, "Select demographics CSV", "", "CSV files (*.csv);;All files (*)")
-        if file_path:
-            self.demographics_csv_edit.setText(file_path)
 
     def _set_busy(self, busy: bool) -> None:
         for btn in self.findChildren(QPushButton):
@@ -1870,6 +1822,9 @@ class AcousticPipelineWindow(QMainWindow):
         self.progress.setRange(0, 0 if busy else 100)
         if not busy:
             self.progress.setValue(100)
+            if self._run_root is not None:
+                for btn in (self.browse_input_btn, self.browse_output_btn, self.init_project_btn):
+                    btn.setEnabled(False)
 
     def _run_worker(self, name: str, func: Callable, kwargs: dict) -> None:
         if self._thread is not None:
@@ -1932,58 +1887,60 @@ class AcousticPipelineWindow(QMainWindow):
             open_path(target)
 
     def open_output_root(self) -> None:
-        out = self.output_edit.text().strip()
-        if not out:
-            QMessageBox.information(self, "No output folder", "Please choose an output project folder first.")
+        if self._run_root is None:
+            QMessageBox.information(self, "No run folder", "Initialize an acoustic run first.")
             return
-        p = Path(out).expanduser(); p.mkdir(parents=True, exist_ok=True); open_path(p)
+        open_path(self._run_root)
 
     # ---------------------------- ACTIONS ----------------------------
     def _task_fallback_from_gui(self) -> str | None:
         task = self.task_name_edit.text().strip() if hasattr(self, "task_name_edit") else ""
         return task or None
 
-    def _initialize_project_with_task(
-        self,
-        output_root: Path,
-        project_name: str,
-        task_fallback: str | None = None,
-        input_folder: str = "",
-    ):
-        return register_project_component(
-            output_root=output_root,
-            component="acoustic",
-            project_name=project_name,
-            details={
-                "gui_version": "0.38",
-                "primary_task": task_fallback or "",
-                "input_folder": input_folder,
-            },
-        )
+    def _freeze_setup(self) -> None:
+        for field in (self.project_name_edit, self.task_name_edit, self.input_edit, self.output_edit):
+            field.setReadOnly(True)
+        for button in (self.browse_input_btn, self.browse_output_btn, self.init_project_btn):
+            button.setEnabled(False)
 
     def run_project_init(self) -> None:
-        paths = self._require_paths()
-        if paths is None: return
-        _input_path, output_root = paths
-        self._run_worker(
-            "project",
-            self._initialize_project_with_task,
-            {
-                "output_root": output_root,
-                "project_name": self.project_name_edit.text().strip() or "VSLP Study",
-                "task_fallback": self._task_fallback_from_gui(),
-                "input_folder": self.input_edit.text().strip(),
-            },
-        )
-
-    def run_metadata(self) -> None:
-        paths = self._require_paths()
-        if paths is None: return
-        if not self._require_project_initialized(): return
-        input_path, output_root = paths
-        demo_text = self.demographics_csv_edit.text().strip() if hasattr(self, "demographics_csv_edit") else ""
-        cfg = MetadataConfig(demographics_csv=demo_text or None, task_fallback=self._task_fallback_from_gui())
-        self._run_worker("metadata", run_acoustic_metadata, {"input_path": input_path, "output_root": output_root, "config": cfg})
+        if self._run_root is not None:
+            QMessageBox.information(self, "Run already initialized", "Open a new Acoustic GUI window to create a different run.")
+            return
+        raw_values = {
+            "project_name": self.project_name_edit.text(),
+            "task_name": self.task_name_edit.text(),
+            "input_folder": self.input_edit.text(),
+            "output_parent": self.output_edit.text(),
+        }
+        project_name = raw_values["project_name"].strip()
+        task_name = raw_values["task_name"].strip()
+        input_text = raw_values["input_folder"].strip()
+        parent_text = raw_values["output_parent"].strip()
+        if not all((project_name, task_name, input_text, parent_text)):
+            QMessageBox.warning(self, "Incomplete Setup", "Project name, Task name, Input folder, and Output parent folder are all required.")
+            return
+        input_path = Path(input_text).expanduser().resolve()
+        if not input_path.is_dir():
+            QMessageBox.warning(self, "Input folder missing", "Select an existing input audio folder.")
+            return
+        try:
+            task_run_folder_name(task_name)
+            output_parent = Path(parent_text).expanduser().resolve()
+            if output_parent.is_relative_to(input_path):
+                raise ValueError("Output parent must be outside the input folder.")
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Invalid Setup", str(exc))
+            return
+        self._run_worker("project", initialize_acoustic_run, {
+            "project_name": project_name,
+            "task_name": task_name,
+            "input_folder": input_path,
+            "output_parent": output_parent,
+            "setup_values": raw_values,
+            "gui_version": "0.38",
+            "pipeline_version": "0.38.0",
+        })
 
     def run_ingest(self) -> None:
         paths = self._require_paths()
@@ -2176,11 +2133,10 @@ class AcousticPipelineWindow(QMainWindow):
         if not selected_features:
             QMessageBox.warning(self, "No features selected", "Select at least one feature in the feature tree.")
             return
-        metadata_index = self._metadata_index_path()
         cfg = FeatureExtractionConfig(
             selected_features=selected_features,
             minimum_pause_duration_sec=float(self.min_pause_feature_spin.value()),
-            metadata_csv=str(metadata_index) if metadata_index.exists() else None,
+            task_name=self._task_fallback_from_gui(),
             acoustic_region_policy=self.region_policy_combo.currentText(),
             computation_mode=self.computation_mode_combo.currentText(),
         )
@@ -2205,8 +2161,6 @@ class AcousticPipelineWindow(QMainWindow):
         manifest_dir.mkdir(parents=True, exist_ok=True)
 
         artifacts = [
-            ("metadata", "project_file_index", self._stage_path("metadata", "summary"), "table"),
-            ("metadata", "metadata_report", self._stage_path("metadata", "report"), "report"),
             ("ingest", "audio_ingest_summary", self._stage_path("ingest", "summary"), "table"),
             ("preprocess", "preprocess_main_summary", self._stage_path("preprocess", "main_summary"), "table"),
             ("preprocess", "preprocess_report", self._stage_path("preprocess", "report"), "report"),
@@ -2242,15 +2196,17 @@ class AcousticPipelineWindow(QMainWindow):
                 return "available"
 
         task_value = "not specified"
+        project_value = "not specified"
         try:
             manifest = json.loads((output_root / "project_manifest.json").read_text(encoding="utf-8"))
-            task_value = manifest.get("primary_task") or "not specified"
-        except Exception:
+            project_value = manifest.get("project_name") or "not specified"
+            task_value = (manifest.get("components") or {}).get("acoustic", {}).get("primary_task") or "not specified"
+        except (OSError, ValueError, TypeError):
             pass
         metrics = [
+            ("Project name", project_value),
             ("Primary task", task_value),
             ("Ingested files", csv_count(self._stage_path("ingest", "summary"))),
-            ("Metadata-linked files", csv_count(self._stage_path("metadata", "summary"))),
             ("Segmented files", csv_count(self._stage_path("segment", "main_summary"))),
             ("QC feature rows", csv_count(self._stage_path("quality", "summary"))),
             ("Feature rows", csv_count(self._stage_path("features", "summary"))),
@@ -2291,51 +2247,14 @@ table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{border-bottom:
         manifest_path = manifest.write_json(manifest_dir / "stage_manifest.json")
         return StageResult(status="completed", manifest_path=manifest_path, summary_table=manifest_csv, report_path=report_path)
 
-    def _metadata_decision_before_full_run(self) -> bool:
-        """Return True if the full workflow may proceed.
-
-        Metadata is recommended but not required. This helper avoids large backend
-        errors by asking the user what to do before the run starts.
-        """
-        demo_text = self.demographics_csv_edit.text().strip() if hasattr(self, "demographics_csv_edit") else ""
-        if demo_text:
-            return True
-
-        msg = QMessageBox(self)
-        msg.setIcon(QMessageBox.Question)
-        msg.setWindowTitle("Metadata not selected")
-        msg.setText("No metadata CSV is selected.")
-        msg.setInformativeText(
-            "If you have metadata, please upload it before running. "
-            "If not, VSLP can continue using filename parsing and the Setup task field; "
-            "clinical labels such as diagnosis and severity will remain blank."
-        )
-        upload_btn = msg.addButton("Select Metadata CSV", QMessageBox.ActionRole)
-        run_btn = msg.addButton("Run Without Metadata", QMessageBox.AcceptRole)
-        cancel_btn = msg.addButton("Cancel", QMessageBox.RejectRole)
-        msg.setDefaultButton(upload_btn)
-        msg.exec()
-        clicked = msg.clickedButton()
-        if clicked == upload_btn:
-            self.browse_demographics_csv()
-            if getattr(self, "tabs", None) is not None:
-                self.tabs.setCurrentIndex(1)
-            return bool(self.demographics_csv_edit.text().strip())
-        if clicked == run_btn:
-            return True
-        return False
-
     def run_all(self) -> None:
         paths = self._require_paths()
         if paths is None: return
         if not self._require_project_initialized(): return
-        if not self._metadata_decision_before_full_run(): return
         input_path, output_root = paths
 
         selected_features = self._selected_feature_names()
         def full_run(input_path: Path, output_root: Path):
-            demo_text = self.demographics_csv_edit.text().strip() if hasattr(self, "demographics_csv_edit") else ""
-            metadata_result = run_acoustic_metadata(input_path=input_path, output_root=output_root, config=MetadataConfig(demographics_csv=demo_text or None, task_fallback=self._task_fallback_from_gui()))
             ingest_result = run_acoustic_ingest(input_path=input_path, output_root=output_root)
             preprocess_cfg = self._preprocess_config_from_gui()
             preprocess_result = run_acoustic_preprocess(input_path=input_path, output_root=output_root, config=preprocess_cfg)
@@ -2367,18 +2286,18 @@ table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{border-bottom:
                 config=FeatureExtractionConfig(
                     selected_features=selected_features,
                     minimum_pause_duration_sec=float(self.min_pause_feature_spin.value()),
-                    metadata_csv=str(output_root / "acoustic" / "000_metadata" / "tables" / "project_file_index.csv") if (output_root / "acoustic" / "000_metadata" / "tables" / "project_file_index.csv").exists() else None,
+                    task_name=self._task_fallback_from_gui(),
                     acoustic_region_policy=self.region_policy_combo.currentText(),
                     computation_mode=self.computation_mode_combo.currentText(),
                 ),
             )
             reports_result = self._write_run_summary_files(output_root)
-            return {"metadata": metadata_result, "ingest": ingest_result, "preprocess": preprocess_result, "segment": segment_result, "quality": quality_result, "features": features_result, "reports": reports_result}
+            return {"ingest": ingest_result, "preprocess": preprocess_result, "segment": segment_result, "quality": quality_result, "features": features_result, "reports": reports_result}
         self._run_worker("full_run", full_run, {"input_path": input_path, "output_root": output_root})
 
     def _on_worker_finished(self, name: str, result: object) -> None:  # type: ignore[override]
         if name == "full_run" and isinstance(result, dict):
-            for stage_name in ["metadata", "ingest", "preprocess", "segment", "quality", "features", "reports"]:
+            for stage_name in ["ingest", "preprocess", "segment", "quality", "features", "reports"]:
                 self._on_worker_finished(stage_name, result[stage_name])
             self.append_log("Full acoustic backend run finished.")
             return
@@ -2399,6 +2318,10 @@ table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{border-bottom:
         if report: self.append_log(f"Report: {report}")
         if summary: self.append_log(f"Summary: {summary}")
         if name == "project":
+            self._run_root = result.root
+            self.run_root_edit.setText(str(result.root))
+            self._freeze_setup()
+            self.append_log(f"Active acoustic run folder: {result.root}")
             self._refresh_project_gate()
         if name == "ingest":
             self._update_ingest_feedback()

@@ -2,43 +2,34 @@
 
 ## Rule
 
-Use one VSLP study workspace for a study or processing cohort. Select that same root folder in the Acoustic, Kinematics, and Feature Analysis GUIs.
+Acoustic Setup accepts a parent output folder and creates a separate `TaskSlug_YYYYMMDD_HHMMSS` run folder beneath it. Select that run folder when loading its acoustic handoff into Feature Analysis. Kinematics retains its own workspace setup.
 
-Do not create unrelated top-level output folders for each GUI. The applications isolate their own artifacts below the shared root.
+Acoustic Setup requires project name, task name, input folder, and output parent. It creates the manifest, setup config, log, and `acoustic/` root. Setup then locks. Acoustic stage folders appear as stages run, and empty stage directories are removed afterward. Downstream Feature Analysis may later add `feature_analysis/` when the run folder is selected as its workspace. Kinematics and ML are not created by acoustic Setup.
 
-## Canonical Layout
+## Acoustic Run Layout
 
 ```text
-study_workspace/
+TaskSlug_YYYYMMDD_HHMMSS/
 |-- project_manifest.json
 |-- configs/
-|-- acoustic/
-|   |-- 000_metadata/
-|   |-- 001_ingest/
-|   |-- feature_handoff/main/
-|   |-- feature_handoff/supplementary/
-|   `-- ...
-|-- kinematics/
-|   |-- project_manifest.json
-|   |-- 000_ingest/
-|   |-- feature_handoff/main/
-|   |-- feature_handoff/supplementary/
-|   `-- ...
-|-- feature_analysis/
-|   |-- acoustic/
-|   |   |-- tables/
-|   |   |-- plots/
-|   |   |-- reports/
-|   |   `-- exports/
-|   |-- kinematics/
-|   `-- generic/
-|-- ml/
-`-- logs/
+|   `-- setup_config.json
+|-- logs/
+|   `-- setup.log
+`-- acoustic/
+    |-- 001_ingest/
+    |-- 002_preprocess/
+    |-- 003_segmentation/
+    |-- 003_quality_control/
+    |-- 004_features/
+    |-- 007_run_summary/
+    `-- feature_handoff/
+        |-- main/
+        `-- supplementary/
 ```
 
-The root `project_manifest.json` is the workspace identity and component registry. Component initialization is additive: opening an existing workspace from another GUI preserves its original project name, creation timestamp, and registered components.
+The root manifest stores the project name, human-readable task, safe task slug, run ID, local and exact UTC creation times, resolved paths, versions, and acoustic modality. Existing run names receive `_02`, `_03`, etc., and are never reused. The setup config and log record the project, task, source folder, and run folder. Stage folders appear as stages run. The acoustic GUI does not create `kinematics/`, `ml/`, or `feature_analysis/` during Setup. Clinical metadata is joined in Feature Analysis.
 
-The Kinematics GUI also writes a component manifest under `kinematics/` because its stage workflow requires kinematics-specific configuration. This supplements the root manifest; it does not define a second project.
+Kinematics uses its own component workflow and may write a component manifest under `kinematics/` in a workspace chosen for that GUI.
 
 ## When to Create Another Workspace
 
@@ -50,7 +41,7 @@ Create a separate workspace when any of the following changes:
 - pilot versus locked production processing;
 - independent analysis that must not share outputs or provenance.
 
-Different tasks from the same governed study may share a workspace. Their task identity must remain explicit in metadata and exported tables.
+Different acoustic tasks from the same governed study may share a parent output folder but receive separate task-stamped run folders. Their task identity remains explicit in metadata and exported tables.
 
 ## Feature Analysis
 

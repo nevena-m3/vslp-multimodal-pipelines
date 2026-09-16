@@ -10710,7 +10710,7 @@ Decision colors:
         modality = {"acoustic": "Acoustic", "kinematic": "Kinematic", "kinematics": "Kinematic"}.get(raw_modality)
         if modality is None:
             folder_hint = main_dir.parent.parent.name.lower()
-            modality = {"acoustic": "Acoustic", "kinematic": "Kinematic", "kinematics": "Kinematic"}.get(folder_hint, "Generic")
+            modality = {"acoustic": "Acoustic", "acoustics": "Acoustic", "kinematic": "Kinematic", "kinematics": "Kinematic"}.get(folder_hint, "Generic")
 
         modality_dir = main_dir.parent.parent
         workspace = modality_dir.parent
