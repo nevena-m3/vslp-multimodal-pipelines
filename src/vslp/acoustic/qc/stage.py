@@ -44,7 +44,7 @@ def run_acoustic_qc_dashboard(output_root: str | Path, config: AcousticQCConfig 
 
     preprocess_csv = output_root / "acoustic" / "001_preprocess" / "tables" / "acoustic_preprocess_summary.csv"
     segmentation_csv = output_root / "acoustic" / "002_segmentation" / "tables" / "acoustic_segmentation_summary.csv"
-    feature_status_csv = output_root / "acoustic" / "004_features" / "tables" / "acoustic_feature_status_long.csv"
+    feature_status_csv = output_root / "acoustic" / "005_features" / "tables" / "acoustic_feature_status_long.csv"
 
     warnings: list[str] = []
     errors: list[dict[str, Any]] = []

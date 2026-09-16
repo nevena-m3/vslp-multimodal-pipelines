@@ -19,9 +19,10 @@ TaskSlug_YYYYMMDD_HHMMSS/
     |-- 000_ingest/
     |-- 001_preprocess/
     |-- 002_segmentation/
-    |-- 003_quality_control/
-    |-- 004_features/
-    |-- 005_run_summary/
+    |-- 003_segmentation_review/
+    |-- 004_quality_control/
+    |-- 005_features/
+    |-- 006_run_summary/
     `-- feature_handoff/
         |-- main/
         `-- supplementary/

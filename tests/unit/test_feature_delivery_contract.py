@@ -9,7 +9,7 @@ from vslp.core.feature_contract import build_feature_delivery, write_feature_han
 
 
 def test_delivery_separates_main_from_supplementary_outputs(tmp_path: Path) -> None:
-    tables = tmp_path / "acoustic" / "004_features" / "tables"
+    tables = tmp_path / "acoustic" / "005_features" / "tables"
     tables.mkdir(parents=True)
     handoff = write_feature_handoff(
         tables,
@@ -20,7 +20,7 @@ def test_delivery_separates_main_from_supplementary_outputs(tmp_path: Path) -> N
         tables / "legacy_values.csv",
         tables / "legacy_registry.csv",
     )
-    diagnostic = tmp_path / "acoustic" / "003_quality_control" / "plots" / "qc.png"
+    diagnostic = tmp_path / "acoustic" / "004_quality_control" / "plots" / "qc.png"
     diagnostic.parent.mkdir(parents=True)
     diagnostic.write_bytes(b"png")
     delivery = build_feature_delivery(tmp_path, "acoustic", handoff)
@@ -32,7 +32,7 @@ def test_delivery_separates_main_from_supplementary_outputs(tmp_path: Path) -> N
     assert not (main / "metadata_context.csv").exists()
     assert "metadata_context.csv" not in (main / "README.md").read_text(encoding="utf-8")
     catalog = pd.read_csv(delivery["catalog_csv"])
-    assert "acoustic/003_quality_control/plots/qc.png" in catalog["relative_path"].str.replace("\\", "/").tolist()
+    assert "acoustic/004_quality_control/plots/qc.png" in catalog["relative_path"].str.replace("\\", "/").tolist()
     manifest = json.loads(delivery["delivery_manifest_json"].read_text(encoding="utf-8"))
     assert manifest["contract"] == "vslp-modality-feature-delivery"
     assert manifest["modality"] == "acoustic"

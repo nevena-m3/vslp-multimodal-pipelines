@@ -62,5 +62,5 @@ def test_quality_control_stage_writes_family_tables(tmp_path: Path):
     assert "qadd_pause_rms_db_median" in df.columns
     assert "qgain_speech_rms_db_std" in df.columns
     assert "qtemp_waveform_continuity_break_score" in df.columns
-    assert (out / "acoustic" / "003_quality_control" / "tables" / "acoustic_quality_family_status.csv").exists()
+    assert (out / "acoustic" / "004_quality_control" / "tables" / "acoustic_quality_family_status.csv").exists()
     assert result.report_path.exists()

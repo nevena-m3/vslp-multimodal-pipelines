@@ -58,7 +58,7 @@ def build_feature_scale_registry(feature_registry: pd.DataFrame | None = None) -
                 "native_scale": "segment_event_or_segment_distribution",
                 "native_source": "Silero speech/nonspeech segment table",
                 "physiologic_unit": "speech phrase / internal pause / effective task",
-                "current_persistence": "per-file scalar plus native segment tables under acoustics/004_features/tables/native_measurements/",
+                "current_persistence": "per-file scalar plus native segment tables under acoustics/005_features/tables/native_measurements/",
                 "recommended_file_reducers": "duration_sum,count,mean,cv,percent_of_effective_duration,word_count_rate_when_available",
                 "recommended_group_reducers": "median,iqr,q05,q95,n_files,missing_fraction; avoid simple mean when files/tasks differ strongly",
                 "ml_recommendation": "include distribution descriptors and QC flags; preserve task stratification",

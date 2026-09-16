@@ -125,19 +125,20 @@ The established stage outputs remain in place:
 acoustic/000_ingest/
 acoustic/001_preprocess/
 acoustic/002_segmentation/
-acoustic/003_quality_control/
-acoustic/004_features/
-acoustic/005_run_summary/
+acoustic/003_segmentation_review/
+acoustic/004_quality_control/
+acoustic/005_features/
+acoustic/006_run_summary/
 ```
 
 Legacy and detailed feature-stage files include:
 
 ```text
-acoustic/004_features/tables/acoustic_features_per_file.csv
-acoustic/004_features/tables/selected_acoustic_feature_registry.csv
-acoustic/004_features/tables/acoustic_feature_status_long.csv
-acoustic/004_features/tables/acoustic_feature_computation_policy.csv
-acoustic/004_features/tables/acoustic_feature_scalar_reduction_audit.csv
+acoustic/005_features/tables/acoustic_features_per_file.csv
+acoustic/005_features/tables/selected_acoustic_feature_registry.csv
+acoustic/005_features/tables/acoustic_feature_status_long.csv
+acoustic/005_features/tables/acoustic_feature_computation_policy.csv
+acoustic/005_features/tables/acoustic_feature_scalar_reduction_audit.csv
 ```
 
 Do not use report HTML, plots, identifiers, file paths, or processing status as predictor inputs.

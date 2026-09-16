@@ -275,16 +275,21 @@ def run_acoustic_feature_extraction(
     segmentation_summary_csv: str | Path,
     output_root: str | Path,
     config: FeatureExtractionConfig | None = None,
+    final_segmentation_intervals_csv: str | Path | None = None,
 ) -> StageResult:
     """Extract acoustic features from segmentation outputs."""
     cfg = _apply_computation_mode_defaults(config or FeatureExtractionConfig())
     segmentation_summary_csv = Path(segmentation_summary_csv)
-    stage_dir = Path(output_root) / "acoustic" / "004_features"
+    stage_dir = Path(output_root) / "acoustic" / "005_features"
     folders = ensure_stage_folders(stage_dir, lazy=True)
 
     registry = _select_registry(cfg)
     selected_names = set(registry["feature"].astype(str).tolist())
-    seg_summary = pd.read_csv(segmentation_summary_csv)
+    if final_segmentation_intervals_csv is not None:
+        from vslp.acoustic.segment.review import load_final_segmentation
+        seg_summary = load_final_segmentation(final_segmentation_intervals_csv, segmentation_summary_csv)
+    else:
+        seg_summary = pd.read_csv(segmentation_summary_csv)
     if "automatic_status" in seg_summary:
         seg_summary = seg_summary.loc[
             ~seg_summary["automatic_status"].astype(str).str.upper().isin({"EXCLUDED", "FAILED"})
@@ -388,7 +393,7 @@ def run_acoustic_feature_extraction(
         "acoustic",
         handoff,
         optional_main={
-            "qc_features.csv": Path(output_root) / "acoustic" / "003_quality_control" / "tables" / "acoustic_quality_processed_features.csv",
+            "qc_features.csv": Path(output_root) / "acoustic" / "004_quality_control" / "tables" / "acoustic_quality_processed_features.csv",
         },
     )
     build_feature_scale_registry(registry).to_csv(scale_registry_path, index=False)
@@ -450,7 +455,8 @@ def run_acoustic_feature_extraction(
         stage_name="acoustic_feature_extraction",
         stage_version="0.12.0",
         status="completed_with_warnings" if warnings else "completed",
-        input_artifacts=[ArtifactRef(path=str(segmentation_summary_csv), role="segmentation_summary", media_type="text/csv")],
+        input_artifacts=[ArtifactRef(path=str(segmentation_summary_csv), role="final_segmentation_decisions" if final_segmentation_intervals_csv else "segmentation_summary", media_type="text/csv")]
+        + ([ArtifactRef(path=str(final_segmentation_intervals_csv), role="final_segmentation_intervals", media_type="text/csv")] if final_segmentation_intervals_csv else []),
         output_artifacts=[
             ArtifactRef(path=str(features_path), role="features_per_file", media_type="text/csv"),
             ArtifactRef(path=str(status_path), role="feature_status_long", media_type="text/csv"),
@@ -596,7 +602,12 @@ def _plot_implemented_feature_distributions(features_csv: Path, registry: pd.Dat
     for ax, name in zip(axes_arr, chosen, strict=False):
         vals = pd.to_numeric(df[name], errors="coerce").dropna().values
         if vals.size:
-            ax.hist(vals, bins=min(20, max(5, int(np.sqrt(vals.size)))))
+            # Nearly identical measurements can make NumPy's equally spaced
+            # bin edges collapse at floating point precision.
+            spread = float(np.max(vals) - np.min(vals))
+            scale = max(1.0, float(np.max(np.abs(vals))))
+            bins = 1 if spread <= np.finfo(float).eps * scale * 16 else min(20, max(5, int(np.sqrt(vals.size))))
+            ax.hist(vals, bins=bins)
         ax.set_title(name, fontsize=9)
         ax.tick_params(axis="both", labelsize=8)
     for ax in axes_arr[len(chosen):]:
@@ -726,7 +737,9 @@ def _plot_feature_distribution_audit(features_csv: Path, registry: pd.DataFrame,
         r = meta.loc[name] if name in meta.index else pd.Series(dtype=object)
         lo = pd.to_numeric(pd.Series([r.get("expected_low")]), errors="coerce").iloc[0] if "expected_low" in r.index else np.nan
         hi = pd.to_numeric(pd.Series([r.get("expected_high")]), errors="coerce").iloc[0] if "expected_high" in r.index else np.nan
-        bins = min(20, max(5, int(np.sqrt(vals.size) + 2)))
+        spread = float(np.max(vals) - np.min(vals))
+        scale = max(1.0, float(np.max(np.abs(vals))))
+        bins = 1 if spread <= np.finfo(float).eps * scale * 16 else min(20, max(5, int(np.sqrt(vals.size) + 2)))
         ax.hist(vals, bins=bins, alpha=0.85)
         if np.isfinite(lo):
             ax.axvline(lo, linestyle="--", linewidth=1)

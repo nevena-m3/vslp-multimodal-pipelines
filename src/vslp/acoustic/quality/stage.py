@@ -672,15 +672,19 @@ def _quality_recommendations(warnings_df: pd.DataFrame, n_files: int) -> pd.Data
 
 
 @cleanup_stage
-def run_acoustic_quality_control(segmentation_summary_csv: str | Path, output_root: str | Path, config: QualityControlConfig | None=None) -> StageResult:
+def run_acoustic_quality_control(segmentation_summary_csv: str | Path, output_root: str | Path, config: QualityControlConfig | None=None, final_segmentation_intervals_csv: str | Path | None=None) -> StageResult:
     cfg=config or QualityControlConfig()
     families=cfg.selected_families or list(QC_FAMILIES.keys())
     families=[f for f in families if f in QC_FAMILIES]
     output_root=Path(output_root); segmentation_summary_csv=Path(segmentation_summary_csv)
-    stage_dir=output_root/"acoustic"/"003_quality_control"
+    stage_dir=output_root/"acoustic"/"004_quality_control"
     folders=ensure_stage_folders(stage_dir, lazy=True)
     rows=[]; status_rows=[]; errors=[]
-    seg=pd.read_csv(segmentation_summary_csv) if segmentation_summary_csv.exists() else pd.DataFrame()
+    if final_segmentation_intervals_csv is not None:
+        from vslp.acoustic.segment.review import load_final_segmentation
+        seg=load_final_segmentation(final_segmentation_intervals_csv, segmentation_summary_csv)
+    else:
+        seg=pd.read_csv(segmentation_summary_csv) if segmentation_summary_csv.exists() else pd.DataFrame()
     for _, row in seg.iterrows():
         if str(row.get("automatic_status", "ACCEPTED")).upper() in {"EXCLUDED", "FAILED"}:
             continue
@@ -783,7 +787,8 @@ def run_acoustic_quality_control(segmentation_summary_csv: str | Path, output_ro
         stage_name="acoustic_quality_control",
         stage_version="0.23.0",
         status="completed_with_warnings" if errors else "completed",
-        input_artifacts=[ArtifactRef(path=str(segmentation_summary_csv), role="segmentation_summary", media_type="text/csv")],
+        input_artifacts=[ArtifactRef(path=str(segmentation_summary_csv), role="final_segmentation_decisions" if final_segmentation_intervals_csv else "segmentation_summary", media_type="text/csv")]
+        + ([ArtifactRef(path=str(final_segmentation_intervals_csv), role="final_segmentation_intervals", media_type="text/csv")] if final_segmentation_intervals_csv else []),
         output_artifacts=[
             ArtifactRef(path=str(features_csv), role="quality_features", media_type="text/csv"),
             ArtifactRef(path=str(main_csv), role="quality_main_summary", media_type="text/csv"),

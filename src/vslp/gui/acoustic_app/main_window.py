@@ -68,6 +68,8 @@ from vslp.acoustic.preprocess.stage import PreprocessConfig, run_acoustic_prepro
 from vslp.acoustic.segment.pipeline import SegmentationConfig, run_acoustic_segmentation
 from vslp.acoustic.segment.selection import SILERO, DDK, PHONATION, CUSTOM, recommend_method
 from vslp.acoustic.segment.task_methods import DDKConfig, PhonationConfig
+from vslp.acoustic.segment.review import initialize_segmentation_review
+from vslp.gui.acoustic_app.review_widget import SegmentationReviewWidget
 from vslp.acoustic.quality.stage import (
     QC_FAMILIES,
     FAMILY_FEATURES,
@@ -136,6 +138,7 @@ class AcousticPipelineWindow(QMainWindow):
             "ingest": StageRecord(),
             "preprocess": StageRecord(),
             "segment": StageRecord(),
+            "review": StageRecord(),
             "quality": StageRecord(),
             "features": StageRecord(),
             "reports": StageRecord(),
@@ -182,6 +185,7 @@ class AcousticPipelineWindow(QMainWindow):
             ("ingest", "Ingest"),
             ("preprocess", "Preprocess"),
             ("segment", "Data Segmentation"),
+            ("review", "Segmentation manual review"),
             ("quality", "Quality Control"),
             ("features", "Feature Extraction"),
             ("reports", "Reports"),
@@ -232,8 +236,12 @@ class AcousticPipelineWindow(QMainWindow):
         tabs.addTab(self._build_setup_tab(), "Setup")
         tabs.addTab(self._build_preprocess_tab(), "Preprocess")
         tabs.addTab(self._build_segment_tab(), "Segmentation")
+        self.review_widget = SegmentationReviewWidget(self._output_root)
+        self.review_widget.finalized.connect(lambda result: self._on_worker_finished("review", result))
+        self.review_widget.continue_requested.connect(self.run_after_review)
+        tabs.addTab(self.review_widget, "Segmentation manual review")
         tabs.addTab(self._build_quality_tab(), "Quality Control")
-        tabs.addTab(self._build_features_tab(), "Features")
+        tabs.addTab(self._build_features_tab(), "Physiological Features")
         tabs.addTab(self._build_inspector_tab(), "Inspector")
         tabs.addTab(self._build_reports_tab(), "Reports & Outputs")
         main_col.addWidget(tabs, stretch=1)
@@ -406,10 +414,13 @@ class AcousticPipelineWindow(QMainWindow):
         self.init_project_btn = QPushButton("Initialize Project")
         self.init_project_btn.setObjectName("RunButton")
         self.init_project_btn.clicked.connect(self.run_project_init)
+        self.open_run_btn = QPushButton("Open existing run")
+        self.open_run_btn.clicked.connect(self.open_existing_run)
         self.ingest_btn = QPushButton("Run Ingest")
         self.ingest_btn.clicked.connect(self.run_ingest)
         self.ingest_btn.setToolTip("Runs ffprobe-based media digest. Requires project initialization first.")
         btn_row.addWidget(self.init_project_btn)
+        btn_row.addWidget(self.open_run_btn)
         btn_row.addWidget(self.ingest_btn)
         workflow_layout.addLayout(btn_row)
 
@@ -731,7 +742,7 @@ class AcousticPipelineWindow(QMainWindow):
         ]
         for i, (label, filename) in enumerate(plot_buttons):
             btn = QPushButton(label)
-            btn.clicked.connect(lambda _checked=False, fn=filename: self.preview_image(self._output_root() / "acoustic" / "003_quality_control" / "plots" / fn))
+            btn.clicked.connect(lambda _checked=False, fn=filename: self.preview_image(self._output_root() / "acoustic" / "004_quality_control" / "plots" / fn))
             plots_layout.addWidget(btn, i // 2, i % 2)
         left_layout.addWidget(plots_group)
 
@@ -1061,6 +1072,9 @@ class AcousticPipelineWindow(QMainWindow):
             ("Preprocess detailed summary", lambda: self.preview_csv(self._stage_path("preprocess", "summary"))),
             ("Preprocess QC flags", lambda: self.preview_csv(self._stage_path("preprocess", "qc_flags"))),
             ("Segmentation summary", lambda: self.preview_csv(self._stage_path("segment", "summary"))),
+            ("Segmentation review queue", lambda: self.preview_csv(self._stage_path("review", "summary"))),
+            ("Final segmentation decisions", lambda: self.preview_csv(self._stage_path("review", "decisions"))),
+            ("Final segmentation intervals", lambda: self.preview_csv(self._stage_path("review", "intervals"))),
             ("Quality features", lambda: self.preview_csv(self._stage_path("quality", "summary"))),
             ("Quality main summary", lambda: self.preview_csv(self._stage_path("quality", "main_summary"))),
             ("Quality feature registry", lambda: self.preview_csv(self._stage_path("quality", "feature_registry"))),
@@ -1077,10 +1091,10 @@ class AcousticPipelineWindow(QMainWindow):
             ("Feature status", lambda: self.preview_csv(self._stage_path("features", "status"))),
             ("Feature distribution audit", lambda: self.preview_csv(self._stage_path("features", "audit"))),
             ("Feature expected-range flags", lambda: self.preview_csv(self._stage_path("features", "range_flags"))),
-            ("Feature measurement scales", lambda: self.preview_csv(self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_feature_measurement_scale_registry.csv")),
+            ("Feature measurement scales", lambda: self.preview_csv(self._output_root() / "acoustic" / "005_features" / "tables" / "acoustic_feature_measurement_scale_registry.csv")),
             ("Feature computation policy", lambda: self.preview_csv(self._stage_path("features", "computation_policy"))),
             ("Feature scalar-reduction audit", lambda: self.preview_csv(self._stage_path("features", "reduction_audit"))),
-            ("Native segment events", lambda: self.preview_csv(self._output_root() / "acoustic" / "004_features" / "tables" / "native_measurements" / "acoustic_native_segment_events.csv")),
+            ("Native segment events", lambda: self.preview_csv(self._output_root() / "acoustic" / "005_features" / "tables" / "native_measurements" / "acoustic_native_segment_events.csv")),
         ]
         for label, callback in table_buttons:
             btn = QPushButton(label)
@@ -1096,18 +1110,18 @@ class AcousticPipelineWindow(QMainWindow):
             ("Preprocess SNR", lambda: self.preview_image(self._output_root() / "acoustic" / "001_preprocess" / "plots" / "preprocess_snr_distribution.png")),
             ("Preprocess clipping", lambda: self.preview_image(self._output_root() / "acoustic" / "001_preprocess" / "plots" / "preprocess_clipping_distribution.png")),
             ("Preprocess DC offset", lambda: self.preview_image(self._output_root() / "acoustic" / "001_preprocess" / "plots" / "preprocess_dc_offset_before_after.png")),
-            ("Quality family status", lambda: self.preview_image(self._output_root() / "acoustic" / "003_quality_control" / "plots" / "quality_family_status.png")),
-            ("Quality overview", lambda: self.preview_image(self._output_root() / "acoustic" / "003_quality_control" / "plots" / "quality_main_features_overview.png")),
-            ("Quality feature distributions", lambda: self.preview_image(self._output_root() / "acoustic" / "003_quality_control" / "plots" / "quality_feature_distributions.png")),
-            ("Quality warning heatmap", lambda: self.preview_image(self._output_root() / "acoustic" / "003_quality_control" / "plots" / "quality_warning_heatmap.png")),
-            ("Quality recommendations", lambda: self.preview_image(self._output_root() / "acoustic" / "003_quality_control" / "plots" / "quality_recommendation_summary.png")),
-            ("Quality family score distributions", lambda: self.preview_image(self._output_root() / "acoustic" / "003_quality_control" / "plots" / "quality_family_score_distributions.png")),
-            ("Quality review rank", lambda: self.preview_image(self._output_root() / "acoustic" / "003_quality_control" / "plots" / "quality_recording_review_rank.png")),
-            ("Quality feature correlation", lambda: self.preview_image(self._output_root() / "acoustic" / "003_quality_control" / "plots" / "quality_feature_correlation_heatmap.png")),
-            ("Quality family correlation", lambda: self.preview_image(self._output_root() / "acoustic" / "003_quality_control" / "plots" / "quality_family_correlation_heatmap.png")),
-            ("Quality feature coverage", lambda: self.preview_image(self._output_root() / "acoustic" / "003_quality_control" / "plots" / "quality_missingness_feature_coverage.png")),
-            ("Quality PCA scree", lambda: self.preview_image(self._output_root() / "acoustic" / "003_quality_control" / "plots" / "quality_pca_scree.png")),
-            ("Quality PCA embedding", lambda: self.preview_image(self._output_root() / "acoustic" / "003_quality_control" / "plots" / "quality_pca_embedding.png")),
+            ("Quality family status", lambda: self.preview_image(self._output_root() / "acoustic" / "004_quality_control" / "plots" / "quality_family_status.png")),
+            ("Quality overview", lambda: self.preview_image(self._output_root() / "acoustic" / "004_quality_control" / "plots" / "quality_main_features_overview.png")),
+            ("Quality feature distributions", lambda: self.preview_image(self._output_root() / "acoustic" / "004_quality_control" / "plots" / "quality_feature_distributions.png")),
+            ("Quality warning heatmap", lambda: self.preview_image(self._output_root() / "acoustic" / "004_quality_control" / "plots" / "quality_warning_heatmap.png")),
+            ("Quality recommendations", lambda: self.preview_image(self._output_root() / "acoustic" / "004_quality_control" / "plots" / "quality_recommendation_summary.png")),
+            ("Quality family score distributions", lambda: self.preview_image(self._output_root() / "acoustic" / "004_quality_control" / "plots" / "quality_family_score_distributions.png")),
+            ("Quality review rank", lambda: self.preview_image(self._output_root() / "acoustic" / "004_quality_control" / "plots" / "quality_recording_review_rank.png")),
+            ("Quality feature correlation", lambda: self.preview_image(self._output_root() / "acoustic" / "004_quality_control" / "plots" / "quality_feature_correlation_heatmap.png")),
+            ("Quality family correlation", lambda: self.preview_image(self._output_root() / "acoustic" / "004_quality_control" / "plots" / "quality_family_correlation_heatmap.png")),
+            ("Quality feature coverage", lambda: self.preview_image(self._output_root() / "acoustic" / "004_quality_control" / "plots" / "quality_missingness_feature_coverage.png")),
+            ("Quality PCA scree", lambda: self.preview_image(self._output_root() / "acoustic" / "004_quality_control" / "plots" / "quality_pca_scree.png")),
+            ("Quality PCA embedding", lambda: self.preview_image(self._output_root() / "acoustic" / "004_quality_control" / "plots" / "quality_pca_embedding.png")),
             ("Feature missingness", lambda: self.preview_image(self._features_plot_path("feature_missingness.png"))),
             ("Feature implementation status", lambda: self.preview_image(self._features_plot_path("feature_subsystem_implementation_status.png"))),
             ("Feature distributions", lambda: self.preview_image(self._features_plot_path("implemented_feature_distributions.png"))),
@@ -1544,37 +1558,40 @@ class AcousticPipelineWindow(QMainWindow):
             ("segment", "summary"): self._segmentation_summary_path(),
             ("segment", "main_summary"): self._output_root() / "acoustic" / "002_segmentation" / "tables" / "acoustic_segmentation_main_summary.csv",
             ("segment", "report"): self._output_root() / "acoustic" / "002_segmentation" / "reports" / "acoustic_segmentation_report.html",
-            ("quality", "summary"): self._output_root() / "acoustic" / "003_quality_control" / "tables" / "acoustic_quality_features.csv",
-            ("quality", "main_summary"): self._output_root() / "acoustic" / "003_quality_control" / "tables" / "acoustic_quality_main_summary.csv",
-            ("quality", "family_status"): self._output_root() / "acoustic" / "003_quality_control" / "tables" / "acoustic_quality_family_status.csv",
-            ("quality", "family_summary"): self._output_root() / "acoustic" / "003_quality_control" / "tables" / "acoustic_quality_family_summary.csv",
-            ("quality", "feature_registry"): self._output_root() / "acoustic" / "003_quality_control" / "tables" / "acoustic_quality_feature_registry.csv",
-            ("quality", "warnings"): self._output_root() / "acoustic" / "003_quality_control" / "tables" / "acoustic_quality_warnings.csv",
-            ("quality", "recommendations"): self._output_root() / "acoustic" / "003_quality_control" / "tables" / "acoustic_quality_recommendations.csv",
-            ("quality", "distribution"): self._output_root() / "acoustic" / "003_quality_control" / "tables" / "acoustic_quality_distribution_summary.csv",
-            ("quality", "processed"): self._output_root() / "acoustic" / "003_quality_control" / "tables" / "acoustic_quality_processed_features.csv",
-            ("quality", "family_scores"): self._output_root() / "acoustic" / "003_quality_control" / "tables" / "acoustic_quality_family_scores.csv",
-            ("quality", "feature_corr"): self._output_root() / "acoustic" / "003_quality_control" / "tables" / "acoustic_quality_feature_spearman_correlation.csv",
-            ("quality", "family_corr"): self._output_root() / "acoustic" / "003_quality_control" / "tables" / "acoustic_quality_family_spearman_correlation.csv",
-            ("quality", "review_rank"): self._output_root() / "acoustic" / "003_quality_control" / "tables" / "acoustic_quality_recording_review_rank.csv",
-            ("quality", "pca_variance"): self._output_root() / "acoustic" / "003_quality_control" / "tables" / "acoustic_quality_pca_variance.csv",
-            ("quality", "pca_scores"): self._output_root() / "acoustic" / "003_quality_control" / "tables" / "acoustic_quality_pca_scores.csv",
-            ("quality", "report"): self._output_root() / "acoustic" / "003_quality_control" / "reports" / "acoustic_quality_control_report.html",
-            ("features", "summary"): self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_features_per_file.csv",
-            ("features", "report"): self._output_root() / "acoustic" / "004_features" / "reports" / "acoustic_feature_report.html",
-            ("reports", "summary"): self._output_root() / "acoustic" / "005_run_summary" / "tables" / "vslp_acoustic_output_manifest.csv",
-            ("reports", "report"): self._output_root() / "acoustic" / "005_run_summary" / "reports" / "vslp_acoustic_run_summary.html",
-            ("features", "registry"): self._output_root() / "acoustic" / "004_features" / "tables" / "selected_acoustic_feature_registry.csv",
-            ("features", "status"): self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_feature_status_long.csv",
-            ("features", "audit"): self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_feature_distribution_audit.csv",
-            ("features", "range_flags"): self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_feature_expected_range_flags.csv",
-            ("features", "computation_policy"): self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_feature_computation_policy.csv",
-            ("features", "reduction_audit"): self._output_root() / "acoustic" / "004_features" / "tables" / "acoustic_feature_scalar_reduction_audit.csv",
+            ("review", "summary"): self._output_root() / "acoustic" / "003_segmentation_review" / "tables" / "segmentation_review_queue.csv",
+            ("review", "decisions"): self._output_root() / "acoustic" / "003_segmentation_review" / "tables" / "final_segmentation_decisions.csv",
+            ("review", "intervals"): self._output_root() / "acoustic" / "003_segmentation_review" / "tables" / "final_segmentation_intervals.csv",
+            ("quality", "summary"): self._output_root() / "acoustic" / "004_quality_control" / "tables" / "acoustic_quality_features.csv",
+            ("quality", "main_summary"): self._output_root() / "acoustic" / "004_quality_control" / "tables" / "acoustic_quality_main_summary.csv",
+            ("quality", "family_status"): self._output_root() / "acoustic" / "004_quality_control" / "tables" / "acoustic_quality_family_status.csv",
+            ("quality", "family_summary"): self._output_root() / "acoustic" / "004_quality_control" / "tables" / "acoustic_quality_family_summary.csv",
+            ("quality", "feature_registry"): self._output_root() / "acoustic" / "004_quality_control" / "tables" / "acoustic_quality_feature_registry.csv",
+            ("quality", "warnings"): self._output_root() / "acoustic" / "004_quality_control" / "tables" / "acoustic_quality_warnings.csv",
+            ("quality", "recommendations"): self._output_root() / "acoustic" / "004_quality_control" / "tables" / "acoustic_quality_recommendations.csv",
+            ("quality", "distribution"): self._output_root() / "acoustic" / "004_quality_control" / "tables" / "acoustic_quality_distribution_summary.csv",
+            ("quality", "processed"): self._output_root() / "acoustic" / "004_quality_control" / "tables" / "acoustic_quality_processed_features.csv",
+            ("quality", "family_scores"): self._output_root() / "acoustic" / "004_quality_control" / "tables" / "acoustic_quality_family_scores.csv",
+            ("quality", "feature_corr"): self._output_root() / "acoustic" / "004_quality_control" / "tables" / "acoustic_quality_feature_spearman_correlation.csv",
+            ("quality", "family_corr"): self._output_root() / "acoustic" / "004_quality_control" / "tables" / "acoustic_quality_family_spearman_correlation.csv",
+            ("quality", "review_rank"): self._output_root() / "acoustic" / "004_quality_control" / "tables" / "acoustic_quality_recording_review_rank.csv",
+            ("quality", "pca_variance"): self._output_root() / "acoustic" / "004_quality_control" / "tables" / "acoustic_quality_pca_variance.csv",
+            ("quality", "pca_scores"): self._output_root() / "acoustic" / "004_quality_control" / "tables" / "acoustic_quality_pca_scores.csv",
+            ("quality", "report"): self._output_root() / "acoustic" / "004_quality_control" / "reports" / "acoustic_quality_control_report.html",
+            ("features", "summary"): self._output_root() / "acoustic" / "005_features" / "tables" / "acoustic_features_per_file.csv",
+            ("features", "report"): self._output_root() / "acoustic" / "005_features" / "reports" / "acoustic_feature_report.html",
+            ("reports", "summary"): self._output_root() / "acoustic" / "006_run_summary" / "tables" / "vslp_acoustic_output_manifest.csv",
+            ("reports", "report"): self._output_root() / "acoustic" / "006_run_summary" / "reports" / "vslp_acoustic_run_summary.html",
+            ("features", "registry"): self._output_root() / "acoustic" / "005_features" / "tables" / "selected_acoustic_feature_registry.csv",
+            ("features", "status"): self._output_root() / "acoustic" / "005_features" / "tables" / "acoustic_feature_status_long.csv",
+            ("features", "audit"): self._output_root() / "acoustic" / "005_features" / "tables" / "acoustic_feature_distribution_audit.csv",
+            ("features", "range_flags"): self._output_root() / "acoustic" / "005_features" / "tables" / "acoustic_feature_expected_range_flags.csv",
+            ("features", "computation_policy"): self._output_root() / "acoustic" / "005_features" / "tables" / "acoustic_feature_computation_policy.csv",
+            ("features", "reduction_audit"): self._output_root() / "acoustic" / "005_features" / "tables" / "acoustic_feature_scalar_reduction_audit.csv",
         }
         return mapping[(stage, kind)]
 
     def _features_plot_path(self, name: str) -> Path:
-        return self._output_root() / "acoustic" / "004_features" / "plots" / name
+        return self._output_root() / "acoustic" / "005_features" / "plots" / name
 
     def refresh_latest_outputs(self) -> None:
         if self._run_root is None:
@@ -1586,6 +1603,7 @@ class AcousticPipelineWindow(QMainWindow):
             "ingest": (self._stage_path("ingest", "summary"), None),
             "preprocess": (self._stage_path("preprocess", "summary"), self._stage_path("preprocess", "report")),
             "segment": (self._stage_path("segment", "summary"), self._stage_path("segment", "report")),
+            "review": (self._stage_path("review", "summary"), None),
             "quality": (self._stage_path("quality", "summary"), self._stage_path("quality", "report")),
             "features": (self._stage_path("features", "summary"), self._stage_path("features", "report")),
             "reports": (self._stage_path("reports", "summary"), self._stage_path("reports", "report")),
@@ -1598,6 +1616,8 @@ class AcousticPipelineWindow(QMainWindow):
             if report and report.exists():
                 rec.report_path = str(report)
             self.stage_records[stage] = rec
+        if self._stage_path("review", "summary").exists():
+            self.review_widget.refresh()
         self._refresh_stage_cards()
         self._refresh_project_gate()
         self._update_ingest_feedback()
@@ -1744,7 +1764,7 @@ class AcousticPipelineWindow(QMainWindow):
         if not busy:
             self.progress.setValue(100)
             if self._run_root is not None:
-                for btn in (self.browse_input_btn, self.browse_output_btn, self.init_project_btn):
+                for btn in (self.browse_input_btn, self.browse_output_btn, self.init_project_btn, self.open_run_btn):
                     btn.setEnabled(False)
 
     def _run_worker(self, name: str, func: Callable, kwargs: dict) -> None:
@@ -1767,6 +1787,8 @@ class AcousticPipelineWindow(QMainWindow):
         if self._thread is not None:
             self._thread.quit(); self._thread.wait()
         self._thread = None; self._worker = None; self._set_busy(False)
+        if self._run_root is not None and self._stage_path("review", "summary").exists():
+            self.review_widget.refresh()
 
     def _on_worker_started(self, name: str) -> None:
         self._set_busy(True)
@@ -1817,8 +1839,32 @@ class AcousticPipelineWindow(QMainWindow):
     def _freeze_setup(self) -> None:
         for field in (self.project_name_edit, self.task_name_edit, self.input_edit, self.output_edit):
             field.setReadOnly(True)
-        for button in (self.browse_input_btn, self.browse_output_btn, self.init_project_btn):
+        for button in (self.browse_input_btn, self.browse_output_btn, self.init_project_btn, self.open_run_btn):
             button.setEnabled(False)
+
+    def open_existing_run(self) -> None:
+        if self._run_root is not None:
+            QMessageBox.information(self, "Run already open", "Open a new Acoustic GUI window to load another run.")
+            return
+        folder = QFileDialog.getExistingDirectory(self, "Select acoustic run folder")
+        if not folder:
+            return
+        root = Path(folder).resolve()
+        try:
+            manifest = json.loads((root / "project_manifest.json").read_text(encoding="utf-8"))
+            if manifest.get("modality") != "acoustic" or Path(manifest.get("run_root", "")).resolve() != root:
+                raise ValueError("Select a valid acoustic run folder.")
+            self.project_name_edit.setText(str(manifest["project_name"]))
+            self.task_name_edit.setText(str(manifest["task_name"]))
+            self.input_edit.setText(str(manifest["input_folder"]))
+            self.output_edit.setText(str(manifest["output_parent"]))
+            self._run_root = root
+            self.run_root_edit.setText(str(root))
+            self._freeze_setup()
+            self.refresh_latest_outputs()
+            self.append_log(f"Reopened acoustic run: {root}")
+        except (OSError, ValueError, KeyError) as exc:
+            QMessageBox.warning(self, "Cannot open run", str(exc))
 
     def run_project_init(self) -> None:
         if self._run_root is not None:
@@ -1995,9 +2041,10 @@ class AcousticPipelineWindow(QMainWindow):
         if paths is None: return
         if not self._require_project_initialized(): return
         _input_path, output_root = paths
-        segmentation_summary = self._segmentation_summary_path()
-        if not segmentation_summary.exists():
-            QMessageBox.warning(self, "Segmentation required", "Run Data Segmentation first. Quality Control uses segmentation frames and segment tables.")
+        segmentation_summary = self._stage_path("review", "decisions")
+        final_intervals = self._stage_path("review", "intervals")
+        if not segmentation_summary.exists() or not final_intervals.exists():
+            QMessageBox.warning(self, "Review required", "Freeze final segmentation decisions before Quality Control.")
             return
         selected_features = self._selected_qc_features()
         selected_families = self._selected_qc_families()
@@ -2012,16 +2059,17 @@ class AcousticPipelineWindow(QMainWindow):
             hard_clip_threshold=float(self.qc_hard_clip_spin.value()),
             near_clip_threshold=float(self.qc_near_clip_spin.value()),
         )
-        self._run_worker("quality", run_acoustic_quality_control, {"segmentation_summary_csv": segmentation_summary, "output_root": output_root, "config": cfg})
+        self._run_worker("quality", run_acoustic_quality_control, {"segmentation_summary_csv": segmentation_summary, "final_segmentation_intervals_csv": final_intervals, "output_root": output_root, "config": cfg})
 
     def run_features(self) -> None:
         paths = self._require_paths()
         if paths is None: return
         if not self._require_project_initialized(): return
         _input_path, output_root = paths
-        segmentation_summary = self._segmentation_summary_path()
-        if not segmentation_summary.exists():
-            QMessageBox.warning(self, "Segmentation required", "Run Silero segmentation first. The segmentation summary CSV was not found.")
+        segmentation_summary = self._stage_path("review", "decisions")
+        final_intervals = self._stage_path("review", "intervals")
+        if not segmentation_summary.exists() or not final_intervals.exists():
+            QMessageBox.warning(self, "Review required", "Freeze final segmentation decisions before Feature Extraction.")
             return
         selected_features = self._selected_feature_names()
         if not selected_features:
@@ -2033,7 +2081,7 @@ class AcousticPipelineWindow(QMainWindow):
             acoustic_region_policy=self.region_policy_combo.currentText(),
             computation_mode=self.computation_mode_combo.currentText(),
         )
-        self._run_worker("features", run_acoustic_feature_extraction, {"segmentation_summary_csv": segmentation_summary, "output_root": output_root, "config": cfg})
+        self._run_worker("features", run_acoustic_feature_extraction, {"segmentation_summary_csv": segmentation_summary, "final_segmentation_intervals_csv": final_intervals, "output_root": output_root, "config": cfg})
 
 
     def run_generate_report_summary(self) -> None:
@@ -2045,7 +2093,7 @@ class AcousticPipelineWindow(QMainWindow):
 
     def _write_run_summary_files(self, output_root: str | Path) -> StageResult:
         output_root = Path(output_root)
-        stage_dir = output_root / "acoustic" / "005_run_summary"
+        stage_dir = output_root / "acoustic" / "006_run_summary"
         table_dir = stage_dir / "tables"
         report_dir = stage_dir / "reports"
         manifest_dir = stage_dir / "logs"
@@ -2059,6 +2107,8 @@ class AcousticPipelineWindow(QMainWindow):
             ("preprocess", "preprocess_report", self._stage_path("preprocess", "report"), "report"),
             ("segmentation", "segmentation_main_summary", self._stage_path("segment", "main_summary"), "table"),
             ("segmentation", "segmentation_report", self._stage_path("segment", "report"), "report"),
+            ("manual_review", "final_segmentation_decisions", self._stage_path("review", "decisions"), "table"),
+            ("manual_review", "final_segmentation_intervals", self._stage_path("review", "intervals"), "table"),
             ("quality_control", "quality_main_summary", self._stage_path("quality", "main_summary"), "table"),
             ("quality_control", "quality_warnings", self._stage_path("quality", "warnings"), "table"),
             ("quality_control", "quality_recommendations", self._stage_path("quality", "recommendations"), "table"),
@@ -2146,7 +2196,6 @@ table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{border-bottom:
         if not self._require_project_initialized(): return
         input_path, output_root = paths
 
-        selected_features = self._selected_feature_names()
         segmentation_config = self._segmentation_config_from_gui()
         if segmentation_config.method == CUSTOM:
             QMessageBox.information(self, "Plugin required", "Install a segmentation plugin before selecting Custom.")
@@ -2165,37 +2214,55 @@ table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{border-bottom:
                 output_root=output_root,
                 config=segmentation_config,
             )
-            quality_result = run_acoustic_quality_control(
-                segmentation_summary_csv=output_root / "acoustic" / "002_segmentation" / "tables" / "acoustic_segmentation_summary.csv",
-                output_root=output_root,
-                config=QualityControlConfig(
-                    selected_families=self._selected_qc_families(),
-                    selected_features=self._selected_qc_features(),
-                    minimum_internal_pause_sec=float(self.qc_pause_sec_spin.value()),
-                    high_level_percentile=float(self.qc_high_level_spin.value()),
-                    hard_clip_threshold=float(self.qc_hard_clip_spin.value()),
-                    near_clip_threshold=float(self.qc_near_clip_spin.value()),
-                ),
-            )
-            features_result = run_acoustic_feature_extraction(
-                segmentation_summary_csv=output_root / "acoustic" / "002_segmentation" / "tables" / "acoustic_segmentation_summary.csv",
-                output_root=output_root,
-                config=FeatureExtractionConfig(
-                    selected_features=selected_features,
-                    minimum_pause_duration_sec=float(self.min_pause_feature_spin.value()),
-                            acoustic_region_policy=self.region_policy_combo.currentText(),
-                    computation_mode=self.computation_mode_combo.currentText(),
-                ),
-            )
-            reports_result = self._write_run_summary_files(output_root)
-            return {"ingest": ingest_result, "preprocess": preprocess_result, "segment": segment_result, "quality": quality_result, "features": features_result, "reports": reports_result}
+            review_result = initialize_segmentation_review(segment_result.summary_table, output_root)
+            return {"ingest": ingest_result, "preprocess": preprocess_result,
+                    "segment": segment_result, "review": review_result}
         self._run_worker("full_run", full_run, {"input_path": input_path, "output_root": output_root})
+
+    def run_after_review(self) -> None:
+        if not self._require_project_initialized():
+            return
+        decisions = self._stage_path("review", "decisions")
+        intervals = self._stage_path("review", "intervals")
+        if not decisions.is_file() or not intervals.is_file():
+            QMessageBox.warning(self, "Review required", "Freeze final segmentation first.")
+            return
+        qc_cfg = QualityControlConfig(
+            selected_families=self._selected_qc_families(),
+            selected_features=self._selected_qc_features(),
+            minimum_internal_pause_sec=float(self.qc_pause_sec_spin.value()),
+            high_level_percentile=float(self.qc_high_level_spin.value()),
+            hard_clip_threshold=float(self.qc_hard_clip_spin.value()),
+            near_clip_threshold=float(self.qc_near_clip_spin.value()),
+        )
+        feature_cfg = FeatureExtractionConfig(
+            selected_features=self._selected_feature_names(),
+            minimum_pause_duration_sec=float(self.min_pause_feature_spin.value()),
+            acoustic_region_policy=self.region_policy_combo.currentText(),
+            computation_mode=self.computation_mode_combo.currentText(),
+        )
+
+        def continuation(output_root: Path):
+            common = {"segmentation_summary_csv": decisions,
+                      "final_segmentation_intervals_csv": intervals,
+                      "output_root": output_root}
+            quality = run_acoustic_quality_control(**common, config=qc_cfg)
+            features = run_acoustic_feature_extraction(**common, config=feature_cfg)
+            reports = self._write_run_summary_files(output_root)
+            return {"quality": quality, "features": features, "reports": reports}
+
+        self._run_worker("post_review_run", continuation, {"output_root": self._output_root()})
 
     def _on_worker_finished(self, name: str, result: object) -> None:  # type: ignore[override]
         if name == "full_run" and isinstance(result, dict):
-            for stage_name in ["ingest", "preprocess", "segment", "quality", "features", "reports"]:
+            for stage_name in ["ingest", "preprocess", "segment", "review"]:
                 self._on_worker_finished(stage_name, result[stage_name])
-            self.append_log("Full acoustic backend run finished.")
+            self.append_log("Workflow paused for segmentation manual review. Freeze final boundaries before QC and Features.")
+            return
+        if name == "post_review_run" and isinstance(result, dict):
+            for stage_name in ("quality", "features", "reports"):
+                self._on_worker_finished(stage_name, result[stage_name])
+            self.append_log("Reviewed acoustic workflow finished.")
             return
         status = getattr(result, "status", "completed")
         manifest = getattr(result, "manifest_path", None)
@@ -2227,6 +2294,12 @@ table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{border-bottom:
             self._update_preprocess_feedback()
         if name == "segment":
             self._update_segmentation_feedback()
+            try:
+                initialize_segmentation_review(self._segmentation_summary_path(), self._output_root())
+                self.review_widget.refresh()
+                self.stage_records["review"].status = "completed_with_warnings"
+            except Exception as exc:  # noqa: BLE001
+                self.append_log(f"Review queue could not be initialized: {exc}")
         if name == "quality":
             self._update_quality_feedback()
         self.refresh_latest_outputs()

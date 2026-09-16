@@ -11,6 +11,8 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 import numpy as np
 import pandas as pd
 
@@ -111,7 +113,9 @@ def _plot(path: Path, x: np.ndarray | None, sr: int | None, method: str,
           intervals: list[Interval], status: str, flags: list[str],
           trace: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None,
           nuclei: list[float] | None = None, stable: Interval | None = None,
-          breaks: list[Interval] | None = None) -> None:
+          breaks: list[Interval] | None = None,
+          automatic_intervals: list[Interval] | None = None,
+          trace_label: str | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fig, axes = plt.subplots(2 if trace else 1, 1, figsize=(13, 5.8), sharex=True,
                              gridspec_kw={"height_ratios": [2, 1]} if trace else None)
@@ -121,10 +125,25 @@ def _plot(path: Path, x: np.ndarray | None, sr: int | None, method: str,
         t = np.arange(len(x)) / sr
         axes[0].plot(t, x, lw=0.45, color="#315a89")
         axes[0].set_xlim(0, len(x) / sr)
+        duration = len(x) / sr
+        if intervals:
+            if intervals[0].start_sec > 0:
+                axes[0].axvspan(0, intervals[0].start_sec, color="#d97876", alpha=0.08)
+            if intervals[-1].end_sec < duration:
+                axes[0].axvspan(intervals[-1].end_sec, duration, color="#d97876", alpha=0.08)
+        else:
+            axes[0].axvspan(0, duration, color="#d97876", alpha=0.08)
     for interval in intervals:
         axes[0].axvspan(interval.start_sec, interval.end_sec, color="#4abf80", alpha=0.26)
-        axes[0].axvline(interval.start_sec, color="#27814f", lw=0.8)
-        axes[0].axvline(interval.end_sec, color="#27814f", lw=0.8)
+        if automatic_intervals is None:
+            axes[0].axvline(interval.start_sec, color="#27814f", lw=0.8)
+            axes[0].axvline(interval.end_sec, color="#27814f", lw=0.8)
+        else:
+            axes[0].axvline(interval.start_sec, color="#7735a4", ls="--", lw=1.1)
+            axes[0].axvline(interval.end_sec, color="#7735a4", ls="--", lw=1.1)
+    for item in automatic_intervals or []:
+        axes[0].axvline(item.start_sec, color="#27814f", lw=0.8, alpha=0.8)
+        axes[0].axvline(item.end_sec, color="#27814f", lw=0.8, alpha=0.8)
     for left, right in zip(intervals[:-1], intervals[1:]):
         axes[0].axvspan(left.end_sec, right.start_sec, color="#d97876", alpha=0.14)
     if stable:
@@ -136,11 +155,20 @@ def _plot(path: Path, x: np.ndarray | None, sr: int | None, method: str,
         for n in nuclei:
             axes[0].axvline(n, color="#8520af", ls="--", lw=0.8)
     axes[0].set_ylabel("Amplitude")
+    legend = [Patch(facecolor="#4abf80", alpha=0.35, label="Speech"),
+              Patch(facecolor="#d97876", alpha=0.13, label="Leading nonspeech"),
+              Patch(facecolor="#d97876", alpha=0.30, label="Internal nonspeech / pause"),
+              Patch(facecolor="#d97876", alpha=0.13, label="Trailing nonspeech"),
+              Line2D([0], [0], color="#27814f", lw=1, label="Automatic boundary")]
+    if automatic_intervals is not None:
+        legend.append(Line2D([0], [0], color="#7735a4", ls="--", lw=1.1,
+                             label="Manual boundary"))
+    axes[0].legend(handles=legend, loc="upper right", fontsize=7, ncol=2, framealpha=0.88)
     if trace:
         times, values, threshold = trace
-        label = "RMS support" if method == SILERO else ("Energy envelope" if method == DDK else "Activity RMS")
+        label = trace_label or ("RMS support" if method == SILERO else ("Energy envelope" if method == DDK else "Activity RMS"))
         axes[1].plot(times, values, label=label, color="#374e9c", lw=1)
-        if method != SILERO:
+        if method != SILERO and trace_label is None:
             axes[1].plot(times, threshold, label="Adaptive threshold", color="#ce4b41", lw=1)
         axes[1].legend(loc="upper right", fontsize=8)
         axes[1].set_ylabel("Support")

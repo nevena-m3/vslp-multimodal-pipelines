@@ -373,7 +373,7 @@ def _build_multistat_aggregation(working: pd.DataFrame, group_cols: list[str], f
 
 def _build_aggregation_strategy(output_root: Path, feature_cols: list[str]) -> pd.DataFrame:
     """Merge feature scale metadata into an aggregation strategy table if available."""
-    scale_path = output_root / "acoustic" / "004_features" / "tables" / "acoustic_feature_measurement_scale_registry.csv"
+    scale_path = output_root / "acoustic" / "005_features" / "tables" / "acoustic_feature_measurement_scale_registry.csv"
     if scale_path.exists():
         try:
             scale = pd.read_csv(scale_path)

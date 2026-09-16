@@ -1,6 +1,6 @@
 # Acoustic segmentation methods
 
-The Segmentation menu recommends a method from the Setup task name. The user may change it. Every method reads the canonical native-rate FLOAT32 WAV without rewriting it. The stage records every preprocessing input, including excluded and failed recordings, in the summary and review queue. Only `ACCEPTED` and `REVIEW` rows continue to acoustic QC and feature measurement.
+The Segmentation menu recommends a method from the Setup task name. The user may change it. Every method reads the canonical native-rate FLOAT32 WAV without rewriting it. The stage records every preprocessing input, including excluded and failed recordings, in the summary and review queue. Final reviewed decisions govern which recordings continue to acoustic QC and feature measurement.
 
 ## Silero VAD: reading and connected speech
 
@@ -25,3 +25,7 @@ The full interval supports break/continuity measurements. The separate stable in
 ## Outputs and review
 
 Under `acoustic/002_segmentation/`, each processed recording has frame, exact segment, and boundary CSVs plus a method-specific plot in `plots/accepted`, `plots/flagged`, or `plots/excluded`. A recording that failed preprocessing still receives an excluded plot and a review queue row. Silero additionally writes boundary audits and interval views; DDK writes nuclei; phonation writes full/stable/break regions. The stage writes `acoustic_segmentation_summary.csv`, `acoustic_segmentation_main_summary.csv`, `segmentation_review_queue.csv`, and `logs/stage_manifest.json`. An error CSV appears only when segmentation errors occur. Empty directories are removed by the acoustic stage cleanup wrapper.
+
+The separate **Segmentation manual review** stage reads these automatic outputs without changing them. It opens on recordings requiring review, while filters allow spot checks of accepted files. A reviewer can keep automatic intervals, enter and preview manual intervals, or exclude a recording. Manual intervals are validated for finite numbers, ordering, non-overlap, and recording duration. Decisions and overrides persist in `acoustic/003_segmentation_review/tables/`. An automatic `EXCLUDED` recording can be retained with a reviewed manual boundary; a computational `FAILED` recording remains distinct.
+
+**Freeze final segmentation** writes `final_segmentation_decisions.csv`, `final_segmentation_intervals.csv`, reviewed segment/frame files, reviewed plots, and a stage manifest. The final files record `AUTO` or `MANUAL` boundary provenance, reviewer, date, and notes. Freezing requires every review-required recording to have a decision. The full GUI workflow pauses at this stage and continues to Quality Control and Physiological Features only after freezing. Reopen an existing run through Setup to resume saved review. QC and Features consume the final interval and segment layer while continuing to measure the native-rate canonical WAV. Later stage folders are `004_quality_control`, `005_features`, and `006_run_summary`.

@@ -36,8 +36,8 @@ src/vslp/acoustic/features/stage.py
 5. Confirm the feature appears in:
 
 ```text
-acoustic/004_features/tables/acoustic_features_per_file.csv
-acoustic/004_features/tables/acoustic_feature_status_long.csv
+acoustic/005_features/tables/acoustic_features_per_file.csv
+acoustic/005_features/tables/acoustic_feature_status_long.csv
 ```
 
 ## Rules
