@@ -20,12 +20,12 @@ Before processing data, define:
 
 Use separate output projects for distinct studies or incompatible processing configurations. Never write generated outputs over raw source media.
 
-Use the same study workspace root in all three GUIs. VSLP separates Acoustic, Kinematics, and modality-specific Feature Analysis outputs inside that root. See the [project workspace layout](../reference/project_workspace.md).
+Acoustic Setup creates a task-stamped run folder inside the selected parent output folder. Load that run folder into Feature Analysis for the acoustic handoff. Kinematics uses its own workspace root. See the [project workspace layout](../reference/project_workspace.md).
 
 ## Acoustic Workflow
 
 ```text
-Setup -> Metadata -> Preprocess -> Segmentation -> Quality Control
+Setup -> Preprocess -> Segmentation -> Quality Control
       -> Feature Extraction -> Inspector -> Reports & Outputs
 ```
 
@@ -47,7 +47,7 @@ Detailed procedure: [Kinematics Pipeline SOP](../sops/KINEMATICS_PIPELINE_SOP.md
 
 ## Feature Analysis Workflow
 
-Load one modality at a time. Map the feature, metadata, QC, and registry tables, then run the full analysis once.
+Load one modality at a time. Add clinical metadata here, then map the feature, metadata, QC, and registry tables, then run the full analysis once.
 
 ```text
 Load/Map -> Overview -> Missingness -> Distributions -> QC -> Relationships

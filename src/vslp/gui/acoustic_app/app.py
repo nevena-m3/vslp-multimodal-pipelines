@@ -24,3 +24,7 @@ def launch_acoustic_gui() -> int:
     window = AcousticPipelineWindow()
     window.show()
     return app.exec()
+
+
+if __name__ == '__main__':  # pragma: no cover
+    raise SystemExit(launch_acoustic_gui())

@@ -1,5 +1,6 @@
 # Standard Operating Procedures
 
+- [Current-state GUI suite and menu inventory](CURRENT_STATE_GUI_SUITE_SOP.md)
 - [Acoustic Pipeline SOP](ACOUSTIC_PIPELINE_SOP.md)
 - [Kinematics Pipeline SOP](KINEMATICS_PIPELINE_SOP.md)
 - [Feature Analysis SOP](FEATURE_ANALYSIS_GUI_SOP.md)

@@ -59,6 +59,7 @@ class FeatureExtractionConfig:
     selected_features: list[str] = field(default_factory=list)
     task_word_counts: dict[str, float] = field(default_factory=dict)
     metadata_csv: str | None = None
+    task_name: str | None = None
     minimum_pause_duration_sec: float = 0.30
     acoustic_region_policy: str = "speech_only"  # speech_only, effective_task, full_file
     # v0.35: explicit computation/reduction policy controls.
@@ -322,6 +323,8 @@ def run_acoustic_feature_extraction(
     selected_names = set(registry["feature"].astype(str).tolist())
     seg_summary = pd.read_csv(segmentation_summary_csv)
     seg_summary = _merge_metadata_if_available(seg_summary, cfg.metadata_csv)
+    if cfg.task_name:
+        seg_summary["task"] = cfg.task_name
 
     plugins = [p for p in build_default_plugins() if selected_names.intersection(set(p.feature_names))]
 
@@ -412,7 +415,6 @@ def run_acoustic_feature_extraction(
         handoff,
         optional_main={
             "qc_features.csv": Path(output_root) / "acoustic" / "003_quality_control" / "tables" / "acoustic_quality_processed_features.csv",
-            "metadata_context.csv": Path(output_root) / "acoustic" / "000_metadata" / "tables" / "project_file_index.csv",
         },
     )
     build_feature_scale_registry(registry).to_csv(scale_registry_path, index=False)

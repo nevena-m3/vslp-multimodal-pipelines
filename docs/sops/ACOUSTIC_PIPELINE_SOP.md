@@ -2,7 +2,7 @@
 
 ## 1. Purpose
 
-This SOP defines the controlled use of the VSLP Acoustic Pipeline GUI to create auditable per-recording acoustic features and QC outputs for research. It covers project setup, metadata linkage, non-destructive preprocessing, segmentation, quality control, feature extraction, inspection, and reporting.
+This SOP defines the controlled use of the VSLP Acoustic Pipeline GUI to create auditable per-recording acoustic features and QC outputs for research. It covers project setup, non-destructive preprocessing, segmentation, quality control, feature extraction, inspection, and reporting.
 
 The pipeline is not a diagnostic system. QC warnings are review evidence, not automatic exclusion rules. Feature values require study-specific validation before clinical interpretation.
 
@@ -11,13 +11,12 @@ The pipeline is not a diagnostic system. QC warnings are review evidence, not au
 Required:
 
 - source audio or audio-bearing media readable by FFmpeg/FFprobe;
-- a writable shared VSLP study workspace outside the source-media directory;
-- a defined task and row/recording unit;
+- a writable parent output folder outside the source-media directory;
+- a required task name and defined row/recording unit;
 - Python 3.11 VSLP environment with GUI dependencies.
 
 Recommended:
 
-- metadata CSV containing stable subject, session/visit, task, and source-file linkage;
 - documented filename convention;
 - approved study-specific preprocessing, segmentation, QC, and feature policy;
 - a representative pilot subset for validation before batch processing.
@@ -35,28 +34,20 @@ vslp gui acoustic
 ### Step 1: Setup
 
 1. Select the input media folder.
-2. Select the shared VSLP study workspace. Acoustic artifacts will be written under `acoustic/`.
-3. Enter a stable project name and task fallback.
+2. Select a parent output folder outside the source-media directory.
+3. Enter a required project name and required task name. The human-readable task name is preserved in provenance, while a filesystem-safe slug names the run folder.
 4. Confirm recursive discovery is appropriate for the folder structure.
-5. Initialize the project and review discovered file counts.
+5. Click Initialize Project. The GUI creates a new `TaskSlug_YYYYMMDD_HHMMSS` folder below the selected parent, then displays that active run folder in Setup. All later acoustic stages use it.
+6. Confirm that the new folder contains `project_manifest.json`, `configs/setup_config.json`, `logs/setup.log`, and `acoustic/`. A collision receives `_02`, `_03`, etc. Setup fields lock for this run; open a new GUI window for a different project, task, or input. Review discovered, accepted, duplicate-skipped, and failed counts after Run Ingest.
 
 Acceptance checks:
 
 - all expected files are discovered once;
 - unsupported or unreadable files are reported;
-- output is not inside the raw-data folder;
-- task fallback is not being used to overwrite valid metadata.
+- output is not inside the raw-data folder and the task-stamped run folder is new;
+- the required task reflects the recordings selected for this run.
 
-### Step 2: Metadata
-
-1. Load the metadata CSV when available.
-2. Review detected subject, task, visit/date, diagnosis, severity, and filename columns.
-3. Run metadata indexing/linkage.
-4. Inspect unmatched and duplicate records.
-
-Metadata may contain a larger cohort than the selected media subset. Unmatched clinical fields should remain blank rather than being guessed.
-
-### Step 3: Preprocess
+### Step 2: Preprocess
 
 Use conservative defaults unless the protocol specifies otherwise:
 
@@ -68,7 +59,7 @@ Use conservative defaults unless the protocol specifies otherwise:
 
 Review SNR, clipping, DC offset, sample rate, duration, and conversion failures. Filtering or normalization can alter amplitude-, spectral-, and voice-quality features and must be recorded.
 
-### Step 4: Data Segmentation
+### Step 3: Data Segmentation
 
 Run Silero VAD or another implemented method using a locked configuration. Review:
 
@@ -80,13 +71,13 @@ Run Silero VAD or another implemented method using a locked configuration. Revie
 
 Do not treat segmentation success as task-compliance validation.
 
-### Step 5: Quality Control
+### Step 4: Quality Control
 
 Run selected QC families and inspect recording-level and family-level evidence. Current families include additive interference, gain dynamics, reverberation/echo, channel/device effects, nonlinear distortion, and temporal discontinuity.
 
 Record any study-specific exclusion or sensitivity decision separately. Do not delete rows solely because a QC score is high.
 
-### Step 6: Feature Extraction
+### Step 5: Feature Extraction
 
 1. Select implemented feature families or individual features.
 2. Confirm the computation mode and acoustic region policy.
@@ -96,11 +87,11 @@ Record any study-specific exclusion or sensitivity decision separately. Do not d
 
 Feature subsystems include timing/respiratory, rhythm/envelope modulation, phonatory, articulatory/formant, resonatory/nasality, and coordination features.
 
-### Step 7: Inspector
+### Step 6: Inspector
 
 Inspect representative tables and plots. Confirm that row counts, filenames, task context, QC linkage, and feature coverage are plausible. Investigate file-level errors before creating a handoff.
 
-### Step 8: Reports and Outputs
+### Step 7: Reports and Outputs
 
 Generate or refresh the run summary. Preserve configuration, manifests, errors, tables, plots, and reports with the study record.
 
@@ -117,11 +108,10 @@ acoustic/feature_handoff/main/
 |-- feature_status.csv
 |-- feature_export_manifest.json
 |-- qc_features.csv              # when available
-|-- metadata_context.csv         # when available
 `-- README.md
 ```
 
-The four canonical files are required. QC and metadata context are optional because they may be supplied separately in Feature Analysis.
+The four canonical files are required. QC is optional. Clinical metadata should be supplied in Feature Analysis.
 
 Supplementary index:
 
@@ -132,7 +122,6 @@ acoustic/feature_handoff/supplementary/artifact_catalog.csv
 The established stage outputs remain in place:
 
 ```text
-acoustic/000_metadata/
 acoustic/001_ingest/
 acoustic/002_preprocess/
 acoustic/003_segmentation/
@@ -169,7 +158,7 @@ Stop and resolve the issue when:
 
 - Source media preserved unchanged.
 - Project and task scope documented.
-- Metadata linkage reviewed.
+- Required task is present on acoustic feature rows; clinical metadata is joined in Feature Analysis.
 - Preprocessing configuration recorded.
 - Segmentation spot-checked.
 - QC evidence reviewed without automatic exclusion.
@@ -177,5 +166,5 @@ Stop and resolve the issue when:
 - File-level errors resolved or documented.
 - Run summary and manifests generated.
 - Main handoff opened and its four canonical files verified.
-- Optional QC and metadata context presence or absence documented.
+- Optional QC context presence or absence documented; load clinical metadata in Feature Analysis.
 - Supplementary artifact catalog retained with the study record.

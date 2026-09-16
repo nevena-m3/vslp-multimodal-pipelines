@@ -104,7 +104,7 @@ def build_feature_delivery(
 ) -> dict[str, Path]:
     """Create a human-facing main/supplementary delivery without moving stage outputs."""
     root = Path(output_root).expanduser().resolve()
-    modality_folder = "kinematics" if modality == "kinematic" else modality
+    modality_folder = {"kinematic": "kinematics"}.get(modality, modality)
     modality_root = root / modality_folder
     delivery = modality_root / "feature_handoff"
     main_dir = delivery / "main"
