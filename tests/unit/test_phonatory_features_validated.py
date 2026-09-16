@@ -83,3 +83,23 @@ def test_implemented_features_include_complete_phonatory_group():
     names = implemented_feature_names()
     for feat in PHONATORY_FEATURES:
         assert feat in names
+
+
+def test_sustained_phonation_uses_stable_native_region_and_full_episode_for_breaks(tmp_path: Path):
+    sr = 16000
+    t = np.arange(sr * 4) / sr
+    x = 0.2 * np.sin(2 * np.pi * 130 * t)
+    x[(t >= 2.0) & (t < 2.2)] = 0
+    wav = tmp_path / "sustained.wav"
+    sf.write(wav, x.astype("float32"), sr, subtype="FLOAT")
+    ctx = FeatureContext(
+        file_name="sustained.wav", segmentation_wav_path=wav,
+        row=pd.Series({"segmentation_method": "sustained_phonation",
+                       "full_phonation_start": 0.0, "full_phonation_end": 4.0,
+                       "stable_region_start": 0.5, "stable_region_end": 1.7}),
+        config=PhonatoryConfig(),
+    )
+    out = PhonatoryPlugin().compute(ctx)
+    assert "region=stable_phonation_native_rate" in out["f0_mean"].note
+    assert "voice_breaks_from_full_episode" in out["num_voicebreaks"].note
+    assert float(out["num_voicebreaks"].value) >= 1.0

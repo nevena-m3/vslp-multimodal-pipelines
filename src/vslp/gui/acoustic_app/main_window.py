@@ -65,7 +65,9 @@ from vslp.acoustic.features.stage import (
 from vslp.acoustic.ingest.stage import run_acoustic_ingest
 from vslp.acoustic.run_setup import initialize_acoustic_run
 from vslp.acoustic.preprocess.stage import PreprocessConfig, run_acoustic_preprocess
-from vslp.acoustic.segment.stage import run_acoustic_segmentation_silero
+from vslp.acoustic.segment.pipeline import SegmentationConfig, run_acoustic_segmentation
+from vslp.acoustic.segment.selection import SILERO, DDK, PHONATION, CUSTOM, recommend_method
+from vslp.acoustic.segment.task_methods import DDKConfig, PhonationConfig
 from vslp.acoustic.quality.stage import (
     QC_FAMILIES,
     FAMILY_FEATURES,
@@ -460,88 +462,121 @@ class AcousticPipelineWindow(QMainWindow):
     def _build_segment_tab(self) -> QWidget:
         container = QWidget()
         layout = QVBoxLayout(container)
-        layout.addWidget(self._info_panel(
-            "Info",
-            "Select the segmentation method for this dataset. Silero is recommended for passages, sentences, and free speech. SPA and energy/RMS segmentation are reserved for task-specific workflows such as DDKs or custom syllable/event detection. Parameters shown below update based on the selected method."
-        ))
-
         method_group = QGroupBox("Segmentation method")
-        method_form = QFormLayout(method_group)
+        form = QFormLayout(method_group)
         self.segmentation_method_combo = QComboBox()
-        self.segmentation_method_combo.addItems([
-            "Silero VAD - speech/pause segmentation",
-            "SPA - task-specific segmentation (placeholder)",
-            "Energy/RMS - amplitude-based segmentation (placeholder)",
-            "Custom method - plugin slot (placeholder)",
-        ])
-        self.segmentation_method_combo.currentTextChanged.connect(self._update_segmentation_method_ui)
-        self._set_tooltip(self.segmentation_method_combo, "Choose the segmentation algorithm. Only Silero is fully implemented in this version; other methods are visible placeholders for later plugin implementation.")
-        method_form.addRow("Method", self.segmentation_method_combo)
+        for label, code in (
+            ("Silero VAD", SILERO), ("DDK energy-envelope", DDK),
+            ("Sustained phonation", PHONATION), ("Custom/plugin", CUSTOM),
+        ):
+            self.segmentation_method_combo.addItem(label, code)
+        self.segmentation_method_combo.currentIndexChanged.connect(self._update_segmentation_method_ui)
+        form.addRow("Method", self.segmentation_method_combo)
         layout.addWidget(method_group)
 
-        self.silero_group = QGroupBox("Silero parameters")
+        self.silero_group = QGroupBox("Silero VAD")
         form = QFormLayout(self.silero_group)
-        self.threshold_spin = QDoubleSpinBox(); self.threshold_spin.setDecimals(2); self.threshold_spin.setRange(0.0, 1.0); self.threshold_spin.setSingleStep(0.05); self.threshold_spin.setValue(0.50)
-        self._set_tooltip(self.threshold_spin, "Speech probability threshold. 0.50 is the neutral starting value; higher values are more conservative.")
+        self.threshold_spin = QDoubleSpinBox(); self.threshold_spin.setDecimals(2); self.threshold_spin.setRange(0.01, 0.99); self.threshold_spin.setSingleStep(0.05); self.threshold_spin.setValue(0.50)
+        self._set_tooltip(self.threshold_spin, "Speech evidence: higher may miss weak or breathy speech; lower may retain noise.")
         self.min_speech_spin = QSpinBox(); self.min_speech_spin.setRange(0, 5000); self.min_speech_spin.setValue(250)
-        self._set_tooltip(self.min_speech_spin, "Minimum accepted speech segment duration. Default 250 ms reduces transient false detections.")
+        self._set_tooltip(self.min_speech_spin, "Shortest retained speech event; longer may remove fragmented speech.")
         self.min_silence_spin = QSpinBox(); self.min_silence_spin.setRange(0, 5000); self.min_silence_spin.setValue(100)
-        self._set_tooltip(self.min_silence_spin, "Minimum nonspeech gap separating speech chunks. Default 100 ms preserves short pauses.")
-        self.speech_pad_spin = QSpinBox(); self.speech_pad_spin.setRange(0, 2000); self.speech_pad_spin.setValue(50)
-        self._set_tooltip(self.speech_pad_spin, "Padding added around speech regions to reduce boundary truncation.")
-        self.frame_ms_spin = QSpinBox(); self.frame_ms_spin.setRange(10, 1000); self.frame_ms_spin.setValue(30)
-        self._set_tooltip(self.frame_ms_spin, "Diagnostic frame size for frame-level tables and plots.")
-        self.force_reload_check = QCheckBox("Force reload Silero model")
+        self._set_tooltip(self.min_silence_spin, "Gap needed to separate speech; longer values bridge brief pauses.")
+        self.speech_pad_spin = QSpinBox(); self.speech_pad_spin.setRange(0, 2000); self.speech_pad_spin.setValue(0)
+        self._set_tooltip(self.speech_pad_spin, "Artificial boundary expansion; 0 ms preserves measured onset and offset.")
+        self.silero_profile_combo = QComboBox(); self.silero_profile_combo.addItems(["default", "conservative", "permissive"])
+        self._set_tooltip(self.silero_profile_combo, "Sensitivity check: conservative needs stronger speech evidence; permissive retains weaker speech.")
         form.addRow("Threshold", self.threshold_spin)
-        form.addRow("Min speech duration (ms)", self.min_speech_spin)
-        form.addRow("Min silence duration (ms)", self.min_silence_spin)
-        form.addRow("Speech pad (ms)", self.speech_pad_spin)
-        form.addRow("Diagnostic frame size (ms)", self.frame_ms_spin)
-        form.addRow("Advanced", self.force_reload_check)
+        form.addRow("Minimum speech (ms)", self.min_speech_spin)
+        form.addRow("Minimum silence (ms)", self.min_silence_spin)
+        form.addRow("Speech padding (ms)", self.speech_pad_spin)
+        form.addRow("Sensitivity profile", self.silero_profile_combo)
         layout.addWidget(self.silero_group)
 
-        self.segmentation_placeholder_group = QGroupBox("Method status")
-        placeholder_layout = QVBoxLayout(self.segmentation_placeholder_group)
-        self.segmentation_method_status = QLabel("Silero is fully implemented. Other methods are intentionally reserved as plugin slots.")
-        self.segmentation_method_status.setWordWrap(True)
-        placeholder_layout.addWidget(self.segmentation_method_status)
-        self.segmentation_placeholder_group.setVisible(False)
-        layout.addWidget(self.segmentation_placeholder_group)
+        self.ddk_group = QGroupBox("DDK energy-envelope")
+        form = QFormLayout(self.ddk_group)
+        self.ddk_threshold_spin = QDoubleSpinBox(); self.ddk_threshold_spin.setRange(0.05, 0.90); self.ddk_threshold_spin.setSingleStep(0.05); self.ddk_threshold_spin.setValue(0.35)
+        self._set_tooltip(self.ddk_threshold_spin, "Local energy fraction separating syllable events from valleys; lower retains weak syllables.")
+        self.ddk_min_event_spin = QSpinBox(); self.ddk_min_event_spin.setRange(10, 500); self.ddk_min_event_spin.setValue(35)
+        self._set_tooltip(self.ddk_min_event_spin, "Shortest measurable syllable energy event; longer values suppress brief noise bursts.")
+        self.ddk_local_window_spin = QSpinBox(); self.ddk_local_window_spin.setRange(100, 2000); self.ddk_local_window_spin.setValue(600)
+        self._set_tooltip(self.ddk_local_window_spin, "Time span used to adapt to changing loudness across repetitions.")
+        form.addRow("Local threshold fraction", self.ddk_threshold_spin)
+        form.addRow("Minimum event (ms)", self.ddk_min_event_spin)
+        form.addRow("Local window (ms)", self.ddk_local_window_spin)
+        layout.addWidget(self.ddk_group)
 
-        output_group = QGroupBox("Segmentation output")
-        output_layout = QVBoxLayout(output_group)
-        self.segmentation_feedback = QPlainTextEdit()
-        self.segmentation_feedback.setReadOnly(True)
-        self.segmentation_feedback.setMaximumHeight(150)
-        self.segmentation_feedback.setPlainText("Run data segmentation to summarize speech/pause regions, segment counts, speech fraction, and output tables.")
-        output_layout.addWidget(self.segmentation_feedback)
-        layout.addWidget(output_group)
+        self.phonation_group = QGroupBox("Sustained phonation")
+        form = QFormLayout(self.phonation_group)
+        self.phon_min_spin = QSpinBox(); self.phon_min_spin.setRange(100, 10000); self.phon_min_spin.setValue(500)
+        self._set_tooltip(self.phon_min_spin, "Shortest detectable phonation episode; shorter episodes remain available for review.")
+        self.phon_onset_spin = QSpinBox(); self.phon_onset_spin.setRange(0, 5000); self.phon_onset_spin.setValue(1000)
+        self._set_tooltip(self.phon_onset_spin, "Excludes initial vocal-fold and airflow build-up from the stable region.")
+        self.phon_offset_spin = QSpinBox(); self.phon_offset_spin.setRange(0, 5000); self.phon_offset_spin.setValue(300)
+        self._set_tooltip(self.phon_offset_spin, "Excludes terminal breath and vibration decay from the stable region.")
+        self.phon_stable_spin = QSpinBox(); self.phon_stable_spin.setRange(100, 10000); self.phon_stable_spin.setValue(2000)
+        self._set_tooltip(self.phon_stable_spin, "Interior duration for stationary voice measures; full episode retains voice breaks.")
+        self.phon_activity_spin = QDoubleSpinBox(); self.phon_activity_spin.setRange(0.02, 0.90); self.phon_activity_spin.setSingleStep(0.02); self.phon_activity_spin.setValue(0.18)
+        self._set_tooltip(self.phon_activity_spin, "Energy above room baseline needed to mark active phonation.")
+        self.phon_gap_spin = QSpinBox(); self.phon_gap_spin.setRange(0, 2000); self.phon_gap_spin.setValue(500)
+        self._set_tooltip(self.phon_gap_spin, "Keep brief internal voice breaks inside the full episode; breaks remain visible.")
+        form.addRow("Minimum phonation (ms)", self.phon_min_spin)
+        form.addRow("Onset guard (ms)", self.phon_onset_spin)
+        form.addRow("Offset guard (ms)", self.phon_offset_spin)
+        form.addRow("Stable duration (ms)", self.phon_stable_spin)
+        form.addRow("Activity fraction", self.phon_activity_spin)
+        form.addRow("Internal break span (ms)", self.phon_gap_spin)
+        layout.addWidget(self.phonation_group)
 
-        run_btn = QPushButton("Run Data Segmentation")
-        run_btn.setObjectName("RunButton")
-        run_btn.clicked.connect(self.run_segmentation)
+        self.segmentation_recommendation = QLabel()
+        layout.addWidget(self.segmentation_recommendation)
+        self.segmentation_feedback = QPlainTextEdit(); self.segmentation_feedback.setReadOnly(True); self.segmentation_feedback.setMaximumHeight(110)
+        self.segmentation_feedback.setPlainText("Not run")
+        layout.addWidget(self.segmentation_feedback)
+        run_btn = QPushButton("Run Segmentation"); run_btn.setObjectName("RunButton"); run_btn.clicked.connect(self.run_segmentation)
         layout.addWidget(run_btn)
         layout.addStretch(1)
+        self.task_name_edit.textChanged.connect(self._recommend_segmentation_method)
         self._update_segmentation_method_ui()
         return self._scrollable(container)
 
+    def _recommend_segmentation_method(self, task: str) -> None:
+        method = recommend_method(task)
+        index = self.segmentation_method_combo.findData(method)
+        if index >= 0:
+            self.segmentation_method_combo.setCurrentIndex(index)
 
     def _update_segmentation_method_ui(self) -> None:
-        method = self.segmentation_method_combo.currentText() if hasattr(self, "segmentation_method_combo") else "Silero"
-        is_silero = method.startswith("Silero")
-        if hasattr(self, "silero_group"):
-            self.silero_group.setVisible(is_silero)
-        if hasattr(self, "segmentation_placeholder_group"):
-            self.segmentation_placeholder_group.setVisible(not is_silero)
-        if hasattr(self, "segmentation_method_status"):
-            if method.startswith("SPA"):
-                self.segmentation_method_status.setText("SPA segmentation is reserved for DDK/task-specific segmentation. The plugin slot is present, but the method is not yet implemented in this build.")
-            elif method.startswith("Energy"):
-                self.segmentation_method_status.setText("Energy/RMS segmentation is reserved as a simple amplitude-based fallback. The GUI slot is present for future implementation and validation.")
-            elif method.startswith("Custom"):
-                self.segmentation_method_status.setText("Custom segmentation will support lab-specific algorithms through a plugin interface. This method is not yet implemented in this build.")
-            else:
-                self.segmentation_method_status.setText("Silero is fully implemented and recommended for passages, sentences, and free speech.")
+        method = self.segmentation_method_combo.currentData()
+        self.silero_group.setVisible(method == SILERO)
+        self.ddk_group.setVisible(method == DDK)
+        self.phonation_group.setVisible(method == PHONATION)
+        recommendations = {
+            SILERO: "Recommended for: Bamboo Passage · Buy Bobby a Puppy · WSTG · connected speech",
+            DDK: "Recommended for: pa · ta · ka · ba · pataka · repetitive oral DDK",
+            PHONATION: "Recommended for: sustained vowels /a/, /i/, etc.",
+            CUSTOM: "Custom plugin method is not installed.",
+        }
+        self.segmentation_recommendation.setText(recommendations[method])
+
+    def _segmentation_config_from_gui(self) -> SegmentationConfig:
+        return SegmentationConfig(
+            method=self.segmentation_method_combo.currentData(),
+            threshold=float(self.threshold_spin.value()),
+            min_speech_duration_ms=int(self.min_speech_spin.value()),
+            min_silence_duration_ms=int(self.min_silence_spin.value()),
+            speech_pad_ms=int(self.speech_pad_spin.value()),
+            sensitivity_profile=self.silero_profile_combo.currentText(),
+            ddk=DDKConfig(threshold_fraction=float(self.ddk_threshold_spin.value()),
+                          min_event_ms=float(self.ddk_min_event_spin.value()),
+                          local_window_ms=float(self.ddk_local_window_spin.value())),
+            phonation=PhonationConfig(min_phonation_ms=float(self.phon_min_spin.value()),
+                                     onset_guard_ms=float(self.phon_onset_spin.value()),
+                                     offset_guard_ms=float(self.phon_offset_spin.value()),
+                                     stable_duration_ms=float(self.phon_stable_spin.value()),
+                                     activity_fraction=float(self.phon_activity_spin.value()),
+                                     max_internal_gap_ms=float(self.phon_gap_spin.value())),
+        )
 
     def _build_quality_tab(self) -> QWidget:
         """Build the segmentation-informed Quality Control workstation."""
@@ -1629,7 +1664,7 @@ class AcousticPipelineWindow(QMainWindow):
 
     def preview_latest_segmentation_plot(self) -> None:
         plot_dir = self._output_root() / "acoustic" / "002_segmentation" / "plots"
-        plots = sorted(plot_dir.glob("*.png")) if plot_dir.exists() else []
+        plots = sorted(plot_dir.rglob("*.png")) if plot_dir.exists() else []
         if not plots:
             QMessageBox.information(self, "No plots", f"No segmentation plots found in:\n{plot_dir}")
             return
@@ -1670,40 +1705,19 @@ class AcousticPipelineWindow(QMainWindow):
         if not hasattr(self, "segmentation_feedback"):
             return
         main_path = self._stage_path("segment", "main_summary")
-        errors_path = self._output_root() / "acoustic" / "002_segmentation" / "errors" / "acoustic_segmentation_errors.csv"
         if not main_path.exists():
-            self.segmentation_feedback.setPlainText("Run data segmentation to summarize speech/pause regions, segment counts, speech fraction, and output tables.")
+            self.segmentation_feedback.setPlainText("Not run")
             return
         try:
             df = self._read_csv_safe(main_path)
-            err_df = self._read_csv_safe(errors_path)
-            err_n = len(err_df)
-            n = len(df)
-            lines = [
-                f"Files segmented: {n}",
-                f"Files failed: {err_n}",
-            ]
-            if n == 0:
-                lines.append("No successful segmentation rows were available. Check the segmentation errors table for details.")
-                self.segmentation_feedback.setPlainText("\n".join(lines))
-                return
-            speech_fraction = pd.to_numeric(df.get("speech_fraction"), errors="coerce")
-            speech_segments = pd.to_numeric(df.get("n_speech_segments"), errors="coerce")
-            internal_pause = pd.to_numeric(df.get("n_internal_nonspeech_segments"), errors="coerce")
-            longest_pause = pd.to_numeric(df.get("longest_internal_nonspeech_sec"), errors="coerce")
-            if speech_fraction.notna().any():
-                lines.append(f"Median speech fraction: {speech_fraction.median():.3f}")
-            if speech_segments.notna().any():
-                lines.append(f"Median speech segments/file: {speech_segments.median():.1f}")
-            if internal_pause.notna().any():
-                lines.append(f"Median internal pause segments/file: {internal_pause.median():.1f}")
-            if longest_pause.notna().any():
-                lines.append(f"Median longest internal pause: {longest_pause.median():.2f} s")
-            self.segmentation_feedback.setPlainText("\n".join(lines))
+            status = df.get("automatic_status", pd.Series(dtype=str)).astype(str).str.upper()
+            counts = {name: int(status.eq(name).sum()) for name in ("ACCEPTED", "REVIEW", "EXCLUDED", "FAILED")}
+            self.segmentation_feedback.setPlainText(
+                "  |  ".join(f"{name.title()}: {count}" for name, count in counts.items())
+            )
         except Exception as exc:  # noqa: BLE001
-            self.segmentation_feedback.setPlainText(f"Could not summarize segmentation outputs: {exc}")
+            self.segmentation_feedback.setPlainText(f"Could not read segmentation outputs: {exc}")
 
-    # ---------------------------- HELPERS ----------------------------
     def append_log(self, text: str) -> None:
         self.log_box.appendPlainText(text)
 
@@ -1880,29 +1894,18 @@ class AcousticPipelineWindow(QMainWindow):
 
     def run_segmentation(self) -> None:
         paths = self._require_paths()
-        if paths is None: return
-        if not self._require_project_initialized(): return
-        method = self.segmentation_method_combo.currentText() if hasattr(self, "segmentation_method_combo") else "Silero"
-        if not method.startswith("Silero"):
-            QMessageBox.information(
-                self,
-                "Method not implemented",
-                "This segmentation method is reserved as a plugin slot and is not implemented yet. Please use Silero for the current build."
-            )
+        if paths is None or not self._require_project_initialized(): return
+        if self.segmentation_method_combo.currentData() == CUSTOM:
+            QMessageBox.information(self, "Plugin required", "Install a segmentation plugin before selecting Custom.")
             return
         _input_path, output_root = paths
         preprocess_summary = self._preprocess_summary_path()
         if not preprocess_summary.exists():
-            QMessageBox.warning(self, "Preprocess required", "Run preprocessing first. The preprocess summary CSV was not found.")
+            QMessageBox.warning(self, "Preprocess required", "Run preprocessing first.")
             return
-        self._run_worker("segment", run_acoustic_segmentation_silero, {
+        self._run_worker("segment", run_acoustic_segmentation, {
             "preprocess_summary_csv": preprocess_summary, "output_root": output_root,
-            "threshold": float(self.threshold_spin.value()),
-            "min_speech_duration_ms": int(self.min_speech_spin.value()),
-            "min_silence_duration_ms": int(self.min_silence_spin.value()),
-            "speech_pad_ms": int(self.speech_pad_spin.value()),
-            "frame_ms": int(self.frame_ms_spin.value()),
-            "force_reload": bool(self.force_reload_check.isChecked()),
+            "config": self._segmentation_config_from_gui(),
         })
 
     def _update_quality_feedback(self) -> None:
@@ -2144,6 +2147,10 @@ table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{border-bottom:
         input_path, output_root = paths
 
         selected_features = self._selected_feature_names()
+        segmentation_config = self._segmentation_config_from_gui()
+        if segmentation_config.method == CUSTOM:
+            QMessageBox.information(self, "Plugin required", "Install a segmentation plugin before selecting Custom.")
+            return
         def full_run(input_path: Path, output_root: Path):
             ingest_result = run_acoustic_ingest(input_path=input_path, output_root=output_root)
             if ingest_result.summary_table is None:
@@ -2153,15 +2160,10 @@ table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{border-bottom:
                 output_root=output_root,
                 config=self._preprocess_config_from_gui(),
             )
-            segment_result = run_acoustic_segmentation_silero(
+            segment_result = run_acoustic_segmentation(
                 preprocess_summary_csv=output_root / "acoustic" / "001_preprocess" / "tables" / "acoustic_preprocess_summary.csv",
                 output_root=output_root,
-                threshold=float(self.threshold_spin.value()),
-                min_speech_duration_ms=int(self.min_speech_spin.value()),
-                min_silence_duration_ms=int(self.min_silence_spin.value()),
-                speech_pad_ms=int(self.speech_pad_spin.value()),
-                frame_ms=int(self.frame_ms_spin.value()),
-                force_reload=bool(self.force_reload_check.isChecked()),
+                config=segmentation_config,
             )
             quality_result = run_acoustic_quality_control(
                 segmentation_summary_csv=output_root / "acoustic" / "002_segmentation" / "tables" / "acoustic_segmentation_summary.csv",

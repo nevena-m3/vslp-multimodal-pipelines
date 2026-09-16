@@ -31,7 +31,7 @@ except ImportError:  # pragma: no cover - dependency failure is reported in feat
     parselmouth = None
     praat_call = None
 
-from vslp.acoustic.features.plugins.audio_utils import frame_signal, read_region_audio
+from vslp.acoustic.features.plugins.audio_utils import frame_signal, read_mono_audio, read_region_audio
 from vslp.acoustic.features.plugins.base import AcousticFeaturePlugin, FeatureContext, FeatureValue
 
 PHONATORY_FEATURES = (
@@ -285,12 +285,30 @@ class PhonatoryPlugin(AcousticFeaturePlugin):
         frame_ms = float(getattr(context.config, "phonatory_frame_ms", 40.0))
         hop_ms = float(getattr(context.config, "phonatory_hop_ms", 10.0))
 
-        x, sr, region_note = read_region_audio(
-            context.segmentation_wav_path,
-            context.segments_csv,
-            region=context.analysis_region,
-            min_pause_duration_sec=min_pause,
-        )
+        full_episode_x = None
+        if str(context.row.get("segmentation_method", "")) == "sustained_phonation":
+            native_x, sr = read_mono_audio(context.segmentation_wav_path)
+            full_start = context.row.get("full_phonation_start", np.nan)
+            full_end = context.row.get("full_phonation_end", np.nan)
+            stable_start = context.row.get("stable_region_start", np.nan)
+            stable_end = context.row.get("stable_region_end", np.nan)
+            if np.isfinite(full_start) and np.isfinite(full_end):
+                full_episode_x = native_x[max(0, round(float(full_start) * sr)):
+                                          min(len(native_x), round(float(full_end) * sr))]
+            if np.isfinite(stable_start) and np.isfinite(stable_end):
+                x = native_x[max(0, round(float(stable_start) * sr)):
+                             min(len(native_x), round(float(stable_end) * sr))]
+                region_note = "region=stable_phonation_native_rate"
+            else:
+                x = full_episode_x if full_episode_x is not None else native_x
+                region_note = "region=full_phonation_stable_unavailable"
+        else:
+            x, sr, region_note = read_region_audio(
+                context.segmentation_wav_path,
+                context.segments_csv,
+                region=context.analysis_region,
+                min_pause_duration_sec=min_pause,
+            )
         if x.size == 0:
             return {name: _nan_feature(name, "failed", "empty_audio") for name in self.feature_names}
 
@@ -348,6 +366,10 @@ class PhonatoryPlugin(AcousticFeaturePlugin):
         apq5 = _amplitude_perturbation(amps, 5)
         apq11 = _amplitude_perturbation(amps, 11)
         cycle_values, cycle_note = _praat_cycle_features(x, sr, fmin=fmin, fmax=fmax)
+        if full_episode_x is not None and len(full_episode_x) > len(x):
+            full_cycle_values, _ = _praat_cycle_features(full_episode_x, sr, fmin=fmin, fmax=fmax)
+            cycle_values["num_voicebreaks"] = full_cycle_values["num_voicebreaks"]
+            cycle_note += "; voice_breaks_from_full_episode"
 
         voice_fraction = float(np.mean(voiced_arr)) if voiced_arr.size else 0.0
         note = (

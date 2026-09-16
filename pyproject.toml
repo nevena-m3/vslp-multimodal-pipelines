@@ -38,8 +38,8 @@ gui = [
   "pyqtgraph>=0.13",
 ]
 silero = [
-  "torch>=2.2",
-  "torchaudio>=2.2",
+  "silero-vad==6.2.1",
+  "onnxruntime>=1.18,<2",
 ]
 kinematic = [
   "opencv-python>=4.9",

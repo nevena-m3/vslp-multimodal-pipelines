@@ -285,6 +285,12 @@ def run_acoustic_feature_extraction(
     registry = _select_registry(cfg)
     selected_names = set(registry["feature"].astype(str).tolist())
     seg_summary = pd.read_csv(segmentation_summary_csv)
+    if "automatic_status" in seg_summary:
+        seg_summary = seg_summary.loc[
+            ~seg_summary["automatic_status"].astype(str).str.upper().isin({"EXCLUDED", "FAILED"})
+        ].copy()
+    if seg_summary.empty:
+        raise ValueError("No accepted or review-required segmented recordings are available for feature extraction")
     run = json.loads((Path(output_root) / "project_manifest.json").read_text(encoding="utf-8"))
     if not run.get("task_name") or not run.get("run_id") or not run.get("project_name"):
         raise ValueError("Acoustic feature extraction requires initialized Setup provenance")

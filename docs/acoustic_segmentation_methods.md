@@ -1,0 +1,27 @@
+# Acoustic segmentation methods
+
+The Segmentation menu recommends a method from the Setup task name. The user may change it. Every method reads the canonical native-rate FLOAT32 WAV without rewriting it. The stage records every preprocessing input, including excluded and failed recordings, in the summary and review queue. Only `ACCEPTED` and `REVIEW` rows continue to acoustic QC and feature measurement.
+
+## Silero VAD: reading and connected speech
+
+The pinned `silero-vad==6.2.1` ONNX model receives a private 16 kHz copy. Its sample-index timestamps are the primary speech boundaries. Defaults are threshold 0.50, minimum speech 250 ms, minimum silence 100 ms, and padding 0 ms. A 30 ms frame trace is diagnostic only. The stage also saves raw/primary intervals, eroded strict speech, guarded internal nonspeech, and local RMS boundary contrast. Conservative (0.65/250/100) and permissive (0.35/100/200) sensitivity profiles reproduce the reference settings. The reading triage follows the source repository's no-speech, very-low-speech-fraction, short-file, near-silent, extreme-fragmentation, and long-pause rules; weak boundary contrast adds review without moving boundaries. Accepted guardrails and a cohort median/MAD outlier check (at least 20 accepted references, robust z ≥4.5) populate the review queue without using study metadata.
+
+Scientific implementation source: [quality_framework_features segmentation](https://github.com/nevena-m3/quality_framework_features/blob/main/src/paper1_qc/segmentation.py).
+
+## DDK energy envelope: repetitive oral events
+
+An event means **one energy burst corresponding to an attempted syllable**, not a syllable inferred from a transcript. For `/pataka/`, the algorithm detects individual `/pa/`, `/ta/`, and `/ka/` bursts when separable; it does not label their phonetic identity or treat the three-burst sequence as one cycle. Manual review is needed when bursts merge or a weak consonant/vowel creates multiple peaks.
+
+On a private working copy, the algorithm removes DC offset, peak-scales, applies a fourth-order 200 Hz low-pass filter, computes 20 ms frame mean-square energy every 5 ms, then smooths the envelope over three frames. A 600 ms rolling window estimates the 20th and 90th percentile energy. The local threshold is `p20 + 0.35 × (p90 − p20)`, floored by 1.5 times the global 15th-percentile energy. Threshold crossings define event intervals, with a 35 ms minimum event length. The maximum energy within each interval is the event nucleus. Nucleus intervals yield DDK rate and cycle mean/SD. Events below 1.5% of the recording's largest peak are rejected as low support. Event counts at ±10% of the threshold audit algorithmic stability. Poor peak/valley contrast, close or ambiguous boundaries, zero events, and unstable event counts trigger `REVIEW`. Slow rate and irregular cycles **do not** trigger exclusion.
+
+This is an explicit adaptation of the 20 ms energy-envelope and threshold-crossing approach in [Tanchip et al. (2022), JSLHR, DOI 10.1044/2021_JSLHR-21-00503](https://doi.org/10.1044/2021_JSLHR-21-00503). The percentile threshold and support check make the threshold locally adaptive and are recorded in per-recording provenance. The published work found energy-envelope methods robust across dysarthria severity but still required human review for ambiguous productions.
+
+## Sustained phonation: full episode and stable interior
+
+The algorithm computes 20 ms RMS frames every 10 ms. The activity threshold is `p10 + 0.18 × (p95 − p10)` of the recording's RMS distribution. Activity gaps up to 500 ms are bridged **only for choosing the full episode**; internal breaks remain listed and visible. The longest resulting episode is the full phonation onset/offset. A 1 s onset guard and 300 ms offset guard define the eligible interior. Within it, the most energetic 2 s window is the stable analysis region. If insufficient interior exists, the full episode remains available and the stable region is flagged unavailable. Minimum episode duration 500 ms is a review rule, not an automatic clinical exclusion.
+
+The full interval supports break/continuity measurements. The separate stable interval supports quasi-stationary measures. The phonatory feature plugin reads the stable interval from the native-rate WAV for stationary measures and counts voice breaks across the full episode. If a stable interval is unavailable, it falls back to the full episode and records that choice. The default 2 s stable segment reflects sustained-vowel voice analysis practice; [ASHA's recommended protocol](https://pubs.asha.org/doi/10.1044/2018_AJSLP-17-0009) calls for approximately 3–5 s habitual sustained `/a/`. These are measurement windows, not normality thresholds.
+
+## Outputs and review
+
+Under `acoustic/002_segmentation/`, each processed recording has frame, exact segment, and boundary CSVs plus a method-specific plot in `plots/accepted`, `plots/flagged`, or `plots/excluded`. A recording that failed preprocessing still receives an excluded plot and a review queue row. Silero additionally writes boundary audits and interval views; DDK writes nuclei; phonation writes full/stable/break regions. The stage writes `acoustic_segmentation_summary.csv`, `acoustic_segmentation_main_summary.csv`, `segmentation_review_queue.csv`, and `logs/stage_manifest.json`. An error CSV appears only when segmentation errors occur. Empty directories are removed by the acoustic stage cleanup wrapper.
