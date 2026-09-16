@@ -1,4 +1,0 @@
-segment_type,start_sec,end_sec,duration_sec,run_start_frame,run_end_frame,segment_role
-nonspeech,0.0,1.71,1.71,0,57,leading_nonspeech
-speech,1.71,3.15,1.44,57,105,speech
-nonspeech,3.15,124.89,121.74,105,4163,trailing_nonspeech
