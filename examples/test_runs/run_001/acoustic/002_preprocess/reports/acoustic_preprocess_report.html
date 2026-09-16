@@ -1,0 +1,32 @@
+<!doctype html>
+<html><head><meta charset='utf-8'><title>VSLP Acoustic Preprocess Report</title>
+<style>
+body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif; background:#071A2D; color:#EAF2F8; margin:32px; }
+.card { background:#0B253D; border:1px solid #315D7C; border-radius:12px; padding:18px; margin:14px 0; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; } th, td { border-bottom:1px solid #315D7C; padding:8px; text-align:left; }
+.badge { display:inline-block; padding:4px 8px; border-radius:6px; background:#0E3A5B; margin-right:8px; }
+</style></head><body>
+<h1>VSLP Acoustic Preprocess Report</h1>
+<div class='card'>
+<span class='badge'>Processed: 5</span><span class='badge'>Failed: 0</span><span class='badge'>50 Hz flags: 0</span><span class='badge'>60 Hz flags: 0</span><span class='badge'>Clipping flags: 0</span>
+</div>
+<div class='card'><h2>Configuration</h2><pre>{
+  "segmentation_sample_rate_hz": 16000,
+  "feature_sample_rate_hz": null,
+  "make_segmentation_wav": true,
+  "make_feature_wav": true,
+  "remove_dc_offset": true,
+  "mono_policy": "best_channel",
+  "filter": {
+    "enabled": false,
+    "kind": "none",
+    "low_hz": null,
+    "high_hz": null,
+    "notch_hz": null,
+    "notch_q": 30.0,
+    "order": 4
+  },
+  "ffmpeg_bin": "ffmpeg"
+}</pre></div>
+<div class='card'><h2>Notes</h2><p>SNR is estimated from low-energy frames and should be interpreted as a QC proxy only.</p><p>Source files are never modified. Canonical WAV files are written under <code>artifacts/</code>.</p></div>
+</body></html>
