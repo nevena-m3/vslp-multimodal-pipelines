@@ -6,7 +6,7 @@
 
 | Area | Current role | Entry point |
 |---|---|---|
-| Acoustic Pipeline GUI | Audio discovery, metadata, conversion, segmentation, QC, feature extraction, handoff | `vslp gui acoustic` or `vslp-acoustic-gui` |
+| Acoustic Pipeline GUI | Audio discovery, conversion, segmentation, QC, feature extraction, handoff | `vslp gui acoustic` or `vslp-acoustic-gui` |
 | Kinematics Pipeline GUI | Video discovery, landmarks, selection, normalization, QC, features, aggregation, handoff | `vslp gui kinematics` or `vslp-kinematics-gui` |
 | Feature Analysis GUI | One-modality feature audit, task review, recommendations, ML-ready export | `vslp gui features` or `vslp-features-gui` |
 | ML Modeling GUI v0.1 | Prototype dataset-contract builder; no training or validation workflow | `python -m vslp.gui.ml_app.main` |
@@ -25,17 +25,17 @@ The three production-facing GUIs are PySide6 desktop applications. The ML GUI is
 
 ### Handoff contract
 
-Each upstream pipeline writes `acoustic/feature_handoff/main` or `kinematics/feature_handoff/main`. Four files are required: `feature_values.csv`, `feature_registry.csv`, `feature_status.csv`, and `feature_export_manifest.json`. `qc_features.csv` and `metadata_context.csv` are optional. `feature_handoff/supplementary/artifact_catalog.csv` indexes detailed audit outputs. In Feature Analysis, **Load Main Handoff Folder** is the routine import path.
+Each upstream pipeline writes `acoustic/feature_handoff/main` or `kinematics/feature_handoff/main`. Four files are required: `feature_values.csv`, `feature_registry.csv`, `feature_status.csv`, and `feature_export_manifest.json`. `qc_features.csv` is optional for acoustic handoff. Kinematic handoff may also include `metadata_context.csv`. `feature_handoff/supplementary/artifact_catalog.csv` indexes detailed audit outputs. In Feature Analysis, **Load Main Handoff Folder** is the routine import path.
 
 ## 3. Acoustic Pipeline GUI: every main tab
 
-**Launch:** `vslp gui acoustic`. The actual GUI is `src/vslp/gui/acoustic_app/main_window.py`. Its left rail shows Project, Ingest, Preprocess, Data Segmentation, Quality Control, Feature Extraction, and Reports status. The bottom Run Log records stage messages. The left-rail actions are **Refresh Latest Outputs** (detect existing result files), **Run Full Acoustic Workflow** (sequential stage run), and **Open Output Project Folder**. The full-run action requires project initialization and uses the task entered in Setup.
+**Launch:** `vslp gui acoustic`. The actual GUI is `src/vslp/gui/acoustic_app/main_window.py`. Its left rail shows Project, Ingest, Preprocess, Data Segmentation, Quality Control, Feature Extraction, and Reports status. The bottom Run Log records stage messages. The left-rail actions are **Refresh Latest Outputs** (detect existing result files), **Run Full Acoustic Workflow** (sequential stage run), and **Open Run Folder**. The full-run action requires project initialization and uses the task entered in Setup.
 
 ### Setup
 
 - **Browse Input Folder / Browse Output Folder:** select source media and a parent output folder. Enter required project and task names; set recursive discovery as appropriate.
-- **Initialize Project:** creates a new `Taskname_YYYYMMDD_HHMMSS` folder containing `project_manifest.json`, `configs/`, and `logs/`; `acoustic/` appears when a stage writes files; the Setup output field switches to that active run folder. Project name and task are recorded in the manifest, setup config, and setup log. Empty acoustic directories are removed after each stage. Clinical metadata is loaded in Feature Analysis. This is the gate for later stages.
-- **Run Ingest:** probes discovered media and records technical metadata, unsupported/read failures, duplicates, formats and codecs. The Setup display summarizes discovered/probed files and warnings. Check counts against the source folder.
+- **Initialize Project:** requires project name, task name, input folder, and output parent; creates a unique `TaskSlug_YYYYMMDD_HHMMSS` folder containing `project_manifest.json`, `configs/setup_config.json`, `logs/setup.log`, and `acoustic/`. Setup fields then lock and the generated run folder is displayed. Empty stage directories are removed after each stage. Clinical metadata is loaded in Feature Analysis.
+- **Run Ingest:** probes discovered media and records technical metadata, unsupported/read failures, duplicates, formats and codecs. The Setup display reports discovered, accepted, duplicate-skipped, and failed counts. Check counts against the source folder.
 
 ### Preprocess
 
@@ -61,18 +61,18 @@ Each upstream pipeline writes `acoustic/feature_handoff/main` or `kinematics/fea
 
 ### Inspector
 
-- **Refresh latest outputs** finds stage artifacts; select a table/plot to preview it in **Table Preview** or **Plot Preview**. **Open current preview file** and **Open output project folder** open the selected artifact/location.
+- **Refresh latest outputs** finds stage artifacts; select a table/plot to preview it in **Table Preview** or **Plot Preview**. **Open current preview file** and **Open run folder** open the selected artifact/location.
 - Reconcile input, segmented and feature row counts, file names, task context, errors and timestamps. A preview is a sample, not a complete audit.
 
 ### Reports & Outputs
 
-- **Generate Run Summary:** writes an HTML stage summary and artifact manifest under `acoustic/007_run_summary`.
+- **Generate Run Summary:** writes an HTML stage summary and artifact manifest under `acoustic/005_run_summary`.
 - **Open Main Feature GUI Handoff:** opens the canonical downstream folder. **Open Supplementary Outputs:** opens the audit catalog. **Open Acoustic Output Folder** and **Open Plots Folder** provide direct navigation.
-- Confirm all four canonical handoff files, optional QC/metadata context, and supplementary index before loading Feature Analysis.
+- Confirm all four canonical acoustic handoff files, optional acoustic QC, and supplementary index before loading Feature Analysis. Join clinical metadata there.
 
 ## 4. Kinematics Pipeline GUI: every main tab
 
-**Launch:** `vslp gui kinematics`. The active implementation is `src/vslp/gui/kinematics/app.py`. Its left rail reports stage status and offers **Refresh Latest Outputs**, **Run Full Kinematics Workflow**, and **Open Output Project Folder**. Check the Run Log and file-level errors after each stage.
+**Launch:** `vslp gui kinematics`. The active implementation is `src/vslp/gui/kinematics/app.py`. Its left rail reports stage status and offers **Refresh Latest Outputs**, **Run Full Kinematics Workflow**, and **Open Run Folder**. Check the Run Log and file-level errors after each stage.
 
 ### Setup
 
@@ -115,12 +115,12 @@ Each upstream pipeline writes `acoustic/feature_handoff/main` or `kinematics/fea
 
 ### Inspector
 
-- **Refresh Inspector / Inventory** updates **Stage status**, **Readiness checklist**, **Artifact inventory**, **Latest table preview**, and **Inspector notes**. **Open Output Project Folder** opens the workspace. Verify timestamps and rerun downstream stages after changing selection or normalization.
+- **Refresh Inspector / Inventory** updates **Stage status**, **Readiness checklist**, **Artifact inventory**, **Latest table preview**, and **Inspector notes**. **Open Run Folder** opens the workspace. Verify timestamps and rerun downstream stages after changing selection or normalization.
 
 ### Reports & Outputs
 
 - **Open Main Feature GUI Handoff** and **Open Supplementary Outputs** lead to canonical and audit folders.
-- **Create Workflow Outline Report**, **Create Pipeline Summary Report**, **Open Latest HTML Report**, and **Open Output Project Folder** manage reporting.
+- **Create Workflow Outline Report**, **Create Pipeline Summary Report**, **Open Latest HTML Report**, and **Open Run Folder** manage reporting.
 - Subtabs: **Report preview**, **Report checklist**, **Report manifest**, **Output guidance**. Verify canonical files and the supplementary artifact catalog.
 
 ## 5. Feature Analysis GUI: every sidebar menu

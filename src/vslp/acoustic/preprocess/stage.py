@@ -36,6 +36,7 @@ from vslp.acoustic.preprocess.audio import (
     summarize_audio_quality,
 )
 from vslp.core.io import discover_files
+from vslp.acoustic.context import run_context, cleanup_stage
 from vslp.core.project import ensure_stage_folders
 from vslp.core.provenance import python_environment, sha256_file, tool_versions
 from vslp.core.schemas import ArtifactRef, StageManifest, StageResult
@@ -245,7 +246,7 @@ def _preprocess_one(path: Path, folders: dict[str, Path], cfg: PreprocessConfig)
 
 def _build_main_summary(rows: list[dict[str, Any]]) -> pd.DataFrame:
     cols = [
-        "file_name", "status", "raw_duration_sec", "raw_sample_rate_hz", "raw_n_channels",
+        "recording_id", "file_name", "source_file_path", "source_sha256", "project_name", "task_name", "run_id", "run_created_at_local", "run_created_at_utc", "status", "raw_duration_sec", "raw_sample_rate_hz", "raw_n_channels",
         "snr_db_estimate", "clipping_fraction_near_full_scale", "clipping_run_count",
         "raw_dc_offset", "processed_dc_offset", "powerline_50hz_flag", "powerline_60hz_flag",
         "dc_offset_removed", "normalize_peak", "filter_enabled", "filter_kind",
@@ -287,6 +288,7 @@ def _build_qc_flags(rows: list[dict[str, Any]]) -> pd.DataFrame:
     return pd.DataFrame(out)
 
 
+@cleanup_stage
 def run_acoustic_preprocess(
     input_path: str | Path,
     output_root: str | Path,
@@ -295,8 +297,9 @@ def run_acoustic_preprocess(
 ) -> StageResult:
     cfg = config or PreprocessConfig()
     extensions = extensions or DEFAULT_AUDIO_EXTENSIONS
-    stage_dir = Path(output_root) / "acoustic" / "002_preprocess"
-    folders = ensure_stage_folders(stage_dir)
+    stage_dir = Path(output_root) / "acoustic" / "001_preprocess"
+    folders = ensure_stage_folders(stage_dir, lazy=True)
+    context = run_context(output_root)
 
     rows: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
@@ -304,7 +307,11 @@ def run_acoustic_preprocess(
 
     for path in files:
         try:
-            rows.append(_preprocess_one(path, folders, cfg))
+            row = _preprocess_one(path, folders, cfg)
+            row["recording_id"] = row["source_sha256"]
+            row["source_file_path"] = row["file_path"]
+            row.update(context)
+            rows.append(row)
         except Exception as exc:  # noqa: BLE001
             errors.append({"file_name": path.name, "file_path": str(path), "status": "failed", "error": str(exc)})
 

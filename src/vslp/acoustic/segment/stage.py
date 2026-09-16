@@ -4,7 +4,7 @@ V1 supports:
 - Silero VAD, using the uploaded reference wrapper contract and diagnostic plot style;
 - Energy/RMS placeholder fallback, implemented separately.
 
-The stage expects preprocessed segmentation WAV files from 002_preprocess by default.
+The stage expects preprocessed segmentation WAV files from 001_preprocess by default.
 """
 
 from __future__ import annotations
@@ -16,6 +16,7 @@ import pandas as pd
 import soundfile as sf
 
 from vslp.acoustic.segment.silero_wrapper import build_silero_stage_from_audio, plot_silero_stage, summarize_silero_stage
+from vslp.acoustic.context import cleanup_stage
 from vslp.core.project import ensure_stage_folders
 from vslp.core.provenance import python_environment, sha256_file
 from vslp.core.schemas import ArtifactRef, StageManifest, StageResult
@@ -68,6 +69,7 @@ def load_silero_model(repo_or_dir: str = "snakers4/silero-vad", force_reload: bo
     return model, get_speech_timestamps
 
 
+@cleanup_stage
 def run_acoustic_segmentation_silero(
     preprocess_summary_csv: str | Path,
     output_root: str | Path,
@@ -81,8 +83,8 @@ def run_acoustic_segmentation_silero(
 ) -> StageResult:
     """Run Silero segmentation for each successfully preprocessed file."""
     preprocess_summary_csv = Path(preprocess_summary_csv)
-    stage_dir = Path(output_root) / "acoustic" / "003_segmentation"
-    folders = ensure_stage_folders(stage_dir)
+    stage_dir = Path(output_root) / "acoustic" / "002_segmentation"
+    folders = ensure_stage_folders(stage_dir, lazy=True)
 
     df = pd.read_csv(preprocess_summary_csv)
     if "segmentation_wav_path" not in df.columns:
@@ -136,6 +138,13 @@ def run_acoustic_segmentation_silero(
                 {
                     "file_name": file_name,
                     "source_file_path": row.get("file_path"),
+                    "source_sha256": row.get("source_sha256"),
+                    "recording_id": row.get("recording_id", row.get("source_sha256")),
+                    "project_name": row.get("project_name"),
+                    "task_name": row.get("task_name"),
+                    "run_id": row.get("run_id"),
+                    "run_created_at_local": row.get("run_created_at_local"),
+                    "run_created_at_utc": row.get("run_created_at_utc"),
                     "segmentation_wav_path": str(wav_path),
                     "segmentation_wav_sha256": sha256_file(wav_path),
                     "frame_csv_path": str(frame_csv),
@@ -200,7 +209,15 @@ def run_acoustic_segmentation_silero(
 
 
 MAIN_SEGMENTATION_SUMMARY_COLUMNS = [
+    "recording_id",
     "file_name",
+    "source_file_path",
+    "source_sha256",
+    "project_name",
+    "task_name",
+    "run_id",
+    "run_created_at_local",
+    "run_created_at_utc",
     "status",
     "method",
     "duration_sec",

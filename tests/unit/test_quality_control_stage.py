@@ -9,8 +9,8 @@ from vslp.acoustic.quality.stage import QualityControlConfig, run_acoustic_quali
 
 def test_quality_control_stage_writes_family_tables(tmp_path: Path):
     out = tmp_path / "project"
-    wav_dir = out / "acoustic" / "002_preprocess" / "artifacts" / "segmentation_wav"
-    seg_tables = out / "acoustic" / "003_segmentation" / "tables"
+    wav_dir = out / "acoustic" / "001_preprocess" / "artifacts" / "segmentation_wav"
+    seg_tables = out / "acoustic" / "002_segmentation" / "tables"
     wav_dir.mkdir(parents=True)
     (seg_tables / "frames").mkdir(parents=True)
     (seg_tables / "segments").mkdir(parents=True)

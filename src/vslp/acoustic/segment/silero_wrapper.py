@@ -341,10 +341,13 @@ def summarize_silero_stage(stage, row=None):
         out.update({
             "file_name": row.get("file_name"),
             "file_path": row.get("file_path"),
-            "ID_norm": row.get("ID_norm"),
-            "Diagnosis": row.get("Diagnosis"),
-            "severity_bin": row.get("severity_bin"),
-            "Recording date": row.get("Recording date"),
+            "source_sha256": row.get("source_sha256"),
+            "recording_id": row.get("recording_id", row.get("source_sha256")),
+            "project_name": row.get("project_name"),
+            "task_name": row.get("task_name"),
+            "run_id": row.get("run_id"),
+            "run_created_at_local": row.get("run_created_at_local"),
+            "run_created_at_utc": row.get("run_created_at_utc"),
         })
 
     return out

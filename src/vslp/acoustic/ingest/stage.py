@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 import pandas as pd
 
+from vslp.acoustic.context import run_context, cleanup_stage
 from vslp.core.io import discover_files_with_duplicate_report
 from vslp.core.project import ensure_stage_folders
 from vslp.core.provenance import python_environment, sha256_file, tool_versions
@@ -14,6 +15,7 @@ from vslp.acoustic.ingest.ffprobe import digest_media_file
 DEFAULT_AUDIO_EXTENSIONS = [".wav", ".mp3", ".mp4", ".m4a", ".ogg", ".flac", ".aac", ".aiff", ".webm", ".mov"]
 
 
+@cleanup_stage
 def run_acoustic_ingest(
     input_path: str | Path,
     output_root: str | Path,
@@ -25,8 +27,9 @@ def run_acoustic_ingest(
     One bad file is reported in the error table and does not stop the batch.
     """
     extensions = extensions or DEFAULT_AUDIO_EXTENSIONS
-    stage_dir = Path(output_root) / "acoustic" / "001_ingest"
-    folders = ensure_stage_folders(stage_dir)
+    stage_dir = Path(output_root) / "acoustic" / "000_ingest"
+    folders = ensure_stage_folders(stage_dir, lazy=True)
+    context = run_context(output_root)
 
     rows: list[dict] = []
     errors: list[dict] = []
@@ -36,6 +39,10 @@ def run_acoustic_ingest(
         try:
             digest = digest_media_file(path, ffprobe_bin=ffprobe_bin)
             digest["sha256"] = sha256_file(path)
+            digest["source_sha256"] = digest["sha256"]
+            digest["recording_id"] = digest["sha256"]
+            digest["source_file_path"] = str(path)
+            digest.update(context)
             digest["ingest_status"] = "ok"
             rows.append(digest)
         except Exception as exc:  # noqa: BLE001 - batch should continue

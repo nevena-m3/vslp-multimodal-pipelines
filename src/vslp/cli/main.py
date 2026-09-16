@@ -12,7 +12,6 @@ import typer
 from vslp.acoustic.features.registry import build_acoustic_feature_registry
 from vslp.acoustic.features.stage import FeatureExtractionConfig, run_acoustic_feature_extraction
 from vslp.acoustic.ingest.stage import run_acoustic_ingest
-from vslp.acoustic.metadata.stage import MetadataConfig, run_acoustic_metadata
 from vslp.acoustic.pipeline.run_preprocess_to_segmentation import run_acoustic_ingest_preprocess_segment
 from vslp.acoustic.preprocess.stage import FilterConfig, PreprocessConfig, run_acoustic_preprocess
 from vslp.acoustic.segment.stage import run_acoustic_segmentation_silero
@@ -52,17 +51,6 @@ def project_init(output_root: Path, project_name: str = "vslp_project"):
     """Create a VSLP project/output directory."""
     paths = initialize_project(output_root=output_root, project_name=project_name)
     typer.echo(f"Created VSLP project: {paths.root}")
-
-
-@acoustic_app.command("metadata")
-def acoustic_metadata(input: Path, output_root: Path, demographics_csv: Path | None = None):
-    """Create a project file index from optional demographics CSV and filename parsing."""
-    cfg = MetadataConfig(demographics_csv=str(demographics_csv) if demographics_csv else None)
-    result = run_acoustic_metadata(input_path=input, output_root=output_root, config=cfg)
-    typer.echo(f"Status: {result.status}")
-    typer.echo(f"File index: {result.summary_table}")
-    typer.echo(f"Report: {result.report_path}")
-    typer.echo(f"Manifest: {result.manifest_path}")
 
 
 @acoustic_app.command("ingest")
@@ -144,6 +132,7 @@ def acoustic_segment_silero(
 def acoustic_run_v1(
     input: Path,
     output_root: Path,
+    task_name: str,
     project_name: str = "vslp_project",
     skip_segmentation: bool = False,
 ):
@@ -152,6 +141,7 @@ def acoustic_run_v1(
         input_path=input,
         output_root=output_root,
         project_name=project_name,
+        task_name=task_name,
         run_segmentation=not skip_segmentation,
     )
     for name, result in results.items():
@@ -192,14 +182,12 @@ def acoustic_extract_features(
     segmentation_summary_csv: Path,
     output_root: Path,
     minimum_pause_duration_sec: float = 0.30,
-    metadata_csv: Path | None = None,
     acoustic_region_policy: str = "speech_only",
     computation_mode: str = "validated_default",
 ):
     """Extract acoustic features from region-aware segmentation outputs."""
     cfg = FeatureExtractionConfig(
         minimum_pause_duration_sec=minimum_pause_duration_sec,
-        metadata_csv=str(metadata_csv) if metadata_csv else None,
         acoustic_region_policy=acoustic_region_policy,
         computation_mode=computation_mode,
     )

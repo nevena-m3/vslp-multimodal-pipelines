@@ -16,18 +16,18 @@ TaskSlug_YYYYMMDD_HHMMSS/
 |-- logs/
 |   `-- setup.log
 `-- acoustic/
-    |-- 001_ingest/
-    |-- 002_preprocess/
-    |-- 003_segmentation/
+    |-- 000_ingest/
+    |-- 001_preprocess/
+    |-- 002_segmentation/
     |-- 003_quality_control/
     |-- 004_features/
-    |-- 007_run_summary/
+    |-- 005_run_summary/
     `-- feature_handoff/
         |-- main/
         `-- supplementary/
 ```
 
-The root manifest stores the project name, human-readable task, safe task slug, run ID, local and exact UTC creation times, resolved paths, versions, and acoustic modality. Existing run names receive `_02`, `_03`, etc., and are never reused. The setup config and log record the project, task, source folder, and run folder. Stage folders appear as stages run. The acoustic GUI does not create `kinematics/`, `ml/`, or `feature_analysis/` during Setup. Clinical metadata is joined in Feature Analysis.
+The root manifest stores the project name, human-readable task, safe task slug, run ID, local and exact UTC creation times, resolved paths, versions, and acoustic modality. Existing run names receive `_02`, `_03`, etc., and are never reused. The setup config and log record the project, task, source folder, and run folder. Stage folders appear as stages run. The acoustic GUI does not create `kinematics/`, `ml/`, or `feature_analysis/` during Setup. Clinical metadata is joined in Feature Analysis. Recording IDs are stable original-source SHA-256 values; source filename remains a separate human-readable field. The Acoustic GUI does not read demographics or clinical labels.
 
 Kinematics uses its own component workflow and may write a component manifest under `kinematics/` in a workspace chosen for that GUI.
 
