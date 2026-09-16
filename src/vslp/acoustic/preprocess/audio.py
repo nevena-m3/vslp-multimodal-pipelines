@@ -1,176 +1,302 @@
-"""Audio decoding and preprocessing primitives.
+"""Deterministic audio decoding and canonical preprocessing primitives.
 
-Policy: never modify source files. All transforms return arrays and metadata; stage code writes outputs.
+This module intentionally contains only transforms that are part of the canonical
+preprocessing contract. Artifact/QC measurements belong to the Quality Control stage.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, asdict
-from pathlib import Path
+from dataclasses import asdict, dataclass
+import math
 import os
+from pathlib import Path
 import subprocess
 import tempfile
+
 import numpy as np
 import soundfile as sf
-from scipy import signal
 
 
 @dataclass(frozen=True)
-class AudioQualitySummary:
-    duration_sec: float
-    sample_rate_hz: int
-    n_samples: int
-    n_channels: int
-    dc_offset: float
-    peak_abs: float
-    rms: float
-    clipping_fraction_near_full_scale: float
-    clipping_run_count: int
-    snr_db_estimate: float | None
-    powerline_50hz_flag: bool
-    powerline_60hz_flag: bool
+class ChannelResolution:
+    """Auditable decision for converting decoded audio to one canonical channel."""
 
-    def to_dict(self):
+    status: str
+    selected_channel: int | None
+    reason: str
+    n_channels: int
+    per_channel_rms: tuple[float, ...]
+    per_channel_peak_abs: tuple[float, ...]
+    correlation_to_reference: tuple[float | None, ...]
+    gain_difference_db_to_reference: tuple[float | None, ...]
+
+    def to_dict(self) -> dict:
         return asdict(self)
 
 
-def decode_audio_ffmpeg(file_path: str | Path, target_sr: int | None = None, mono: bool = True, ffmpeg_bin: str = "ffmpeg") -> tuple[np.ndarray, int]:
-    """Decode arbitrary audio/video media to float waveform using ffmpeg."""
+def _validate_decoded_audio(x: np.ndarray, sr: int, *, file_path: Path) -> None:
+    if int(sr) <= 0:
+        raise ValueError(f"Decoded audio has invalid sample rate {sr}: {file_path}")
+    if x.ndim != 2:
+        raise ValueError(f"Decoded audio must be frames x channels, got shape {x.shape}: {file_path}")
+    if x.shape[0] == 0 or x.shape[1] == 0:
+        raise ValueError(f"Decoded audio is empty: {file_path}")
+    if not np.isfinite(x).all():
+        raise ValueError(f"Decoded audio contains NaN or infinite samples: {file_path}")
+
+
+def decode_audio_ffmpeg(
+    file_path: str | Path,
+    target_sr: int | None = None,
+    mono: bool = False,
+    ffmpeg_bin: str = "ffmpeg",
+    audio_stream_selector: str = "0:a:0",
+) -> tuple[np.ndarray, int]:
+    """Decode one deterministic audio stream to float32 PCM without amplitude clipping.
+
+    The canonical preprocessing stage calls this with ``target_sr=None`` and
+    ``mono=False`` so the native sample rate and channel structure are preserved
+    until channel resolution is performed explicitly.
+
+    ``target_sr`` and ``mono`` remain available for algorithm-specific callers, but
+    they are not part of canonical preprocessing.
+    """
     file_path = Path(file_path)
+    if not file_path.is_file():
+        raise FileNotFoundError(f"Source media file does not exist: {file_path}")
+
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-        tmp_wav = tmp.name
+        tmp_wav = Path(tmp.name)
+
     try:
-        cmd = [str(ffmpeg_bin), "-y", "-i", str(file_path), "-vn"]
+        cmd = [
+            str(ffmpeg_bin),
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(file_path),
+            "-map",
+            str(audio_stream_selector),
+            "-vn",
+        ]
         if mono:
             cmd += ["-ac", "1"]
         if target_sr is not None:
-            cmd += ["-ar", str(target_sr)]
-        cmd += ["-f", "wav", tmp_wav]
-        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
-        if p.returncode != 0:
-            raise RuntimeError(f"ffmpeg failed for {file_path}: {p.stderr}")
-        x, sr = sf.read(tmp_wav, always_2d=False)
-        x = np.asarray(x, dtype=np.float32)
-        x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
-        return np.clip(x, -1.0, 1.0), int(sr)
+            if int(target_sr) <= 0:
+                raise ValueError("target_sr must be a positive integer")
+            cmd += ["-ar", str(int(target_sr))]
+        cmd += ["-c:a", "pcm_f32le", "-f", "wav", str(tmp_wav)]
+
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            message = proc.stderr.strip() or "unknown ffmpeg error"
+            raise RuntimeError(f"ffmpeg failed for {file_path}: {message}")
+
+        x2d, sr = sf.read(tmp_wav, dtype="float32", always_2d=True)
+        x2d = np.asarray(x2d, dtype=np.float32)
+        _validate_decoded_audio(x2d, int(sr), file_path=file_path)
+        if mono:
+            return x2d[:, 0].copy(), int(sr)
+        return x2d, int(sr)
     finally:
-        if os.path.exists(tmp_wav):
-            try:
-                os.remove(tmp_wav)
-            except OSError:
-                pass
+        try:
+            os.remove(tmp_wav)
+        except OSError:
+            pass
 
 
 def dc_offset_remove(x: np.ndarray) -> np.ndarray:
+    """Remove only the constant (zero-frequency) offset from a mono waveform."""
     x = np.asarray(x, dtype=np.float32)
-    return x - np.nanmean(x, axis=0)
+    if x.ndim != 1:
+        raise ValueError(f"DC-offset removal requires mono 1-D audio, got shape {x.shape}")
+    if x.size == 0:
+        raise ValueError("DC-offset removal received empty audio")
+    if not np.isfinite(x).all():
+        raise ValueError("DC-offset removal received NaN or infinite samples")
+    offset = float(np.mean(x, dtype=np.float64))
+    return (x.astype(np.float64) - offset).astype(np.float32)
 
 
-def peak_normalize(x: np.ndarray, target_peak: float = 0.95) -> tuple[np.ndarray, dict]:
-    """Peak-normalize a waveform without changing silent files.
-
-    Normalization is optional because it can alter amplitude/intensity features.
-    It is provided mainly for controlled ML experiments where scale normalization
-    is explicitly desired and documented.
-    """
+def apply_dc_offset_policy(
+    x: np.ndarray,
+    *,
+    remove_dc_offset: bool,
+) -> tuple[np.ndarray, float, float]:
+    """Apply the user-selected DC policy without any other waveform transform."""
     x = np.asarray(x, dtype=np.float32)
-    peak = float(np.max(np.abs(x))) if x.size else 0.0
-    target_peak = float(target_peak)
-    if peak <= 0 or not np.isfinite(peak):
-        return x, {"normalization_applied": False, "normalization_reason": "silent_or_invalid_peak", "original_peak_abs": peak, "target_peak_abs": target_peak, "gain": 1.0}
-    if target_peak <= 0 or target_peak > 1.0:
-        raise ValueError("target_peak must be in (0, 1]")
-    gain = target_peak / peak
-    y = np.clip(x * gain, -1.0, 1.0).astype(np.float32)
-    return y, {"normalization_applied": True, "normalization_reason": "peak_normalization", "original_peak_abs": peak, "target_peak_abs": target_peak, "gain": float(gain)}
+    if x.ndim != 1 or x.size == 0:
+        raise ValueError(f"DC policy requires non-empty mono audio, got shape {x.shape}")
+    if not np.isfinite(x).all():
+        raise ValueError("DC policy received NaN or infinite samples")
+
+    before = float(np.mean(x, dtype=np.float64))
+    if remove_dc_offset:
+        y = dc_offset_remove(x)
+    else:
+        y = x.copy()
+    after = float(np.mean(y, dtype=np.float64))
+    return y, before, after
 
 
-def choose_best_mono_channel(x: np.ndarray) -> tuple[np.ndarray, dict]:
-    """Select mono channel.
-
-    If stereo/multichannel, choose the channel with the best proxy SNR: highest RMS
-    among non-clipped channels. This avoids destructive averaging when one channel is bad.
-    """
-    x = np.asarray(x, dtype=np.float32)
-    if x.ndim == 1:
-        return x, {"stereo_policy": "already_mono", "selected_channel": 0}
-    metrics = []
-    for ch in range(x.shape[1]):
-        c = x[:, ch]
-        rms = float(np.sqrt(np.mean(c**2))) if len(c) else 0.0
-        clip_frac = float(np.mean(np.abs(c) >= 0.98)) if len(c) else 1.0
-        score = rms - 10.0 * clip_frac
-        metrics.append((score, ch, rms, clip_frac))
-    score, ch, rms, clip_frac = max(metrics, key=lambda t: t[0])
-    return x[:, ch], {"stereo_policy": "best_channel_by_rms_clip_penalty", "selected_channel": int(ch), "selected_channel_rms": rms, "selected_channel_clip_fraction": clip_frac}
+def _rms(x: np.ndarray) -> float:
+    return float(np.sqrt(np.mean(np.square(x, dtype=np.float64), dtype=np.float64)))
 
 
-def count_clipping_runs(x: np.ndarray, threshold: float = 0.999, min_run: int = 3) -> int:
-    mask = np.abs(np.asarray(x)) >= threshold
-    if not mask.any():
-        return 0
-    padded = np.concatenate([[False], mask, [False]])
-    changes = np.diff(padded.astype(int))
-    starts = np.where(changes == 1)[0]
-    ends = np.where(changes == -1)[0]
-    return int(np.sum((ends - starts) >= min_run))
-
-
-def estimate_snr_db_low_energy(x: np.ndarray, frame_sec: float = 0.03, sr: int = 16000, noise_quantile: float = 0.1) -> float | None:
-    """Estimate SNR using low-energy frames as noise floor.
-
-    This is an estimated SNR, not reference SNR. Use for QC only.
-    """
-    x = np.asarray(x, dtype=np.float32)
-    frame_len = max(1, int(frame_sec * sr))
-    n_frames = len(x) // frame_len
-    if n_frames < 3:
+def _centered_correlation(a: np.ndarray, b: np.ndarray) -> float | None:
+    a64 = np.asarray(a, dtype=np.float64)
+    b64 = np.asarray(b, dtype=np.float64)
+    ac = a64 - np.mean(a64)
+    bc = b64 - np.mean(b64)
+    denom = float(np.linalg.norm(ac) * np.linalg.norm(bc))
+    if not math.isfinite(denom) or denom <= np.finfo(np.float64).tiny:
         return None
-    frames = x[: n_frames * frame_len].reshape(n_frames, frame_len)
-    power = np.mean(frames**2, axis=1) + 1e-12
-    noise = float(np.quantile(power, noise_quantile))
-    signal_power = float(np.mean(power))
-    if noise <= 0 or signal_power <= noise:
+    value = float(np.dot(ac, bc) / denom)
+    return float(np.clip(value, -1.0, 1.0))
+
+
+def _gain_difference_db(rms_value: float, rms_reference: float) -> float | None:
+    if rms_value <= 0.0 or rms_reference <= 0.0:
         return None
-    return float(10 * np.log10((signal_power - noise) / noise))
+    return float(20.0 * np.log10(rms_value / rms_reference))
 
 
-def detect_powerline_interference(x: np.ndarray, sr: int, base_freqs: tuple[int, int] = (50, 60), harmonic_max_hz: int = 300, prominence_db: float = 10.0) -> dict[str, bool]:
-    """Flag likely 50/60 Hz powerline energy using Welch PSD local prominence."""
+def resolve_mono_channel(
+    x: np.ndarray,
+    *,
+    duplicate_correlation_min: float = 0.999,
+    duplicate_gain_difference_db_max: float = 0.10,
+    silent_channel_rms_max: float = 1e-6,
+) -> ChannelResolution:
+    """Resolve multichannel audio conservatively.
+
+    Rules
+    -----
+    - mono: use channel 0;
+    - all channels effectively silent: use channel 0 deterministically;
+    - exactly one non-silent channel: use it;
+    - multiple non-silent channels: select the first only when they are effectively
+      duplicate channels under strict correlation and gain criteria;
+    - otherwise: return ``needs_channel_review`` and do not choose a channel.
+
+    The thresholds are engineering duplicate-channel criteria, not clinical or
+    physiological thresholds.
+    """
     x = np.asarray(x, dtype=np.float32)
-    if len(x) < sr:
-        return {"powerline_50hz_flag": False, "powerline_60hz_flag": False}
-    freqs, psd = signal.welch(x, fs=sr, nperseg=min(len(x), 4096))
-    psd_db = 10 * np.log10(psd + 1e-20)
-    flags = {}
-    for base in base_freqs:
-        hit = False
-        for f0 in range(base, harmonic_max_hz + 1, base):
-            idx = np.argmin(np.abs(freqs - f0))
-            local = (freqs >= f0 - 5) & (freqs <= f0 + 5)
-            if local.sum() > 3 and psd_db[idx] - np.median(psd_db[local]) > prominence_db:
-                hit = True
-                break
-        flags[f"powerline_{base}hz_flag"] = bool(hit)
-    return flags
+    if x.ndim != 2 or x.shape[1] < 1:
+        raise ValueError(f"Channel resolution requires frames x channels audio, got {x.shape}")
+    if x.shape[0] == 0:
+        raise ValueError("Channel resolution received empty audio")
+    if not np.isfinite(x).all():
+        raise ValueError("Channel resolution received NaN or infinite samples")
+    if not (0.0 < duplicate_correlation_min <= 1.0):
+        raise ValueError("duplicate_correlation_min must be in (0, 1]")
+    if duplicate_gain_difference_db_max < 0.0:
+        raise ValueError("duplicate_gain_difference_db_max must be >= 0")
+    if silent_channel_rms_max < 0.0:
+        raise ValueError("silent_channel_rms_max must be >= 0")
 
+    n_channels = int(x.shape[1])
+    rms = tuple(_rms(x[:, ch]) for ch in range(n_channels))
+    peaks = tuple(float(np.max(np.abs(x[:, ch]))) for ch in range(n_channels))
 
-def summarize_audio_quality(x: np.ndarray, sr: int) -> AudioQualitySummary:
-    x = np.asarray(x, dtype=np.float32)
-    n_channels = 1 if x.ndim == 1 else x.shape[1]
-    mono = x if x.ndim == 1 else np.mean(x, axis=1)
-    power_flags = detect_powerline_interference(mono, sr)
-    return AudioQualitySummary(
-        duration_sec=float(len(mono) / sr) if sr > 0 else float("nan"),
-        sample_rate_hz=int(sr),
-        n_samples=int(len(mono)),
-        n_channels=int(n_channels),
-        dc_offset=float(np.mean(mono)) if len(mono) else float("nan"),
-        peak_abs=float(np.max(np.abs(mono))) if len(mono) else float("nan"),
-        rms=float(np.sqrt(np.mean(mono**2))) if len(mono) else float("nan"),
-        clipping_fraction_near_full_scale=float(np.mean(np.abs(mono) >= 0.98)) if len(mono) else float("nan"),
-        clipping_run_count=count_clipping_runs(mono),
-        snr_db_estimate=estimate_snr_db_low_energy(mono, sr=sr),
-        powerline_50hz_flag=power_flags["powerline_50hz_flag"],
-        powerline_60hz_flag=power_flags["powerline_60hz_flag"],
+    if n_channels == 1:
+        return ChannelResolution(
+            status="resolved_mono",
+            selected_channel=0,
+            reason="source_is_mono",
+            n_channels=1,
+            per_channel_rms=rms,
+            per_channel_peak_abs=peaks,
+            correlation_to_reference=(1.0,),
+            gain_difference_db_to_reference=(0.0,),
+        )
+
+    usable = [ch for ch, value in enumerate(rms) if value > silent_channel_rms_max]
+    if not usable:
+        return ChannelResolution(
+            status="resolved_all_channels_effectively_silent",
+            selected_channel=0,
+            reason=f"all_channel_rms<=silent_threshold({silent_channel_rms_max:g})",
+            n_channels=n_channels,
+            per_channel_rms=rms,
+            per_channel_peak_abs=peaks,
+            correlation_to_reference=tuple(1.0 if ch == 0 else None for ch in range(n_channels)),
+            gain_difference_db_to_reference=tuple(0.0 if ch == 0 else None for ch in range(n_channels)),
+        )
+
+    if len(usable) == 1:
+        selected = int(usable[0])
+        return ChannelResolution(
+            status="resolved_single_usable_channel",
+            selected_channel=selected,
+            reason="all_other_channels_effectively_silent",
+            n_channels=n_channels,
+            per_channel_rms=rms,
+            per_channel_peak_abs=peaks,
+            correlation_to_reference=tuple(1.0 if ch == selected else None for ch in range(n_channels)),
+            gain_difference_db_to_reference=tuple(0.0 if ch == selected else None for ch in range(n_channels)),
+        )
+
+    reference = int(usable[0])
+    correlations: list[float | None] = []
+    gains: list[float | None] = []
+    duplicate = True
+    for ch in range(n_channels):
+        if ch == reference:
+            correlations.append(1.0)
+            gains.append(0.0)
+            continue
+        if ch not in usable:
+            correlations.append(None)
+            gains.append(None)
+            continue
+        corr = _centered_correlation(x[:, reference], x[:, ch])
+        gain_db = _gain_difference_db(rms[ch], rms[reference])
+        correlations.append(corr)
+        gains.append(gain_db)
+        if (
+            corr is None
+            or corr < duplicate_correlation_min
+            or gain_db is None
+            or abs(gain_db) > duplicate_gain_difference_db_max
+        ):
+            duplicate = False
+
+    if duplicate:
+        return ChannelResolution(
+            status="resolved_duplicate_multichannel",
+            selected_channel=reference,
+            reason=(
+                "non_silent_channels_are_effectively_duplicate;"
+                f"corr>={duplicate_correlation_min:g};"
+                f"|gain_db|<={duplicate_gain_difference_db_max:g}"
+            ),
+            n_channels=n_channels,
+            per_channel_rms=rms,
+            per_channel_peak_abs=peaks,
+            correlation_to_reference=tuple(correlations),
+            gain_difference_db_to_reference=tuple(gains),
+        )
+
+    return ChannelResolution(
+        status="needs_channel_review",
+        selected_channel=None,
+        reason=(
+            "multiple_non_silent_channels_are_not_equivalent_under_duplicate_channel_criteria"
+        ),
+        n_channels=n_channels,
+        per_channel_rms=rms,
+        per_channel_peak_abs=peaks,
+        correlation_to_reference=tuple(correlations),
+        gain_difference_db_to_reference=tuple(gains),
     )

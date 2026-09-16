@@ -57,6 +57,8 @@ def digest_media_file(path: str | Path, ffprobe_bin: str = "ffprobe") -> dict[st
         "bit_rate": as_int(fmt.get("bit_rate")),
         "n_streams": len(streams),
         "n_audio_streams": len(audio_streams),
+        "audio_stream_index": as_int(first_audio.get("index")),
+        "audio_stream_selector": "0:a:0" if audio_streams else None,
         "audio_codec": first_audio.get("codec_name"),
         "audio_codec_long_name": first_audio.get("codec_long_name"),
         "sample_rate_hz": as_int(first_audio.get("sample_rate")),

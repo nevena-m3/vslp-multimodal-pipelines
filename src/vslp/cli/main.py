@@ -13,7 +13,7 @@ from vslp.acoustic.features.registry import build_acoustic_feature_registry
 from vslp.acoustic.features.stage import FeatureExtractionConfig, run_acoustic_feature_extraction
 from vslp.acoustic.ingest.stage import run_acoustic_ingest
 from vslp.acoustic.pipeline.run_preprocess_to_segmentation import run_acoustic_ingest_preprocess_segment
-from vslp.acoustic.preprocess.stage import FilterConfig, PreprocessConfig, run_acoustic_preprocess
+from vslp.acoustic.preprocess.stage import PreprocessConfig, run_acoustic_preprocess
 from vslp.acoustic.segment.stage import run_acoustic_segmentation_silero
 from vslp.acoustic.quality.stage import QualityControlConfig, run_acoustic_quality_control
 from vslp.core.project import initialize_project
@@ -65,34 +65,27 @@ def acoustic_ingest(input: Path, output_root: Path, ffprobe_bin: str = "ffprobe"
 
 @acoustic_app.command("preprocess")
 def acoustic_preprocess(
-    input: Path,
+    ingest_summary_csv: Path,
     output_root: Path,
-    segmentation_sample_rate_hz: int = 16000,
-    feature_sample_rate_hz: int | None = None,
     ffmpeg_bin: str = "ffmpeg",
-    filter_kind: str = "none",
-    low_hz: float | None = None,
-    high_hz: float | None = None,
-    notch_hz: float | None = None,
+    remove_dc_offset: bool = typer.Option(
+        True,
+        "--remove-dc-offset/--keep-dc-offset",
+    ),
 ):
-    """Create canonical WAVs and QC tables/reports."""
-    filter_cfg = FilterConfig(
-        enabled=filter_kind != "none",
-        kind=filter_kind,
-        low_hz=low_hz,
-        high_hz=high_hz,
-        notch_hz=notch_hz,
-    )
+    """Create native-rate mono FLOAT32 canonical WAVs from accepted Ingest records."""
     cfg = PreprocessConfig(
-        segmentation_sample_rate_hz=segmentation_sample_rate_hz,
-        feature_sample_rate_hz=feature_sample_rate_hz,
-        filter=filter_cfg,
         ffmpeg_bin=ffmpeg_bin,
+        remove_dc_offset=remove_dc_offset,
     )
-    result = run_acoustic_preprocess(input_path=input, output_root=output_root, config=cfg)
+    result = run_acoustic_preprocess(
+        ingest_summary_csv=ingest_summary_csv,
+        output_root=output_root,
+        config=cfg,
+    )
     typer.echo(f"Status: {result.status}")
     typer.echo(f"Summary: {result.summary_table}")
-    typer.echo(f"Errors: {result.error_table}")
+    typer.echo(f"Issues: {result.error_table}")
     typer.echo(f"Report: {result.report_path}")
     typer.echo(f"Manifest: {result.manifest_path}")
 

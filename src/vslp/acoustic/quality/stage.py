@@ -191,11 +191,15 @@ def _iqr(x) -> float:
 
 
 def _read_audio(path: Path) -> tuple[np.ndarray, int]:
+    """Read canonical preprocessing audio without silently transforming it."""
     x, sr = sf.read(path, dtype="float32", always_2d=False)
     x = np.asarray(x, dtype=np.float32)
-    if x.ndim == 2:
-        x = np.mean(x, axis=1).astype(np.float32)
-    x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+    if x.ndim != 1:
+        raise ValueError(f"Canonical QC audio must be mono; got shape {x.shape}: {path}")
+    if x.size == 0:
+        raise ValueError(f"Canonical QC audio is empty: {path}")
+    if not np.isfinite(x).all():
+        raise ValueError(f"Canonical QC audio contains NaN/Inf samples: {path}")
     return x, int(sr)
 
 
@@ -480,20 +484,52 @@ def _compute_temporal(frames: pd.DataFrame, x: np.ndarray, sr: int, cfg: Quality
     return out
 
 
-def _compute_one(row: pd.Series, cfg: QualityControlConfig, families: list[str]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    file_name=str(row.get("file_name", ""))
-    wav=Path(str(row.get("segmentation_wav_path", "")))
-    frames_path=Path(str(row.get("frame_csv_path", "")))
-    segments_path=Path(str(row.get("segments_csv_path", "")))
-    out={"file_name":file_name, "segmentation_wav_path":str(wav), "frame_csv_path":str(frames_path), "segments_csv_path":str(segments_path)}
-    out.update({key: row.get(key) for key in ("recording_id", "source_file_path", "source_sha256", "project_name", "task_name", "run_id", "run_created_at_local", "run_created_at_utc")})
-    status_rows=[]
-    if not wav.exists(): raise FileNotFoundError(f"Missing segmentation WAV: {wav}")
-    if not frames_path.exists(): raise FileNotFoundError(f"Missing frame CSV: {frames_path}")
-    if not segments_path.exists(): raise FileNotFoundError(f"Missing segments CSV: {segments_path}")
-    x,sr=_read_audio(wav); frames=pd.read_csv(frames_path); segments=pd.read_csv(segments_path)
-    out["sample_rate_hz"]=sr; out["duration_sec"]=float(len(x)/sr) if sr else np.nan; out["segmentation_wav_sha256"]=sha256_file(wav)
-    fam_funcs={
+def _compute_one(
+    row: pd.Series,
+    cfg: QualityControlConfig,
+    families: list[str],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    file_name = str(row.get("file_name", ""))
+    wav = Path(str(row.get("analysis_wav_path", "")))
+    frames_path = Path(str(row.get("frame_csv_path", "")))
+    segments_path = Path(str(row.get("segments_csv_path", "")))
+    out = {
+        "file_name": file_name,
+        "analysis_wav_path": str(wav),
+        "frame_csv_path": str(frames_path),
+        "segments_csv_path": str(segments_path),
+    }
+    out.update(
+        {
+            key: row.get(key)
+            for key in (
+                "recording_id",
+                "source_file_path",
+                "source_sha256",
+                "project_name",
+                "task_name",
+                "run_id",
+                "run_created_at_local",
+                "run_created_at_utc",
+            )
+        }
+    )
+    status_rows = []
+    if not wav.exists():
+        raise FileNotFoundError(f"Missing canonical analysis WAV: {wav}")
+    if not frames_path.exists():
+        raise FileNotFoundError(f"Missing frame CSV: {frames_path}")
+    if not segments_path.exists():
+        raise FileNotFoundError(f"Missing segments CSV: {segments_path}")
+
+    x, sr = _read_audio(wav)
+    frames = pd.read_csv(frames_path)
+    segments = pd.read_csv(segments_path)
+    out["sample_rate_hz"] = sr
+    out["duration_sec"] = float(len(x) / sr) if sr else np.nan
+    out["analysis_wav_sha256"] = sha256_file(wav)
+
+    fam_funcs = {
         "additive_interference": lambda: _compute_additive(frames, segments, x, sr, cfg),
         "gain_dynamics": lambda: _compute_gain(frames, segments),
         "reverberation_echo": lambda: _compute_reverb(frames, segments),
@@ -504,16 +540,45 @@ def _compute_one(row: pd.Series, cfg: QualityControlConfig, families: list[str])
     for fam in QC_FAMILIES:
         if fam in families:
             try:
-                vals=fam_funcs[fam](); out.update(vals); fam_status=vals.get(f"{fam.split('_')[0] if False else ''}", "")
+                vals = fam_funcs[fam]()
+                out.update(vals)
                 status_col = next((k for k in vals if k.endswith("_status")), None)
                 flag_col = next((k for k in vals if k.endswith("_flags")), None)
-                status_rows.append({"file_name":file_name,"family":fam,"family_label":QC_FAMILIES[fam]["label"],"status":vals.get(status_col,"computed"),"flags":vals.get(flag_col,"")})
+                status_rows.append(
+                    {
+                        "file_name": file_name,
+                        "family": fam,
+                        "family_label": QC_FAMILIES[fam]["label"],
+                        "status": vals.get(status_col, "computed"),
+                        "flags": vals.get(flag_col, ""),
+                    }
+                )
             except Exception as exc:
-                status_rows.append({"file_name":file_name,"family":fam,"family_label":QC_FAMILIES[fam]["label"],"status":"failed","flags":str(exc)})
+                status_rows.append(
+                    {
+                        "file_name": file_name,
+                        "family": fam,
+                        "family_label": QC_FAMILIES[fam]["label"],
+                        "status": "failed",
+                        "flags": str(exc),
+                    }
+                )
         else:
-            for k in FAMILY_FEATURES[fam]:
-                out[k]=np.nan if not k.endswith("status") and not k.endswith("flags") else ("not_selected" if k.endswith("status") else "")
-            status_rows.append({"file_name":file_name,"family":fam,"family_label":QC_FAMILIES[fam]["label"],"status":"not_selected","flags":""})
+            for key in FAMILY_FEATURES[fam]:
+                out[key] = (
+                    np.nan
+                    if not key.endswith("status") and not key.endswith("flags")
+                    else ("not_selected" if key.endswith("status") else "")
+                )
+            status_rows.append(
+                {
+                    "file_name": file_name,
+                    "family": fam,
+                    "family_label": QC_FAMILIES[fam]["label"],
+                    "status": "not_selected",
+                    "flags": "",
+                }
+            )
     return out, status_rows
 
 
@@ -671,7 +736,7 @@ def run_acoustic_quality_control(segmentation_summary_csv: str | Path, output_ro
     pd.DataFrame(errors).to_csv(errors_csv,index=False)
     fam_summary=status_df.groupby(["family","family_label","status"]).size().reset_index(name="count") if not status_df.empty else pd.DataFrame(columns=["family","family_label","status","count"])
     fam_summary.to_csv(family_csv,index=False)
-    main_cols=["recording_id","file_name","source_file_path","source_sha256","project_name","task_name","run_id","run_created_at_local","run_created_at_utc","quality_review_level","quality_n_warnings","quality_warning_families","duration_sec","sample_rate_hz","qadd_pause_rms_db_median","qadd_speech_pause_level_diff_db","qgain_speech_rms_db_std","qrev_post_offset_tail_db_above_floor","qchan_speech_centroid_hz","qdist_near_clipped_sample_fraction","qtemp_waveform_continuity_break_score"]
+    main_cols=["recording_id","file_name","source_file_path","source_sha256","project_name","task_name","run_id","run_created_at_local","run_created_at_utc","analysis_wav_path","analysis_wav_sha256","quality_review_level","quality_n_warnings","quality_warning_families","duration_sec","sample_rate_hz","qadd_pause_rms_db_median","qadd_speech_pause_level_diff_db","qgain_speech_rms_db_std","qrev_post_offset_tail_db_above_floor","qchan_speech_centroid_hz","qdist_near_clipped_sample_fraction","qtemp_waveform_continuity_break_score"]
     for c in main_cols:
         if c not in feat_df.columns: feat_df[c]=np.nan
     feat_df[main_cols].to_csv(main_csv,index=False)
