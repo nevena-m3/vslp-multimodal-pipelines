@@ -10,19 +10,18 @@ from scipy import signal
 
 
 def read_mono_audio(path: Path) -> tuple[np.ndarray, int]:
+    """Read a canonical waveform without silently transforming it."""
     x, sr = sf.read(path, always_2d=False, dtype="float32")
     x = np.asarray(x, dtype=np.float32)
-    if x.ndim == 2:
-        x = np.mean(x, axis=1).astype(np.float32)
-    x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+    if x.ndim != 1:
+        raise ValueError(
+            f"Canonical feature audio must be mono; got shape {x.shape} for {path}"
+        )
     if x.size == 0:
         return x, int(sr)
-    x = x - float(np.mean(x))
-    peak = float(np.max(np.abs(x)))
-    if peak > 1.0:
-        x = x / peak
-    return x.astype(np.float32), int(sr)
-
+    if not np.isfinite(x).all():
+        raise ValueError(f"Canonical feature audio contains NaN/Inf samples: {path}")
+    return x, int(sr)
 
 def frame_signal(x: np.ndarray, sr: int, frame_ms: float = 40.0, hop_ms: float = 10.0) -> tuple[np.ndarray, int, int]:
     frame_len = max(1, int(round(sr * frame_ms / 1000.0)))

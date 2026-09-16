@@ -197,7 +197,15 @@ def build_silero_stage_from_audio(
         info, audio, frame_df, segments_df, boundaries_df
     """
     x = np.asarray(x, dtype=np.float32)
-    x = np.clip(x, -1.0, 1.0)
+    if x.ndim != 1 or x.size == 0:
+        raise ValueError(f"Silero VAD requires non-empty mono audio, got shape {x.shape}")
+    if not np.isfinite(x).all():
+        raise ValueError("Silero VAD input contains NaN or infinite samples")
+    if float(np.max(np.abs(x))) > 1.0 + 1e-6:
+        raise ValueError(
+            "Silero VAD input exceeds normalized floating-point range. "
+            "Model-specific range handling must be explicit in the segmentation stage."
+        )
 
     if sr not in {8000, 16000}:
         raise ValueError(f"Silero VAD usually expects 8000 or 16000 Hz, got {sr}")

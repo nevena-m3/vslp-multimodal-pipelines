@@ -64,7 +64,7 @@ from vslp.acoustic.features.stage import (
 )
 from vslp.acoustic.ingest.stage import run_acoustic_ingest
 from vslp.acoustic.run_setup import initialize_acoustic_run
-from vslp.acoustic.preprocess.stage import FilterConfig, PreprocessConfig, run_acoustic_preprocess
+from vslp.acoustic.preprocess.stage import PreprocessConfig, run_acoustic_preprocess
 from vslp.acoustic.segment.stage import run_acoustic_segmentation_silero
 from vslp.acoustic.quality.stage import (
     QC_FAMILIES,
@@ -437,93 +437,23 @@ class AcousticPipelineWindow(QMainWindow):
     def _build_preprocess_tab(self) -> QWidget:
         container = QWidget()
         layout = QVBoxLayout(container)
+        layout.setSpacing(12)
 
-        group = QGroupBox("Preprocessing")
-        form = QFormLayout(group)
-
+        options = QGroupBox("Preprocessing")
+        options_layout = QVBoxLayout(options)
         self.remove_dc_check = QCheckBox("Remove DC offset")
         self.remove_dc_check.setChecked(True)
-        self._set_tooltip(self.remove_dc_check, "Recommended default. Removes constant waveform offset before segmentation and feature extraction.")
+        options_layout.addWidget(self.remove_dc_check)
+        layout.addWidget(options)
 
-        self.normalize_check = QCheckBox("Peak-normalize waveform")
-        self.normalize_check.setChecked(False)
-        self._set_tooltip(self.normalize_check, "Off by default. Normalization can alter amplitude/intensity features; enable only when needed for a documented ML experiment.")
-        self.normalize_target_spin = QDoubleSpinBox()
-        self.normalize_target_spin.setDecimals(2)
-        self.normalize_target_spin.setRange(0.10, 1.00)
-        self.normalize_target_spin.setSingleStep(0.05)
-        self.normalize_target_spin.setValue(0.95)
-        self.normalize_target_spin.setEnabled(False)
-        self.normalize_check.stateChanged.connect(lambda *_: self.normalize_target_spin.setEnabled(self.normalize_check.isChecked()))
-
-        self.make_segmentation_wav_check = QCheckBox("Create segmentation WAV")
-        self.make_segmentation_wav_check.setChecked(True)
-        self._set_tooltip(self.make_segmentation_wav_check, "Keep enabled when using Silero segmentation. Default sample rate is 16 kHz.")
-        self.seg_sr_spin = QSpinBox()
-        self.seg_sr_spin.setRange(8000, 48000)
-        self.seg_sr_spin.setValue(16000)
-
-        self.make_feature_wav_check = QCheckBox("Create feature WAV")
-        self.make_feature_wav_check.setChecked(True)
-        self._set_tooltip(self.make_feature_wav_check, "Feature WAVs are used by downstream acoustic feature extraction.")
-        self.feature_resample_check = QCheckBox("Resample feature WAV")
-        self.feature_resample_check.setChecked(False)
-        self._set_tooltip(self.feature_resample_check, "Off by default. Leave feature WAV at original sample rate unless a study-specific reason requires resampling.")
-        self.feature_sr_spin = QSpinBox()
-        self.feature_sr_spin.setRange(8000, 96000)
-        self.feature_sr_spin.setValue(16000)
-        self.feature_sr_spin.setEnabled(False)
-        self.feature_resample_check.stateChanged.connect(lambda *_: self.feature_sr_spin.setEnabled(self.feature_resample_check.isChecked()))
-
-        form.addRow("DC offset", self.remove_dc_check)
-        form.addRow("Normalize", self.normalize_check)
-        form.addRow("Target peak", self.normalize_target_spin)
-        form.addRow("Segmentation WAV", self.make_segmentation_wav_check)
-        form.addRow("Segmentation sample rate", self.seg_sr_spin)
-        form.addRow("Feature WAV", self.make_feature_wav_check)
-        form.addRow("Feature resampling", self.feature_resample_check)
-        form.addRow("Feature sample rate", self.feature_sr_spin)
-        layout.addWidget(group)
-
-        self.expert_mode_check = QCheckBox("Show filters")
-        self.expert_mode_check.stateChanged.connect(self._toggle_expert_controls)
-        layout.addWidget(self.expert_mode_check)
-
-        self.expert_group = QGroupBox("Optional filters")
-        expert_form = QFormLayout(self.expert_group)
-        self.filter_preset_combo = QComboBox()
-        self.filter_preset_combo.addItems([
-            "none",
-            "high-pass Butterworth",
-            "low-pass Butterworth",
-            "band-pass Butterworth",
-            "notch 50 Hz",
-            "notch 60 Hz",
-        ])
-        self._set_tooltip(self.filter_preset_combo, "Filtering is off by default. Use only when justified by recording conditions or analysis plan.")
-        self.low_hz_spin = QDoubleSpinBox(); self.low_hz_spin.setRange(0, 50000); self.low_hz_spin.setValue(50.0)
-        self.high_hz_spin = QDoubleSpinBox(); self.high_hz_spin.setRange(0, 50000); self.high_hz_spin.setValue(8000.0)
-        self.filter_order_spin = QSpinBox(); self.filter_order_spin.setRange(1, 10); self.filter_order_spin.setValue(4)
-        expert_form.addRow("Preset", self.filter_preset_combo)
-        expert_form.addRow("Low cutoff (Hz)", self.low_hz_spin)
-        expert_form.addRow("High cutoff (Hz)", self.high_hz_spin)
-        expert_form.addRow("Filter order", self.filter_order_spin)
-        self.expert_group.setVisible(False)
-        layout.addWidget(self.expert_group)
-
-        summary_group = QGroupBox("Preprocessing summary")
-        summary_layout = QVBoxLayout(summary_group)
-        self.preprocess_feedback = QPlainTextEdit()
-        self.preprocess_feedback.setReadOnly(True)
-        self.preprocess_feedback.setMaximumHeight(145)
-        self.preprocess_feedback.setPlainText("Run preprocessing to summarize SNR, clipping, DC offset, powerline flags, and generated WAVs.")
-        summary_layout.addWidget(self.preprocess_feedback)
-        layout.addWidget(summary_group)
-
-        run_btn = QPushButton("Run Preprocess")
+        run_btn = QPushButton("Run Preprocessing")
         run_btn.setObjectName("RunButton")
         run_btn.clicked.connect(self.run_preprocess)
         layout.addWidget(run_btn)
+
+        self.preprocess_feedback = QLabel("Not run")
+        self.preprocess_feedback.setObjectName("SubtitleLabel")
+        layout.addWidget(self.preprocess_feedback)
         layout.addStretch(1)
         return self._scrollable(container)
 
@@ -1575,7 +1505,6 @@ class AcousticPipelineWindow(QMainWindow):
             ("ingest", "summary"): self._output_root() / "acoustic" / "000_ingest" / "tables" / "audio_ingest_summary.csv",
             ("preprocess", "summary"): self._preprocess_summary_path(),
             ("preprocess", "main_summary"): self._output_root() / "acoustic" / "001_preprocess" / "tables" / "acoustic_preprocess_main_summary.csv",
-            ("preprocess", "qc_flags"): self._output_root() / "acoustic" / "001_preprocess" / "tables" / "acoustic_preprocess_qc_flags.csv",
             ("preprocess", "report"): self._output_root() / "acoustic" / "001_preprocess" / "reports" / "acoustic_preprocess_report.html",
             ("segment", "summary"): self._segmentation_summary_path(),
             ("segment", "main_summary"): self._output_root() / "acoustic" / "002_segmentation" / "tables" / "acoustic_segmentation_main_summary.csv",
@@ -1710,40 +1639,23 @@ class AcousticPipelineWindow(QMainWindow):
         if not hasattr(self, "preprocess_feedback"):
             return
         main_path = self._stage_path("preprocess", "main_summary")
-        flags_path = self._stage_path("preprocess", "qc_flags")
         if not main_path.exists():
-            self.preprocess_feedback.setPlainText("Run preprocessing to summarize SNR, clipping, DC offset, powerline flags, and generated WAVs.")
+            self.preprocess_feedback.setText("Not run")
             return
         try:
-            df = pd.read_csv(main_path)
-            flags = pd.read_csv(flags_path) if flags_path.exists() else pd.DataFrame()
-            n = len(df)
-            review = int((flags.get("qc_status") == "review").sum()) if not flags.empty and "qc_status" in flags.columns else 0
-            snr = pd.to_numeric(df.get("snr_db_estimate"), errors="coerce")
-            clip = pd.to_numeric(df.get("clipping_fraction_near_full_scale"), errors="coerce")
-            dc_before = pd.to_numeric(df.get("raw_dc_offset"), errors="coerce").abs()
-            dc_after = pd.to_numeric(df.get("processed_dc_offset"), errors="coerce").abs()
-            f50 = int(df.get("powerline_50hz_flag", pd.Series(dtype=bool)).fillna(False).astype(bool).sum()) if "powerline_50hz_flag" in df else 0
-            f60 = int(df.get("powerline_60hz_flag", pd.Series(dtype=bool)).fillna(False).astype(bool).sum()) if "powerline_60hz_flag" in df else 0
-            normalized = int(df.get("normalize_peak", pd.Series(dtype=bool)).fillna(False).astype(bool).sum()) if "normalize_peak" in df else 0
-            filtered = int(df.get("filter_enabled", pd.Series(dtype=bool)).fillna(False).astype(bool).sum()) if "filter_enabled" in df else 0
-            self.preprocess_feedback.setPlainText(
-                f"Files processed: {n}\n"
-                f"Files flagged for review: {review}\n"
-                f"Median estimated SNR: {snr.median():.2f} dB\n" if snr.notna().any() else f"Files processed: {n}\nFiles flagged for review: {review}\nMedian estimated SNR: unavailable\n"
+            df = self._read_csv_safe(main_path)
+            if df.empty:
+                self.preprocess_feedback.setText("No preprocessing results")
+                return
+            status = df.get("status", pd.Series("", index=df.index)).astype(str)
+            n_ok = int(status.eq("ok").sum())
+            n_review = int(status.eq("needs_channel_review").sum())
+            n_failed = int(status.eq("failed").sum())
+            self.preprocess_feedback.setText(
+                f"Processed: {n_ok}   |   Review: {n_review}   |   Failed: {n_failed}"
             )
-            extra = (
-                f"Max clipping fraction: {clip.max():.6f}\n" if clip.notna().any() else "Max clipping fraction: unavailable\n"
-            )
-            extra += (
-                f"Median |DC offset| raw → processed: {dc_before.median():.6f} → {dc_after.median():.6f}\n" if dc_before.notna().any() and dc_after.notna().any() else "Median |DC offset| raw → processed: unavailable\n"
-            )
-            extra += f"Powerline flags: 50 Hz={f50}, 60 Hz={f60}\n"
-            extra += f"Normalized files: {normalized}; Filtered files: {filtered}"
-            self.preprocess_feedback.appendPlainText(extra)
         except Exception as exc:  # noqa: BLE001
-            self.preprocess_feedback.setPlainText(f"Could not summarize preprocessing outputs: {exc}")
-
+            self.preprocess_feedback.setText(f"Could not read preprocessing results: {exc}")
 
     def _read_csv_safe(self, path: Path) -> pd.DataFrame:
         """Read a CSV if it exists and is non-empty; otherwise return an empty DataFrame."""
@@ -1792,9 +1704,6 @@ class AcousticPipelineWindow(QMainWindow):
             self.segmentation_feedback.setPlainText(f"Could not summarize segmentation outputs: {exc}")
 
     # ---------------------------- HELPERS ----------------------------
-    def _toggle_expert_controls(self) -> None:
-        self.expert_group.setVisible(self.expert_mode_check.isChecked())
-
     def append_log(self, text: str) -> None:
         self.log_box.appendPlainText(text)
 
@@ -1943,43 +1852,31 @@ class AcousticPipelineWindow(QMainWindow):
         input_path, output_root = paths
         self._run_worker("ingest", run_acoustic_ingest, {"input_path": input_path, "output_root": output_root})
 
-    def _preprocess_filter_config_from_gui(self) -> FilterConfig:
-        preset = self.filter_preset_combo.currentText() if hasattr(self, "filter_preset_combo") else "none"
-        order = int(self.filter_order_spin.value()) if hasattr(self, "filter_order_spin") else 4
-        low = float(self.low_hz_spin.value()) if hasattr(self, "low_hz_spin") else None
-        high = float(self.high_hz_spin.value()) if hasattr(self, "high_hz_spin") else None
-        if preset == "high-pass Butterworth":
-            return FilterConfig(enabled=True, kind="hpf", low_hz=low, order=order)
-        if preset == "low-pass Butterworth":
-            return FilterConfig(enabled=True, kind="lpf", high_hz=high, order=order)
-        if preset == "band-pass Butterworth":
-            return FilterConfig(enabled=True, kind="bpf", low_hz=low, high_hz=high, order=order)
-        if preset == "notch 50 Hz":
-            return FilterConfig(enabled=True, kind="notch", notch_hz=50.0, order=order)
-        if preset == "notch 60 Hz":
-            return FilterConfig(enabled=True, kind="notch", notch_hz=60.0, order=order)
-        return FilterConfig(enabled=False, kind="none", order=order)
-
     def _preprocess_config_from_gui(self) -> PreprocessConfig:
-        feature_sr = int(self.feature_sr_spin.value()) if getattr(self, "feature_resample_check", None) and self.feature_resample_check.isChecked() else None
         return PreprocessConfig(
-            segmentation_sample_rate_hz=int(self.seg_sr_spin.value()),
-            feature_sample_rate_hz=feature_sr,
-            make_segmentation_wav=bool(self.make_segmentation_wav_check.isChecked()),
-            make_feature_wav=bool(self.make_feature_wav_check.isChecked()),
             remove_dc_offset=bool(self.remove_dc_check.isChecked()),
-            normalize_peak=bool(self.normalize_check.isChecked()),
-            normalize_peak_target_abs=float(self.normalize_target_spin.value()),
-            filter=self._preprocess_filter_config_from_gui(),
         )
 
     def run_preprocess(self) -> None:
         paths = self._require_paths()
-        if paths is None: return
-        if not self._require_project_initialized(): return
-        input_path, output_root = paths
-        cfg = self._preprocess_config_from_gui()
-        self._run_worker("preprocess", run_acoustic_preprocess, {"input_path": input_path, "output_root": output_root, "config": cfg})
+        if paths is None:
+            return
+        if not self._require_project_initialized():
+            return
+        _input_path, output_root = paths
+        ingest_summary = self._stage_path("ingest", "summary")
+        if not ingest_summary.exists():
+            QMessageBox.warning(self, "Ingest required", "Run Ingest first.")
+            return
+        self._run_worker(
+            "preprocess",
+            run_acoustic_preprocess,
+            {
+                "ingest_summary_csv": ingest_summary,
+                "output_root": output_root,
+                "config": self._preprocess_config_from_gui(),
+            },
+        )
 
     def run_segmentation(self) -> None:
         paths = self._require_paths()
@@ -2249,8 +2146,13 @@ table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{border-bottom:
         selected_features = self._selected_feature_names()
         def full_run(input_path: Path, output_root: Path):
             ingest_result = run_acoustic_ingest(input_path=input_path, output_root=output_root)
-            preprocess_cfg = self._preprocess_config_from_gui()
-            preprocess_result = run_acoustic_preprocess(input_path=input_path, output_root=output_root, config=preprocess_cfg)
+            if ingest_result.summary_table is None:
+                raise RuntimeError("Ingest completed without a summary table; preprocessing cannot proceed")
+            preprocess_result = run_acoustic_preprocess(
+                ingest_summary_csv=ingest_result.summary_table,
+                output_root=output_root,
+                config=self._preprocess_config_from_gui(),
+            )
             segment_result = run_acoustic_segmentation_silero(
                 preprocess_summary_csv=output_root / "acoustic" / "001_preprocess" / "tables" / "acoustic_preprocess_summary.csv",
                 output_root=output_root,

@@ -45,12 +45,19 @@ def test_invalid_existing_manifest_is_not_silently_replaced(tmp_path: Path):
         initialize_project(tmp_path)
 
 
-def test_guis_use_shared_workspace_and_modality_scoped_feature_outputs():
+def test_guis_use_current_workspace_contracts_and_modality_scoped_feature_outputs():
     acoustic = Path("src/vslp/gui/acoustic_app/main_window.py").read_text(encoding="utf-8")
     kinematics = Path("src/vslp/gui/kinematics/app.py").read_text(encoding="utf-8")
     features = Path("src/vslp/gui/features/app.py").read_text(encoding="utf-8")
 
-    assert 'component="acoustic"' in acoustic
+    # Acoustic GUI now creates an immutable task-specific acoustic run rather than
+    # registering itself into a cross-modality workspace. Dedicated run-layout
+    # tests validate the exact acoustic-run schema and directory contract.
+    assert "initialize_acoustic_run" in acoustic
+    assert 'component="acoustic"' not in acoustic
+
+    # Kinematics and modality-neutral Feature Analysis retain their shared-workspace
+    # contracts until those applications are migrated separately.
     assert 'component="kinematics"' in kinematics
     assert '/ "feature_analysis" / scope' in features
     assert '"Select modality (required)"' in features

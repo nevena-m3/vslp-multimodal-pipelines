@@ -98,7 +98,9 @@ def _select_registry(cfg: FeatureExtractionConfig) -> pd.DataFrame:
 
 def _make_context(row: pd.Series, cfg: FeatureExtractionConfig) -> FeatureContext:
     segments_raw = row.get("segments_csv_path", "")
-    wav_raw = row.get("segmentation_wav_path", "")
+    # Feature plugins must consume the canonical native-rate preprocessing waveform.
+    # The FeatureContext field retains its historical name for plugin compatibility.
+    wav_raw = row.get("analysis_wav_path", "")
     segments_path = Path(str(segments_raw)) if str(segments_raw) and str(segments_raw) != "nan" else None
     wav_path = Path(str(wav_raw)) if str(wav_raw) and str(wav_raw) != "nan" else None
     duration = row.get("duration_sec", np.nan)
@@ -127,7 +129,7 @@ def _operational_prefix(row: pd.Series, run: dict[str, Any]) -> dict[str, Any]:
         "file_name": row.get("file_name", ""),
         "source_file_path": row.get("source_file_path", row.get("file_path")),
         "source_sha256": source_sha,
-        "segmentation_wav_path": row.get("segmentation_wav_path"),
+        "analysis_wav_path": row.get("analysis_wav_path"),
         "project_name": run["project_name"],
         "task_name": run["task_name"],
         "task": run["task_name"],

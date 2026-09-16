@@ -38,10 +38,12 @@ def run_acoustic_ingest(
     for path in files:
         try:
             digest = digest_media_file(path, ffprobe_bin=ffprobe_bin)
+            if int(digest.get("n_audio_streams") or 0) < 1:
+                raise ValueError(f"No audio stream detected: {path}")
             digest["sha256"] = sha256_file(path)
             digest["source_sha256"] = digest["sha256"]
             digest["recording_id"] = digest["sha256"]
-            digest["source_file_path"] = str(path)
+            digest["source_file_path"] = str(path.resolve())
             digest.update(context)
             digest["ingest_status"] = "ok"
             rows.append(digest)
