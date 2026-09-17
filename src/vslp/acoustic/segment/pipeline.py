@@ -115,7 +115,9 @@ def _plot(path: Path, x: np.ndarray | None, sr: int | None, method: str,
           nuclei: list[float] | None = None, stable: Interval | None = None,
           breaks: list[Interval] | None = None,
           automatic_intervals: list[Interval] | None = None,
-          trace_label: str | None = None) -> None:
+          trace_label: str | None = None,
+          analysis_window: tuple[float, float] | None = None,
+          excluded_intervals: list[tuple[float, float]] | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fig, axes = plt.subplots(2 if trace else 1, 1, figsize=(13, 5.8), sharex=True,
                              gridspec_kw={"height_ratios": [2, 1]} if trace else None)
@@ -126,13 +128,14 @@ def _plot(path: Path, x: np.ndarray | None, sr: int | None, method: str,
         axes[0].plot(t, x, lw=0.45, color="#315a89")
         axes[0].set_xlim(0, len(x) / sr)
         duration = len(x) / sr
+        analysis_start, analysis_end = analysis_window or (0.0, duration)
         if intervals:
-            if intervals[0].start_sec > 0:
-                axes[0].axvspan(0, intervals[0].start_sec, color="#d97876", alpha=0.08)
-            if intervals[-1].end_sec < duration:
-                axes[0].axvspan(intervals[-1].end_sec, duration, color="#d97876", alpha=0.08)
+            if intervals[0].start_sec > analysis_start:
+                axes[0].axvspan(analysis_start, intervals[0].start_sec, color="#b8cddb", alpha=0.36)
+            if intervals[-1].end_sec < analysis_end:
+                axes[0].axvspan(intervals[-1].end_sec, analysis_end, color="#c8bbda", alpha=0.36)
         else:
-            axes[0].axvspan(0, duration, color="#d97876", alpha=0.08)
+            axes[0].axvspan(analysis_start, analysis_end, color="#b8cddb", alpha=0.36)
     for interval in intervals:
         axes[0].axvspan(interval.start_sec, interval.end_sec, color="#4abf80", alpha=0.26)
         if automatic_intervals is None:
@@ -145,7 +148,14 @@ def _plot(path: Path, x: np.ndarray | None, sr: int | None, method: str,
         axes[0].axvline(item.start_sec, color="#27814f", lw=0.8, alpha=0.8)
         axes[0].axvline(item.end_sec, color="#27814f", lw=0.8, alpha=0.8)
     for left, right in zip(intervals[:-1], intervals[1:]):
-        axes[0].axvspan(left.end_sec, right.start_sec, color="#d97876", alpha=0.14)
+        axes[0].axvspan(left.end_sec, right.start_sec, color="#efbea9", alpha=0.42)
+    for left, right in excluded_intervals or []:
+        axes[0].axvspan(left, right, color="#da967e", alpha=0.52, hatch="///")
+    if x is not None and sr:
+        if analysis_start > 0:
+            axes[0].axvspan(0, analysis_start, color="#aeb5bd", alpha=0.62)
+        if analysis_end < duration:
+            axes[0].axvspan(analysis_end, duration, color="#aeb5bd", alpha=0.62)
     if stable:
         axes[0].axvspan(stable.start_sec, stable.end_sec, color="#efaa33", alpha=0.4,
                         label="Stable analysis region")
@@ -156,13 +166,17 @@ def _plot(path: Path, x: np.ndarray | None, sr: int | None, method: str,
             axes[0].axvline(n, color="#8520af", ls="--", lw=0.8)
     axes[0].set_ylabel("Amplitude")
     legend = [Patch(facecolor="#4abf80", alpha=0.35, label="Speech"),
-              Patch(facecolor="#d97876", alpha=0.13, label="Leading nonspeech"),
-              Patch(facecolor="#d97876", alpha=0.30, label="Internal nonspeech / pause"),
-              Patch(facecolor="#d97876", alpha=0.13, label="Trailing nonspeech"),
+              Patch(facecolor="#b8cddb", alpha=0.55, label="Leading nonspeech"),
+              Patch(facecolor="#efbea9", alpha=0.62, label="Internal nonspeech / pause"),
+              Patch(facecolor="#c8bbda", alpha=0.55, label="Trailing nonspeech"),
               Line2D([0], [0], color="#27814f", lw=1, label="Automatic boundary")]
     if automatic_intervals is not None:
         legend.append(Line2D([0], [0], color="#7735a4", ls="--", lw=1.1,
                              label="Manual boundary"))
+    if analysis_window is not None:
+        legend.append(Patch(facecolor="#aeb5bd", alpha=0.48, label="Outside analysis window"))
+    if excluded_intervals:
+        legend.append(Patch(facecolor="#da967e", alpha=0.52, hatch="///", label="Manual exclusion"))
     axes[0].legend(handles=legend, loc="upper right", fontsize=7, ncol=2, framealpha=0.88)
     if trace:
         times, values, threshold = trace

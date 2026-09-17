@@ -132,12 +132,18 @@ def mask_from_segments(
     if n_samples <= 0:
         return mask
     region = (region or "speech_only").lower()
-    if region == "full_file" or segments is None or len(segments) == 0:
+    if segments is None or len(segments) == 0:
         mask[:] = True
         return mask
 
     segs = segments.copy()
-    if region == "speech_only":
+    if region == "full_file":
+        if "segment_role" in segs.columns and segs["segment_role"].astype(str).isin(["outside_analysis_window", "manual_exclusion"]).any():
+            selected = segs.loc[segs["segment_type"].astype(str).str.lower().isin(["speech", "nonspeech"])]
+        else:
+            mask[:] = True
+            return mask
+    elif region == "speech_only":
         selected = segs.loc[segs["segment_type"].astype(str).str.lower().eq("speech")]
     elif region == "internal_pauses":
         if "segment_role" in segs.columns:
@@ -148,7 +154,7 @@ def mask_from_segments(
             selected = selected.loc[selected["duration_sec"].astype(float) >= float(min_pause_duration_sec)]
     elif region == "effective_task":
         if "segment_role" in segs.columns:
-            selected = segs.loc[~segs["segment_role"].astype(str).str.lower().isin(["leading_nonspeech", "trailing_nonspeech"])]
+            selected = segs.loc[segs["segment_role"].astype(str).str.lower().isin(["speech", "internal_nonspeech"])]
         else:
             selected = segs
     else:
@@ -159,7 +165,9 @@ def mask_from_segments(
         e = int(min(n_samples, round(float(row["end_sec"]) * sr)))
         if e > s:
             mask[s:e] = True
-    if not mask.any() and region != "internal_pauses":
+    if not mask.any() and region != "internal_pauses" and not (
+        "segment_role" in segs.columns and segs["segment_role"].astype(str).isin(["outside_analysis_window", "manual_exclusion"]).any()
+    ):
         # Fail open for signal features: if VAD produced no mask, use full audio but status notes will expose region policy.
         mask[:] = True
     return mask

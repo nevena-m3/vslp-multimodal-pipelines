@@ -686,7 +686,7 @@ def run_acoustic_quality_control(segmentation_summary_csv: str | Path, output_ro
     else:
         seg=pd.read_csv(segmentation_summary_csv) if segmentation_summary_csv.exists() else pd.DataFrame()
     for _, row in seg.iterrows():
-        if str(row.get("automatic_status", "ACCEPTED")).upper() in {"EXCLUDED", "FAILED"}:
+        if final_segmentation_intervals_csv is None and str(row.get("automatic_status", "ACCEPTED")).upper() in {"EXCLUDED", "FAILED"}:
             continue
         try:
             vals, st=_compute_one(row, cfg, families); rows.append(vals); status_rows.extend([{**item, **{key: row.get(key) for key in ("recording_id", "task_name", "run_id")}} for item in st])

@@ -7,7 +7,7 @@ import pandas as pd
 import soundfile as sf
 from PySide6.QtWidgets import QApplication, QFileDialog
 
-from vslp.acoustic.segment.review import save_segmentation_review_entry
+from vslp.acoustic.segment.review import load_review_state, save_segmentation_review_entry
 from vslp.gui.acoustic_app.main_window import AcousticPipelineWindow
 from vslp.gui.acoustic_app.review_widget import SegmentationReviewWidget
 
@@ -33,17 +33,33 @@ def test_review_gui_filters_and_persists_after_widget_restart(tmp_path: Path):
          "segments_csv_path": str(segments)},
     ]).to_csv(table, index=False)
     widget = SegmentationReviewWidget(lambda: tmp_path)
+    assert not hasattr(widget, "plot_label")  # Review uses the live pyqtgraph editor.
     widget.refresh()
     assert widget.recording_list.count() == 1  # Pending review is default.
     widget.filter_combo.setCurrentText("All")
     assert widget.recording_list.count() == 2
-    save_segmentation_review_entry(tmp_path, "review", "KEEP_AUTO", "Reviewer")
+    save_segmentation_review_entry(tmp_path, "review", "KEEP_AUTO", "Reviewer", "Remove cough",
+        analysis_start_sec=.05, analysis_end_sec=.95,
+        exclusion_intervals=[{"start_sec": .4, "end_sec": .5,
+            "exclusion_reason": "Cough / throat clear", "notes": "Cough"}])
     widget.close()
     restarted = SegmentationReviewWidget(lambda: tmp_path)
     restarted.refresh()
     assert restarted.recording_list.count() == 0
     restarted.filter_combo.setCurrentText("Kept automatic after review")
     assert restarted.recording_list.count() == 1
+    assert restarted.editor.analysis_start_sec == .05
+    assert restarted.editor.analysis_end_sec == .95
+    assert restarted.editor.exclusions[0]["exclusion_reason"] == "Cough / throat clear"
+    restarted._enter_edit_mode()
+    restarted.editor._regions[0].setRegion((.2, .8))
+    restarted.editor.set_selection(.55, .6)
+    restarted.notes_edit.setPlainText("Adjusted speech and cough")
+    restarted._exclude_selection()
+    restarted._save("KEEP_MANUAL")
+    decisions, overrides = load_review_state(tmp_path)
+    assert decisions.set_index("recording_id").loc["review", "final_decision"] == "KEEP_MANUAL"
+    assert [(float(r.start_sec), float(r.end_sec)) for r in overrides.itertuples()] == [(.2, .8)]
     restarted.close()
     assert app is not None
 

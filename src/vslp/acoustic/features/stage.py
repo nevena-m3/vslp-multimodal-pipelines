@@ -290,7 +290,7 @@ def run_acoustic_feature_extraction(
         seg_summary = load_final_segmentation(final_segmentation_intervals_csv, segmentation_summary_csv)
     else:
         seg_summary = pd.read_csv(segmentation_summary_csv)
-    if "automatic_status" in seg_summary:
+    if final_segmentation_intervals_csv is None and "automatic_status" in seg_summary:
         seg_summary = seg_summary.loc[
             ~seg_summary["automatic_status"].astype(str).str.upper().isin({"EXCLUDED", "FAILED"})
         ].copy()

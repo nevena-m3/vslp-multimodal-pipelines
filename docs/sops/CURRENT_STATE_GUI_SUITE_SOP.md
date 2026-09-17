@@ -50,8 +50,8 @@ Each upstream pipeline writes `acoustic/feature_handoff/main` or `kinematics/fea
 
 ### Segmentation manual review
 
-- The queue opens on recordings awaiting review. Filters show all recordings, review-required recordings, automatic acceptances, kept automatic decisions, manual decisions, and exclusions. Select a recording to see status, flags, method, plot and audio playback.
-- Enter reviewer name and notes, then **Keep automatic**, **Edit boundaries** and **Preview manual**, or **Exclude**. Manual intervals use one `start_sec,end_sec` pair per line and must fit within the recording without overlap. Decisions persist under `acoustic/003_segmentation_review/`.
+- The queue opens on recordings awaiting review. Filters show all recordings, review-required recordings, automatic acceptances, kept automatic decisions, manual decisions, and exclusions. Select a recording to see status, flags, method, the live waveform/RMS view, and synchronized audio playback.
+- Click the waveform to seek, drag to select, and use **Play selection** to hear that interval. **Edit boundaries** enables draggable speech regions, adding/deleting speech, analysis start/end from the cursor, internal contamination exclusion with a reason, Undo, and Reset to automatic. The text interval editor is an advanced fallback. Enter reviewer name and notes, then **Keep automatic**, **Save manual**, or **Exclude recording**. Decisions persist under `acoustic/003_segmentation_review/`.
 - **Freeze final segmentation** requires decisions for all review-required recordings. It writes final decisions and intervals with boundary source and reviewer provenance. An automatic `EXCLUDED` can be recovered manually; a computational `FAILED` cannot be treated as a reviewed exclusion. Once frozen, **Continue to QC & Features** is available. To revise frozen boundaries, create a new run.
 
 ### Quality Control
