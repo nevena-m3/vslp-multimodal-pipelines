@@ -1,6 +1,6 @@
 # VSLP GUI Suite: Current-State SOP and Menu Inventory
 
-**Repository state reviewed:** `win-dev`, upstream commit `0481cc8` (16 September 2026). This document describes the code currently in the local review clone. It is an operating map for deciding what to change; it is not a claim that every scientific method or GUI path has been validated with study data.
+**Acoustic section updated:** `september-review`, commit `c8ce1fa` (17 September 2026). Other GUI sections remain an earlier inventory; verify them against current code before use.
 
 ## 1. What is in the repository
 
@@ -20,7 +20,7 @@ The three production-facing GUIs are PySide6 desktop applications. The ML GUI is
 1. Use Python 3.11 in an environment installed with `pip install -e ".[gui,silero,kinematic,dev]"`. Acoustic processing also needs FFmpeg/FFprobe; kinematic landmark extraction needs MediaPipe and a compatible `.task` model.
 2. Keep raw audio/video and identifiable metadata in approved source storage. Choose a parent output folder outside the raw media. Acoustic Setup creates a task-stamped run folder beneath it.
 3. Use the acoustic run folder as the handoff workspace for its downstream Feature Analysis run. Acoustic Setup initially creates `configs/`, `logs/`, and `acoustic/` beneath that run folder; the root `project_manifest.json` registers the project. Other components are not created by this Setup action.
-4. Define the recording row, subject ID, task, session/visit, outcome, and covariate policies before a production run. Pilot on representative files and inspect outputs before batch use.
+4. Define the Setup task and acoustic recording policy before a production run. Study and clinical metadata are handled downstream in Feature Analysis. Pilot on representative files and inspect outputs before batch use.
 5. Run a stage, inspect its table/report/error/manifest, and rerun downstream stages when upstream inputs or policies change. A green/completed indicator means the stage returned; it does not certify data validity.
 
 ### Handoff contract
@@ -29,34 +29,41 @@ Each upstream pipeline writes `acoustic/feature_handoff/main` or `kinematics/fea
 
 ## 3. Acoustic Pipeline GUI: every main tab
 
-**Launch:** `vslp gui acoustic`. The actual GUI is `src/vslp/gui/acoustic_app/main_window.py`. Its left rail shows Project, Ingest, Preprocess, Data Segmentation, Quality Control, Feature Extraction, and Reports status. The bottom Run Log records stage messages. The left-rail actions are **Refresh Latest Outputs** (detect existing result files), **Run Full Acoustic Workflow** (sequential stage run), and **Open Run Folder**. The full-run action requires project initialization and uses the task entered in Setup.
+**Launch:** `vslp gui acoustic`. The actual GUI is `src/vslp/gui/acoustic_app/main_window.py`. Its left rail shows Setup, Ingest, Preprocess, Segmentation, Segmentation manual review, Quality Control, Physiological Features, and Reports status. The bottom Run Log records stage messages. **Run Full Acoustic Workflow** runs Ingest once, then Preprocess and Segmentation, and pauses for manual review. After review decisions are frozen, **Continue to QC & Features** runs the remaining stages.
 
 ### Setup
 
 - **Browse Input Folder / Browse Output Folder:** select source media and a parent output folder. Enter required project and task names; set recursive discovery as appropriate.
 - **Initialize Project:** requires project name, task name, input folder, and output parent; creates a unique `TaskSlug_YYYYMMDD_HHMMSS` folder containing `project_manifest.json`, `configs/setup_config.json`, `logs/setup.log`, and `acoustic/`. Setup fields then lock and the generated run folder is displayed. Empty stage directories are removed after each stage. Clinical metadata is loaded in Feature Analysis.
+- **Open existing run:** select the generated run folder to resume saved manual review after restarting the GUI. The manifest restores the locked Setup fields.
 - **Run Ingest:** probes discovered media and records technical metadata, unsupported/read failures, duplicates, formats and codecs. The Setup display reports discovered, accepted, duplicate-skipped, and failed counts. Check counts against the source folder.
 
 ### Preprocess
 
-- Configures segmentation WAV creation and feature WAV creation, segmentation sample rate (16 kHz default), optional feature resampling, DC removal, optional peak normalization, and optional Butterworth high/low/band-pass or 50/60 Hz notch filter with frequency/order controls.
-- **Run Preprocess:** creates derived WAVs without changing originals. Review sample rates, duration, SNR, clipping, DC offset, failures and QC flags. Filters and normalization can change feature meaning; record their use.
+- Configures canonical native-rate FLOAT32 audio creation. Optional processing is retained only where the GUI and stage explicitly support it; Silero's 16 kHz copy exists in memory during segmentation.
+- **Run Preprocess:** creates canonical WAVs without changing originals. Review sample rates, duration, SNR, clipping, DC offset, failures and QC flags.
 
 ### Segmentation
 
-- Method selector currently executes **Silero**. Other choices are reserved plugin slots and display a not-implemented notice. Controls include threshold, minimum speech/silence duration, speech padding, frame size and force model reload.
-- **Run Data Segmentation:** requires preprocess summary and writes speech/pause segments, summary, plots and report. Review no-speech files and boundary plausibility for each task. VAD does not establish task compliance.
+- Choose **Silero VAD** for connected speech, **DDK energy-envelope** for repetitive oral DDK, or **Sustained phonation** for sustained vowels. The Setup task preselects a method where recognized; the user can change it. Only the selected method's parameters are shown. Custom remains a plugin slot.
+- **Run Segmentation:** reads canonical audio and writes automatic intervals, frames, boundaries, a per-recording diagnostic plot, summary, review queue and stage manifest under `acoustic/002_segmentation/`. Inspect flags and boundaries; automatic outputs remain unchanged by later review.
+
+### Segmentation manual review
+
+- The queue opens on recordings awaiting review. Filters show all recordings, review-required recordings, automatic acceptances, kept automatic decisions, manual decisions, and exclusions. Select a recording to see status, flags, method, plot and audio playback.
+- Enter reviewer name and notes, then **Keep automatic**, **Edit boundaries** and **Preview manual**, or **Exclude**. Manual intervals use one `start_sec,end_sec` pair per line and must fit within the recording without overlap. Decisions persist under `acoustic/003_segmentation_review/`.
+- **Freeze final segmentation** requires decisions for all review-required recordings. It writes final decisions and intervals with boundary source and reviewer provenance. An automatic `EXCLUDED` can be recovered manually; a computational `FAILED` cannot be treated as a reviewed exclusion. Once frozen, **Continue to QC & Features** is available. To revise frozen boundaries, create a new run.
 
 ### Quality Control
 
-- **Configure** subtab: choose QC families/features in a tree, inspect feature descriptions, select all/recommended/clear, set internal-pause, high-level percentile, hard-clip and near-clip thresholds, **Reset defaults**, then **Run Quality Control**. It requires segmentation output.
+- **Configure** subtab: choose QC families/features in a tree, inspect feature descriptions, select all/recommended/clear, set internal-pause, high-level percentile, hard-clip and near-clip thresholds, **Reset defaults**, then **Run Quality Control**. It requires frozen reviewed segmentation.
 - Current families cover additive interference, gain dynamics, reverberation/echo, channel/device effects, nonlinear distortion and temporal discontinuity. The stage produces feature values, family status/scores, warnings and recommendations; warnings are review evidence.
 - **Outputs** subtab: inspect summary tables, family/feature results, distributions, correlations, PCA/review ranking where available, plots, and **Open QC HTML report**. Missing output means it has not been generated or refreshed.
 
 ### Features
 
 - Select feature families or individual features in the registry tree. Quick selectors cover all, implemented, implemented plus proxy, and clear. The detail panel describes scientific meaning, status, scale, support and computation notes; the policy table shows native scale and scalar-reduction decisions.
-- Choose computation mode and acoustic region policy (`speech_only`, `effective_task`, or `full_file`), and minimum pause support. **Run Feature Extraction** requires segmentation output. Available plugin families include timing/respiratory, rhythm, phonatory, articulatory/formants, resonatory/nasality and coordination. An item marked proxy or pending should not be assumed to be a validated measure.
+- Choose computation mode and acoustic region policy (`speech_only`, `effective_task`, or `full_file`), and minimum pause support. **Run Feature Extraction** requires frozen reviewed segmentation. Available plugin families include timing/respiratory, rhythm, phonatory, articulatory/formants, resonatory/nasality and coordination. An item marked proxy or pending should not be assumed to be a validated measure.
 - Inspect per-file features, long status table, selected registry, expected-range flags, distribution audit, reduction audit and report before handoff.
 
 ### Inspector
@@ -66,7 +73,7 @@ Each upstream pipeline writes `acoustic/feature_handoff/main` or `kinematics/fea
 
 ### Reports & Outputs
 
-- **Generate Run Summary:** writes an HTML stage summary and artifact manifest under `acoustic/005_run_summary`.
+- **Generate Run Summary:** writes an HTML stage summary and artifact manifest under `acoustic/006_run_summary`.
 - **Open Main Feature GUI Handoff:** opens the canonical downstream folder. **Open Supplementary Outputs:** opens the audit catalog. **Open Acoustic Output Folder** and **Open Plots Folder** provide direct navigation.
 - Confirm all four canonical acoustic handoff files, optional acoustic QC, and supplementary index before loading Feature Analysis. Join clinical metadata there.
 

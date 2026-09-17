@@ -1616,7 +1616,7 @@ class AcousticPipelineWindow(QMainWindow):
             if report and report.exists():
                 rec.report_path = str(report)
             self.stage_records[stage] = rec
-        if self._stage_path("review", "summary").exists():
+        if self._stage_path("segment", "summary").exists():
             self.review_widget.refresh()
         self._refresh_stage_cards()
         self._refresh_project_gate()
@@ -2196,6 +2196,7 @@ table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{border-bottom:
         if not self._require_project_initialized(): return
         input_path, output_root = paths
 
+        preprocess_config = self._preprocess_config_from_gui()
         segmentation_config = self._segmentation_config_from_gui()
         if segmentation_config.method == CUSTOM:
             QMessageBox.information(self, "Plugin required", "Install a segmentation plugin before selecting Custom.")
@@ -2207,7 +2208,7 @@ table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{border-bottom:
             preprocess_result = run_acoustic_preprocess(
                 ingest_summary_csv=ingest_result.summary_table,
                 output_root=output_root,
-                config=self._preprocess_config_from_gui(),
+                config=preprocess_config,
             )
             segment_result = run_acoustic_segmentation(
                 preprocess_summary_csv=output_root / "acoustic" / "001_preprocess" / "tables" / "acoustic_preprocess_summary.csv",

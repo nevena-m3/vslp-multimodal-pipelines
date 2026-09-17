@@ -1,10 +1,11 @@
 import os
+import json
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import soundfile as sf
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QFileDialog
 
 from vslp.acoustic.segment.review import save_segmentation_review_entry
 from vslp.gui.acoustic_app.main_window import AcousticPipelineWindow
@@ -55,5 +56,29 @@ def test_acoustic_gui_has_separate_review_stage_and_final_paths():
     assert tabs.index("Segmentation manual review") == tabs.index("Segmentation") + 1
     assert tabs.index("Quality Control") == tabs.index("Segmentation manual review") + 1
     assert "review" in window.stage_records
+    window.close()
+    assert app is not None
+
+
+def test_reopen_existing_run_restores_manual_review(tmp_path: Path, monkeypatch):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    source = tmp_path / "acoustic" / "002_segmentation" / "tables" / "acoustic_segmentation_summary.csv"
+    source.parent.mkdir(parents=True)
+    pd.DataFrame([{"recording_id": "r", "file_name": "r.wav", "task_name": "Bamboo Passage",
+                   "segmentation_method": "silero_vad", "automatic_status": "REVIEW",
+                   "review_required": True, "duration_sec": 1}]).to_csv(source, index=False)
+    (tmp_path / "project_manifest.json").write_text(json.dumps({
+        "modality": "acoustic", "run_root": str(tmp_path.resolve()),
+        "project_name": "P", "task_name": "Bamboo Passage",
+        "input_folder": str(tmp_path / "input"), "output_parent": str(tmp_path.parent),
+    }), encoding="utf-8")
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *_args: str(tmp_path))
+    window = AcousticPipelineWindow()
+    window.open_existing_run()
+    assert window._run_root == tmp_path.resolve()
+    assert window.task_name_edit.text() == "Bamboo Passage"
+    assert window.task_name_edit.isReadOnly()
+    assert window.review_widget.recording_list.count() == 1
     window.close()
     assert app is not None
