@@ -1,0 +1,42 @@
+{
+  "family_id": "F08",
+  "source_document": "08_Speech_Articulation_Rate_Codex_Implementation.docx",
+  "algorithm_version": "family08-rate-1.0.0",
+  "parameter_set_id": "family08_bamboo_reviewed_v1",
+  "pause_min_sec": 0.3,
+  "outputs": [
+    {
+      "construct_id": "C048",
+      "feature_id": "speaking_rate_syll_s",
+      "human_name": "Speaking rate — syllables per second",
+      "unit": "syllables/s",
+      "evidence_level": "STRONG",
+      "evidence_study_count": 10,
+      "evidence_entry_count": 11,
+      "numerator_field": "syllable_count",
+      "formula": "syllable_count / elapsed_task_sec"
+    },
+    {
+      "construct_id": "C048",
+      "feature_id": "speaking_rate_words_min",
+      "human_name": "Speaking rate — words per minute",
+      "unit": "words/min",
+      "evidence_level": "STRONG",
+      "evidence_study_count": 10,
+      "evidence_entry_count": 11,
+      "numerator_field": "word_count",
+      "formula": "60 * word_count / elapsed_task_sec"
+    },
+    {
+      "construct_id": "C049",
+      "feature_id": "articulation_rate_syll_s",
+      "human_name": "Articulation rate — syllables per second",
+      "unit": "syllables/s",
+      "evidence_level": "STRONG",
+      "evidence_study_count": 4,
+      "evidence_entry_count": 5,
+      "numerator_field": "syllable_count",
+      "formula": "syllable_count / (elapsed_task_sec - internal_pauses_ge_300ms_sec)"
+    }
+  ]
+}

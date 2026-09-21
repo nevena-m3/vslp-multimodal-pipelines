@@ -125,6 +125,8 @@ class WaveformEditor(QWidget):
                        exclusions: list[dict] | None = None) -> None:
         x, sr = _read_canonical_audio(wav_path)
         self.duration_sec = len(x) / sr
+        self.view.setLimits(xMin=0.0, xMax=self.duration_sec)
+        self.support.getViewBox().setLimits(xMin=0.0, xMax=self.duration_sec)
         self.automatic_intervals = list(automatic)
         self.analysis_start_sec, self.analysis_end_sec = analysis_window or (0.0, self.duration_sec)
         self.exclusions = [dict(item) for item in (exclusions or [])]
@@ -230,6 +232,16 @@ class WaveformEditor(QWidget):
         self.set_intervals(candidate)
         self.intervals_changed.emit()
 
+    def selected_interval(self) -> tuple[float, float] | None:
+        intervals = self.intervals()
+        return intervals[self._selected_region] if 0 <= self._selected_region < len(intervals) else None
+
+    def pan_time(self, fraction: float) -> None:
+        left, right = self.waveform.viewRange()[0]
+        width = right - left
+        start = max(0.0, min(self.duration_sec - width, left + fraction * width))
+        self.waveform.setXRange(start, start + width, padding=0)
+
     def set_cursor(self, seconds: float) -> None:
         self.cursor_sec = max(0.0, min(self.duration_sec, float(seconds)))
         self.playback_line.setValue(self.cursor_sec)
@@ -295,14 +307,15 @@ class WaveformEditor(QWidget):
     def _clicked(self, event) -> None:
         if event.button() != Qt.LeftButton:
             return
+        self.clear_selection()
         point = self.waveform.plotItem.vb.mapSceneToView(event.scenePos())
         time = max(0.0, min(self.duration_sec, float(point.x())))
-        if self._editing:
-            for index, region in enumerate(self._regions):
-                a, b = region.getRegion()
-                if a <= time <= b:
-                    self._selected_region = index
-                    break
+        self._selected_region = -1
+        for index, region in enumerate(self._regions):
+            a, b = region.getRegion()
+            if a <= time <= b:
+                self._selected_region = index
+                break
         self.set_cursor(time)
         self.seek_requested.emit(time)
         if event.double():

@@ -672,7 +672,14 @@ def _quality_recommendations(warnings_df: pd.DataFrame, n_files: int) -> pd.Data
 
 
 @cleanup_stage
-def run_acoustic_quality_control(segmentation_summary_csv: str | Path, output_root: str | Path, config: QualityControlConfig | None=None, final_segmentation_intervals_csv: str | Path | None=None) -> StageResult:
+def run_acoustic_quality_control(segmentation_summary_csv: str | Path, output_root: str | Path, config: QualityControlConfig | None=None, final_segmentation_intervals_csv: str | Path | None=None, progress_callback=None) -> StageResult:
+    authoritative = Path(output_root) / "acoustic" / "003_segmentation_review" / "final" / "final_segmentation_decisions.csv"
+    if authoritative.is_file():
+        expected_intervals = authoritative.with_name("final_segmentation_intervals.csv")
+        if (Path(segmentation_summary_csv).resolve() != authoritative.resolve() or
+                final_segmentation_intervals_csv is None or
+                Path(final_segmentation_intervals_csv).resolve() != expected_intervals.resolve()):
+            raise ValueError("Frozen reviewed segmentation exists; QC requires its authoritative final decisions and intervals")
     cfg=config or QualityControlConfig()
     families=cfg.selected_families or list(QC_FAMILIES.keys())
     families=[f for f in families if f in QC_FAMILIES]
@@ -685,13 +692,20 @@ def run_acoustic_quality_control(segmentation_summary_csv: str | Path, output_ro
         seg=load_final_segmentation(final_segmentation_intervals_csv, segmentation_summary_csv)
     else:
         seg=pd.read_csv(segmentation_summary_csv) if segmentation_summary_csv.exists() else pd.DataFrame()
-    for _, row in seg.iterrows():
+    if progress_callback:
+        progress_callback(0, len(seg), "Quality Control")
+    for index, (_, row) in enumerate(seg.iterrows(), start=1):
         if final_segmentation_intervals_csv is None and str(row.get("automatic_status", "ACCEPTED")).upper() in {"EXCLUDED", "FAILED"}:
+            if progress_callback:
+                progress_callback(index, len(seg), f"Quality Control — {row.get('file_name', '')}")
             continue
         try:
             vals, st=_compute_one(row, cfg, families); rows.append(vals); status_rows.extend([{**item, **{key: row.get(key) for key in ("recording_id", "task_name", "run_id")}} for item in st])
         except Exception as exc:
             errors.append({"file_name":row.get("file_name", ""), "status":"failed", "error":str(exc)})
+        finally:
+            if progress_callback:
+                progress_callback(index, len(seg), f"Quality Control — {row.get('file_name', '')}")
     features_csv=folders["tables"]/"acoustic_quality_features.csv"
     main_csv=folders["tables"]/"acoustic_quality_main_summary.csv"
     status_csv=folders["tables"]/"acoustic_quality_family_status.csv"

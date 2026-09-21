@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Callable
 import pandas as pd
 
 from vslp.acoustic.context import run_context, cleanup_stage
@@ -21,6 +22,7 @@ def run_acoustic_ingest(
     output_root: str | Path,
     ffprobe_bin: str = "ffprobe",
     extensions: list[str] | None = None,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> StageResult:
     """Run non-destructive audio ingest over a file/folder.
 
@@ -34,8 +36,10 @@ def run_acoustic_ingest(
     rows: list[dict] = []
     errors: list[dict] = []
     files, skipped_duplicates = discover_files_with_duplicate_report(input_path, extensions)
+    if progress_callback:
+        progress_callback(0, len(files), "Ingest")
 
-    for path in files:
+    for index, path in enumerate(files, start=1):
         try:
             digest = digest_media_file(path, ffprobe_bin=ffprobe_bin)
             if int(digest.get("n_audio_streams") or 0) < 1:
@@ -49,6 +53,9 @@ def run_acoustic_ingest(
             rows.append(digest)
         except Exception as exc:  # noqa: BLE001 - batch should continue
             errors.append({"file_name": path.name, "file_path": str(path), "ingest_status": "failed", "error": str(exc)})
+        finally:
+            if progress_callback:
+                progress_callback(index, len(files), f"Ingest — {path.name}")
 
     summary_path = folders["tables"] / "audio_ingest_summary.csv"
     errors_path = folders["errors"] / "audio_ingest_errors.csv"

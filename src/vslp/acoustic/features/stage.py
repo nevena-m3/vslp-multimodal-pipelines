@@ -56,6 +56,7 @@ class FeatureExtractionConfig:
 
     selected_subsystems: list[str] = field(default_factory=list)
     selected_features: list[str] = field(default_factory=list)
+    prompt_manifest_path: str | None = None
     task_word_counts: dict[str, float] = field(default_factory=dict)
     minimum_pause_duration_sec: float = 0.30
     acoustic_region_policy: str = "speech_only"  # speech_only, effective_task, full_file
@@ -88,12 +89,30 @@ class FeatureExtractionConfig:
 
 
 def _select_registry(cfg: FeatureExtractionConfig) -> pd.DataFrame:
-    registry = build_acoustic_feature_registry()
-    if cfg.selected_subsystems:
-        registry = registry.loc[registry["subsystem"].isin(cfg.selected_subsystems)].copy()
-    if cfg.selected_features:
-        registry = registry.loc[registry["feature"].isin(cfg.selected_features)].copy()
-    return registry.reset_index(drop=True)
+    from vslp.acoustic.features.catalog import load_feature_catalog
+
+    approved = {output["feature_id"] for output in load_feature_catalog()["outputs"]
+                if output.get("family_spec_approved") and output.get("selectable")}
+    requested = set(cfg.selected_features)
+    if not requested or not requested <= approved:
+        raise ValueError(
+            "Acoustic Features requires exact, approved output IDs from the "
+            "79-construct family specifications; legacy feature IDs cannot execute."
+        )
+    catalog = load_feature_catalog()
+    rows = []
+    for output in catalog["outputs"]:
+        if output["feature_id"] in requested:
+            rows.append({"feature": output["feature_id"], "subsystem": output["family_name"],
+                         "family": output["family_name"], "construct_id": output["construct_id"],
+                         "meaning": output["human_name"], "unit": output["unit"],
+                         "formula": output["formula"], "evidence_tier": output["evidence_level"],
+                         "implementation_status": output["use_status"],
+                         "algorithm_version": output["algorithm_version"],
+                         "parameter_set_id": output["default_parameter_set_id"],
+                         "analysis_region": output["analysis_region"],
+                         "source_document": output["source_document"]})
+    return pd.DataFrame(rows)
 
 
 def _make_context(row: pd.Series, cfg: FeatureExtractionConfig) -> FeatureContext:
@@ -276,14 +295,28 @@ def run_acoustic_feature_extraction(
     output_root: str | Path,
     config: FeatureExtractionConfig | None = None,
     final_segmentation_intervals_csv: str | Path | None = None,
+    progress_callback=None,
 ) -> StageResult:
     """Extract acoustic features from segmentation outputs."""
+    authoritative = Path(output_root) / "acoustic" / "003_segmentation_review" / "final" / "final_segmentation_decisions.csv"
+    if authoritative.is_file():
+        expected_intervals = authoritative.with_name("final_segmentation_intervals.csv")
+        if (Path(segmentation_summary_csv).resolve() != authoritative.resolve() or
+                final_segmentation_intervals_csv is None or
+                Path(final_segmentation_intervals_csv).resolve() != expected_intervals.resolve()):
+            raise ValueError("Frozen reviewed segmentation exists; Features requires its authoritative final decisions and intervals")
     cfg = _apply_computation_mode_defaults(config or FeatureExtractionConfig())
+    registry = _select_registry(cfg)
+    from vslp.acoustic.features.family08 import FAMILY08_IDS, run_family08_stage
+
+    if set(cfg.selected_features) <= FAMILY08_IDS:
+        return run_family08_stage(segmentation_summary_csv, output_root, cfg,
+                                  final_segmentation_intervals_csv, registry,
+                                  progress_callback=progress_callback)
     segmentation_summary_csv = Path(segmentation_summary_csv)
     stage_dir = Path(output_root) / "acoustic" / "005_features"
     folders = ensure_stage_folders(stage_dir, lazy=True)
 
-    registry = _select_registry(cfg)
     selected_names = set(registry["feature"].astype(str).tolist())
     if final_segmentation_intervals_csv is not None:
         from vslp.acoustic.segment.review import load_final_segmentation
@@ -307,7 +340,9 @@ def run_acoustic_feature_extraction(
     errors: list[dict[str, Any]] = []
     long_status_rows: list[dict[str, Any]] = []
 
-    for _, row in seg_summary.iterrows():
+    if progress_callback:
+        progress_callback(0, len(seg_summary), "Acoustic Features")
+    for index, (_, row) in enumerate(seg_summary.iterrows(), start=1):
         file_name = str(row.get("file_name", ""))
         out_row: dict[str, Any] = _operational_prefix(row, run)
         feature_results: dict[str, FeatureValue] = {}
@@ -357,6 +392,9 @@ def run_acoustic_feature_extraction(
             out_row["feature_extraction_status"] = "failed"
             rows.append(out_row)
             errors.append({"file_name": file_name, "status": "failed", "error": str(exc)})
+        finally:
+            if progress_callback:
+                progress_callback(index, len(seg_summary), f"Acoustic Features — {file_name}")
 
     features_path = folders["tables"] / "acoustic_features_per_file.csv"
     status_path = folders["tables"] / "acoustic_feature_status_long.csv"

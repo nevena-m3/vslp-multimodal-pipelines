@@ -1,19 +1,9 @@
-"""VSLP Acoustic Pipeline GUI v0.38.
-
-V0.38 final polish:
-- stage-aware workflow guidance with scientific rationale;
-- embedded CSV and plot previews;
-- latest-output detection;
-- feature-level selection inside each subsystem;
-- quick selectors for all / implemented / proxy / pending features;
-- region-aware feature extraction;
-- dedicated Quality Control stage;
-- clearer separation of clinical/simple controls and expert controls.
-"""
+"""VSLP Acoustic Pipeline GUI."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import inspect
 from pathlib import Path
 import json
 from typing import Callable
@@ -21,7 +11,7 @@ import traceback
 
 import pandas as pd
 from PySide6.QtCore import QObject, QThread, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QPixmap
+from PySide6.QtGui import QBrush, QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -54,21 +44,19 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from vslp.acoustic.features.registry import build_acoustic_feature_registry
+from vslp.acoustic.features.catalog import load_feature_catalog, task_indicator, prerequisite_issues
 from vslp.acoustic.features.scales import build_feature_family_policy_summary
 from vslp.acoustic.features.stage import (
-    IMPLEMENTED_FEATURES,
-    PROXY_FEATURES,
     FeatureExtractionConfig,
     run_acoustic_feature_extraction,
 )
 from vslp.acoustic.ingest.stage import run_acoustic_ingest
 from vslp.acoustic.run_setup import initialize_acoustic_run
 from vslp.acoustic.preprocess.stage import PreprocessConfig, run_acoustic_preprocess
-from vslp.acoustic.segment.pipeline import SegmentationConfig, run_acoustic_segmentation
+from vslp.acoustic.segment.pipeline import SegmentationConfig, run_acoustic_segmentation, segmentation_runs
 from vslp.acoustic.segment.selection import SILERO, DDK, PHONATION, CUSTOM, recommend_method
 from vslp.acoustic.segment.task_methods import DDKConfig, PhonationConfig
-from vslp.acoustic.segment.review import initialize_segmentation_review
+from vslp.acoustic.segment.review import initialize_segmentation_review, select_segmentation_run
 from vslp.gui.acoustic_app.review_widget import SegmentationReviewWidget
 from vslp.acoustic.quality.stage import (
     QC_FAMILIES,
@@ -96,6 +84,7 @@ class Worker(QObject):
     finished = Signal(str, object)
     failed = Signal(str, str)
     message = Signal(str)
+    progress = Signal(int, int, str)
 
     def __init__(self, name: str, func: Callable, kwargs: dict):
         super().__init__()
@@ -105,10 +94,14 @@ class Worker(QObject):
         self.output_root = kwargs.get("output_root")
 
     def run(self) -> None:
+        label = "Acoustic Features" if self.name == "features" else self.name
         self.started.emit(self.name)
-        self.message.emit(f"Starting {self.name}...")
+        self.message.emit(f"Starting {label}...")
         try:
-            result = self.func(**self.kwargs)
+            kwargs = dict(self.kwargs)
+            if "progress_callback" in inspect.signature(self.func).parameters:
+                kwargs["progress_callback"] = self.progress.emit
+            result = self.func(**kwargs)
         except Exception as exc:  # noqa: BLE001
             tb = traceback.format_exc()
             if self.output_root is not None:
@@ -117,7 +110,7 @@ class Worker(QObject):
             return
         if self.output_root is not None:
             prune_empty_acoustic_directories(self.output_root)
-        self.message.emit(f"Finished {self.name}: {getattr(result, 'status', 'ok')}")
+        self.message.emit(f"Finished {label}: {getattr(result, 'status', 'ok')}")
         self.finished.emit(self.name, result)
 
 
@@ -131,7 +124,8 @@ class AcousticPipelineWindow(QMainWindow):
         self._current_preview_pixmap: QPixmap | None = None
         self._current_preview_path: Path | None = None
 
-        self.registry = build_acoustic_feature_registry()
+        self.feature_catalog = load_feature_catalog()
+        self.catalog_outputs = {item["feature_id"]: item for item in self.feature_catalog["outputs"]}
         self._updating_feature_tree = False
         self.stage_records: dict[str, StageRecord] = {
             "project": StageRecord(),
@@ -187,7 +181,7 @@ class AcousticPipelineWindow(QMainWindow):
             ("segment", "Data Segmentation"),
             ("review", "Segmentation manual review"),
             ("quality", "Quality Control"),
-            ("features", "Feature Extraction"),
+            ("features", "Acoustic Features"),
             ("reports", "Reports"),
         ]:
             card = QFrame()
@@ -241,24 +235,34 @@ class AcousticPipelineWindow(QMainWindow):
         self.review_widget.continue_requested.connect(self.run_after_review)
         tabs.addTab(self.review_widget, "Segmentation manual review")
         tabs.addTab(self._build_quality_tab(), "Quality Control")
-        tabs.addTab(self._build_features_tab(), "Physiological Features")
+        qc_index = tabs.count() - 1
+        tabs.setTabEnabled(qc_index, False)
+        tabs.setTabToolTip(qc_index, "Temporarily unavailable — quality framework under revision.")
+        self.stage_cards["quality"].setEnabled(False)
+        self.stage_labels["quality"].setText("Temporarily unavailable")
+        tabs.addTab(self._build_features_tab(), "Acoustic Features")
         tabs.addTab(self._build_inspector_tab(), "Inspector")
         tabs.addTab(self._build_reports_tab(), "Reports & Outputs")
-        main_col.addWidget(tabs, stretch=1)
 
         log_group = QGroupBox("Run Log")
         log_layout = QVBoxLayout(log_group)
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
+        self.progress_label = QLabel("Ready")
         self.log_box = QPlainTextEdit()
         self.log_box.setReadOnly(True)
         self.log_box.setMinimumHeight(90)
-        self.log_box.setMaximumHeight(125)
         log_layout.addWidget(self.progress)
+        log_layout.addWidget(self.progress_label)
         log_layout.addWidget(self.log_box)
-        log_group.setMaximumHeight(180)
-        main_col.addWidget(log_group)
+        run_splitter = QSplitter(Qt.Vertical)
+        run_splitter.addWidget(tabs)
+        run_splitter.addWidget(log_group)
+        run_splitter.setStretchFactor(0, 5)
+        run_splitter.setStretchFactor(1, 1)
+        run_splitter.setSizes([650, 175])
+        main_col.addWidget(run_splitter, stretch=1)
 
         root.addLayout(main_col, stretch=1)
 
@@ -457,6 +461,8 @@ class AcousticPipelineWindow(QMainWindow):
         self.remove_dc_check = QCheckBox("Remove DC offset")
         self.remove_dc_check.setChecked(True)
         options_layout.addWidget(self.remove_dc_check)
+        self.normalize_check = QCheckBox("Amplitude normalization")
+        options_layout.addWidget(self.normalize_check)
         layout.addWidget(options)
 
         run_btn = QPushButton("Run Preprocessing")
@@ -506,15 +512,9 @@ class AcousticPipelineWindow(QMainWindow):
 
         self.ddk_group = QGroupBox("DDK energy-envelope")
         form = QFormLayout(self.ddk_group)
-        self.ddk_threshold_spin = QDoubleSpinBox(); self.ddk_threshold_spin.setRange(0.05, 0.90); self.ddk_threshold_spin.setSingleStep(0.05); self.ddk_threshold_spin.setValue(0.35)
-        self._set_tooltip(self.ddk_threshold_spin, "Local energy fraction separating syllable events from valleys; lower retains weak syllables.")
-        self.ddk_min_event_spin = QSpinBox(); self.ddk_min_event_spin.setRange(10, 500); self.ddk_min_event_spin.setValue(35)
-        self._set_tooltip(self.ddk_min_event_spin, "Shortest measurable syllable energy event; longer values suppress brief noise bursts.")
-        self.ddk_local_window_spin = QSpinBox(); self.ddk_local_window_spin.setRange(100, 2000); self.ddk_local_window_spin.setValue(600)
-        self._set_tooltip(self.ddk_local_window_spin, "Time span used to adapt to changing loudness across repetitions.")
-        form.addRow("Local threshold fraction", self.ddk_threshold_spin)
+        self.ddk_min_event_spin = QSpinBox(); self.ddk_min_event_spin.setRange(10, 500); self.ddk_min_event_spin.setValue(20)
+        self._set_tooltip(self.ddk_min_event_spin, "Shortest retained energy event; one 20 ms frame by default.")
         form.addRow("Minimum event (ms)", self.ddk_min_event_spin)
-        form.addRow("Local window (ms)", self.ddk_local_window_spin)
         layout.addWidget(self.ddk_group)
 
         self.phonation_group = QGroupBox("Sustained phonation")
@@ -548,6 +548,7 @@ class AcousticPipelineWindow(QMainWindow):
         layout.addWidget(run_btn)
         layout.addStretch(1)
         self.task_name_edit.textChanged.connect(self._recommend_segmentation_method)
+        self.task_name_edit.textChanged.connect(lambda: self._refresh_feature_count_label())
         self._update_segmentation_method_ui()
         return self._scrollable(container)
 
@@ -563,8 +564,8 @@ class AcousticPipelineWindow(QMainWindow):
         self.ddk_group.setVisible(method == DDK)
         self.phonation_group.setVisible(method == PHONATION)
         recommendations = {
-            SILERO: "Recommended for: Bamboo Passage · Buy Bobby a Puppy · WSTG · connected speech",
-            DDK: "Recommended for: pa · ta · ka · ba · pataka · repetitive oral DDK",
+            SILERO: "Recommended for: Passages (e.g. Bamboo Passage) and sentences (e.g. Buy Bobby a Puppy, We See Three Geese)",
+            DDK: "Recommended for: Rapid syllable repetition tasks such as /pa/, /ta/, /ka/, /ba/ and repetitive oral DDK",
             PHONATION: "Recommended for: sustained vowels /a/, /i/, etc.",
             CUSTOM: "Custom plugin method is not installed.",
         }
@@ -578,9 +579,7 @@ class AcousticPipelineWindow(QMainWindow):
             min_silence_duration_ms=int(self.min_silence_spin.value()),
             speech_pad_ms=int(self.speech_pad_spin.value()),
             sensitivity_profile=self.silero_profile_combo.currentText(),
-            ddk=DDKConfig(threshold_fraction=float(self.ddk_threshold_spin.value()),
-                          min_event_ms=float(self.ddk_min_event_spin.value()),
-                          local_window_ms=float(self.ddk_local_window_spin.value())),
+            ddk=DDKConfig(min_event_ms=float(self.ddk_min_event_spin.value())),
             phonation=PhonationConfig(min_phonation_ms=float(self.phon_min_spin.value()),
                                      onset_guard_ms=float(self.phon_onset_spin.value()),
                                      offset_guard_ms=float(self.phon_offset_spin.value()),
@@ -957,36 +956,44 @@ class AcousticPipelineWindow(QMainWindow):
     def _build_features_tab(self) -> QWidget:
         container = QWidget()
         layout = QVBoxLayout(container)
-        layout.addWidget(self._info_panel(
-            "Info",
-            "Select feature families or individual features. Each feature has a defined native measurement scale, analysis region, and scalar-reduction rule."
-        ))
-
         splitter = QSplitter(Qt.Horizontal)
         left = QWidget(); left_layout = QVBoxLayout(left)
-        selector_group = QGroupBox("Feature selector")
+        selector_group = QGroupBox("Acoustic feature selector")
         selector_layout = QVBoxLayout(selector_group)
+        self.feature_task_label = QLabel("Task: Set up a run")
+        selector_layout.addWidget(self.feature_task_label)
         quick = QHBoxLayout()
         for label, callback in [
-            ("All", self.select_all_features),
-            ("Implemented", self.select_implemented_features),
-            ("Implemented + Proxy", self.select_implemented_and_proxy_features),
+            ("Recommended for task", self.select_recommended_features),
+            ("All production", self.select_all_features),
             ("Clear", self.clear_feature_selection),
         ]:
             btn = QPushButton(label)
             btn.clicked.connect(callback)
             quick.addWidget(btn)
         selector_layout.addLayout(quick)
+        self.show_research_check = QCheckBox("Show research / experimental features")
+        self.show_research_check.toggled.connect(self._filter_feature_tree)
+        selector_layout.addWidget(self.show_research_check)
+        self.feature_search_edit = QLineEdit()
+        self.feature_search_edit.setPlaceholderText("Search feature, code name, family, or task")
+        self.feature_search_edit.textChanged.connect(self._filter_feature_tree)
+        selector_layout.addWidget(self.feature_search_edit)
 
         self.feature_tree = QTreeWidget()
-        self.feature_tree.setHeaderLabels(["Feature / subsystem", "Status", "Tier", "Task / unit"])
+        self.feature_tree.setHeaderLabels(["Feature", "Code name", "Evidence", "Use", "Task(s)", "Unit", "QC range", "Analysis unit"])
+        self.feature_tree.headerItem().setToolTip(6, "Broad plausibility guardrail, not a healthy or clinical reference interval")
+        for column, width in enumerate((275, 170, 95, 125, 220, 75, 100, 105)):
+            self.feature_tree.setColumnWidth(column, width)
         self.feature_tree.setMinimumHeight(360)
         self.feature_tree.setSelectionMode(QAbstractItemView.SingleSelection)
         self.feature_tree.itemChanged.connect(self._on_feature_tree_item_changed)
         self.feature_tree.itemSelectionChanged.connect(self._update_feature_detail)
         self.feature_items: dict[str, QTreeWidgetItem] = {}
         self.subsystem_items: dict[str, QTreeWidgetItem] = {}
+        self.construct_items: dict[str, QTreeWidgetItem] = {}
         self._populate_feature_tree()
+        self.feature_tree.setSortingEnabled(True)
         selector_layout.addWidget(self.feature_tree)
         left_layout.addWidget(selector_group)
 
@@ -994,13 +1001,30 @@ class AcousticPipelineWindow(QMainWindow):
         self.feature_count_label = QLabel("")
         self.feature_count_label.setObjectName("SectionHeader")
         right_layout.addWidget(self.feature_count_label)
-        self.feature_detail_box = QPlainTextEdit()
-        self.feature_detail_box.setReadOnly(True)
-        self.feature_detail_box.setMinimumHeight(150)
-        self.feature_detail_box.setMaximumHeight(210)
-        right_layout.addWidget(self.feature_detail_box)
-        param_group = QGroupBox("Feature parameters")
-        form = QFormLayout(param_group)
+        detail_group = QGroupBox("SELECTED FEATURE")
+        detail_layout = QVBoxLayout(detail_group)
+        self.feature_detail_box = QTreeWidget()
+        self.feature_detail_box.setHeaderLabels(["Field", "Value"])
+        self.feature_detail_box.setRootIsDecorated(False)
+        self.feature_detail_box.setColumnWidth(0, 145)
+        detail_layout.addWidget(self.feature_detail_box)
+        right_layout.addWidget(detail_group)
+        recommendations_group = QGroupBox("RECOMMENDED FOR CURRENT TASK")
+        recommendations_layout = QVBoxLayout(recommendations_group)
+        self.feature_recommendations_box = QTreeWidget()
+        self.feature_recommendations_box.setHeaderLabels(["Category / feature", "Detail"])
+        self.feature_recommendations_box.setColumnWidth(0, 240)
+        recommendations_layout.addWidget(self.feature_recommendations_box)
+        right_layout.addWidget(recommendations_group)
+        prompt_row = QHBoxLayout()
+        self.feature_prompt_manifest_edit = QLineEdit()
+        self.feature_prompt_manifest_edit.setPlaceholderText("Versioned prompt-count manifest (.json)")
+        self.feature_prompt_manifest_edit.textChanged.connect(self._refresh_feature_count_label)
+        prompt_row.addWidget(self.feature_prompt_manifest_edit)
+        prompt_browse = QPushButton("Browse")
+        prompt_browse.clicked.connect(self._browse_feature_prompt_manifest)
+        prompt_row.addWidget(prompt_browse)
+        right_layout.addLayout(prompt_row)
         self.min_pause_feature_spin = QDoubleSpinBox(); self.min_pause_feature_spin.setDecimals(2); self.min_pause_feature_spin.setRange(0.0, 5.0); self.min_pause_feature_spin.setSingleStep(0.05); self.min_pause_feature_spin.setValue(0.30)
         self._set_tooltip(self.min_pause_feature_spin, "Minimum internal nonspeech duration counted as a pause and minimum phrase duration. The supplied VSLP feature protocol specifies 300 ms.")
         self.computation_mode_combo = QComboBox(); self.computation_mode_combo.addItems([
@@ -1013,19 +1037,14 @@ class AcousticPipelineWindow(QMainWindow):
         self._set_tooltip(self.computation_mode_combo, "Validated default is recommended. Other modes are applied only where scientifically valid and are recorded in the scalar-reduction audit table.")
         self.region_policy_combo = QComboBox(); self.region_policy_combo.addItems(["speech_only", "effective_task", "full_file"])
         self._set_tooltip(self.region_policy_combo, "Family defaults override this where needed. This is kept as a low-level fallback for signal features.")
-        form.addRow("Minimum internal pause duration (s)", self.min_pause_feature_spin)
-        form.addRow("Computation mode", self.computation_mode_combo)
-        form.addRow("Fallback signal region", self.region_policy_combo)
-        right_layout.addWidget(param_group)
+        self.min_pause_feature_spin.setEnabled(False)
+        self.computation_mode_combo.setEnabled(False)
+        self.region_policy_combo.setEnabled(False)
 
-        strategy_group = QGroupBox("Computation policy")
-        strategy_layout = QVBoxLayout(strategy_group)
-        strategy_layout.addWidget(self._build_feature_policy_table())
-        right_layout.addWidget(strategy_group)
-
-        run_btn = QPushButton("Run Feature Extraction")
+        run_btn = QPushButton("Run Acoustic Features")
         run_btn.setObjectName("RunButton")
         run_btn.clicked.connect(self.run_features)
+        self.run_features_btn = run_btn
         right_layout.addWidget(run_btn)
         right_layout.addStretch(1)
         splitter.addWidget(left); splitter.addWidget(right); splitter.setSizes([720, 430]); splitter.setMinimumHeight(540)
@@ -1086,9 +1105,9 @@ class AcousticPipelineWindow(QMainWindow):
             ("Quality feature correlation", lambda: self.preview_csv(self._stage_path("quality", "feature_corr"))),
             ("Quality PCA variance", lambda: self.preview_csv(self._stage_path("quality", "pca_variance"))),
             ("Quality family status", lambda: self.preview_csv(self._stage_path("quality", "family_status"))),
-            ("Feature table", lambda: self.preview_csv(self._stage_path("features", "summary"))),
-            ("Feature registry", lambda: self.preview_csv(self._stage_path("features", "registry"))),
-            ("Feature status", lambda: self.preview_csv(self._stage_path("features", "status"))),
+            ("Acoustic Features table", lambda: self.preview_csv(self._stage_path("features", "summary"))),
+            ("Acoustic Features registry", lambda: self.preview_csv(self._stage_path("features", "registry"))),
+            ("Acoustic Features status", lambda: self.preview_csv(self._stage_path("features", "status"))),
             ("Feature distribution audit", lambda: self.preview_csv(self._stage_path("features", "audit"))),
             ("Feature expected-range flags", lambda: self.preview_csv(self._stage_path("features", "range_flags"))),
             ("Feature measurement scales", lambda: self.preview_csv(self._output_root() / "acoustic" / "005_features" / "tables" / "acoustic_feature_measurement_scale_registry.csv")),
@@ -1251,7 +1270,7 @@ class AcousticPipelineWindow(QMainWindow):
             ("Preprocess report", lambda: self._open_stage_file("preprocess", "report")),
             ("Segmentation report", lambda: self._open_stage_file("segment", "report")),
             ("Quality Control report", lambda: self._open_stage_file("quality", "report")),
-            ("Feature Extraction report", lambda: self._open_stage_file("features", "report")),
+            ("Acoustic Features report", lambda: self._open_stage_file("features", "report")),
             ("Run summary report", lambda: self._open_stage_file("reports", "report")),
         ]
         for i, (label, callback) in enumerate(stage_buttons):
@@ -1266,8 +1285,8 @@ class AcousticPipelineWindow(QMainWindow):
             ("Segmentation summary", lambda: self._open_stage_file("segment", "main_summary")),
             ("Quality main summary", lambda: self._open_stage_file("quality", "main_summary")),
             ("Quality recommendations", lambda: self._open_stage_file("quality", "recommendations")),
-            ("Feature table", lambda: self._open_stage_file("features", "summary")),
-            ("Feature status", lambda: self._open_stage_file("features", "status")),
+            ("Acoustic Features table", lambda: self._open_stage_file("features", "summary")),
+            ("Acoustic Features status", lambda: self._open_stage_file("features", "status")),
             ("Feature scalar-reduction audit", lambda: self._open_stage_file("features", "reduction_audit")),
             ("Run output manifest", lambda: self._open_stage_file("reports", "summary")),
         ]
@@ -1297,77 +1316,98 @@ class AcousticPipelineWindow(QMainWindow):
     def _open_feature_handoff(self, section: str) -> None:
         path = self._output_root() / "acoustic" / "feature_handoff" / section
         if not path.exists():
-            QMessageBox.information(self, "Handoff not available", "Run Acoustic Feature Extraction first.")
+            QMessageBox.information(self, "Handoff not available", "Run Acoustic Features first.")
             return
         open_path(path)
 
     # ---------------------------- FEATURE TREE ----------------------------
-    def _feature_status(self, name: str) -> str:
-        if name in PROXY_FEATURES:
-            return "proxy"
-        if name in IMPLEMENTED_FEATURES:
-            return "implemented"
-        return "pending"
-
     def _populate_feature_tree(self) -> None:
         self._updating_feature_tree = True
         self.feature_tree.clear()
-        for subsystem, sdf in self.registry.groupby("subsystem", sort=True):
-            parent = QTreeWidgetItem([f"{subsystem} ({len(sdf)})", "subsystem", ""])
+        self.feature_items.clear()
+        self.subsystem_items.clear()
+        self.construct_items.clear()
+        outputs_by_construct = {}
+        for output in self.feature_catalog["outputs"]:
+            outputs_by_construct.setdefault(output["construct_id"], []).append(output)
+        for family in self.feature_catalog["families"]:
+            family_id = family["family_id"]
+            parent = QTreeWidgetItem([family["family_name"]])
+            parent.setData(0, Qt.UserRole, ("family", family_id))
             parent.setFlags(parent.flags() | Qt.ItemIsUserCheckable)
-            parent.setCheckState(0, Qt.Checked)
+            parent.setCheckState(0, Qt.Unchecked)
             self.feature_tree.addTopLevelItem(parent)
-            self.subsystem_items[str(subsystem)] = parent
-            for _, row in sdf.sort_values("feature").iterrows():
-                feature = str(row["feature"])
-                status = self._feature_status(feature)
-                tier = str(row.get("evidence_tier", ""))
-                unit = str(row.get("unit", ""))
-                task = str(row.get("task_scope", ""))
-                task_unit = f"{task} | {unit}" if task and unit else (task or unit)
-                item = QTreeWidgetItem([feature, status, tier, task_unit])
-                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-                item.setCheckState(0, Qt.Checked)
-                item.setData(0, Qt.UserRole, feature)
-                item.setToolTip(0, str(row.get("meaning", "")))
-                item.setToolTip(1, "implemented = computed; proxy = engineering estimate needing validation; pending = explicit NaN placeholder")
-                item.setToolTip(2, "Evidence tier from the feature map: A established, B strong, C inconsistent/exploratory, D low priority.")
-                item.setToolTip(3, "Task compatibility and units.")
-                if status == "implemented":
-                    color = QColor("#8EF2C6")
-                elif status == "proxy":
-                    color = QColor("#FFD98E")
-                else:
-                    color = QColor("#8FA9BD")
-                tier_color = {"A": QColor("#8EF2C6"), "B": QColor("#5FD3C4"), "C": QColor("#FFD98E"), "D": QColor("#D77A6A")}.get(tier, QColor("#8FA9BD"))
-                item.setForeground(1, QBrush(color))
-                item.setForeground(2, QBrush(tier_color))
-                item.setForeground(0, QBrush(QColor("#EAF2F8")))
-                parent.addChild(item)
-                self.feature_items[feature] = item
+            self.subsystem_items[family_id] = parent
+            for construct in (c for c in self.feature_catalog["constructs"] if c["family_id"] == family_id):
+                construct_id = construct["construct_id"]
+                tasks = [self.feature_catalog["tasks_registry"][key] for key in
+                         (*construct["recommended_tasks"], *construct["conditional_tasks"])]
+                node = QTreeWidgetItem([construct["construct_name"], "—", "—",
+                    construct["use_status"], ", ".join(tasks), construct["unit"],
+                    construct["qc_range_text"], construct["signal_scope"].split("·")[-1].strip()])
+                node.setData(0, Qt.UserRole, ("construct", construct_id))
+                node.setFlags(node.flags() | Qt.ItemIsUserCheckable)
+                node.setCheckState(0, Qt.Unchecked)
+                parent.addChild(node)
+                self.construct_items[construct_id] = node
+                for output in outputs_by_construct.get(construct_id, []):
+                    feature_id = output["feature_id"]
+                    tasks = [self.feature_catalog["tasks_registry"][t] for t in output["recommended_tasks"]]
+                    tasks += [f"{self.feature_catalog['tasks_registry'][t]} (conditional)"
+                              for t in output["conditional_tasks"]]
+                    item = QTreeWidgetItem([output["human_name"], feature_id,
+                        output["evidence_level"], output["use_status"], ", ".join(tasks),
+                        output["unit"], output["qc_range_text"], output["analysis_unit"]])
+                    item.setData(0, Qt.UserRole, ("output", feature_id))
+                    item.setCheckState(0, Qt.Unchecked)
+                    if output["selectable"]:
+                        item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                    else:
+                        item.setFlags(item.flags() & ~Qt.ItemIsUserCheckable)
+                        item.setToolTip(0, output["blocked_reason"] or "Exact output algorithm awaits its family specification.")
+                        item.setForeground(0, QBrush(QColor("#8FA9BD")))
+                    if output["use_status"] == "Research":
+                        item.setForeground(3, QBrush(QColor("#C99C64")))
+                    node.addChild(item)
+                    self.feature_items[feature_id] = item
+                if not node.childCount():
+                    node.setFlags(node.flags() & ~Qt.ItemIsUserCheckable)
+                    node.setToolTip(0, "Exact output IDs will be added from the family specification.")
+            if not any(parent.child(i).flags() & Qt.ItemIsUserCheckable
+                       for i in range(parent.childCount())):
+                parent.setFlags(parent.flags() & ~Qt.ItemIsUserCheckable)
             parent.setExpanded(True)
-        self.feature_tree.resizeColumnToContents(0)
         self._updating_feature_tree = False
+        self._filter_feature_tree()
+
+    def _recount_feature_branch(self, item: QTreeWidgetItem) -> None:
+        children = [item.child(i) for i in range(item.childCount()) if item.child(i).flags() & Qt.ItemIsUserCheckable]
+        if not children:
+            item.setCheckState(0, Qt.Unchecked)
+        else:
+            states = [child.checkState(0) for child in children]
+            item.setCheckState(0, Qt.Checked if all(s == Qt.Checked for s in states) else
+                               Qt.Unchecked if all(s == Qt.Unchecked for s in states) else Qt.PartiallyChecked)
 
     def _on_feature_tree_item_changed(self, item: QTreeWidgetItem, column: int) -> None:
         if self._updating_feature_tree or column != 0:
             return
         self._updating_feature_tree = True
         try:
-            if item.childCount() > 0:
-                state = item.checkState(0)
-                for i in range(item.childCount()):
-                    item.child(i).setCheckState(0, state)
-            else:
-                parent = item.parent()
-                if parent is not None:
-                    checked = sum(parent.child(i).checkState(0) == Qt.Checked for i in range(parent.childCount()))
-                    if checked == parent.childCount():
-                        parent.setCheckState(0, Qt.Checked)
-                    elif checked == 0:
-                        parent.setCheckState(0, Qt.Unchecked)
-                    else:
-                        parent.setCheckState(0, Qt.PartiallyChecked)
+            if item.childCount():
+                def select_descendants(node):
+                    for index in range(node.childCount()):
+                        child = node.child(index)
+                        if child.childCount():
+                            select_descendants(child)
+                            self._recount_feature_branch(child)
+                        elif child.flags() & Qt.ItemIsUserCheckable:
+                            child.setCheckState(0, item.checkState(0))
+                select_descendants(item)
+            parent = item.parent()
+            while parent is not None:
+                self._recount_feature_branch(parent)
+                parent = parent.parent()
         finally:
             self._updating_feature_tree = False
         self._refresh_feature_count_label()
@@ -1375,71 +1415,197 @@ class AcousticPipelineWindow(QMainWindow):
     def _set_feature_selection(self, predicate: Callable[[str], bool]) -> None:
         self._updating_feature_tree = True
         try:
-            for feature, item in self.feature_items.items():
-                item.setCheckState(0, Qt.Checked if predicate(feature) else Qt.Unchecked)
+            for feature_id, item in self.feature_items.items():
+                eligible = bool(item.flags() & Qt.ItemIsUserCheckable)
+                item.setCheckState(0, Qt.Checked if eligible and predicate(feature_id) else Qt.Unchecked)
+            for node in self.construct_items.values():
+                self._recount_feature_branch(node)
             for parent in self.subsystem_items.values():
-                checked = sum(parent.child(i).checkState(0) == Qt.Checked for i in range(parent.childCount()))
-                if checked == parent.childCount():
-                    parent.setCheckState(0, Qt.Checked)
-                elif checked == 0:
-                    parent.setCheckState(0, Qt.Unchecked)
-                else:
-                    parent.setCheckState(0, Qt.PartiallyChecked)
+                self._recount_feature_branch(parent)
         finally:
             self._updating_feature_tree = False
         self._refresh_feature_count_label()
 
     def select_all_features(self) -> None:
-        self._set_feature_selection(lambda _f: True)
+        self._set_feature_selection(lambda f: self.catalog_outputs[f]["use_status"] == "Production")
 
-    def select_implemented_features(self) -> None:
-        self._set_feature_selection(lambda f: f in IMPLEMENTED_FEATURES and f not in PROXY_FEATURES)
-
-    def select_implemented_and_proxy_features(self) -> None:
-        self._set_feature_selection(lambda f: f in IMPLEMENTED_FEATURES or f in PROXY_FEATURES)
+    def select_recommended_features(self) -> None:
+        task = self.task_name_edit.text() if hasattr(self, "task_name_edit") else ""
+        self._set_feature_selection(lambda f: (
+            self.catalog_outputs[f]["use_status"] == "Production"
+            and task_indicator(self.catalog_outputs[f], task,
+                prerequisite_problems=self._feature_prerequisite_issues(f))[0] == "GREEN"))
 
     def clear_feature_selection(self) -> None:
         self._set_feature_selection(lambda _f: False)
 
+    def _filter_feature_tree(self, *_args) -> None:
+        if not hasattr(self, "feature_tree"):
+            return
+        query = self.feature_search_edit.text().strip().casefold()
+        research = self.show_research_check.isChecked()
+        for construct in self.feature_catalog["constructs"]:
+            node = self.construct_items[construct["construct_id"]]
+            for index in range(node.childCount()):
+                leaf = node.child(index)
+                output = self.catalog_outputs[leaf.data(0, Qt.UserRole)[1]]
+                task_names = [self.feature_catalog["tasks_registry"][key] for key in
+                              (*output["recommended_tasks"], *output["conditional_tasks"])]
+                text = " ".join((output["human_name"], output["feature_id"], output["family_name"],
+                                 output["construct_name"], *task_names)).casefold()
+                leaf.setHidden((output["use_status"] == "Research" and not research) or bool(query and query not in text))
+            construct_text = " ".join((construct["construct_name"], construct["family_name"],
+                *(self.feature_catalog["tasks_registry"][k] for k, v in construct["tasks"].items() if v))).casefold()
+            node.setHidden(bool(query and query not in construct_text and
+                                not any(not node.child(i).isHidden() for i in range(node.childCount()))) or
+                           (construct["matrix_status"] == "RESEARCH" and not research))
+        for parent in self.subsystem_items.values():
+            parent.setHidden(bool(query and not any(not parent.child(i).isHidden() for i in range(parent.childCount()))
+                                  and query not in parent.text(0).casefold()))
+
     def _selected_feature_names(self) -> list[str]:
-        return [f for f, item in self.feature_items.items() if item.checkState(0) == Qt.Checked]
+        return [feature_id for feature_id, item in self.feature_items.items()
+                if item.checkState(0) == Qt.Checked and item.flags() & Qt.ItemIsUserCheckable]
+
+    def _feature_prerequisite_issues(self, feature_id: str) -> list[str]:
+        task = self.task_name_edit.text() if hasattr(self, "task_name_edit") else ""
+        root = self._run_root
+        decisions = root / "acoustic" / "003_segmentation_review" / "final" / "final_segmentation_decisions.csv" if root else None
+        intervals = root / "acoustic" / "003_segmentation_review" / "final" / "final_segmentation_intervals.csv" if root else None
+        prompt_path = Path(self.feature_prompt_manifest_edit.text().strip()) if hasattr(
+            self, "feature_prompt_manifest_edit") and self.feature_prompt_manifest_edit.text().strip() else None
+        output = self.catalog_outputs[feature_id]
+        prompt_available = False
+        if output["family_id"] == "F08":
+            from vslp.acoustic.features.family08 import load_prompt_counts
+
+            prompt, _issue = load_prompt_counts(prompt_path, task)
+            prompt_available = bool(prompt and prompt.get(output["numerator_field"]) is not None)
+        return prerequisite_issues(output, task_name=task,
+                                   final_decisions=decisions, final_intervals=intervals,
+                                   prompt_available=prompt_available)
+
+    def _browse_feature_prompt_manifest(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, "Select prompt-count manifest", "", "JSON files (*.json)")
+        if path:
+            self.feature_prompt_manifest_edit.setText(path)
 
     def _refresh_feature_count_label(self) -> None:
         if not hasattr(self, "feature_count_label"):
             return
+        self._refresh_feature_indicators()
         selected = self._selected_feature_names()
-        impl = sum(f in IMPLEMENTED_FEATURES and f not in PROXY_FEATURES for f in selected)
-        proxy = sum(f in PROXY_FEATURES for f in selected)
-        pending = len(selected) - impl - proxy
-        self.feature_count_label.setText(f"Selected: {len(selected)} | implemented: {impl} | proxy: {proxy} | pending placeholders: {pending}")
+        counts = {name: sum(self.catalog_outputs[f]["use_status"] == name for f in selected)
+                  for name in ("Production", "Conditional", "Research")}
+        problems = sum(bool(self._feature_prerequisite_issues(f)) for f in selected)
+        task = self.task_name_edit.text() if hasattr(self, "task_name_edit") else "Not set"
+        self.feature_count_label.setText(
+            f"Selected outputs: {len(selected)} | Production: {counts['Production']} | "
+            f"Conditional: {counts['Conditional']} | Research: {counts['Research']} | "
+            f"Blocked selected: 0\nCurrent task: {task or 'Not set'} | Prerequisite issues: {problems}")
+        if hasattr(self, "run_features_btn"):
+            self.run_features_btn.setEnabled(bool(selected) and problems < len(selected))
+        if hasattr(self, "feature_task_label"):
+            self.feature_task_label.setText(f"Task: {task or 'Not set'}")
+        if hasattr(self, "feature_recommendations_box"):
+            tree = self.feature_recommendations_box
+            tree.clear()
+            tree.addTopLevelItem(QTreeWidgetItem(["Current task", task or "—"]))
+            for label, state in (("Recommended", "GREEN"), ("Conditional", "AMBER"),
+                                 ("Unavailable", "RED"), ("Not specified", "GRAY")):
+                matches = [c for c in self.feature_catalog["constructs"]
+                           if self.construct_items[c["construct_id"]].data(0, Qt.UserRole + 1) == state
+                           and (c["matrix_status"] != "RESEARCH" or self.show_research_check.isChecked())]
+                group = QTreeWidgetItem([f"{label} ({len(matches)})", ""])
+                tree.addTopLevelItem(group)
+                for construct in matches:
+                    group.addChild(QTreeWidgetItem([construct["construct_name"],
+                                                   self.construct_items[construct["construct_id"]].toolTip(0)]))
+                group.setExpanded(label in {"Recommended", "Conditional"})
+
+    def _refresh_feature_indicators(self) -> None:
+        if not hasattr(self, "feature_tree"):
+            return
+        colors = {"GREEN": "#71C49A", "AMBER": "#D9B56D",
+                  "GRAY": "#8FA1AF", "RED": "#D67D7D"}
+        icons = {}
+        for state, color in colors.items():
+            pixmap = QPixmap(13, 13)
+            pixmap.fill(Qt.transparent)
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(color))
+            painter.drawEllipse(2, 2, 9, 9)
+            painter.end()
+            icons[state] = QIcon(pixmap)
+        task = self.task_name_edit.text() if hasattr(self, "task_name_edit") else ""
+        self._updating_feature_tree = True
+        try:
+            for construct in self.feature_catalog["constructs"]:
+                item = self.construct_items[construct["construct_id"]]
+                if construct["outputs"]:
+                    children = [task_indicator(
+                        output, task,
+                        prerequisite_problems=self._feature_prerequisite_issues(output["feature_id"]))
+                        for output in construct["outputs"]]
+                    state, tooltip = next(
+                        (result for wanted in ("GREEN", "AMBER", "GRAY", "RED")
+                         for result in children if result[0] == wanted), children[0])
+                else:
+                    state, tooltip = task_indicator(construct, task, has_exact_output=False)
+                item.setIcon(0, icons[state])
+                item.setToolTip(0, tooltip)
+                item.setData(0, Qt.UserRole + 1, state)
+            for feature_id, item in self.feature_items.items():
+                output = self.catalog_outputs[feature_id]
+                state, tooltip = task_indicator(
+                    output, task,
+                    prerequisite_problems=self._feature_prerequisite_issues(feature_id))
+                item.setIcon(0, icons[state])
+                item.setToolTip(0, tooltip)
+                item.setData(0, Qt.UserRole + 1, state)
+        finally:
+            self._updating_feature_tree = False
+        if self.feature_tree.selectedItems():
+            self._update_feature_detail()
 
     def _update_feature_detail(self) -> None:
         items = self.feature_tree.selectedItems()
         if not items or not hasattr(self, "feature_detail_box"):
             return
-        item = items[0]
-        feature = item.data(0, Qt.UserRole)
-        if not feature:
-            subsystem_text = item.text(0)
-            self.feature_detail_box.setPlainText(f"Subsystem: {subsystem_text}\n\nSelect a child feature to view details.")
-            return
-        row = self.registry.loc[self.registry["feature"].astype(str) == str(feature)].iloc[0]
-        status = self._feature_status(str(feature))
-        status_note = {
-            "implemented": "Computed by the current backend and ready for engineering review.",
-            "proxy": "Computed as a proxy. Use for pipeline testing/exploration; validate before clinical interpretation.",
-            "pending": "Registered but not implemented yet. Output remains NaN intentionally."
-        }.get(status, "")
-        detail = (
-            f"Feature: {feature}\n"
-            f"Subsystem: {row['subsystem']}\n"
-            f"Status: {status} — {status_note}\n"
-            f"Unit: {row.get('unit', '')}\n\n"
-            f"Scientific meaning:\n{row.get('meaning', '')}\n\n"
-            f"Computation note:\n{row.get('computation_note', '')}\n\n"
-            "Region policy note:\nTiming and pause features use Silero segment tables. Signal features use the selected analysis region, with speech_only recommended by default."
-        )
-        self.feature_detail_box.setPlainText(detail)
+        kind, key = items[0].data(0, Qt.UserRole)
+        tree = self.feature_detail_box
+        tree.clear()
+        if kind == "construct":
+            item = next(c for c in self.feature_catalog["constructs"] if c["construct_id"] == key)
+            fields = [("Feature", item["construct_name"]), ("Type", "Construct"),
+                      ("Code name", "—"), ("Evidence", "—"), ("Use", item["use_status"]),
+                      ("Task(s)", ", ".join(self.feature_catalog["tasks_registry"][k]
+                        for k in (*item["recommended_tasks"], *item["conditional_tasks"])) or "—"),
+                      ("Unit", item["unit"]), ("QC range", item["qc_range_text"]),
+                      ("Analysis unit", item["signal_scope"].split("·")[-1].strip()),
+                      ("Output status", "Awaiting exact FEATURE ID(S) from family specification")]
+        elif kind == "output":
+            item = self.catalog_outputs[key]
+            fields = [("Feature", item["human_name"]), ("Code name", key),
+                      ("Evidence", item["evidence_level"] or "—"),
+                      ("Source coverage", f"{item['evidence_study_count']} studies · "
+                       f"{item['evidence_entry_count']} charted entries"),
+                      ("Use", item["use_status"]), ("Unit", item["unit"]),
+                      ("QC range", item["qc_range_text"]), ("Analysis unit", item["analysis_unit"]),
+                      ("Estimator", item["estimator"]),
+                      ("Analysis region", item["analysis_region"]),
+                      ("Parameter profile", item["parameter_profile"]["name"] + " (read-only)"),
+                      *[(key.replace("_", " ").capitalize(), value)
+                        for key, value in item["parameter_profile"]["active_parameters"].items()]]
+        else:
+            fields = [("Family", items[0].text(0))]
+        if kind in {"construct", "output"}:
+            fields.insert(2, ("Current task", items[0].data(0, Qt.UserRole + 1) or "—"))
+            fields.insert(3, ("Task detail", items[0].toolTip(0)))
+        for field, value in fields:
+            tree.addTopLevelItem(QTreeWidgetItem([field, str(value)]))
 
     # ---------------------------- PATHS/PREVIEWS ----------------------------
     def _output_root(self) -> Path:
@@ -1547,20 +1713,30 @@ class AcousticPipelineWindow(QMainWindow):
         return self._output_root() / "acoustic" / "001_preprocess" / "tables" / "acoustic_preprocess_summary.csv"
 
     def _segmentation_summary_path(self) -> Path:
+        runs = segmentation_runs(self._output_root())
+        if runs:
+            return Path(runs[-1]["summary_path"])
         return self._output_root() / "acoustic" / "002_segmentation" / "tables" / "acoustic_segmentation_summary.csv"
 
     def _stage_path(self, stage: str, kind: str) -> Path:
+        selected = self._output_root() / "acoustic" / "003_segmentation_review" / "logs" / "review_registry.json"
+        if selected.is_file() and stage == "review":
+            import json
+            run_id = json.loads(selected.read_text(encoding="utf-8")).get("selected_segmentation_run_id", "")
+            if kind == "summary":
+                return self._output_root() / "acoustic" / "003_segmentation_review" / "runs" / f"review_{run_id}" / "tables" / "review_queue.csv"
+        if stage == "review" and kind in {"decisions", "intervals"}:
+            name = "final_segmentation_decisions.csv" if kind == "decisions" else "final_segmentation_intervals.csv"
+            return self._output_root() / "acoustic" / "003_segmentation_review" / "final" / name
         mapping = {
             ("ingest", "summary"): self._output_root() / "acoustic" / "000_ingest" / "tables" / "audio_ingest_summary.csv",
             ("preprocess", "summary"): self._preprocess_summary_path(),
             ("preprocess", "main_summary"): self._output_root() / "acoustic" / "001_preprocess" / "tables" / "acoustic_preprocess_main_summary.csv",
             ("preprocess", "report"): self._output_root() / "acoustic" / "001_preprocess" / "reports" / "acoustic_preprocess_report.html",
             ("segment", "summary"): self._segmentation_summary_path(),
-            ("segment", "main_summary"): self._output_root() / "acoustic" / "002_segmentation" / "tables" / "acoustic_segmentation_main_summary.csv",
-            ("segment", "report"): self._output_root() / "acoustic" / "002_segmentation" / "reports" / "acoustic_segmentation_report.html",
-            ("review", "summary"): self._output_root() / "acoustic" / "003_segmentation_review" / "tables" / "segmentation_review_queue.csv",
-            ("review", "decisions"): self._output_root() / "acoustic" / "003_segmentation_review" / "tables" / "final_segmentation_decisions.csv",
-            ("review", "intervals"): self._output_root() / "acoustic" / "003_segmentation_review" / "tables" / "final_segmentation_intervals.csv",
+            ("segment", "main_summary"): self._segmentation_summary_path().with_name("acoustic_segmentation_main_summary.csv"),
+            ("segment", "report"): self._segmentation_summary_path().parent.parent / "reports" / "acoustic_segmentation_report.html",
+            ("review", "summary"): self._output_root() / "acoustic" / "003_segmentation_review" / "runs" / "review_default" / "tables" / "review_queue.csv",
             ("quality", "summary"): self._output_root() / "acoustic" / "004_quality_control" / "tables" / "acoustic_quality_features.csv",
             ("quality", "main_summary"): self._output_root() / "acoustic" / "004_quality_control" / "tables" / "acoustic_quality_main_summary.csv",
             ("quality", "family_status"): self._output_root() / "acoustic" / "004_quality_control" / "tables" / "acoustic_quality_family_status.csv",
@@ -1683,7 +1859,7 @@ class AcousticPipelineWindow(QMainWindow):
         open_path(path)
 
     def preview_latest_segmentation_plot(self) -> None:
-        plot_dir = self._output_root() / "acoustic" / "002_segmentation" / "plots"
+        plot_dir = self._segmentation_summary_path().parent.parent / "plots"
         plots = sorted(plot_dir.rglob("*.png")) if plot_dir.exists() else []
         if not plots:
             QMessageBox.information(self, "No plots", f"No segmentation plots found in:\n{plot_dir}")
@@ -1760,9 +1936,12 @@ class AcousticPipelineWindow(QMainWindow):
     def _set_busy(self, busy: bool) -> None:
         for btn in self.findChildren(QPushButton):
             btn.setEnabled(not busy)
-        self.progress.setRange(0, 0 if busy else 100)
-        if not busy:
-            self.progress.setValue(100)
+        if busy:
+            self.progress.setRange(0, 0)
+            self.progress_label.setText("Discovering inputs…")
+        else:
+            if self.progress.maximum() == 0:
+                self.progress.setRange(0, 100)
             if self._run_root is not None:
                 for btn in (self.browse_input_btn, self.browse_output_btn, self.init_project_btn, self.open_run_btn):
                     btn.setEnabled(False)
@@ -1777,6 +1956,7 @@ class AcousticPipelineWindow(QMainWindow):
         self._thread.started.connect(self._worker.run)
         self._worker.started.connect(self._on_worker_started)
         self._worker.message.connect(self.append_log)
+        self._worker.progress.connect(self._on_worker_progress)
         self._worker.finished.connect(self._on_worker_finished)
         self._worker.failed.connect(self._on_worker_failed)
         self._worker.finished.connect(self._cleanup_thread)
@@ -1795,17 +1975,32 @@ class AcousticPipelineWindow(QMainWindow):
         if name in self.stage_records:
             self.stage_records[name].status = "running"
             self._refresh_stage_cards()
-        self.append_log(f"=== {name} ===")
+        self.append_log(f"=== {'Acoustic Features' if name == 'features' else name} ===")
+
+    def _on_worker_progress(self, done: int, total: int, message: str) -> None:
+        if total > 0:
+            self.progress.setRange(0, total)
+            self.progress.setValue(max(0, min(done, total)))
+            percent = round(100 * done / total)
+            self.progress_label.setText(f"{percent}% — {done} / {total} — {message}")
+        else:
+            self.progress.setRange(0, 100)
+            self.progress.setValue(100)
+            self.progress_label.setText(message)
 
     def _on_worker_failed(self, name: str, err: str) -> None:
         rec = self.stage_records.get(name, StageRecord())
         rec.status = "failed"; self.stage_records[name] = rec
         self._refresh_stage_cards()
-        self.append_log(f"ERROR in {name}:\n{err}")
-        QMessageBox.critical(self, f"{name} failed", err)
+        label = "Acoustic Features" if name == "features" else name
+        self.append_log(f"ERROR in {label}:\n{err}")
+        QMessageBox.critical(self, f"{label} failed", err)
 
     def _refresh_stage_cards(self) -> None:
         for key, lbl in self.stage_labels.items():
+            if key == "quality":
+                lbl.setText("Temporarily unavailable")
+                continue
             status = self.stage_records[key].status
             lbl.setText(self._stage_status_text(status))
             if status in {"completed", "detected"}:
@@ -1915,6 +2110,7 @@ class AcousticPipelineWindow(QMainWindow):
     def _preprocess_config_from_gui(self) -> PreprocessConfig:
         return PreprocessConfig(
             remove_dc_offset=bool(self.remove_dc_check.isChecked()),
+            amplitude_normalization=bool(self.normalize_check.isChecked()),
         )
 
     def run_preprocess(self) -> None:
@@ -1946,11 +2142,13 @@ class AcousticPipelineWindow(QMainWindow):
             return
         _input_path, output_root = paths
         preprocess_summary = self._preprocess_summary_path()
-        if not preprocess_summary.exists():
-            QMessageBox.warning(self, "Preprocess required", "Run preprocessing first.")
+        ingest_summary = self._stage_path("ingest", "summary")
+        source_summary = preprocess_summary if preprocess_summary.exists() else ingest_summary
+        if not source_summary.exists():
+            QMessageBox.warning(self, "Ingest required", "Run Ingest first.")
             return
         self._run_worker("segment", run_acoustic_segmentation, {
-            "preprocess_summary_csv": preprocess_summary, "output_root": output_root,
+            "preprocess_summary_csv": source_summary, "output_root": output_root,
             "config": self._segmentation_config_from_gui(),
         })
 
@@ -2069,14 +2267,22 @@ class AcousticPipelineWindow(QMainWindow):
         segmentation_summary = self._stage_path("review", "decisions")
         final_intervals = self._stage_path("review", "intervals")
         if not segmentation_summary.exists() or not final_intervals.exists():
-            QMessageBox.warning(self, "Review required", "Freeze final segmentation decisions before Feature Extraction.")
+            QMessageBox.warning(self, "Review required", "Freeze final segmentation decisions before Acoustic Features.")
             return
         selected_features = self._selected_feature_names()
         if not selected_features:
             QMessageBox.warning(self, "No features selected", "Select at least one feature in the feature tree.")
             return
+        issues = {feature_id: self._feature_prerequisite_issues(feature_id)
+                  for feature_id in selected_features}
+        issues = {feature_id: reasons for feature_id, reasons in issues.items() if reasons}
+        if issues:
+            details = "\n".join(f"{feature_id}: {', '.join(reasons)}" for feature_id, reasons in issues.items())
+            QMessageBox.warning(self, "Acoustic Features prerequisites", details)
+            return
         cfg = FeatureExtractionConfig(
             selected_features=selected_features,
+            prompt_manifest_path=self.feature_prompt_manifest_edit.text().strip() or None,
             minimum_pause_duration_sec=float(self.min_pause_feature_spin.value()),
             acoustic_region_policy=self.region_policy_combo.currentText(),
             computation_mode=self.computation_mode_combo.currentText(),
@@ -2113,7 +2319,7 @@ class AcousticPipelineWindow(QMainWindow):
             ("quality_control", "quality_warnings", self._stage_path("quality", "warnings"), "table"),
             ("quality_control", "quality_recommendations", self._stage_path("quality", "recommendations"), "table"),
             ("quality_control", "quality_report", self._stage_path("quality", "report"), "report"),
-            ("feature_extraction", "feature_table", self._stage_path("features", "summary"), "table"),
+            ("acoustic_features", "feature_table", self._stage_path("features", "summary"), "table"),
             ("feature_extraction", "feature_status", self._stage_path("features", "status"), "table"),
             ("feature_extraction", "feature_reduction_audit", self._stage_path("features", "reduction_audit"), "table"),
             ("feature_extraction", "feature_report", self._stage_path("features", "report"), "report"),
@@ -2201,23 +2407,29 @@ table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{border-bottom:
         if segmentation_config.method == CUSTOM:
             QMessageBox.information(self, "Plugin required", "Install a segmentation plugin before selecting Custom.")
             return
-        def full_run(input_path: Path, output_root: Path):
-            ingest_result = run_acoustic_ingest(input_path=input_path, output_root=output_root)
+        def full_run(input_path: Path, output_root: Path, progress_callback=None):
+            ingest_result = run_acoustic_ingest(input_path=input_path, output_root=output_root, progress_callback=progress_callback)
             if ingest_result.summary_table is None:
                 raise RuntimeError("Ingest completed without a summary table; preprocessing cannot proceed")
             preprocess_result = run_acoustic_preprocess(
                 ingest_summary_csv=ingest_result.summary_table,
                 output_root=output_root,
                 config=preprocess_config,
+                progress_callback=progress_callback,
             )
             segment_result = run_acoustic_segmentation(
                 preprocess_summary_csv=output_root / "acoustic" / "001_preprocess" / "tables" / "acoustic_preprocess_summary.csv",
                 output_root=output_root,
                 config=segmentation_config,
+                progress_callback=progress_callback,
             )
-            review_result = initialize_segmentation_review(segment_result.summary_table, output_root)
-            return {"ingest": ingest_result, "preprocess": preprocess_result,
-                    "segment": segment_result, "review": review_result}
+            results = {"ingest": ingest_result, "preprocess": preprocess_result,
+                       "segment": segment_result}
+            runs = segmentation_runs(output_root)
+            if len(runs) == 1:
+                select_segmentation_run(output_root, runs[0]["segmentation_run_id"])
+                results["review"] = initialize_segmentation_review(segment_result.summary_table, output_root)
+            return results
         self._run_worker("full_run", full_run, {"input_path": input_path, "output_root": output_root})
 
     def run_after_review(self) -> None:
@@ -2228,40 +2440,20 @@ table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{border-bottom:
         if not decisions.is_file() or not intervals.is_file():
             QMessageBox.warning(self, "Review required", "Freeze final segmentation first.")
             return
-        qc_cfg = QualityControlConfig(
-            selected_families=self._selected_qc_families(),
-            selected_features=self._selected_qc_features(),
-            minimum_internal_pause_sec=float(self.qc_pause_sec_spin.value()),
-            high_level_percentile=float(self.qc_high_level_spin.value()),
-            hard_clip_threshold=float(self.qc_hard_clip_spin.value()),
-            near_clip_threshold=float(self.qc_near_clip_spin.value()),
-        )
-        feature_cfg = FeatureExtractionConfig(
-            selected_features=self._selected_feature_names(),
-            minimum_pause_duration_sec=float(self.min_pause_feature_spin.value()),
-            acoustic_region_policy=self.region_policy_combo.currentText(),
-            computation_mode=self.computation_mode_combo.currentText(),
-        )
-
-        def continuation(output_root: Path):
-            common = {"segmentation_summary_csv": decisions,
-                      "final_segmentation_intervals_csv": intervals,
-                      "output_root": output_root}
-            quality = run_acoustic_quality_control(**common, config=qc_cfg)
-            features = run_acoustic_feature_extraction(**common, config=feature_cfg)
-            reports = self._write_run_summary_files(output_root)
-            return {"quality": quality, "features": features, "reports": reports}
-
-        self._run_worker("post_review_run", continuation, {"output_root": self._output_root()})
+        self.tabs.setCurrentIndex(next(i for i in range(self.tabs.count())
+                                       if self.tabs.tabText(i) == "Acoustic Features"))
+        self._refresh_feature_count_label()
+        self.append_log("Final reviewed segmentation ready. Select outputs in Acoustic Features.")
 
     def _on_worker_finished(self, name: str, result: object) -> None:  # type: ignore[override]
         if name == "full_run" and isinstance(result, dict):
             for stage_name in ["ingest", "preprocess", "segment", "review"]:
-                self._on_worker_finished(stage_name, result[stage_name])
-            self.append_log("Workflow paused for segmentation manual review. Freeze final boundaries before QC and Features.")
+                if stage_name in result:
+                    self._on_worker_finished(stage_name, result[stage_name])
+            self.append_log("Workflow paused for segmentation manual review. Freeze final boundaries before Acoustic Features.")
             return
         if name == "post_review_run" and isinstance(result, dict):
-            for stage_name in ("quality", "features", "reports"):
+            for stage_name in ("features", "reports"):
                 self._on_worker_finished(stage_name, result[stage_name])
             self.append_log("Reviewed acoustic workflow finished.")
             return
@@ -2278,7 +2470,7 @@ table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{border-bottom:
         rec.errors_path = str(errors) if errors else None
         self.stage_records[name] = rec
         self._refresh_stage_cards()
-        self.append_log(f"{name} completed with status: {status}")
+        self.append_log(f"{'Acoustic Features' if name == 'features' else name} completed with status: {status}")
         if report: self.append_log(f"Report: {report}")
         if summary: self.append_log(f"Summary: {summary}")
         if name == "project":

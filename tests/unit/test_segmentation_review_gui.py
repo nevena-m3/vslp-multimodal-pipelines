@@ -5,14 +5,15 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import soundfile as sf
-from PySide6.QtWidgets import QApplication, QFileDialog
+from PySide6.QtWidgets import QApplication, QFileDialog, QMessageBox
 
 from vslp.acoustic.segment.review import load_review_state, save_segmentation_review_entry
-from vslp.gui.acoustic_app.main_window import AcousticPipelineWindow
+from vslp.gui.acoustic_app.main_window import AcousticPipelineWindow, Worker
 from vslp.gui.acoustic_app.review_widget import SegmentationReviewWidget
 
 
-def test_review_gui_filters_and_persists_after_widget_restart(tmp_path: Path):
+def test_review_gui_filters_and_persists_after_widget_restart(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(QMessageBox, "warning", lambda _parent, title, message: (_ for _ in ()).throw(AssertionError(f"{title}: {message}")))
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     app = QApplication.instance() or QApplication([])
     wav = tmp_path / "x.wav"
@@ -72,6 +73,60 @@ def test_acoustic_gui_has_separate_review_stage_and_final_paths():
     assert tabs.index("Segmentation manual review") == tabs.index("Segmentation") + 1
     assert tabs.index("Quality Control") == tabs.index("Segmentation manual review") + 1
     assert "review" in window.stage_records
+    window.close()
+    assert app is not None
+
+
+def test_unloadable_recording_still_allows_exclusion(tmp_path: Path):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    table = tmp_path / "acoustic" / "002_segmentation" / "tables" / "acoustic_segmentation_summary.csv"
+    table.parent.mkdir(parents=True)
+    pd.DataFrame([{"recording_id": "unloadable", "file_name": "unloadable.wav",
+                   "task_name": "Bamboo Passage", "segmentation_method": "silero_vad",
+                   "automatic_status": "EXCLUDED", "flags": "preprocess_not_accepted",
+                   "review_required": True, "duration_sec": "", "analysis_wav_path": "",
+                   "segments_csv_path": ""}]).to_csv(table, index=False)
+    widget = SegmentationReviewWidget(lambda: tmp_path)
+    widget.refresh()
+    assert not widget.play_button.isEnabled()
+    assert not widget.edit_button.isEnabled()
+    assert widget.exclude_button.isEnabled()
+    widget.reviewer_edit.setText("Reviewer")
+    widget.notes_edit.setPlainText("Preprocessing rejected source")
+    widget._save("EXCLUDE")
+    decisions = pd.read_csv(tmp_path / "acoustic" / "003_segmentation_review" / "runs" / "review_default" / "tables" /
+                            "review_decisions.csv", keep_default_na=False)
+    row = decisions.set_index("recording_id").loc["unloadable"]
+    assert row.final_decision == "EXCLUDE"
+    assert row.automatic_flags == "preprocess_not_accepted"
+    assert row.final_decision_source == "MANUAL_CONFIRMATION"
+    audit = pd.read_csv(tmp_path / "acoustic" / "003_segmentation_review" / "runs" / "review_default" / "tables" /
+                        "audit_log.csv")
+    assert audit.iloc[0].action == "EXCLUDE_RECORDING"
+    widget.close()
+    assert app is not None
+
+
+def test_worker_forwards_real_progress_and_gui_displays_counts():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    app = QApplication.instance() or QApplication([])
+    window = AcousticPipelineWindow()
+    seen = []
+
+    def batch(progress_callback):
+        progress_callback(0, 10, "Segmentation")
+        for index in range(1, 11):
+            progress_callback(index, 10, f"Segmentation — file{index}.wav")
+        return "done"
+
+    worker = Worker("batch", batch, {})
+    worker.progress.connect(lambda done, total, message: (seen.append((done, total, message)),
+                          window._on_worker_progress(done, total, message)))
+    worker.run()
+    assert [item[0] for item in seen] == list(range(11))
+    assert window.progress.value() == 10
+    assert "100% — 10 / 10 — Segmentation — file10.wav" == window.progress_label.text()
     window.close()
     assert app is not None
 

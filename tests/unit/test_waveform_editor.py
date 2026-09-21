@@ -47,6 +47,13 @@ def test_live_editor_add_delete_seek_window_and_selection(tmp_path: Path):
     editor.set_intervals(before_drag[0])
     editor.set_cursor(1.75)
     assert editor.cursor_sec == 1.75
+    assert editor.selected_interval() is None
+    editor._selected_region = 0
+    assert editor.selected_interval() == (0.5, 1.0)
+    editor.pan_time(-2)
+    assert editor.waveform.viewRange()[0][0] >= 0
+    editor.pan_time(2)
+    assert editor.waveform.viewRange()[0][1] <= editor.duration_sec + 1e-6
     seeks = []
     editor.seek_requested.connect(seeks.append)
     editor.seek_requested.emit(1.25)

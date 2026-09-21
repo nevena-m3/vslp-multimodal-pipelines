@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import html
+from datetime import datetime, timezone
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+from uuid import uuid4
 
 import matplotlib
 
@@ -15,8 +18,11 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 import numpy as np
 import pandas as pd
+import soundfile as sf
 
 from vslp.acoustic.context import cleanup_stage
+from vslp.acoustic.preprocess.audio import decode_audio_ffmpeg, resolve_mono_channel
+from vslp.acoustic.preprocess.stage import safe_stem
 from vslp.acoustic.segment.selection import DDK, PHONATION, SILERO
 from vslp.acoustic.segment.silero_reference import (
     Interval, boundary_alignment_diagnostics, classify_reading_segmentation,
@@ -52,6 +58,28 @@ def _write_csv(df: pd.DataFrame, path: Path) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(path, index=False)
     return str(path)
+
+
+def segmentation_runs(output_root: str | Path) -> list[dict[str, Any]]:
+    """List immutable segmentation executions; legacy runs have no index."""
+    stage_root = Path(output_root) / "acoustic" / "002_segmentation"
+    index = stage_root / "logs" / "segmentation_runs.json"
+    if index.is_file():
+        return json.loads(index.read_text(encoding="utf-8"))
+    legacy_manifest = stage_root / "logs" / "stage_manifest.json"
+    legacy_summary = stage_root / "tables" / "acoustic_segmentation_summary.csv"
+    if legacy_manifest.is_file() and legacy_summary.is_file():
+        manifest = json.loads(legacy_manifest.read_text(encoding="utf-8"))
+        summary = pd.read_csv(legacy_summary, nrows=1)
+        config = manifest.get("config", {})
+        return [{"segmentation_run_id": f"legacy_{sha256_file(legacy_summary)[:12]}",
+                 "created_at_utc": manifest.get("created_at", "legacy run"),
+                 "method": config.get("method", str(summary.iloc[0].get("segmentation_method", "")) if len(summary) else ""),
+                 "parameters": config, "task_name": str(summary.iloc[0].get("task_name", "")) if len(summary) else "",
+                 "n_recordings": len(pd.read_csv(legacy_summary, usecols=["recording_id"])),
+                 "input_source_stage": "preprocess", "input_summary_path": "",
+                 "summary_path": str(legacy_summary), "manifest_path": str(legacy_manifest)}]
+    return []
 
 
 def _segments(intervals: list[Interval], duration: float) -> pd.DataFrame:
@@ -117,10 +145,14 @@ def _plot(path: Path, x: np.ndarray | None, sr: int | None, method: str,
           automatic_intervals: list[Interval] | None = None,
           trace_label: str | None = None,
           analysis_window: tuple[float, float] | None = None,
-          excluded_intervals: list[tuple[float, float]] | None = None) -> None:
+          excluded_intervals: list[tuple[float, float]] | None = None,
+          file_name: str = "", parameter_profile: str = "",
+          ddk_details: dict | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fig, axes = plt.subplots(2 if trace else 1, 1, figsize=(13, 5.8), sharex=True,
-                             gridspec_kw={"height_ratios": [2, 1]} if trace else None)
+    n_panels = 3 if ddk_details else (2 if trace else 1)
+    fig, axes = plt.subplots(n_panels, 1, figsize=(13, 7.0 if ddk_details else 5.8), sharex=True,
+                             gridspec_kw={"height_ratios": [2, 1, 0.7]} if ddk_details else
+                             ({"height_ratios": [2, 1]} if trace else None))
     if not isinstance(axes, np.ndarray):
         axes = np.array([axes])
     if x is not None and sr:
@@ -186,8 +218,24 @@ def _plot(path: Path, x: np.ndarray | None, sr: int | None, method: str,
             axes[1].plot(times, threshold, label="Adaptive threshold", color="#ce4b41", lw=1)
         axes[1].legend(loc="upper right", fontsize=8)
         axes[1].set_ylabel("Support")
+    if ddk_details and sr:
+        for candidate in ddk_details.get("raw_events", []):
+            axes[2].axvline(candidate["start_sample"] / sr, color="#aab3bb", lw=0.35, alpha=0.6)
+        for candidate in ddk_details.get("rejected_events", []):
+            axes[2].axvspan(candidate["start_sample"] / sr, candidate["end_sample"] / sr,
+                            color="#d98c72", alpha=0.45, hatch="///")
+        for event in ddk_details.get("final_events", []):
+            axes[2].axvspan(event["start_sample"] / sr, event["end_sample"] / sr,
+                            color="#4abf80", alpha=0.35)
+            axes[2].axvline(event["start_sample"] / sr, color="#27814f", lw=0.8)
+            axes[2].axvline(event["end_sample"] / sr, color="#27814f", lw=0.8)
+            axes[2].plot(event["energy_peak_sample"] / sr, 0.5, marker="o", ms=2.5, color="#7735a4")
+        axes[2].set_ylim(0, 1)
+        axes[2].set_yticks([])
+        axes[2].set_ylabel("Events")
     axes[-1].set_xlabel("Time (s)")
-    fig.suptitle(f"{method} | {status} | {'; '.join(flags) or 'No review flags'}", fontsize=11)
+    method_label = "DDK Energy — Tanchip 2022" if method == DDK else ("Silero VAD" if method == SILERO else method)
+    fig.suptitle(f"{file_name or path.stem}\n{method_label} | {parameter_profile}\n{status} | {'; '.join(flags) or 'No review flags'}", fontsize=10)
     fig.tight_layout()
     fig.savefig(path, dpi=160)
     plt.close(fig)
@@ -200,6 +248,7 @@ def _method_result(x: np.ndarray, sr: int, cfg: SegmentationConfig, model: Any):
     nuclei = []
     stable = None
     breaks = []
+    method_details = {}
     if cfg.method == SILERO:
         work, resample = _prepare_silero_audio(x, sr)
         profiles = {"default": (cfg.threshold, cfg.min_speech_duration_ms, cfg.min_silence_duration_ms),
@@ -220,15 +269,18 @@ def _method_result(x: np.ndarray, sr: int, cfg: SegmentationConfig, model: Any):
         extras["sensitivity_profile"] = cfg.sensitivity_profile
     elif cfg.method == DDK:
         result = segment_ddk(x, sr, cfg.ddk)
+        method_details = result
         raw = [Interval(a / sr, b / sr) for a, b in result["intervals_samples"]]
         primary = raw
         trace = (result["frame_times_sec"], result["energy_envelope"], result["adaptive_threshold"])
         nuclei = [n / sr for n in result["nuclei_samples"]]
-        extras.update({key: result[key] for key in ("n_events", "ddk_rate_hz", "cycle_mean_sec",
-                                                  "cycle_sd_sec", "minimum_peak_threshold_ratio")})
+        extras.update({key: result[key] for key in ("n_events", "n_syllables",
+                                                  "ddk_sequence_start_sec", "ddk_sequence_end_sec",
+                                                  "ddk_sequence_duration_sec", "ddk_rate_hz", "ctv_sec",
+                                                  "cycle_mean_sec", "cycle_sd_sec", "minimum_peak_threshold_ratio")})
         extras["threshold_perturbation_event_counts"] = json.dumps(result["threshold_perturbation_event_counts"])
         extras.update({"boundary_source": "ddk_energy_envelope_threshold_crossings",
-                       "algorithm_version": "vslp-ddk-energy-1", "processing_provenance": json.dumps(result["processing"])})
+                       "algorithm_version": "vslp-ddk-tanchip-energy-2", "processing_provenance": json.dumps(result["processing"])})
     elif cfg.method == PHONATION:
         result = segment_phonation(x, sr, cfg.phonation)
         raw = [Interval(a / sr, b / sr) for a, b in [result["full_samples"]] if a is not None] if result["full_samples"] else []
@@ -289,32 +341,45 @@ def _method_result(x: np.ndarray, sr: int, cfg: SegmentationConfig, model: Any):
         status = result["automatic_status"]
         audit = pd.DataFrame()
     summary.update(extras)
-    return primary, views, frames, audit, summary, status, flags, trace, nuclei, stable, breaks
+    return primary, views, frames, audit, summary, status, flags, trace, nuclei, stable, breaks, method_details
 
 
 @cleanup_stage
 def run_acoustic_segmentation(preprocess_summary_csv: str | Path, output_root: str | Path,
-                              config: SegmentationConfig | None = None) -> StageResult:
+                              config: SegmentationConfig | None = None,
+                              progress_callback: Callable[[int, int, str], None] | None = None) -> StageResult:
     cfg = config or SegmentationConfig()
     source = Path(preprocess_summary_csv)
     if not source.is_file():
         raise FileNotFoundError(source)
     df = pd.read_csv(source)
-    required = {"status", "analysis_wav_path", "recording_id", "source_sha256"}
+    input_source_stage = "preprocess" if "analysis_wav_path" in df.columns else "ingest"
+    required = ({"status", "analysis_wav_path", "recording_id", "source_sha256"}
+                if input_source_stage == "preprocess" else
+                {"ingest_status", "source_file_path", "recording_id", "source_sha256"})
     if missing := required - set(df.columns):
         raise ValueError(f"Preprocess summary missing: {sorted(missing)}")
-    stage = Path(output_root) / "acoustic" / "002_segmentation"
+    stage_root = Path(output_root) / "acoustic" / "002_segmentation"
+    previous_runs = segmentation_runs(output_root)
+    created = datetime.now(timezone.utc)
+    segmentation_run_id = created.astimezone().strftime("%Y%m%d_%H%M%S_%f") + "_" + uuid4().hex[:6]
+    stage = (stage_root if not (stage_root / "logs" / "stage_manifest.json").exists()
+             else stage_root / "runs" / segmentation_run_id)
     folders = ensure_stage_folders(stage, lazy=True)
     rows = []
     errors = []
     model = None
-    for _, row in df.iterrows():
+    if progress_callback:
+        progress_callback(0, len(df), "Segmentation")
+    for index, (_, row) in enumerate(df.iterrows(), start=1):
         item = {key: row.get(key) for key in ("recording_id", "file_name", "source_file_path",
                 "source_sha256", "project_name", "task_name", "run_id", "run_created_at_local",
                 "run_created_at_utc", "analysis_wav_path")}
         item["segmentation_method"] = cfg.method
+        item["segmentation_run_id"] = segmentation_run_id
+        item["input_source_stage"] = input_source_stage
         item["method"] = cfg.method
-        base = str(row.get("recording_id", row.get("file_name", "recording"))).replace("/", "_").replace("\\", "_")
+        base = f"{safe_stem(str(row.get('file_name', 'recording')))}__{str(row.get('recording_id', ''))[:8]}"
         x = None
         sr = None
         intervals = []
@@ -322,15 +387,31 @@ def run_acoustic_segmentation(preprocess_summary_csv: str | Path, output_root: s
         nuclei = []
         stable = None
         breaks = []
+        method_details = {}
         try:
-            if str(row["status"]).lower() != "ok":
-                raise ValueError(f"Preprocessing status: {row['status']}")
-            wav = Path(str(row["analysis_wav_path"]))
-            x, sr = _read_canonical_audio(wav)
+            source_status = str(row["status"] if input_source_stage == "preprocess" else row["ingest_status"]).lower()
+            if source_status != "ok":
+                raise ValueError(f"{input_source_stage} status: {source_status}")
+            if input_source_stage == "preprocess":
+                wav = Path(str(row["analysis_wav_path"]))
+                x, sr = _read_canonical_audio(wav)
+            else:
+                source_audio = Path(str(row["source_file_path"]))
+                if sha256_file(source_audio) != str(row["source_sha256"]):
+                    raise ValueError("Ingest source hash changed since ingest")
+                channels, sr = decode_audio_ffmpeg(source_audio, target_sr=None, mono=False)
+                resolution = resolve_mono_channel(channels)
+                if resolution.selected_channel is None:
+                    raise ValueError("Ingest source has unresolved multichannel audio; run Preprocessing")
+                x = channels[:, resolution.selected_channel].copy()
+                wav = stage / "artifacts" / "decoded_ingest" / f"{base}__analysis.wav"
+                wav.parent.mkdir(parents=True, exist_ok=True)
+                sf.write(wav, x, sr, subtype="FLOAT")
+            item["analysis_wav_path"] = str(wav)
             if cfg.method == SILERO and model is None:
                 model = load_silero_model(onnx=True)
             (intervals, views, frames, audit, metrics, status, flags,
-             trace, nuclei, stable, breaks) = _method_result(x, sr, cfg, model)
+             trace, nuclei, stable, breaks, method_details) = _method_result(x, sr, cfg, model)
             item.update(metrics)
             item["analysis_wav_sha256"] = sha256_file(wav)
             segments = _segments(intervals, len(x) / sr)
@@ -350,6 +431,26 @@ def run_acoustic_segmentation(preprocess_summary_csv: str | Path, output_root: s
                 item["interval_views_csv_path"] = _write_csv(pd.DataFrame(view_rows, columns=["view", "start_sec", "end_sec"]),
                     folders["tables"] / "interval_views" / f"{base}__views.csv")
             elif cfg.method == DDK:
+                event_context = {"recording_id": item["recording_id"], "file_name": item["file_name"],
+                                 "task_name": item["task_name"], "boundary_source": item["boundary_source"],
+                                 "algorithm_version": item["algorithm_version"]}
+                def event_rows(events):
+                    result_rows = []
+                    peaks = [event["energy_peak_sample"] for event in events]
+                    for index, event in enumerate(events):
+                        start = event["start_sample"] / sr
+                        end = event["end_sample"] / sr
+                        result_rows.append({**event_context, "event_index": index,
+                            "start_sec": start, "end_sec": end, "duration_sec": end - start,
+                            "energy_peak_sec": peaks[index] / sr,
+                            "energy_peak_value": event["energy_peak_value"],
+                            "previous_cycle_duration_sec": (peaks[index] - peaks[index - 1]) / sr if index else np.nan,
+                            "next_cycle_duration_sec": (peaks[index + 1] - peaks[index]) / sr if index + 1 < len(peaks) else np.nan})
+                    return result_rows
+                item["raw_events_csv_path"] = _write_csv(pd.DataFrame(event_rows(method_details["raw_events"])),
+                    folders["tables"] / "events" / f"{base}__ddk_raw_events.csv")
+                item["final_events_csv_path"] = _write_csv(pd.DataFrame(event_rows(method_details["final_events"])),
+                    folders["tables"] / "events" / f"{base}__ddk_final_events.csv")
                 item["nuclei_csv_path"] = _write_csv(pd.DataFrame({"nucleus_index": range(len(nuclei)), "time_sec": nuclei}),
                     folders["tables"] / "boundaries" / f"{base}__nuclei.csv")
             elif cfg.method == PHONATION:
@@ -359,7 +460,8 @@ def run_acoustic_segmentation(preprocess_summary_csv: str | Path, output_root: s
                     [{"region": "internal_break", "start_sec": p.start_sec, "end_sec": p.end_sec} for p in breaks]),
                     folders["tables"] / "interval_views" / f"{base}__phonation_regions.csv")
         except Exception as exc:  # Batch review retains every input.
-            status = "FAILED" if str(row["status"]).lower() == "ok" else "EXCLUDED"
+            source_status = str(row["status"] if input_source_stage == "preprocess" else row["ingest_status"]).lower()
+            status = "FAILED" if source_status == "ok" else "EXCLUDED"
             flags = ["segmentation_error" if status == "FAILED" else "preprocess_not_accepted"]
             item["error"] = str(exc)
             if status == "FAILED":
@@ -370,10 +472,28 @@ def run_acoustic_segmentation(preprocess_summary_csv: str | Path, output_root: s
         item["review_required"] = status in {"REVIEW", "EXCLUDED", "FAILED"}
         plot_group = {"ACCEPTED": "accepted", "REVIEW": "flagged",
                       "EXCLUDED": "excluded", "FAILED": "excluded"}[status]
+        profile = (f"threshold={cfg.threshold:.2f}, min_speech={cfg.min_speech_duration_ms} ms, min_silence={cfg.min_silence_duration_ms} ms, padding={cfg.speech_pad_ms} ms"
+                   if cfg.method == SILERO else
+                   f"LPF={cfg.ddk.envelope_lowpass_hz:g} Hz (FIR order {cfg.ddk.fir_order}), energy={cfg.ddk.frame_ms:g} ms, threshold MA={cfg.ddk.threshold_window_ms:g} ms, hop={cfg.ddk.hop_ms:g} ms, min event={cfg.ddk.min_event_ms:g} ms, debounce={cfg.ddk.min_separation_ms:g} ms"
+                   if cfg.method == DDK else
+                   f"onset guard={cfg.phonation.onset_guard_ms:g} ms, stable={cfg.phonation.stable_duration_ms:g} ms")
+        item["parameter_profile"] = profile
         plot = folders["plots"] / plot_group / f"{base}__{cfg.method}.png"
-        _plot(plot, x, sr, cfg.method, intervals, status, flags, trace, nuclei, stable, breaks)
-        item["plot_png_path"] = str(plot)
+        try:
+            _plot(plot, x, sr, cfg.method, intervals, status, flags, trace, nuclei, stable, breaks,
+                  file_name=str(item.get("file_name") or ""), parameter_profile=profile,
+                  ddk_details=method_details if cfg.method == DDK else None)
+            item["plot_png_path"] = str(plot)
+        except Exception as exc:  # Keep the recording in the review queue and count its progress.
+            item["plot_png_path"] = ""
+            item["automatic_status"] = "FAILED"
+            item["status"] = "failed"
+            item["flags"] = ";".join(filter(None, [item["flags"], "diagnostic_plot_error"]))
+            item["error"] = str(exc)
+            errors.append({"recording_id": item["recording_id"], "file_name": item["file_name"], "error": str(exc)})
         rows.append(item)
+        if progress_callback:
+            progress_callback(index, len(df), f"Segmentation — {item.get('file_name', '')}")
     summary = pd.DataFrame(rows)
     if summary.empty:
         summary = pd.DataFrame(columns=["recording_id", "file_name", "task_name",
@@ -407,19 +527,48 @@ def run_acoustic_segmentation(preprocess_summary_csv: str | Path, output_root: s
     summary_path = Path(_write_csv(summary, folders["tables"] / "acoustic_segmentation_summary.csv"))
     main_path = Path(_write_csv(summary, folders["tables"] / "acoustic_segmentation_main_summary.csv"))
     queue_path = Path(_write_csv(summary, folders["tables"] / "segmentation_review_queue.csv"))
+    report_path = stage / "reports" / "acoustic_segmentation_report.html"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_rows = "".join(
+        "<tr>" + "".join(f"<td>{html.escape(str(row.get(col, '')))}</td>"
+                            for col in ("file_name", "segmentation_method", "parameter_profile",
+                                        "automatic_status", "flags", "plot_png_path")) + "</tr>"
+        for row in rows)
+    report_path.write_text("<html><body><h1>Acoustic segmentation</h1>"
+                           "<table><tr><th>File</th><th>Method</th><th>Parameters</th>"
+                           "<th>Status</th><th>Flags</th><th>Plot</th></tr>"
+                           + report_rows + "</table></body></html>", encoding="utf-8")
     error_path = Path(_write_csv(pd.DataFrame(errors), folders["errors"] / "acoustic_segmentation_errors.csv")) if errors else None
     stage_status = "failed" if not rows or all(r["status"] in {"failed", "excluded"} for r in rows) else ("completed_with_warnings" if summary.review_required.any() else "completed")
     outputs = [ArtifactRef(path=str(p), role=role, media_type="text/csv") for p, role in
                ((summary_path, "segmentation_summary"), (main_path, "segmentation_main_summary"),
                 (queue_path, "segmentation_review_queue"))]
+    outputs.append(ArtifactRef(path=str(report_path), role="segmentation_report", media_type="text/html"))
     if error_path:
         outputs.append(ArtifactRef(path=str(error_path), role="segmentation_errors", media_type="text/csv"))
     manifest = StageManifest(stage_name="acoustic_segmentation", stage_version="2.0.0", status=stage_status,
-        input_artifacts=[ArtifactRef(path=str(source), role="preprocess_summary", media_type="text/csv", sha256=sha256_file(source))],
-        output_artifacts=outputs, config=asdict(cfg), environment={"python": python_environment()},
+        input_artifacts=[ArtifactRef(path=str(source), role=f"{input_source_stage}_summary", media_type="text/csv", sha256=sha256_file(source))],
+        output_artifacts=outputs, config={**asdict(cfg), "segmentation_run_id": segmentation_run_id,
+                                        "created_at_utc": created.isoformat(),
+                                        "input_source_stage": input_source_stage,
+                                        "input_summary_path": str(source.resolve())},
+        environment={"python": python_environment()},
         warnings=[f"{int(summary.review_required.sum())} recordings require review"], errors=errors,
-        notes=["Canonical native-rate FLOAT32 audio was read only.", "Display frames never set primary boundaries."])
+        notes=[f"input_source_stage={input_source_stage}", "Native-rate audio was read without source modification.",
+               "Display frames never set primary boundaries."])
     manifest_path = folders["logs"] / "stage_manifest.json"
     manifest.write_json(manifest_path)
+    index_path = stage_root / "logs" / "segmentation_runs.json"
+    runs = previous_runs
+    runs.append({"segmentation_run_id": segmentation_run_id,
+                 "created_at_utc": created.isoformat(), "method": cfg.method,
+                 "parameters": asdict(cfg), "task_name": str(df.iloc[0].get("task_name", "")) if len(df) else "",
+                 "n_recordings": len(summary), "input_source_stage": input_source_stage,
+                 "input_summary_path": str(source.resolve()), "summary_path": str(summary_path),
+                 "manifest_path": str(manifest_path)})
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_index = index_path.with_name(f".{index_path.name}.{uuid4().hex}.tmp")
+    temporary_index.write_text(json.dumps(runs, indent=2, default=str), encoding="utf-8")
+    temporary_index.replace(index_path)
     return StageResult(status=stage_status, manifest_path=manifest_path, summary_table=summary_path,
-                       error_table=error_path, report_path=None)
+                       error_table=error_path, report_path=report_path)

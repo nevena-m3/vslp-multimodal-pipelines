@@ -101,23 +101,88 @@ def test_review_corrections_persist_and_rescued_recording_reaches_downstream(tmp
     assert len(overrides) == 2 and len(exclusions) == 1
     assert exclusions.iloc[0].exclusion_reason == "Cough / throat clear"
     finalize_segmentation_review(tmp_path)
-    tables = tmp_path / "acoustic" / "003_segmentation_review" / "tables"
-    final = pd.read_csv(tables / "final_segmentation_intervals.csv", keep_default_na=False)
-    primary = final.loc[final.view.eq("primary_speech")]
+    tables = tmp_path / "acoustic" / "003_segmentation_review" / "runs" / "review_default" / "tables"
+    final = pd.read_csv(tmp_path / "acoustic" / "003_segmentation_review" / "final" / "final_segmentation_intervals.csv", keep_default_na=False)
+    primary = final.loc[final.segment_role.eq("speech")]
     assert primary.boundary_source.eq("MANUAL").all()
     assert primary.start_sec.astype(float).tolist() == [0.8, 1.4, 2.3]
-    timeline = final.loc[final.view.eq("timeline")]
+    timeline = final.loc[final.view.eq("authoritative")]
     assert timeline.segment_role.eq("manual_exclusion").sum() == 1
     assert timeline.segment_role.eq("outside_analysis_window").sum() == 2
-    qc = run_acoustic_quality_control(tables / "final_segmentation_decisions.csv", tmp_path,
+    qc = run_acoustic_quality_control(tmp_path / "acoustic" / "003_segmentation_review" / "final" / "final_segmentation_decisions.csv", tmp_path,
         config=QualityControlConfig(selected_families=["gain_dynamics"]),
-        final_segmentation_intervals_csv=tables / "final_segmentation_intervals.csv")
-    features = run_acoustic_feature_extraction(tables / "final_segmentation_decisions.csv", tmp_path,
-        config=FeatureExtractionConfig(selected_features=["f0_mean"]),
-        final_segmentation_intervals_csv=tables / "final_segmentation_intervals.csv")
+        final_segmentation_intervals_csv=tmp_path / "acoustic" / "003_segmentation_review" / "final" / "final_segmentation_intervals.csv")
+    with pytest.raises(ValueError, match="legacy feature IDs cannot execute"):
+        run_acoustic_feature_extraction(tmp_path / "acoustic" / "003_segmentation_review" / "final" / "final_segmentation_decisions.csv", tmp_path,
+            config=FeatureExtractionConfig(selected_features=["f0_mean"]),
+            final_segmentation_intervals_csv=tmp_path / "acoustic" / "003_segmentation_review" / "final" / "final_segmentation_intervals.csv")
     assert pd.read_csv(qc.summary_table).recording_id.tolist() == ["r"]
-    assert pd.read_csv(features.summary_table).file_name.tolist() == ["r.wav"]
+    assert not (tmp_path / "acoustic" / "005_features" / "tables").exists()
     assert hashes == (sha256_file(wav), sha256_file(automatic_segments), sha256_file(summary))
+
+
+def test_family08_uses_frozen_reviewed_intervals_and_exact_ids(tmp_path: Path):
+    wav, automatic_segments, summary = _run(tmp_path)
+    hashes = sha256_file(wav), sha256_file(automatic_segments)
+    save_segmentation_review_entry(
+        tmp_path, "r", "KEEP_MANUAL", "Reviewer", "Cough excluded",
+        "0.8,1.2\n1.4,3.5", analysis_start_sec=.7, analysis_end_sec=3.7,
+        exclusion_intervals=[{"start_sec": 2, "end_sec": 2.3,
+                              "exclusion_reason": "Cough / throat clear"}])
+    finalize_segmentation_review(tmp_path)
+    final = tmp_path / "acoustic" / "003_segmentation_review" / "final"
+    prompt = tmp_path / "prompt_counts.json"
+    prompt.write_text(json.dumps({
+        "schema_version": "1", "task_id": "bamboo_passage",
+        "prompt_version": "Bamboo-v1", "count_source": "frozen_prompt_count",
+        "syllable_count": 12, "word_count": 6,
+        "applies_to_all_recordings": True,
+    }), encoding="utf-8")
+    progress = []
+    result = run_acoustic_feature_extraction(
+        final / "final_segmentation_decisions.csv", tmp_path,
+        config=FeatureExtractionConfig(
+            selected_features=["speaking_rate_syll_s", "speaking_rate_words_min",
+                               "articulation_rate_syll_s"],
+            prompt_manifest_path=str(prompt)),
+        final_segmentation_intervals_csv=final / "final_segmentation_intervals.csv",
+        progress_callback=lambda done, total, message: progress.append((done, total, message)))
+    values = pd.read_csv(result.summary_table)
+    assert values.file_name.tolist() == ["r.wav"]
+    assert np.isclose(values.speaking_rate_syll_s.iloc[0], 12 / 2.4)
+    assert np.isclose(values.speaking_rate_words_min.iloc[0], 60 * 6 / 2.4)
+    assert np.isclose(values.articulation_rate_syll_s.iloc[0], 12 / 2.4)
+    assert "speech_rate" not in values
+    status = pd.read_csv(result.summary_table.parent / "acoustic_feature_status_long.csv")
+    assert set(status.feature) == {"speaking_rate_syll_s", "speaking_rate_words_min",
+                                   "articulation_rate_syll_s"}
+    assert status.status.eq("computed").all()
+    assert status.algorithm_version.eq("family08-rate-1.0.0").all()
+    assert status.parameter_set_id.eq("family08_bamboo_reviewed_v1").all()
+    assert status.unit.notna().all()
+    assert sha256_file(tmp_path / "acoustic" / "005_features" / "configs" /
+                       "prompt_count_manifest.json") == sha256_file(prompt)
+    assert progress[0][:2] == (0, 1) and progress[-1][:2] == (1, 1)
+    assert hashes == (sha256_file(wav), sha256_file(automatic_segments))
+
+
+def test_family08_missing_prompt_count_is_nan_with_status_reason(tmp_path: Path):
+    _wav, _automatic_segments, _summary = _run(tmp_path)
+    save_segmentation_review_entry(
+        tmp_path, "r", "KEEP_MANUAL", "Reviewer", "Recovered segmentation",
+        "0.8,1.2\n1.4,3.5")
+    finalize_segmentation_review(tmp_path)
+    final = tmp_path / "acoustic" / "003_segmentation_review" / "final"
+    result = run_acoustic_feature_extraction(
+        final / "final_segmentation_decisions.csv", tmp_path,
+        config=FeatureExtractionConfig(selected_features=["speaking_rate_syll_s"]),
+        final_segmentation_intervals_csv=final / "final_segmentation_intervals.csv")
+    values = pd.read_csv(result.summary_table)
+    status = pd.read_csv(result.summary_table.parent / "acoustic_feature_status_long.csv")
+    assert np.isnan(values.speaking_rate_syll_s.iloc[0])
+    assert status.status.tolist() == ["unavailable"]
+    assert status.reason.tolist() == ["prompt_manifest_missing"]
+    assert "speech_rate" not in values
 
 
 def test_auto_modified_provenance_and_trim_without_leading_pause(tmp_path: Path):
@@ -128,15 +193,15 @@ def test_auto_modified_provenance_and_trim_without_leading_pause(tmp_path: Path)
         exclusion_intervals=[{"start_sec": 2, "end_sec": 2.2,
             "exclusion_reason": "Other speaker", "notes": "Background voice"}])
     finalize_segmentation_review(tmp_path)
-    tables = tmp_path / "acoustic" / "003_segmentation_review" / "tables"
-    decisions = pd.read_csv(tables / "final_segmentation_decisions.csv", keep_default_na=False)
-    timeline = pd.read_csv(tables / "final_segmentation_intervals.csv", keep_default_na=False)
+    tables = tmp_path / "acoustic" / "003_segmentation_review" / "runs" / "review_default" / "tables"
+    decisions = pd.read_csv(tmp_path / "acoustic" / "003_segmentation_review" / "final" / "final_segmentation_decisions.csv", keep_default_na=False)
+    timeline = pd.read_csv(tmp_path / "acoustic" / "003_segmentation_review" / "final" / "final_segmentation_intervals.csv", keep_default_na=False)
     assert decisions.iloc[0].final_decision == "KEEP_AUTO"
     assert decisions.iloc[0].boundary_source == "AUTO_MODIFIED"
-    assert timeline.loc[timeline.view.eq("primary_speech"), "boundary_source"].eq("AUTO_MODIFIED").all()
-    leading = timeline.loc[timeline.view.eq("timeline") & timeline.segment_role.eq("leading_nonspeech")].iloc[0]
+    assert timeline.loc[timeline.segment_role.eq("speech"), "boundary_source"].eq("AUTO_MODIFIED").all()
+    leading = timeline.loc[timeline.view.eq("authoritative") & timeline.segment_role.eq("leading_nonspeech")].iloc[0]
     assert (float(leading.start_sec), float(leading.end_sec)) == (1.3, 1.4)
-    outside = timeline.loc[timeline.view.eq("timeline") & timeline.segment_role.eq("outside_analysis_window")].iloc[0]
+    outside = timeline.loc[timeline.view.eq("authoritative") & timeline.segment_role.eq("outside_analysis_window")].iloc[0]
     assert (float(outside.start_sec), float(outside.end_sec)) == (0, 1.3)
     assert sha256_file(automatic_segments) == original and wav.is_file()
 
@@ -145,13 +210,13 @@ def test_atomic_review_entry_recovers_stale_csv_views(tmp_path: Path):
     _run(tmp_path)
     save_segmentation_review_entry(tmp_path, "r", "KEEP_MANUAL", "Reviewer", "Edited event",
         "1.4,3.4", analysis_start_sec=1.2)
-    tables = tmp_path / "acoustic" / "003_segmentation_review" / "tables"
-    stale = pd.read_csv(tables / "segmentation_review_decisions.csv", keep_default_na=False)
+    tables = tmp_path / "acoustic" / "003_segmentation_review" / "runs" / "review_default" / "tables"
+    stale = pd.read_csv(tables / "review_decisions.csv", keep_default_na=False)
     stale.loc[0, "final_decision"] = ""
-    stale.to_csv(tables / "segmentation_review_decisions.csv", index=False)
+    stale.to_csv(tables / "review_decisions.csv", index=False)
     pd.DataFrame(columns=["recording_id", "file_name", "segment_index", "start_sec", "end_sec",
                           "reviewer", "review_date", "review_notes"]).to_csv(
-        tables / "manual_segmentation_overrides.csv", index=False)
+        tables / "manual_overrides.csv", index=False)
     decisions, overrides = load_review_state(tmp_path)
     assert decisions.iloc[0].final_decision == "KEEP_MANUAL"
     assert decisions.iloc[0].analysis_start_sec == "1.2"

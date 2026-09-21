@@ -4,11 +4,11 @@ Scientific contract
 -------------------
 Preprocessing produces one faithful analysis waveform per accepted Ingest record:
 deterministic decode -> conservative mono-channel resolution -> optional constant DC-offset
-removal -> native-rate mono FLOAT32 WAV -> numerical integrity verification.
+removal and optional peak amplitude normalization -> native-rate mono FLOAT32 WAV ->
+numerical integrity verification.
 
-This stage does not perform acoustic quality classification, amplitude normalization,
-generic filtering, or model-specific resampling. Those operations belong to Quality
-Control or to the validated downstream algorithm that requires them.
+This stage does not perform acoustic quality classification, generic filtering,
+or model-specific resampling.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import html
 import json
 import math
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 import matplotlib
@@ -44,6 +44,7 @@ class PreprocessConfig:
     """Configuration for canonical acoustic preprocessing."""
 
     remove_dc_offset: bool = True
+    amplitude_normalization: bool = False
     ffmpeg_bin: str = "ffmpeg"
     audio_stream_selector: str = "0:a:0"
     duplicate_channel_correlation_min: float = 0.999
@@ -79,6 +80,8 @@ MAIN_SUMMARY_COLUMNS = [
     "channel_resolution_status",
     "channel_resolution_reason",
     "remove_dc_offset",
+    "amplitude_normalization",
+    "normalization_scale",
     "dc_offset_before",
     "dc_offset_after",
     "dc_offset_removed",
@@ -570,6 +573,10 @@ def _preprocess_one(
         expected = selected.astype(np.float64) - dc_before
     else:
         expected = selected.astype(np.float64)
+    normalization_scale = float(np.max(np.abs(analysis))) if cfg.amplitude_normalization else 1.0
+    if cfg.amplitude_normalization and normalization_scale > 0:
+        analysis = (analysis.astype(np.float64) / normalization_scale).astype(np.float32)
+        expected /= normalization_scale
     waveform_error = float(np.max(np.abs(analysis.astype(np.float64) - expected)))
     transform_tolerance = max(
         5e-7,
@@ -600,6 +607,8 @@ def _preprocess_one(
         {
             "status": "ok",
             "remove_dc_offset": bool(cfg.remove_dc_offset),
+            "amplitude_normalization": bool(cfg.amplitude_normalization),
+            "normalization_scale": normalization_scale,
             "dc_offset_before": dc_before,
             "dc_offset_after": dc_after,
             "dc_offset_removed": float(dc_before - dc_after),
@@ -707,6 +716,7 @@ def run_acoustic_preprocess(
     ingest_summary_csv: str | Path,
     output_root: str | Path,
     config: PreprocessConfig | None = None,
+    progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> StageResult:
     """Create canonical analysis WAVs from the immutable accepted Ingest record set."""
     cfg = config or PreprocessConfig()
@@ -731,8 +741,10 @@ def run_acoustic_preprocess(
 
     rows: list[dict[str, Any]] = []
     issues: list[dict[str, Any]] = []
+    if progress_callback:
+        progress_callback(0, len(accepted), "Preprocess")
 
-    for _, ingest_row in accepted.iterrows():
+    for index, (_, ingest_row) in enumerate(accepted.iterrows(), start=1):
         base = _base_row(ingest_row, context)
         try:
             result = _preprocess_one(
@@ -768,6 +780,9 @@ def run_acoustic_preprocess(
                     "error": str(exc),
                 }
             )
+        finally:
+            if progress_callback:
+                progress_callback(index, len(accepted), f"Preprocess — {ingest_row.get('file_name', '')}")
 
     n_input = len(accepted)
     n_ok = sum(row.get("status") == "ok" for row in rows)

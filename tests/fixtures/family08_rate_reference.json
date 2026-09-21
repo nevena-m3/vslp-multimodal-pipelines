@@ -1,0 +1,19 @@
+{
+  "source": "synthetic fixed-prompt reference v1",
+  "prompt": {
+    "syllable_count": 12,
+    "word_count": 6
+  },
+  "authoritative_intervals": [
+    {"view": "authoritative", "segment_role": "speech", "start_sec": 1.0, "end_sec": 2.0},
+    {"view": "authoritative", "segment_role": "internal_nonspeech", "start_sec": 2.0, "end_sec": 2.4},
+    {"view": "authoritative", "segment_role": "speech", "start_sec": 2.4, "end_sec": 3.4},
+    {"view": "authoritative", "segment_role": "internal_nonspeech", "start_sec": 3.4, "end_sec": 3.55},
+    {"view": "authoritative", "segment_role": "speech", "start_sec": 3.55, "end_sec": 4.55}
+  ],
+  "expected": {
+    "speaking_rate_syll_s": 3.380281690140845,
+    "speaking_rate_words_min": 101.40845070422536,
+    "articulation_rate_syll_s": 3.8095238095238093
+  }
+}

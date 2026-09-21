@@ -11,12 +11,12 @@ from scipy import ndimage, signal
 @dataclass(frozen=True)
 class DDKConfig:
     frame_ms: float = 20.0
-    hop_ms: float = 5.0
+    hop_ms: float = 10.0
     envelope_lowpass_hz: float = 200.0
-    local_window_ms: float = 600.0
-    threshold_fraction: float = 0.35
-    min_event_ms: float = 35.0
-    min_separation_ms: float = 55.0
+    threshold_window_ms: float = 20.0
+    fir_order: int = 100
+    min_event_ms: float = 20.0
+    min_separation_ms: float = 10.0
 
 
 @dataclass(frozen=True)
@@ -49,85 +49,112 @@ def _runs(mask: np.ndarray) -> list[tuple[int, int]]:
 
 
 def segment_ddk(x: np.ndarray, sr: int, config: DDKConfig = DDKConfig()) -> dict:
-    """Energy envelope threshold crossings, adapted from Tanchip et al. (2022).
-
-    The published 20-ms sum-of-squares envelope and 200-Hz low-pass working
-    signal are retained. A local percentile floor and peak fraction replace a
-    single global amplitude threshold so quiet syllables remain measurable.
-    """
-    if sr <= 0 or len(x) == 0:
-        raise ValueError("DDK requires non-empty audio and a positive sample rate")
+    """Tanchip 2022 Energy method; engineering choices are in processing provenance."""
+    if sr <= 400 or len(x) == 0:
+        raise ValueError("DDK requires nonempty audio sampled above 400 Hz")
+    if config.frame_ms <= 0 or config.hop_ms <= 0 or config.threshold_window_ms <= 0:
+        raise ValueError("DDK frame, hop and threshold window must be positive")
     work = np.asarray(x, dtype=np.float64).copy()
     work -= np.mean(work)
-    peak = float(np.max(np.abs(work)))
-    if peak > 0:
-        work /= peak
-    if sr > 500:
-        sos = signal.butter(4, min(config.envelope_lowpass_hz, 0.45 * sr),
-                            btype="lowpass", fs=sr, output="sos")
-        work = signal.sosfiltfilt(sos, work) if len(work) > 3 * len(sos) else signal.sosfilt(sos, work)
-    starts, times, energy = _frame_energy(work, sr, config.frame_ms, config.hop_ms)
-    envelope = ndimage.uniform_filter1d(energy, size=3, mode="nearest")
-    width = max(3, round(config.local_window_ms / config.hop_ms))
-    if width % 2 == 0:
-        width += 1
-    floor = ndimage.percentile_filter(envelope, percentile=20, size=width, mode="nearest")
-    ceiling = ndimage.percentile_filter(envelope, percentile=90, size=width, mode="nearest")
-    threshold = floor + config.threshold_fraction * (ceiling - floor)
-    global_noise = float(np.percentile(envelope, 15))
-    threshold = np.maximum(threshold, global_noise * 1.5)
-    active = envelope > threshold
-    intervals = []
-    nuclei = []
-    contrasts = []
-    for a, b in _runs(active):
-        onset = max(0, int(starts[a]))
-        offset = min(len(x), int(starts[b]) if b < len(starts) else len(x))
+    scale = float(np.max(np.abs(work)))
+    if scale:
+        work /= scale
+    taps = signal.firwin(config.fir_order + 1, config.envelope_lowpass_hz,
+                         fs=sr, window="hamming")
+    pad = max(config.fir_order, round(config.frame_ms * sr / 1000))
+    padded = np.pad(work, (pad, pad))
+    filtered = signal.fftconvolve(padded, taps, mode="same")[pad:pad + len(work)]
+    frame = max(1, round(config.frame_ms * sr / 1000))
+    hop = max(1, round(config.hop_ms * sr / 1000))
+    starts = np.arange(0, len(x), hop, dtype=int)
+    complete = np.pad(filtered, (0, frame))
+    energy = np.array([np.sum(np.square(complete[s:s + frame], dtype=np.float64))
+                       for s in starts])
+    times = np.minimum(starts + frame / 2, len(x)) / sr
+    width = max(1, round(config.threshold_window_ms / config.hop_ms))
+    threshold = ndimage.uniform_filter1d(energy, size=width, mode="nearest")
+    baseline = float(np.percentile(energy, 50))
+    background_spread = max(0.0, baseline - float(np.percentile(energy, 10)))
+    support_floor = max(baseline + 6 * background_spread, float(np.max(energy)) * 1e-5)
+    active = (energy > threshold) & (energy > support_floor)
+    raw_runs = _runs(active)
+    raw_candidates = []
+    for a, b in raw_runs:
+        k = a + int(np.argmax(energy[a:b]))
+        raw_candidates.append({"start_sample": int(starts[a]),
+                               "end_sample": int(starts[b]) if b < len(starts) else len(x),
+                               "energy_peak_sample": min(len(x) - 1, int(starts[k] + frame // 2)),
+                               "energy_peak_value": float(energy[k])})
+    # Candidate crossings can flicker several times inside one energy island.
+    # Group crossings only while the envelope remains above its estimated
+    # background support; the raw crossings remain separately auditable.
+    supported = energy > support_floor
+    merged_runs = []
+    for a, b in _runs(supported):
+        if not any(left < b and right > a for left, right in raw_runs):
+            continue
+        if merged_runs and (starts[a] - starts[merged_runs[-1][1]] if merged_runs[-1][1] < len(starts) else 0) * 1000 / sr <= config.min_separation_ms:
+            merged_runs[-1] = (merged_runs[-1][0], b)
+        else:
+            merged_runs.append((a, b))
+    raw = []
+    accepted = []
+    rejected = []
+    for a, b in merged_runs:
+        onset = int(starts[a])
+        offset = int(starts[b]) if b < len(starts) else len(x)
+        offset = min(offset, len(x))
+        k = a + int(np.argmax(energy[a:b]))
+        nucleus = min(len(x) - 1, int(starts[k] + frame // 2))
+        item = {"start_sample": onset, "end_sample": offset,
+                "energy_peak_sample": nucleus, "energy_peak_value": float(energy[k]),
+                "threshold_at_peak": float(threshold[k]),
+                "support_ratio": float(energy[k] / max(threshold[k], 1e-12))}
+        raw.append(item)
         if (offset - onset) * 1000 / sr < config.min_event_ms:
-            continue
-        k = a + int(np.argmax(envelope[a:b]))
-        if envelope[k] < 0.015 * float(np.max(envelope)):
-            continue
-        nucleus = int(starts[k])
-        support = float(envelope[k] / max(threshold[k], 1e-12))
-        intervals.append((onset, offset))
-        nuclei.append(nucleus)
-        contrasts.append(support)
-    flags = []
-    if not intervals:
-        flags.append("no_detectable_ddk_events")
-    if intervals and min(contrasts) < 1.25:
-        flags.append("poor_peak_valley_separability")
-    if any((right[0] - left[1]) * 1000 / sr < config.min_separation_ms
-           for left, right in zip(intervals[:-1], intervals[1:])):
-        flags.append("closely_spaced_event_boundaries")
-    if intervals and np.count_nonzero(np.abs(envelope - threshold) < 0.05 * np.maximum(threshold, 1e-12)) > 0.2 * len(envelope):
-        flags.append("ambiguous_event_boundaries")
-    perturb_counts = []
-    for factor in (0.9, 1.1):
-        perturb_counts.append(sum(
-            (starts[b] if b < len(starts) else len(x)) - starts[a]
-            >= round(config.min_event_ms * sr / 1000)
-            and float(np.max(envelope[a:b])) >= 0.015 * float(np.max(envelope))
-            for a, b in _runs(envelope > threshold * factor)
-        ))
-    if intervals and max(abs(count - len(intervals)) for count in perturb_counts) > max(2, 0.3 * len(intervals)):
-        flags.append("algorithmic_instability")
+            rejected.append({**item, "rejection_reason": "below_minimum_event_duration"})
+        else:
+            accepted.append(item)
+    intervals = [(e["start_sample"], e["end_sample"]) for e in accepted]
+    nuclei = [e["energy_peak_sample"] for e in accepted]
     cycles = np.diff(nuclei) / sr
+    sequence_duration = (intervals[-1][1] - intervals[0][0]) / sr if intervals else np.nan
+    flags = []
+    if not accepted:
+        flags.append("no_events_detected")
+        flags.append("no_detectable_ddk_events")
+    if accepted and min(e["support_ratio"] for e in accepted) < 1.05:
+        flags.append("poor_energy_separation")
+    if raw and len(rejected) / len(raw) > 0.25:
+        flags.append("many_events_removed_by_postprocessing")
+    if len(raw) > 4 * max(1, len(accepted)):
+        flags.append("extreme_candidate_fragmentation")
     return {
         "intervals_samples": intervals, "nuclei_samples": nuclei,
-        "frame_times_sec": times, "energy_envelope": envelope,
+        "raw_events": raw_candidates, "merged_candidates": raw,
+        "final_events": accepted, "rejected_events": rejected,
+        "raw_candidate_count": len(raw_runs),
+        "raw_threshold_crossings_samples": [int(starts[k]) for k in np.flatnonzero(np.diff(active.astype(int))) + 1],
+        "frame_times_sec": times, "energy_envelope": energy,
         "adaptive_threshold": threshold, "flags": flags,
         "automatic_status": "REVIEW" if flags else "ACCEPTED",
-        "n_events": len(intervals),
-        "ddk_rate_hz": float(1 / np.mean(cycles)) if len(cycles) else np.nan,
+        "n_events": len(accepted), "n_syllables": len(accepted),
+        "ddk_sequence_start_sec": intervals[0][0] / sr if intervals else np.nan,
+        "ddk_sequence_end_sec": intervals[-1][1] / sr if intervals else np.nan,
+        "ddk_sequence_duration_sec": sequence_duration,
+        "ddk_rate_hz": len(accepted) / sequence_duration if np.isfinite(sequence_duration) and sequence_duration > 0 else np.nan,
+        "ctv_sec": float(np.mean(np.abs(np.diff(cycles)))) if len(cycles) > 1 else np.nan,
         "cycle_mean_sec": float(np.mean(cycles)) if len(cycles) else np.nan,
         "cycle_sd_sec": float(np.std(cycles)) if len(cycles) else np.nan,
-        "minimum_peak_threshold_ratio": min(contrasts) if contrasts else np.nan,
-        "threshold_perturbation_event_counts": perturb_counts,
-        "processing": {"dc_removed": True, "peak_scale": peak,
+        "minimum_peak_threshold_ratio": min((e["support_ratio"] for e in accepted), default=np.nan),
+        "threshold_perturbation_event_counts": [],
+        "processing": {"dc_removed": True, "max_absolute_scale": scale,
+                       "scaling_deviation": "max-absolute for numerical safety",
                        "lowpass_hz": config.envelope_lowpass_hz,
-                       "lowpass_order": 4, "local_threshold": "p20 + fraction*(p90-p20)",
+                       "fir_order": config.fir_order, "fir_window": "hamming",
+                       "filter": "linear_phase_centered_convolution", "zero_padding_samples_each_side": pad,
+                       "threshold": "20_ms_moving_average_of_sum_squares_energy",
+                       "support_floor": support_floor,
                        "config": asdict(config)},
     }
 

@@ -1,0 +1,9 @@
+{
+  "schema_version": "1",
+  "task_id": "bamboo_passage",
+  "prompt_version": "REPLACE_WITH_APPROVED_PROMPT_VERSION",
+  "count_source": "REPLACE_WITH_COUNT_SOURCE",
+  "syllable_count": null,
+  "word_count": null,
+  "applies_to_all_recordings": false
+}
