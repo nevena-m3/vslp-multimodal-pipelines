@@ -1594,6 +1594,9 @@ class AcousticPipelineWindow(QMainWindow):
                        f"{item['evidence_entry_count']} charted entries"),
                       ("Use", item["use_status"]), ("Unit", item["unit"]),
                       ("QC range", item["qc_range_text"]), ("Analysis unit", item["analysis_unit"]),
+                      ("Formula", item["formula"]),
+                      ("Pause/phrase definition", "Internal nonspeech ≥300 ms between patient speech; "
+                       "excluded contamination is outside analysis" if item["family_id"] == "F09" else "—"),
                       ("Estimator", item["estimator"]),
                       ("Analysis region", item["analysis_region"]),
                       ("Parameter profile", item["parameter_profile"]["name"] + " (read-only)"),

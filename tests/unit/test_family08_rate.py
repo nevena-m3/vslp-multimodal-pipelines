@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 
 from vslp.acoustic.features.catalog import load_feature_catalog, task_fit
+from vslp.acoustic.features.family09 import FAMILY09_IDS
 from vslp.acoustic.features.family08 import (
     ALGORITHM_VERSION, FAMILY08_IDS, MIN_PAUSE_SEC, PARAMETER_SET_ID,
     calculate_family08, compute_family08_timing, load_prompt_counts,
@@ -33,7 +34,8 @@ def _timeline(*, excluded=False):
 def test_exact_ids_evidence_units_and_family_task_scope():
     catalog = load_feature_catalog()
     outputs = {item["feature_id"]: item for item in catalog["outputs"]}
-    assert set(outputs) == FAMILY08_IDS
+    assert set(outputs) == FAMILY08_IDS | FAMILY09_IDS
+    outputs = {key: value for key, value in outputs.items() if key in FAMILY08_IDS}
     assert all(item["construct_id"] in {"C048", "C049"} for item in outputs.values())
     assert all(item["evidence_level"] == "STRONG" for item in outputs.values())
     assert outputs["speaking_rate_syll_s"]["evidence_study_count"] == 10

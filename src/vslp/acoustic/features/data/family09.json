@@ -1,0 +1,21 @@
+{
+  "family_id": "F09",
+  "source_document": "09_Pause_Phrasing_Codex_Implementation.docx",
+  "algorithm_version": "family09-pause-1.0.0",
+  "parameter_set_id": "family09_bamboo_reviewed_v1",
+  "minimum_internal_pause_ms": 300,
+  "sample_sd_ddof": 1,
+  "outputs": [
+    {"construct_id": "C050", "feature_id": "total_pause_duration_s", "human_name": "Total pause duration", "unit": "s", "qc_range_text": "No universal bound", "evidence_level": "MODERATE", "evidence_study_count": 3, "evidence_entry_count": 3, "formula": "sum(eligible internal pause durations)", "analysis_unit": "Pause events"},
+    {"construct_id": "C051", "feature_id": "cv_pause_duration", "human_name": "CV pause duration — ratio", "unit": "dimensionless", "qc_range_text": "≥0", "evidence_level": "NOT ESTABLISHED", "evidence_study_count": 2, "evidence_entry_count": 2, "formula": "sample SD(pause durations) / mean(pause durations)", "analysis_unit": "Pause events"},
+    {"construct_id": "C051", "feature_id": "cv_pause_duration_pct", "human_name": "CV pause duration — percent", "unit": "%", "qc_range_text": "≥0%", "evidence_level": "NOT ESTABLISHED", "evidence_study_count": 2, "evidence_entry_count": 2, "formula": "100 × sample SD(pause durations) / mean(pause durations)", "analysis_unit": "Pause events"},
+    {"construct_id": "C052", "feature_id": "cv_phrase_duration", "human_name": "CV phrase duration — ratio", "unit": "dimensionless", "qc_range_text": "≥0", "evidence_level": "NOT ESTABLISHED", "evidence_study_count": 2, "evidence_entry_count": 2, "formula": "sample SD(phrase durations) / mean(phrase durations)", "analysis_unit": "Phrase events"},
+    {"construct_id": "C052", "feature_id": "cv_phrase_duration_pct", "human_name": "CV phrase duration — percent", "unit": "%", "qc_range_text": "≥0%", "evidence_level": "NOT ESTABLISHED", "evidence_study_count": 2, "evidence_entry_count": 2, "formula": "100 × sample SD(phrase durations) / mean(phrase durations)", "analysis_unit": "Phrase events"},
+    {"construct_id": "C053", "feature_id": "pause_count", "human_name": "Pause events — count", "unit": "count", "qc_range_text": "≥0", "evidence_level": "MODERATE", "evidence_study_count": 2, "evidence_entry_count": 2, "formula": "count(eligible internal pauses)", "analysis_unit": "Pause events"},
+    {"construct_id": "C054", "feature_id": "percent_pause_ge300ms", "human_name": "Percent pause (≥300 ms)", "unit": "%", "qc_range_text": "0–100%", "evidence_level": "MODERATE", "evidence_study_count": 2, "evidence_entry_count": 2, "formula": "100 × total pause duration / analyzed utterance duration", "analysis_unit": "Whole utterance"},
+    {"construct_id": "C055", "feature_id": "mean_pause_duration_s", "human_name": "Mean pause duration", "unit": "s", "qc_range_text": "No universal bound", "evidence_level": "LIMITED", "evidence_study_count": 1, "evidence_entry_count": 1, "formula": "mean(eligible pause durations)", "analysis_unit": "Pause events"},
+    {"construct_id": "C056", "feature_id": "mean_phrase_duration_s", "human_name": "Mean phrase duration", "unit": "s", "qc_range_text": "No universal bound", "evidence_level": "NOT ESTABLISHED", "evidence_study_count": 1, "evidence_entry_count": 1, "formula": "mean(phrase durations between eligible pauses)", "analysis_unit": "Phrase events"},
+    {"construct_id": "C057", "feature_id": "pause_pattern_components", "human_name": "Pause-pattern components", "unit": "structured component vector", "qc_range_text": "No universal bound", "evidence_level": "LIMITED", "evidence_study_count": 2, "evidence_entry_count": 2, "formula": "[mean pause, sample SD pause, CV pause, percent pause]", "analysis_unit": "Whole recording", "research_only": true},
+    {"construct_id": "C057", "feature_id": "pause_pattern_factor_if_frozen", "human_name": "Pause-pattern factor (frozen transform)", "unit": "standardized factor score", "qc_range_text": "No universal bound", "evidence_level": "LIMITED", "evidence_study_count": 2, "evidence_entry_count": 2, "formula": "wᵀ z(components) + b", "analysis_unit": "Whole recording", "research_only": true, "selectable": false, "blocked_reason": "Frozen source scaling, loadings and intercept were not supplied."}
+  ]
+}

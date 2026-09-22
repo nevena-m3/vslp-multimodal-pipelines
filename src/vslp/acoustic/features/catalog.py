@@ -12,6 +12,7 @@ from typing import Any
 
 _DATA = Path(__file__).with_name("data") / "master_matrix.json"
 _FAMILY08 = Path(__file__).with_name("data") / "family08.json"
+_FAMILY09 = Path(__file__).with_name("data") / "family09.json"
 USE = {"PROD": "Production", "VARIANT": "Conditional", "TASK": "Conditional",
        "VALIDATE": "Validation required", "RESEARCH": "Research", "BLOCKED": "Blocked"}
 TASKS = {
@@ -94,6 +95,51 @@ def load_feature_catalog() -> dict[str, Any]:
             "source_document": family08["source_document"],
         })
     attach_family_outputs(matrix, "F08", outputs)
+    family09 = json.loads(_FAMILY09.read_text(encoding="utf-8"))
+    for construct_id in (f"C{number:03d}" for number in range(50, 58)):
+        constructs[construct_id]["recommended_tasks"] = ["bamboo_passage"]
+        constructs[construct_id]["conditional_tasks"] = []
+    outputs09 = []
+    for spec in family09["outputs"]:
+        construct = constructs[spec["construct_id"]]
+        research = spec.get("research_only", False)
+        outputs09.append({
+            **spec,
+            "construct_name": construct["construct_name"],
+            "family_id": "F09",
+            "family_name": construct["family_name"],
+            "matrix_status": construct["matrix_status"],
+            "source_use_status": construct["matrix_status"],
+            "use_status": "Research" if research else "Production",
+            "recommended_tasks": ["bamboo_passage"],
+            "conditional_tasks": [],
+            "qc_range_low": None, "qc_range_high": None,
+            "signal_scope": construct["signal_scope"],
+            "analysis_region": "reviewed patient utterance and eligible internal pause/phrase events",
+            "estimator": "shared reviewed pause/phrase event table",
+            "algorithm": family09["algorithm_version"],
+            "algorithm_version": family09["algorithm_version"],
+            "default_parameter_set_id": family09["parameter_set_id"],
+            "parameter_profile": {
+                "name": "Validated default" if not research else "Research components",
+                "read_only": True,
+                "active_parameters": {
+                    "minimum_internal_pause_ms": family09["minimum_internal_pause_ms"],
+                    "sample_sd_ddof": family09["sample_sd_ddof"],
+                    "boundary_source": "frozen reviewed segmentation"}},
+            "prerequisites": {
+                "requires_audio": False, "requires_segmentation": True,
+                "requires_final_reviewed_segmentation": True,
+                "requires_alignment": False, "requires_task": True,
+                "requires_unscaled_audio": False, "requires_voiced_region": False,
+                "requires_ddk_events": False, "requires_vowel_tokens": False,
+                "requires_prompt_manifest": False},
+            "family_spec_approved": True,
+            "selectable": spec.get("selectable", True),
+            "blocked_reason": spec.get("blocked_reason", ""),
+            "source_document": family09["source_document"],
+        })
+    attach_family_outputs(matrix, "F09", outputs09)
     return matrix
 
 

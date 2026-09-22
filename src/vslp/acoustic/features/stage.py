@@ -104,9 +104,11 @@ def _select_registry(cfg: FeatureExtractionConfig) -> pd.DataFrame:
     for output in catalog["outputs"]:
         if output["feature_id"] in requested:
             rows.append({"feature": output["feature_id"], "subsystem": output["family_name"],
-                         "family": output["family_name"], "construct_id": output["construct_id"],
+                         "family": output["family_name"], "family_id": output["family_id"],
+                         "construct_id": output["construct_id"],
                          "meaning": output["human_name"], "unit": output["unit"],
-                         "formula": output["formula"], "evidence_tier": output["evidence_level"],
+                         "formula": output["formula"], "qc_range_text": output["qc_range_text"],
+                         "evidence_tier": output["evidence_level"],
                          "implementation_status": output["use_status"],
                          "algorithm_version": output["algorithm_version"],
                          "parameter_set_id": output["default_parameter_set_id"],
@@ -307,12 +309,13 @@ def run_acoustic_feature_extraction(
             raise ValueError("Frozen reviewed segmentation exists; Features requires its authoritative final decisions and intervals")
     cfg = _apply_computation_mode_defaults(config or FeatureExtractionConfig())
     registry = _select_registry(cfg)
-    from vslp.acoustic.features.family08 import FAMILY08_IDS, run_family08_stage
+    from vslp.acoustic.features.family08 import FAMILY08_IDS, run_reviewed_timing_stage
+    from vslp.acoustic.features.family09 import FAMILY09_IDS
 
-    if set(cfg.selected_features) <= FAMILY08_IDS:
-        return run_family08_stage(segmentation_summary_csv, output_root, cfg,
-                                  final_segmentation_intervals_csv, registry,
-                                  progress_callback=progress_callback)
+    if set(cfg.selected_features) <= FAMILY08_IDS | FAMILY09_IDS:
+        return run_reviewed_timing_stage(segmentation_summary_csv, output_root, cfg,
+                                         final_segmentation_intervals_csv, registry,
+                                         progress_callback=progress_callback)
     segmentation_summary_csv = Path(segmentation_summary_csv)
     stage_dir = Path(output_root) / "acoustic" / "005_features"
     folders = ensure_stage_folders(stage_dir, lazy=True)

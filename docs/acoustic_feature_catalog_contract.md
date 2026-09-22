@@ -4,6 +4,10 @@ The active registry uses only the supplied Family Index and 79-feature master
 matrix. It contains 13 families and exactly 79 constructs. The master
 documents do not supply exact FEATURE ID(S). The subsequently supplied Family
 08 specification provides **three approved leaf outputs** under C048/C049.
+Family 09 provides **eleven exact leaf IDs** under C050–C057; its frozen
+pause-pattern factor remains visible but cannot execute without its source
+transform. Family 09 uses the final reviewed segmentation and a shared
+pause/phrase event table. No old pause aliases are reactivated.
 Other constructs cannot be selected or executed as scalar features.
 Previously exposed IDs from the old catalog and earlier examples are removed
 from the active registry. The feature stage rejects unapproved or legacy IDs.
@@ -19,7 +23,7 @@ The 32 removed active-catalog leaves are:
 `cv_phrase_dur`, `num_pause`, `percent_pause`, `mean_pause_dur`,
 `mean_phrase_dur`, `DDKrate`, `DDKregularity`.
 
-The other 77 constructs currently lack exact family-spec leaf IDs.
+The other 69 constructs currently lack exact family-spec leaf IDs.
 
 Code name and Evidence display as “—” until an individual family specification
 provides them. Family 08 supplies exact IDs and evidence for its three outputs.

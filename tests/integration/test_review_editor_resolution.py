@@ -30,6 +30,7 @@ def _run(tmp_path: Path):
     summary = tmp_path / "acoustic" / "002_segmentation" / "tables" / "acoustic_segmentation_summary.csv"
     summary.parent.mkdir(parents=True)
     pd.DataFrame([{"recording_id": "r", "file_name": "r.wav", "task_name": "Bamboo Passage",
+        "segmentation_run_id": "seg_test",
         "segmentation_method": "silero_vad", "automatic_status": "EXCLUDED", "review_required": True,
         "duration_sec": 4, "analysis_wav_path": str(wav), "segments_csv_path": str(segments),
         "source_sha256": "a" * 64, "project_name": "P", "run_id": "R"}]).to_csv(summary, index=False)
@@ -183,6 +184,51 @@ def test_family08_missing_prompt_count_is_nan_with_status_reason(tmp_path: Path)
     assert status.status.tolist() == ["unavailable"]
     assert status.reason.tolist() == ["prompt_manifest_missing"]
     assert "speech_rate" not in values
+
+
+def test_family09_uses_only_frozen_review_and_writes_shared_events(tmp_path: Path):
+    wav, automatic_segments, _summary = _run(tmp_path)
+    original_hashes = sha256_file(wav), sha256_file(automatic_segments)
+    save_segmentation_review_entry(
+        tmp_path, "r", "KEEP_MANUAL", "Reviewer", "Cough excluded",
+        "0.8,1.2\n1.6,2.0\n2.3,3.5", analysis_start_sec=.7,
+        analysis_end_sec=3.7,
+        exclusion_intervals=[{"start_sec": 2.0, "end_sec": 2.3,
+                              "exclusion_reason": "Cough / throat clear"}])
+    finalize_segmentation_review(tmp_path)
+    final = tmp_path / "acoustic" / "003_segmentation_review" / "final"
+    result = run_acoustic_feature_extraction(
+        final / "final_segmentation_decisions.csv", tmp_path,
+        config=FeatureExtractionConfig(selected_features=[
+            "total_pause_duration_s", "pause_count", "percent_pause_ge300ms",
+            "mean_pause_duration_s", "cv_pause_duration", "mean_phrase_duration_s"]),
+        final_segmentation_intervals_csv=final / "final_segmentation_intervals.csv")
+    values = pd.read_csv(result.summary_table)
+    status = pd.read_csv(result.summary_table.parent / "acoustic_feature_status_long.csv")
+    events_path = result.summary_table.parent / "native_measurements" / "pause_phrase_events.csv"
+    events = pd.read_csv(events_path)
+    assert events_path.is_file()
+    assert np.isclose(values.total_pause_duration_s.iloc[0], .4)
+    assert values.pause_count.iloc[0] == 1
+    assert np.isclose(values.percent_pause_ge300ms.iloc[0], 100 * .4 / 2.4)
+    assert np.isclose(values.mean_pause_duration_s.iloc[0], .4)
+    assert np.isnan(values.cv_pause_duration.iloc[0])
+    assert status.loc[status.feature.eq("cv_pause_duration"), "reason"].iloc[0] == "insufficient_pause_events"
+    assert status.segmentation_run_id.notna().all()
+    assert status.review_run_id.notna().all()
+    assert status.parameter_set_id.eq("family09_bamboo_reviewed_v1").all()
+    assert events.loc[events.event_type.eq("pause"), "duration_sec"].sum() == pytest.approx(.4)
+    assert events.event_type.eq("excluded_contamination").sum() == 1
+    assert events.loc[events.event_type.eq("excluded_contamination"), "qualifies_as_pause"].eq(False).all()
+    assert original_hashes == (sha256_file(wav), sha256_file(automatic_segments))
+
+
+def test_family09_requires_frozen_authoritative_paths(tmp_path: Path):
+    _wav, _automatic_segments, summary = _run(tmp_path)
+    with pytest.raises(ValueError, match="frozen authoritative"):
+        run_acoustic_feature_extraction(
+            summary, tmp_path,
+            config=FeatureExtractionConfig(selected_features=["pause_count"]))
 
 
 def test_auto_modified_provenance_and_trim_without_leading_pause(tmp_path: Path):

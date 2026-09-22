@@ -14,6 +14,8 @@ from vslp.acoustic.features.catalog import (
     validate_feature_ids,
 )
 from vslp.acoustic.features.stage import FeatureExtractionConfig, _select_registry
+from vslp.acoustic.features.family08 import FAMILY08_IDS
+from vslp.acoustic.features.family09 import FAMILY09_IDS
 from vslp.gui.acoustic_app.main_window import AcousticPipelineWindow
 
 
@@ -30,9 +32,9 @@ def test_exact_master_constructs_and_no_legacy_leaves():
     assert len(catalog["constructs"]) == 79
     assert [c["construct_id"] for c in catalog["constructs"]] == [
         c["construct_id"] for c in source["constructs"]]
-    assert {o["feature_id"] for o in catalog["outputs"]} == {
-        "speaking_rate_syll_s", "speaking_rate_words_min", "articulation_rate_syll_s"}
-    assert all(c["outputs"] == [] for c in catalog["constructs"] if c["family_id"] != "F08")
+    assert {o["feature_id"] for o in catalog["outputs"]} == FAMILY08_IDS | FAMILY09_IDS
+    assert all(c["outputs"] == [] for c in catalog["constructs"]
+               if c["family_id"] not in {"F08", "F09"})
     assert all(c["evidence_level"] is None for c in catalog["constructs"])
     assert catalog["constructs"][4]["construct_name"] == "Jitter"
     with pytest.raises(ValueError, match="Duplicate"):
@@ -113,8 +115,7 @@ def test_gui_columns_details_search_and_structured_recommendations():
     ]
     assert len(window.subsystem_items) == 13
     assert len(window.construct_items) == 79
-    assert set(window.feature_items) == {
-        "speaking_rate_syll_s", "speaking_rate_words_min", "articulation_rate_syll_s"}
+    assert set(window.feature_items) == FAMILY08_IDS | FAMILY09_IDS
     jitter = window.construct_items["C005"]
     assert jitter.text(1) == "—"
     assert jitter.text(2) == "—"
@@ -149,7 +150,9 @@ def test_constructs_are_visible_but_unselectable_and_buttons_choose_no_fake_outp
     window.select_recommended_features()
     assert window._selected_feature_names() == []
     window.select_all_features()
-    assert set(window._selected_feature_names()) == set(window.feature_items)
+    assert set(window._selected_feature_names()) == {
+        feature_id for feature_id, item in window.catalog_outputs.items()
+        if item["use_status"] == "Production" and item["selectable"]}
     assert not window.run_features_btn.isEnabled()
     assert not window.min_pause_feature_spin.isEnabled()
     assert not window.computation_mode_combo.isEnabled()
@@ -183,8 +186,9 @@ def test_recommended_button_chooses_green_only(tmp_path: Path):
     window._refresh_feature_count_label()
     assert window.feature_items["speaking_rate_words_min"].data(0, Qt.UserRole + 1) == "AMBER"
     window.select_recommended_features()
-    assert set(window._selected_feature_names()) == {
-        "speaking_rate_syll_s", "articulation_rate_syll_s"}
+    assert set(window._selected_feature_names()) == (
+        FAMILY08_IDS - {"speaking_rate_words_min"} |
+        (FAMILY09_IDS - {"pause_pattern_components", "pause_pattern_factor_if_frozen"}))
     window.task_name_edit.setText("WSTG")
     assert window.feature_items["speaking_rate_syll_s"].data(0, Qt.UserRole + 1) == "RED"
     window.select_recommended_features()
