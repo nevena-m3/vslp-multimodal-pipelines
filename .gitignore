@@ -69,3 +69,4 @@ examples/test_data/metadata/
 **/participant*.csv
 **/subject*.csv
 **/.ipynb_checkpoints/
+docs/feature_gui_v075_metadata_filename_context.md
