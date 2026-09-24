@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 
 import pandas as pd
 import pytest
@@ -18,7 +19,9 @@ def _project(tmp_path, task="wstg", metadata_speaker="speaker_A"):
     root = tmp_path / "project"
     root.mkdir()
     (root / "project_manifest.json").write_text(json.dumps({
-        "task_id": task, "task_name": "WSTG" if task == "wstg" else task}), encoding="utf-8")
+        "task_id": task, "task_name": (
+            "WSTG" if task == "wstg" else "Bamboo Passage" if task == "bamboo_passage" else task)}),
+        encoding="utf-8")
     review = root / "acoustic" / "003_segmentation_review" / "final"
     review.mkdir(parents=True)
     pd.DataFrame([{"recording_id": "r1", "file_name": "opaque.wav",
@@ -57,9 +60,40 @@ def test_no_filename_speaker_or_prompt_inference(tmp_path):
         build_task_alignment_config(root)
 
 
-def test_bamboo_requires_source_text_and_nonlinguistic_tasks_are_exempt(tmp_path):
+def test_bamboo_canonical_prompt_resolves_and_survives_project_reopen(tmp_path):
     root = _project(tmp_path, task="bamboo_passage")
-    assert resolve_prompt(project_alignment_context(root))[1] == "MISSING_CANONICAL_PROMPT"
+    expected = ("Bamboo walls are getting to be very popular. They are strong, easy to use, "
+        "and good-looking. They provide a good background and can create a look of a Japanese "
+        "garden. Bamboo is one of the largest and most rapidly growing grasses all over the "
+        "world. Many varieties of bamboo are grown in Asia, although it is also grown in "
+        "America. Last year we bought a new home and have been working on the flower garden. "
+        "In a few more days, we will be done with the bamboo wall in our garden. We have "
+        "really enjoyed the project.")
+    prompt, issue = resolve_prompt(project_alignment_context(root))
+    assert issue == "" and prompt["exact_expected_text"] == expected
+    assert prompt["prompt_id"] == "bamboo_passage_v1"
+    assert prompt["prompt_version"] == "v1"
+    assert hashlib.sha256(expected.encode("utf-8")).hexdigest() == (
+        "a132fa58fe945d86812dec3cce3936f6f586a24527105f3bc9009f18efdb5f67")
+    config = build_task_alignment_config(root)
+    assert PromptManifest.load(config.prompt_manifest_path).transcript == expected
+    assert PromptManifest.load(config.prompt_manifest_path).prompt_version == "v1"
+    choices = load_project_choices(root)
+    choices["recordings"] = {"r1": {"prompt_id": "bamboo_passage_v1"}}
+    save_project_choices(root, choices)
+    assert resolve_prompt(project_alignment_context(root))[0]["prompt_id"] == "bamboo_passage_v1"
+    from PySide6.QtWidgets import QApplication
+    from vslp.gui.acoustic_app.alignment_widget import AlignmentWidget
+    QApplication.instance() or QApplication([])
+    widget = AlignmentWidget(lambda: root)
+    widget.refresh()
+    assert widget.task_label.text() == "Bamboo Passage"
+    assert widget.prompt_display.text() == expected
+    assert not widget.prompt._alignment_row.isVisible()
+    widget.close()
+
+
+def test_nonlinguistic_tasks_are_exempt():
     assert task_entry("sustained_a")["alignment_applicable"] is False
     assert task_entry("ddk")["alignment_applicable"] is False
 
@@ -133,3 +167,32 @@ def test_multiple_prompt_task_requires_explicit_recording_selection(tmp_path, mo
     config = build_task_alignment_config(root)
     assert PromptManifest.load(config.recording_prompt_manifest_paths["r1"]).prompt_version == "v1"
     assert PromptManifest.load(config.recording_prompt_manifest_paths["r2"]).prompt_version == "v2"
+
+
+@pytest.mark.parametrize(("task_id", "selected", "destination"), [
+    ("bamboo_passage", ["f1_token_hz"], "Alignment"),
+    ("bamboo_passage", ["pause_count"], "Acoustic Features"),
+    ("ddk", ["ddk_rate_syll_s"], "Acoustic Features"),
+    ("sustained_a", ["f0_mean_hz"], "Acoustic Features"),
+])
+def test_review_continuation_routes_only_required_linguistic_alignment(
+        tmp_path, monkeypatch, task_id, selected, destination):
+    from PySide6.QtWidgets import QApplication
+    from vslp.gui.acoustic_app.main_window import AcousticPipelineWindow
+
+    QApplication.instance() or QApplication([])
+    root = _project(tmp_path, task=task_id)
+    intervals = (root / "acoustic" / "003_segmentation_review" / "final" /
+                 "final_segmentation_intervals.csv")
+    intervals.write_text("recording_id,view,segment_role,start_sec,end_sec\n"
+                         "r1,authoritative,speech,0,1\n", encoding="utf-8")
+    window = AcousticPipelineWindow()
+    window._run_root = root
+    monkeypatch.setattr(window, "_require_project_initialized", lambda: True)
+    monkeypatch.setattr(window, "_selected_feature_names", lambda: selected)
+    monkeypatch.setattr(window, "_refresh_feature_count_label", lambda: None)
+    assert window.run_all_btn.text() == "Run to Manual Review"
+    assert window.review_widget.continue_button.text() == "Continue after Review"
+    window.run_after_review()
+    assert window.tabs.tabText(window.tabs.currentIndex()) == destination
+    window.close()

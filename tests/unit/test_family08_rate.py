@@ -13,6 +13,8 @@ from vslp.acoustic.features.family08 import (
     ALGORITHM_VERSION, FAMILY08_IDS, MIN_PAUSE_SEC, PARAMETER_SET_ID,
     calculate_family08, compute_family08_timing, load_prompt_counts,
 )
+from vslp.acoustic.alignment.stage import normalize_transcript
+from vslp.acoustic.alignment.task_workflow import task_entry
 
 
 def _timeline(*, excluded=False):
@@ -48,6 +50,20 @@ def test_exact_ids_evidence_units_and_family_task_scope():
     assert ALGORITHM_VERSION == "family08-rate-1.0.0"
     assert PARAMETER_SET_ID == "family08_bamboo_reviewed_v1"
     assert MIN_PAUSE_SEC == 0.3
+
+
+def test_bamboo_prompt_tokenizations_do_not_invent_family08_count():
+    transcript = task_entry("bamboo_passage")["prompts"][0]["exact_expected_text"]
+    assert len(transcript.split()) == 97
+    assert len(normalize_transcript(transcript).split()) == 98
+    assert "good-looking" in transcript
+    assert "GOOD LOOKING" in normalize_transcript(transcript)
+    counts, issue = load_prompt_counts(None, "Bamboo Passage")
+    assert counts is None and issue == "prompt_manifest_missing"
+    timing, _ = compute_family08_timing(_timeline())
+    values = calculate_family08(timing, counts, set(FAMILY08_IDS))
+    assert all(np.isnan(value) and reason == "prompt_manifest_missing_or_invalid"
+               for value, reason in values.values())
 
 
 def test_speaking_includes_pause_articulation_removes_only_ge_300ms():

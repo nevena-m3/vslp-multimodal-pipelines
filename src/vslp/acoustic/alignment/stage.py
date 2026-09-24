@@ -116,10 +116,12 @@ class PromptManifest:
             raise ValueError("missing_prompt_fields")
         if raw["phone_set"] != PHONE_SET:
             raise ValueError("unsupported_phone_set")
-        transcript_words = [re.sub(r"[^\w']", "", word).casefold()
-                            for word in str(raw["transcript"]).split()]
-        expected = [re.sub(r"[^\w']", "", str(word)).casefold()
-                    for word in raw["expected_words"]]
+        # Match word boundaries without imposing MFA's separate spoken-number gate:
+        # imported validated Alignment manifests can use explicit numbered labels.
+        # Hyphenated orthography still resolves to the two expected MFA words.
+        transcript_words = re.findall(r"[\w']+", str(raw["transcript"]).casefold())
+        expected = re.findall(r"[\w']+", " ".join(
+            str(word) for word in raw["expected_words"]).casefold())
         if transcript_words != expected:
             raise ValueError("PROMPT_MISMATCH")
         return cls(*(tuple(str(word) for word in raw[key]) if key == "expected_words"

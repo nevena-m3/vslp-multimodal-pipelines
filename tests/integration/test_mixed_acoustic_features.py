@@ -14,12 +14,14 @@ from vslp.acoustic.features.family04 import FRAME_COLUMNS, TOKEN_COLUMNS
 from vslp.acoustic.features.stage import FeatureExtractionConfig, run_acoustic_feature_extraction
 
 
-def _case(tmp_path, monkeypatch, *, aligned=False, normalized=False):
+def _case(tmp_path, monkeypatch, *, aligned=False, normalized=False, ddk=False):
     root = tmp_path / "run"
     root.mkdir()
     (root / "project_manifest.json").write_text(json.dumps({
-        "project_name": "P", "task_name": "Bamboo Passage", "task_id": "bamboo_passage",
-        "task_type": "Passage / connected speech", "run_id": "run1"}), encoding="utf-8")
+        "project_name": "P", "task_name": "DDK" if ddk else "Bamboo Passage",
+        "task_id": "ddk" if ddk else "bamboo_passage",
+        "task_type": "DDK" if ddk else "Passage / connected speech",
+        "run_id": "run1"}), encoding="utf-8")
     sr = 16000
     t = np.arange(2 * sr) / sr
     wav = root / "canonical.wav"
@@ -29,7 +31,12 @@ def _case(tmp_path, monkeypatch, *, aligned=False, normalized=False):
     decisions = final / "final_segmentation_decisions.csv"
     intervals = final / "final_segmentation_intervals.csv"
     decisions.write_text("recording_id,final_decision\nr1,KEEP_AUTO\n", encoding="utf-8")
-    pd.DataFrame([
+    reviewed = ([
+        {"recording_id": "r1", "view": "authoritative", "segment_role": "speech",
+         "start_sec": start, "end_sec": start + .06, "boundary_source": "AUTO",
+         "analysis_start_sec": 0, "analysis_end_sec": 2}
+        for start in (.2, .4, .6, .8, 1.0)
+    ] if ddk else [
         {"recording_id": "r1", "view": "authoritative", "segment_role": "speech",
          "start_sec": .2, "end_sec": .8, "boundary_source": "AUTO",
          "analysis_start_sec": 0, "analysis_end_sec": 2},
@@ -39,13 +46,15 @@ def _case(tmp_path, monkeypatch, *, aligned=False, normalized=False):
         {"recording_id": "r1", "view": "authoritative", "segment_role": "speech",
          "start_sec": 1.2, "end_sec": 1.8, "boundary_source": "AUTO",
          "analysis_start_sec": 0, "analysis_end_sec": 2},
-    ]).to_csv(intervals, index=False)
+    ])
+    pd.DataFrame(reviewed).to_csv(intervals, index=False)
     kept = pd.DataFrame([{
         "recording_id": "r1", "file_name": "Bamboo.wav", "duration_sec": 2.,
         "analysis_wav_path": str(wav), "source_sha256": "a" * 64,
         "source_file_path": str(wav), "segmentation_run_id": "seg1",
         "review_run_id": "rev1", "boundary_source": "AUTO",
-        "segmentation_method": "silero_vad", "analysis_start_sec": 0.,
+        "segmentation_method": "ddk_energy" if ddk else "silero_vad",
+        "analysis_start_sec": 0.,
         "analysis_end_sec": 2., "stable_region_start": .2, "stable_region_end": 1.8,
     }])
     for module in ("mixed_dispatch", "family01_stage", "family04_stage", "family06_stage", "family08",
@@ -192,6 +201,53 @@ def test_ddk_prerequisite_does_not_block_pause(tmp_path, monkeypatch):
     assert values.pause_count.iloc[0] == 1
     assert status.loc[status.feature_id.eq("ddk_rate_syll_s"),
                       "failure_reason"].iloc[0] == "missing_final_ddk_segmentation"
+
+
+def test_reviewed_ddk_and_spectrum_succeed_in_one_selected_only_run(tmp_path, monkeypatch):
+    root, decisions, intervals, _ = _case(tmp_path, monkeypatch, ddk=True)
+    selected = {"ddk_rate_syll_s", "ddk_cycle_mad_s", "mfcc01_mean"}
+    result, status, values = _run(root, decisions, intervals, sorted(selected))
+    assert result.status == "completed"
+    assert set(status.feature_id) == selected
+    assert not status.duplicated(["recording_id", "feature_id"]).any()
+    assert status.failure_reason.eq("").all()
+    assert values.ddk_rate_syll_s.iloc[0] == pytest.approx(2.5)
+    assert values.ddk_cycle_mad_s.iloc[0] == pytest.approx(0, abs=1e-12)
+    assert np.isfinite(values.mfcc01_mean.iloc[0])
+    assert "pause_count" not in values.columns
+    events = root / "acoustic" / "005_features" / "family_runs" / "ddk" / "tables" / \
+        "native_measurements" / "ddk_feature_events.csv"
+    assert events.is_file()
+    assert len(pd.read_csv(events)) == 5
+    manifest = json.loads(Path(result.manifest_path).read_text(encoding="utf-8"))
+    assert set(manifest["config"]["families_invoked"]) == {"F10", "F12"}
+    assert set(manifest["config"]["executor_groups"]) == {"ddk", "spectrum"}
+
+
+def test_ten_implemented_families_dispatch_together_with_local_failures(tmp_path, monkeypatch):
+    root, decisions, intervals, _ = _case(tmp_path, monkeypatch, ddk=True)
+    selected = ["f0_mean_hz", "hnr_mean_db", "f1_vowel_median_hz",
+                "m1_t_minus_k_hz", "speech_time_s", "speaking_rate_syll_s",
+                "pause_count", "ddk_rate_syll_s", "amp_mean_fs", "mfcc01_mean"]
+    result, status, values = _run(root, decisions, intervals, selected)
+    assert result.status == "completed_with_warnings"
+    assert set(status.feature_id) == set(selected)
+    assert not status.duplicated(["recording_id", "feature_id"]).any()
+    assert status.loc[status.feature_id.eq("f1_vowel_median_hz"),
+                      "failure_reason"].iloc[0] == "missing_alignment"
+    assert status.loc[status.feature_id.eq("m1_t_minus_k_hz"),
+                      "failure_reason"].iloc[0] in {"missing_alignment", "missing_target_definition"}
+    assert status.loc[status.feature_id.eq("speaking_rate_syll_s"),
+                      "failure_reason"].iloc[0]
+    for feature_id in ("speech_time_s", "ddk_rate_syll_s", "mfcc01_mean"):
+        assert status.loc[status.feature_id.eq(feature_id), "failure_reason"].iloc[0] == ""
+    assert values.ddk_rate_syll_s.iloc[0] == pytest.approx(2.5)
+    manifest = json.loads(Path(result.manifest_path).read_text(encoding="utf-8"))
+    assert set(manifest["config"]["families_invoked"]) == {
+        "F01", "F02", "F04", "F06", "F07", "F08", "F09", "F10", "F11", "F12"}
+    assert set(manifest["config"]["executor_groups"]) == {
+        "voice", "formants", "segmental", "timing", "ddk", "spectrum"}
+    assert len(manifest["config"]["executor_groups"]) == 6
 
 
 def test_duplicate_selection_rejected(tmp_path, monkeypatch):

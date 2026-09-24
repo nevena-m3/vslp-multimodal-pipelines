@@ -127,7 +127,7 @@ def build_task_alignment_config(root: str | Path, *, profile_path: str = "") -> 
     folder.mkdir(parents=True, exist_ok=True)
     prompt_paths = {}
     for identity, prompt in prompts_by_recording.items():
-        expected = re.findall(r"[\w']+", prompt["exact_expected_text"])
+        expected = normalize_transcript(prompt["exact_expected_text"]).split()
         prompt_file = folder / f"prompt_{identity}.json"
         prompt_file.write_text(json.dumps({"manifest_version": task_registry()["registry_version"],
             "task_id": context["task_id"], "prompt_id": prompt["prompt_id"],

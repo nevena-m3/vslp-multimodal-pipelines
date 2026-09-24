@@ -204,7 +204,7 @@ class SegmentationReviewWidget(QWidget):
         next_button.clicked.connect(lambda: self._navigate(1))
         self.finalize_button = QPushButton("Freeze final segmentation")
         self.finalize_button.clicked.connect(self._finalize)
-        self.continue_button = QPushButton("Continue to QC & Features")
+        self.continue_button = QPushButton("Continue after Review")
         self.continue_button.clicked.connect(self.continue_requested.emit)
         self.continue_button.setEnabled(False)
         for button in (previous, next_button, self.finalize_button, self.continue_button):

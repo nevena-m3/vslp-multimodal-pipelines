@@ -50,7 +50,7 @@ from vslp.acoustic.features.catalog import (
 from vslp.acoustic.alignment import freeze_alignment, load_final_alignment, run_acoustic_alignment
 from vslp.acoustic.alignment.self_test import run_mfa_self_test
 from vslp.acoustic.alignment.task_workflow import (
-    check_mfa_environment, check_task_preflight, run_task_alignment,
+    check_mfa_environment, check_task_preflight, run_task_alignment, task_entry,
 )
 from vslp.acoustic.features.scales import build_feature_family_policy_summary
 from vslp.acoustic.features.stage import (
@@ -215,7 +215,7 @@ class AcousticPipelineWindow(QMainWindow):
         self.refresh_outputs_btn.clicked.connect(self.refresh_latest_outputs)
         side_layout.addWidget(self.refresh_outputs_btn)
 
-        self.run_all_btn = QPushButton("Run Full Acoustic Workflow")
+        self.run_all_btn = QPushButton("Run to Manual Review")
         self.run_all_btn.setObjectName("RunButton")
         self.run_all_btn.clicked.connect(self.run_all)
         side_layout.addWidget(self.run_all_btn)
@@ -1045,10 +1045,11 @@ class AcousticPipelineWindow(QMainWindow):
         prompt_row = QHBoxLayout(self.feature_prompt_row)
         prompt_row.setContentsMargins(0, 0, 0, 0)
         self.feature_prompt_manifest_edit = QLineEdit()
-        self.feature_prompt_manifest_edit.setPlaceholderText("Versioned prompt-count manifest (.json)")
+        self.feature_prompt_manifest_edit.setPlaceholderText(
+            "Approved task word/syllable counts required for selected rate outputs")
         self.feature_prompt_manifest_edit.textChanged.connect(self._refresh_feature_count_label)
         prompt_row.addWidget(self.feature_prompt_manifest_edit)
-        prompt_browse = QPushButton("Browse")
+        prompt_browse = QPushButton("Select approved counts")
         prompt_browse.clicked.connect(self._browse_feature_prompt_manifest)
         prompt_row.addWidget(prompt_browse)
         right_layout.addWidget(self.feature_prompt_row)
@@ -2686,10 +2687,22 @@ table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{border-bottom:
         if not decisions.is_file() or not intervals.is_file():
             QMessageBox.warning(self, "Review required", "Freeze final segmentation first.")
             return
+        selected = self._selected_feature_names()
+        manifest_path = self._output_root() / "project_manifest.json"
+        project = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else {}
+        task = task_entry(str(project.get("task_id", "")))
+        needs_alignment = bool(task and task["alignment_applicable"]) and any(
+            self.catalog_outputs[feature_id]["prerequisites"].get("requires_alignment", False)
+            for feature_id in selected)
+        next_tab = "Alignment" if needs_alignment else "Acoustic Features"
         self.tabs.setCurrentIndex(next(i for i in range(self.tabs.count())
-                                       if self.tabs.tabText(i) == "Alignment"))
+                                       if self.tabs.tabText(i) == next_tab))
         self._refresh_feature_count_label()
-        self.append_log("Final reviewed segmentation ready. Alignment is optional; freeze it for word/phone features.")
+        self.append_log(
+            "Final reviewed segmentation ready. Continue to Alignment, inspect and freeze it "
+            "before Acoustic Features." if needs_alignment else
+            "Final reviewed segmentation ready. Continue to Acoustic Features; "
+            "Alignment is not required by the selected outputs.")
 
     def run_alignment(self, config: object) -> None:
         if not self._require_project_initialized():

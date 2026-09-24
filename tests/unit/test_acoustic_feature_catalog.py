@@ -304,6 +304,35 @@ def test_wstg_flattening_and_selection_dependent_prerequisites(tmp_path: Path):
     window.close()
 
 
+def test_specialized_scientific_inputs_appear_only_for_selected_dependencies():
+    window = _window()
+    controls = (window.feature_prompt_row, window.feature_vowel_mapping_row,
+                window.feature_segmental_target_row, window.feature_subevents_row)
+    assert all(control.isHidden() for control in controls)
+
+    prompt = window.feature_items["speaking_rate_words_min"]
+    prompt.setCheckState(0, Qt.Checked)
+    assert not window.feature_prompt_row.isHidden()
+    assert all(control.isHidden() for control in controls[1:])
+    prompt.setCheckState(0, Qt.Unchecked)
+
+    vowel = window.feature_items["f1_vowel_median_hz"]
+    vowel.setCheckState(0, Qt.Checked)
+    assert not window.feature_vowel_mapping_row.isHidden()
+    assert window.feature_prompt_row.isHidden()
+    assert all(control.isHidden() for control in controls[2:])
+    vowel.setCheckState(0, Qt.Unchecked)
+
+    target = window.feature_items["m1_t_minus_k_hz"]
+    target.setCheckState(0, Qt.Checked)
+    assert not window.feature_segmental_target_row.isHidden()
+    assert not window.feature_subevents_row.isHidden()
+    assert all(control.isHidden() for control in controls[:2])
+    target.setCheckState(0, Qt.Unchecked)
+    assert all(control.isHidden() for control in controls)
+    window.close()
+
+
 def test_recommended_button_chooses_green_only(tmp_path: Path):
     window = _window()
     final = tmp_path / "acoustic" / "003_segmentation_review" / "final"
