@@ -1,0 +1,11 @@
+# Mixed-family Acoustic Features execution
+
+The approved leaf registry maps each selected `feature_id` to one `family_id` and one executor group. Executor groups share scientific intermediates where their family implementations already agree: voice (F01/F02), reviewed timing (F07/F08/F09), formants (F04), DDK (F10), and waveform/spectral (F11/F12). No legacy-only ID can enter the dispatcher.
+
+Each group receives only its selected IDs and writes its values, statuses, manifest, and native audits under `acoustic/005_features/family_runs/<group>/`. The dispatcher calls each group once and writes the authoritative combined tables under `acoustic/005_features/tables/`. Group failures become per-recording, per-feature failure rows; other groups continue. The top stage manifest records the groups invoked, source segmentation and Alignment hashes, family manifests, selected IDs, parameter profiles, prerequisites, and result counts.
+
+`acoustic_feature_status_long.csv` is the common result contract. Each row identifies a recording and exact leaf ID and includes value, unit, family, status, failure reason, algorithm/version, parameter set, task metadata, and a family-manifest provenance reference. The dispatcher rejects duplicate `(recording_id, feature_id)` results and rejects unselected outputs. `acoustic_features_per_file.csv` contains recording-level scalar columns only. Token- and named-vowel-level formant IDs remain in the Family 04 native measurement tables and appear in the long status table with `computed_native` when successful.
+
+Prerequisites stay with the relevant executor. Missing Alignment does not prevent reviewed-timing outputs; a missing prompt-count manifest affects Family 08 rates only; amplitude normalization incompatibility affects only relevant Family 11 outputs. The stage reports `completed_with_warnings` when any selected output has a failure reason and still publishes successful values.
+
+The run-local `FormantService` caches the native Burg token/frame representation by recording ID, frozen Alignment run ID, and formant profile ID. Family 04 uses it once per recording; a future concrete Family 05 executor can request the same representation during the same run. The Family 04 frame NPZ files remain available for audit and later trajectory calculations.

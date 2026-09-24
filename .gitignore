@@ -15,5 +15,46 @@ examples/test_runs/
 examples/test_data/audio_inputs/*
 !examples/test_data/audio_inputs/.gitkeep
 
+# Participant-bearing MFA/intermediate alignment data
+**/004_alignment/runs/
+**/004_alignment/final/
+mfa_input/
+mfa_output/
+**/mfa_input/
+**/mfa_work/
+**/provider/*.TextGrid
+**/provider/**/*.TextGrid
+**/alignment_analysis.csv
+**/working_time_map.csv
+**/mfa_validation.log
+**/mfa_alignment.log
+**/oovs_found.txt
+**/unaligned.txt
+vslp_mfa_self_test_*/
+
+# Generated/project audio, linguistic annotations, feature arrays, and run data
+*.wav
+*.flac
+*.mp3
+*.m4a
+*.lab
+*.TextGrid
+*.npz
+*.sqlite
+*.sqlite3
+**/000_ingest/
+**/000_metadata/
+**/001_preprocess/
+**/002_segmentation/
+**/003_segmentation_review/
+**/004_alignment/
+**/005_features/
+**/005_aggregation/
+**/006_qc_dashboard/
+**/mfa_cache/
+**/mfa_database/
+project_data/
+projects/
+
 .venv-win/
 README_v*.md

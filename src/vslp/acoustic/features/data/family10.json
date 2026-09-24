@@ -1,0 +1,28 @@
+{
+  "family_id": "F10",
+  "source_document": "10_DDK_Performance_Codex_Implementation.docx",
+  "algorithm_version": "family10-reviewed-ddk-1.0.0",
+  "parameter_set_id": "family10_ddk_reviewed_v1",
+  "minimum_valid_events": 5,
+  "event_landmark": "final_reviewed_event_midpoint",
+  "rate_denominator": "analysis_window_minus_manual_contamination",
+  "sequence_break_on_manual_exclusion": true,
+  "temporal_variability_definition": "mean_absolute_difference_between_adjacent_cycle_intervals",
+  "outputs": [
+    {
+      "construct_id": "C058", "feature_id": "ddk_rate_syll_s",
+      "human_name": "DDK rate", "unit": "syllables/s", "qc_range_text": "≥0 syllables/s",
+      "evidence_level": "MODERATE", "evidence_study_count": 2, "evidence_entry_count": 2,
+      "formula": "valid final DDK events / effective analyzed DDK duration",
+      "analysis_unit": "Full DDK trial and events"
+    },
+    {
+      "construct_id": "C059", "feature_id": "ddk_cycle_mad_s",
+      "human_name": "DDK cycle-to-cycle temporal variability", "unit": "s",
+      "qc_range_text": "No universal bound",
+      "evidence_level": "LIMITED", "evidence_study_count": 1, "evidence_entry_count": 1,
+      "formula": "mean(abs(T[i+1] - T[i])) within continuous reviewed sequences",
+      "analysis_unit": "Adjacent cycle intervals"
+    }
+  ]
+}

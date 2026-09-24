@@ -15,7 +15,7 @@ from vslp.acoustic.segment.silero_reference import Interval
 from vslp.core.provenance import sha256_file
 
 
-def _run(tmp_path: Path):
+def _run(tmp_path: Path, *, task_name="Bamboo Passage", method="silero_vad"):
     sr = 16000
     t = np.arange(4 * sr) / sr
     x = (0.1 * np.sin(2 * np.pi * 145 * t)).astype("float32")
@@ -29,13 +29,13 @@ def _run(tmp_path: Path):
     ]).to_csv(segments, index=False)
     summary = tmp_path / "acoustic" / "002_segmentation" / "tables" / "acoustic_segmentation_summary.csv"
     summary.parent.mkdir(parents=True)
-    pd.DataFrame([{"recording_id": "r", "file_name": "r.wav", "task_name": "Bamboo Passage",
+    pd.DataFrame([{"recording_id": "r", "file_name": "r.wav", "task_name": task_name,
         "segmentation_run_id": "seg_test",
-        "segmentation_method": "silero_vad", "automatic_status": "EXCLUDED", "review_required": True,
+        "segmentation_method": method, "automatic_status": "EXCLUDED", "review_required": True,
         "duration_sec": 4, "analysis_wav_path": str(wav), "segments_csv_path": str(segments),
         "source_sha256": "a" * 64, "project_name": "P", "run_id": "R"}]).to_csv(summary, index=False)
     (tmp_path / "project_manifest.json").write_text(json.dumps({
-        "project_name": "P", "task_name": "Bamboo Passage", "run_id": "R",
+        "project_name": "P", "task_name": task_name, "run_id": "R",
         "created_at_local": "2026-01-01T00:00:00", "created_at_utc": "2026-01-01T05:00:00Z",
     }), encoding="utf-8")
     initialize_segmentation_review(summary, tmp_path)
@@ -161,7 +161,7 @@ def test_family08_uses_frozen_reviewed_intervals_and_exact_ids(tmp_path: Path):
     assert status.algorithm_version.eq("family08-rate-1.0.0").all()
     assert status.parameter_set_id.eq("family08_bamboo_reviewed_v1").all()
     assert status.unit.notna().all()
-    assert sha256_file(tmp_path / "acoustic" / "005_features" / "configs" /
+    assert sha256_file(tmp_path / "acoustic" / "005_features" / "family_runs" / "timing" / "configs" /
                        "prompt_count_manifest.json") == sha256_file(prompt)
     assert progress[0][:2] == (0, 1) and progress[-1][:2] == (1, 1)
     assert hashes == (sha256_file(wav), sha256_file(automatic_segments))
@@ -205,7 +205,7 @@ def test_family09_uses_only_frozen_review_and_writes_shared_events(tmp_path: Pat
         final_segmentation_intervals_csv=final / "final_segmentation_intervals.csv")
     values = pd.read_csv(result.summary_table)
     status = pd.read_csv(result.summary_table.parent / "acoustic_feature_status_long.csv")
-    events_path = result.summary_table.parent / "native_measurements" / "pause_phrase_events.csv"
+    events_path = result.summary_table.parent.parent / "family_runs" / "timing" / "tables" / "native_measurements" / "pause_phrase_events.csv"
     events = pd.read_csv(events_path)
     assert events_path.is_file()
     assert np.isclose(values.total_pause_duration_s.iloc[0], .4)
@@ -229,6 +229,70 @@ def test_family09_requires_frozen_authoritative_paths(tmp_path: Path):
         run_acoustic_feature_extraction(
             summary, tmp_path,
             config=FeatureExtractionConfig(selected_features=["pause_count"]))
+
+
+def test_nonrecommended_wstg_can_extract_implemented_families_with_real_inputs(tmp_path: Path):
+    _wav, _automatic_segments, _summary = _run(tmp_path, task_name="WSTG")
+    save_segmentation_review_entry(
+        tmp_path, "r", "KEEP_MANUAL", "Reviewer", "Exploratory WSTG timing",
+        "0.8,1.2\n1.6,3.5")
+    finalize_segmentation_review(tmp_path)
+    prompt = tmp_path / "wstg_prompt.json"
+    prompt.write_text(json.dumps({
+        "schema_version": "1", "task_id": "wstg", "prompt_version": "WSTG-v1",
+        "count_source": "explicit_reviewed_prompt", "syllable_count": 12,
+        "word_count": 6, "applies_to_all_recordings": True,
+    }), encoding="utf-8")
+    final = tmp_path / "acoustic" / "003_segmentation_review" / "final"
+    result = run_acoustic_feature_extraction(
+        final / "final_segmentation_decisions.csv", tmp_path,
+        config=FeatureExtractionConfig(selected_features=[
+            "speaking_rate_syll_s", "articulation_rate_syll_s", "pause_count"],
+            prompt_manifest_path=str(prompt)),
+        final_segmentation_intervals_csv=final / "final_segmentation_intervals.csv")
+    values = pd.read_csv(result.summary_table)
+    status = pd.read_csv(result.summary_table.parent / "acoustic_feature_status_long.csv")
+    assert values.task_id.iloc[0] == "wstg"
+    assert np.isclose(values.speaking_rate_syll_s.iloc[0], 12 / 2.7)
+    assert np.isclose(values.articulation_rate_syll_s.iloc[0], 12 / 2.3)
+    assert values.pause_count.iloc[0] == 1
+    assert status.status.eq("computed").all()
+    assert not status.failure_reason.astype(str).str.contains("task_not_supported").any()
+
+
+def test_family10_consumes_frozen_reviewed_ddk_events_and_exclusion(tmp_path: Path):
+    wav, automatic_segments, _summary = _run(tmp_path, task_name="DDK", method="ddk_energy")
+    original_hashes = sha256_file(wav), sha256_file(automatic_segments)
+    manual_events = [(center - .05, center + .05) for center in
+                     (.4, .7, 1.0, 1.3, 1.6, 2.6, 2.9)]
+    save_segmentation_review_entry(
+        tmp_path, "r", "KEEP_MANUAL", "Reviewer", "Cough interrupted DDK",
+        "\n".join(f"{start},{end}" for start, end in manual_events),
+        analysis_start_sec=.2, analysis_end_sec=3.2,
+        exclusion_intervals=[{"start_sec": 2.0, "end_sec": 2.2,
+                              "exclusion_reason": "Cough / throat clear"}])
+    finalize_segmentation_review(tmp_path)
+    final = tmp_path / "acoustic" / "003_segmentation_review" / "final"
+    result = run_acoustic_feature_extraction(
+        final / "final_segmentation_decisions.csv", tmp_path,
+        config=FeatureExtractionConfig(selected_features=["ddk_rate_syll_s", "ddk_cycle_mad_s"]),
+        final_segmentation_intervals_csv=final / "final_segmentation_intervals.csv")
+    values = pd.read_csv(result.summary_table)
+    status = pd.read_csv(result.summary_table.parent / "acoustic_feature_status_long.csv")
+    events = pd.read_csv(result.summary_table.parent.parent / "family_runs" / "ddk" / "tables" / "native_measurements" /
+                         "ddk_feature_events.csv")
+    assert values.n_ddk_events.iloc[0] == 7
+    assert values.n_valid_sequences.iloc[0] == 2
+    assert np.isclose(values.raw_analysis_duration_sec.iloc[0], 3)
+    assert np.isclose(values.excluded_contamination_duration_sec.iloc[0], .2)
+    assert np.isclose(values.ddk_rate_syll_s.iloc[0], 7 / 2.8)
+    assert np.isclose(values.ddk_cycle_mad_s.iloc[0], 0)
+    assert status.status.eq("computed").all()
+    assert status.family_id.eq("F10").all()
+    assert status.segmentation_run_id.eq("seg_test").all()
+    assert events.event_kind.eq("manual_exclusion").sum() == 1
+    assert events.loc[events.event_time_sec.eq(1.6), "next_event_interval_sec"].isna().all()
+    assert original_hashes == (sha256_file(wav), sha256_file(automatic_segments))
 
 
 def test_auto_modified_provenance_and_trim_without_leading_pause(tmp_path: Path):

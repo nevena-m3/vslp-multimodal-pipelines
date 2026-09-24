@@ -1,0 +1,7 @@
+{
+  "manifest_version": "1",
+  "recordings": [
+    {"recording_id": "synthetic_001", "speaker_id": "speaker_A"},
+    {"recording_id": "synthetic_002", "speaker_id": "speaker_B"}
+  ]
+}

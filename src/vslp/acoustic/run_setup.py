@@ -9,6 +9,12 @@ from pathlib import Path
 import tempfile
 
 from vslp.core.project import task_run_folder_name
+from vslp.acoustic.features.catalog import task_key
+
+TASK_TYPES = (
+    "Sustained phonation", "Passage / connected speech",
+    "Sentence / controlled speech", "DDK", "Other / custom",
+)
 
 
 @dataclass(frozen=True)
@@ -24,6 +30,7 @@ def initialize_acoustic_run(
     input_folder: str | Path,
     output_parent: str | Path,
     setup_values: dict[str, str],
+    task_type: str | None = None,
     gui_version: str = "0.38",
     pipeline_version: str = "0.38.0",
     now: datetime | None = None,
@@ -35,6 +42,8 @@ def initialize_acoustic_run(
         raise ValueError("Project name is required.")
     if not task:
         raise ValueError("Task name is required.")
+    if task_type is not None and task_type not in TASK_TYPES:
+        raise ValueError("Task type must be one of the explicit Setup choices.")
     source = Path(input_folder).expanduser().resolve()
     if not source.is_dir():
         raise ValueError(f"Input folder does not exist: {source}")
@@ -78,6 +87,9 @@ def initialize_acoustic_run(
         "modality": "acoustic",
         "project_name": project,
         "task_name": task,
+        "task_id": task_key(task) or slug,
+        "task_display_name": task,
+        "task_type": task_type,
         "task_slug": slug,
         "run_id": run_id,
         "created_at_local": local_time.isoformat(),

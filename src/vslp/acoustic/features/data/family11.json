@@ -1,0 +1,17 @@
+{
+  "family_id": "F11",
+  "source_document": "11_Intensity_Amplitude_Codex_Implementation.docx",
+  "algorithm_version": "family11-digital-amplitude-1.0.0",
+  "parameter_set_id": "family11_amplitude_native_v1",
+  "outputs": [
+    {"construct_id":"C060","feature_id":"absolute_energy_fs2","human_name":"Absolute energy","unit":"digital-amplitude² sum","evidence_level":"NOT ESTABLISHED","evidence_study_count":3,"evidence_entry_count":5,"formula":"sum(x²)","analysis_unit":"Defined waveform segment"},
+    {"construct_id":"C061","feature_id":"sound_power_digital","human_name":"Sound power — digital scale","unit":"digital-amplitude²/s","evidence_level":"NOT ESTABLISHED","evidence_study_count":1,"evidence_entry_count":2,"formula":"sum(x²) / duration seconds","analysis_unit":"Defined waveform segment"},
+    {"construct_id":"C062","feature_id":"wave_amp_skew","human_name":"Waveform amplitude skewness","unit":"dimensionless","evidence_level":"NOT ESTABLISHED","evidence_study_count":1,"evidence_entry_count":2,"formula":"scipy skew, bias=False","analysis_unit":"Waveform samples"},
+    {"construct_id":"C062","feature_id":"wave_amp_excess_kurtosis","human_name":"Waveform amplitude excess kurtosis","unit":"dimensionless","evidence_level":"NOT ESTABLISHED","evidence_study_count":1,"evidence_entry_count":2,"formula":"scipy kurtosis, fisher=True, bias=False","analysis_unit":"Waveform samples"},
+    {"construct_id":"C063","feature_id":"visibility_graph_density_amp","human_name":"Amplitude visibility-graph density","unit":"dimensionless","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":1,"formula":"natural visibility graph density 2m/(M(M-1))","analysis_unit":"50 ms non-overlapping local-SD windows"},
+    {"construct_id":"C064","feature_id":"amp_mean_fs","human_name":"Waveform amplitude mean","unit":"digital full scale","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":4,"formula":"mean(x)","analysis_unit":"Waveform samples"},
+    {"construct_id":"C064","feature_id":"amp_sd_fs","human_name":"Waveform amplitude SD","unit":"digital full scale","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":4,"formula":"sample SD(x), ddof=1","analysis_unit":"Waveform samples"},
+    {"construct_id":"C064","feature_id":"amp_min_fs","human_name":"Waveform amplitude minimum","unit":"digital full scale","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":4,"formula":"min(x)","analysis_unit":"Waveform samples"},
+    {"construct_id":"C064","feature_id":"amp_max_fs","human_name":"Waveform amplitude maximum","unit":"digital full scale","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":4,"formula":"max(x)","analysis_unit":"Waveform samples"}
+  ]
+}

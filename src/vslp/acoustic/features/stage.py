@@ -57,6 +57,10 @@ class FeatureExtractionConfig:
     selected_subsystems: list[str] = field(default_factory=list)
     selected_features: list[str] = field(default_factory=list)
     prompt_manifest_path: str | None = None
+    vowel_category_manifest_path: str | None = None
+    segmental_target_manifest_path: str | None = None
+    acoustic_subevent_annotations_csv: str | None = None
+    formant_profile_id: str = "family04_burg_native_5500_v1"
     task_word_counts: dict[str, float] = field(default_factory=dict)
     minimum_pause_duration_sec: float = 0.30
     acoustic_region_policy: str = "speech_only"  # speech_only, effective_task, full_file
@@ -113,6 +117,7 @@ def _select_registry(cfg: FeatureExtractionConfig) -> pd.DataFrame:
                          "algorithm_version": output["algorithm_version"],
                          "parameter_set_id": output["default_parameter_set_id"],
                          "analysis_region": output["analysis_region"],
+                         "output_granularity": output.get("output_granularity", "recording"),
                          "source_document": output["source_document"]})
     return pd.DataFrame(rows)
 
@@ -301,6 +306,8 @@ def run_acoustic_feature_extraction(
 ) -> StageResult:
     """Extract acoustic features from segmentation outputs."""
     authoritative = Path(output_root) / "acoustic" / "003_segmentation_review" / "final" / "final_segmentation_decisions.csv"
+    if not authoritative.is_file():
+        raise ValueError("Acoustic Features requires frozen authoritative segmentation")
     if authoritative.is_file():
         expected_intervals = authoritative.with_name("final_segmentation_intervals.csv")
         if (Path(segmentation_summary_csv).resolve() != authoritative.resolve() or
@@ -309,240 +316,13 @@ def run_acoustic_feature_extraction(
             raise ValueError("Frozen reviewed segmentation exists; Features requires its authoritative final decisions and intervals")
     cfg = _apply_computation_mode_defaults(config or FeatureExtractionConfig())
     registry = _select_registry(cfg)
-    from vslp.acoustic.features.family08 import FAMILY08_IDS, run_reviewed_timing_stage
-    from vslp.acoustic.features.family09 import FAMILY09_IDS
+    from vslp.acoustic.features.mixed_dispatch import run_mixed_feature_stage
 
-    if set(cfg.selected_features) <= FAMILY08_IDS | FAMILY09_IDS:
-        return run_reviewed_timing_stage(segmentation_summary_csv, output_root, cfg,
-                                         final_segmentation_intervals_csv, registry,
-                                         progress_callback=progress_callback)
-    segmentation_summary_csv = Path(segmentation_summary_csv)
-    stage_dir = Path(output_root) / "acoustic" / "005_features"
-    folders = ensure_stage_folders(stage_dir, lazy=True)
-
-    selected_names = set(registry["feature"].astype(str).tolist())
-    if final_segmentation_intervals_csv is not None:
-        from vslp.acoustic.segment.review import load_final_segmentation
-        seg_summary = load_final_segmentation(final_segmentation_intervals_csv, segmentation_summary_csv)
-    else:
-        seg_summary = pd.read_csv(segmentation_summary_csv)
-    if final_segmentation_intervals_csv is None and "automatic_status" in seg_summary:
-        seg_summary = seg_summary.loc[
-            ~seg_summary["automatic_status"].astype(str).str.upper().isin({"EXCLUDED", "FAILED"})
-        ].copy()
-    if seg_summary.empty:
-        raise ValueError("No accepted or review-required segmented recordings are available for feature extraction")
-    run = json.loads((Path(output_root) / "project_manifest.json").read_text(encoding="utf-8"))
-    if not run.get("task_name") or not run.get("run_id") or not run.get("project_name"):
-        raise ValueError("Acoustic feature extraction requires initialized Setup provenance")
-    seg_summary["task"] = run["task_name"]
-
-    plugins = [p for p in build_default_plugins() if selected_names.intersection(set(p.feature_names))]
-
-    rows: list[dict[str, Any]] = []
-    errors: list[dict[str, Any]] = []
-    long_status_rows: list[dict[str, Any]] = []
-
-    if progress_callback:
-        progress_callback(0, len(seg_summary), "Acoustic Features")
-    for index, (_, row) in enumerate(seg_summary.iterrows(), start=1):
-        file_name = str(row.get("file_name", ""))
-        out_row: dict[str, Any] = _operational_prefix(row, run)
-        feature_results: dict[str, FeatureValue] = {}
-        context = _make_context(row, cfg)
-        try:
-            for plugin in plugins:
-                try:
-                    feature_results.update(plugin.compute(context))
-                except Exception as exc:  # noqa: BLE001 - one plugin should not kill the file
-                    for name in plugin.feature_names:
-                        feature_results[name] = FeatureValue(name, np.nan, "failed", f"plugin_failed: {exc}")
-
-            for _, feat in registry.iterrows():
-                name = str(feat["feature"])
-                subsystem = str(feat["subsystem"])
-                result = feature_results.get(name)
-                if result is not None:
-                    out_row[name] = result.value
-                    status = result.status
-                    note = result.note
-                elif name in IMPLEMENTED_FEATURES:
-                    out_row[name] = np.nan
-                    status = "not_selected_or_missing_input"
-                    note = "feature_has_plugin_but_required_input_was_unavailable"
-                else:
-                    out_row[name] = np.nan
-                    status = "not_implemented_yet"
-                    note = "registered_from_uploaded_feature_notebook_pending_validated_implementation"
-                long_status_rows.append(
-                    {
-                        "file_name": file_name,
-                        "recording_id": out_row["recording_id"],
-                        "project_name": run["project_name"],
-                        "task_name": run["task_name"],
-                        "run_id": run["run_id"],
-                        "run_created_at_local": run["created_at_local"],
-                        "run_created_at_utc": run["created_at_utc"],
-                        "feature": name,
-                        "subsystem": subsystem,
-                        "status": status,
-                        "note": note,
-                    }
-                )
-            out_row["feature_extraction_status"] = "ok"
-            rows.append(out_row)
-        except Exception as exc:  # noqa: BLE001
-            out_row["feature_extraction_status"] = "failed"
-            rows.append(out_row)
-            errors.append({"file_name": file_name, "status": "failed", "error": str(exc)})
-        finally:
-            if progress_callback:
-                progress_callback(index, len(seg_summary), f"Acoustic Features — {file_name}")
-
-    features_path = folders["tables"] / "acoustic_features_per_file.csv"
-    status_path = folders["tables"] / "acoustic_feature_status_long.csv"
-    registry_path = folders["tables"] / "selected_acoustic_feature_registry.csv"
-    scale_registry_path = folders["tables"] / "acoustic_feature_measurement_scale_registry.csv"
-    computation_policy_path = folders["tables"] / "acoustic_feature_computation_policy.csv"
-    reduction_audit_path = folders["tables"] / "acoustic_feature_scalar_reduction_audit.csv"
-    native_segments_path = folders["tables"] / "native_measurements" / "acoustic_native_segment_events.csv"
-    errors_path = folders["errors"] / "acoustic_feature_errors.csv"
-
-    pd.DataFrame(rows).to_csv(features_path, index=False)
-    pd.DataFrame(long_status_rows).to_csv(status_path, index=False)
-    registry.to_csv(registry_path, index=False)
-    handoff_values = pd.DataFrame(rows).copy()
-    if not handoff_values.empty:
-        handoff_values["source_file"] = handoff_values.get("file_name", "")
-        handoff_values["modality"] = "acoustic"
-        handoff_values["aggregation_level"] = "recording_task"
-    handoff_status = pd.DataFrame(long_status_rows).copy()
-    if not handoff_status.empty:
-        handoff_status["modality"] = "acoustic"
-    handoff_registry = registry.copy()
-    handoff_registry["aggregation"] = "file-level scalar; see acoustic_feature_computation_policy.csv"
-    handoff_registry["normalization"] = "feature-specific native scale; see acoustic_feature_measurement_scale_registry.csv"
-    handoff_registry["required_inputs"] = "segmentation and/or task-scoped waveform; see computation_note"
-    handoff_registry["source_document"] = "Features Formulas (2).docx; Features Research  (2).xlsx"
-    handoff_registry["source_location"] = "docs/reference/ACOUSTIC_FEATURE_SOURCE_TRACEABILITY.md"
-    handoff = write_feature_handoff(
-        folders["tables"], handoff_values, handoff_registry, handoff_status,
-        "acoustic", features_path, registry_path,
-    )
-    delivery = build_feature_delivery(
-        output_root,
-        "acoustic",
-        handoff,
-        optional_main={
-            "qc_features.csv": Path(output_root) / "acoustic" / "004_quality_control" / "tables" / "acoustic_quality_processed_features.csv",
-        },
-    )
-    build_feature_scale_registry(registry).to_csv(scale_registry_path, index=False)
-    build_feature_computation_policy(registry).to_csv(computation_policy_path, index=False)
-    _build_reduction_audit(registry, cfg).to_csv(reduction_audit_path, index=False)
-    _write_native_segment_events(seg_summary, native_segments_path)
-    pd.DataFrame(errors).to_csv(errors_path, index=False)
-
-    missingness_plot = folders["plots"] / "feature_missingness.png"
-    subsystem_plot = folders["plots"] / "feature_subsystem_implementation_status.png"
-    distribution_plot = folders["plots"] / "implemented_feature_distributions.png"
-    task_plot = folders["plots"] / "task_feature_overview.png"
-    range_plot = folders["plots"] / "feature_expected_range_flags.png"
-    audit_plot = folders["plots"] / "feature_distribution_audit.png"
-    corr_plot = folders["plots"] / "feature_correlation_heatmap.png"
-    subsystem_dist_plot = folders["plots"] / "feature_subsystem_distributions.png"
-
-    _plot_feature_missingness(features_path, registry, missingness_plot)
-    _plot_subsystem_status(status_path, subsystem_plot)
-    _plot_implemented_feature_distributions(features_path, registry, distribution_plot)
-    _plot_task_feature_overview(features_path, task_plot)
-    range_flags_path = folders["tables"] / "acoustic_feature_expected_range_flags.csv"
-    distribution_audit_path = folders["tables"] / "acoustic_feature_distribution_audit.csv"
-    _write_feature_distribution_audit(features_path, registry, distribution_audit_path, range_flags_path)
-    _plot_expected_range_flags(range_flags_path, range_plot)
-    _plot_feature_distribution_audit(features_path, registry, audit_plot)
-    _plot_feature_correlation_heatmap(features_path, registry, corr_plot)
-    _plot_subsystem_distribution_summary(features_path, registry, subsystem_dist_plot)
-
-    report_path = folders["reports"] / "acoustic_feature_report.html"
-    _write_feature_html_report(
-        report_path,
-        rows,
-        long_status_rows,
-        errors,
-        cfg,
-        missingness_plot,
-        subsystem_plot,
-        distribution_plot,
-        task_plot,
-        range_plot,
-        audit_plot,
-        corr_plot,
-        subsystem_dist_plot,
-    )
-
-    computed_statuses = {"computed", "computed_proxy", "computed_with_warning"}
-    status_df = pd.DataFrame(long_status_rows)
-    computed_features = sorted(status_df.loc[status_df["status"].isin(computed_statuses), "feature"].unique().tolist()) if not status_df.empty else []
-    proxy_features = sorted(status_df.loc[status_df["status"].eq("computed_proxy"), "feature"].unique().tolist()) if not status_df.empty else []
-
-    warnings: list[str] = []
-    if proxy_features:
-        warnings.append(f"Proxy features require reference validation before clinical interpretation: {proxy_features}")
-    if errors:
-        warnings.append(f"{len(errors)} files failed feature extraction")
-
-    manifest = StageManifest(
-        stage_name="acoustic_feature_extraction",
-        stage_version="0.12.0",
-        status="completed_with_warnings" if warnings else "completed",
-        input_artifacts=[ArtifactRef(path=str(segmentation_summary_csv), role="final_segmentation_decisions" if final_segmentation_intervals_csv else "segmentation_summary", media_type="text/csv")]
-        + ([ArtifactRef(path=str(final_segmentation_intervals_csv), role="final_segmentation_intervals", media_type="text/csv")] if final_segmentation_intervals_csv else []),
-        output_artifacts=[
-            ArtifactRef(path=str(features_path), role="features_per_file", media_type="text/csv"),
-            ArtifactRef(path=str(status_path), role="feature_status_long", media_type="text/csv"),
-            ArtifactRef(path=str(registry_path), role="selected_feature_registry", media_type="text/csv"),
-            ArtifactRef(path=str(handoff["feature_values_csv"]), role="canonical_feature_values", media_type="text/csv"),
-            ArtifactRef(path=str(handoff["feature_registry_csv"]), role="canonical_feature_registry", media_type="text/csv"),
-            ArtifactRef(path=str(handoff["feature_status_csv"]), role="canonical_feature_status", media_type="text/csv"),
-            ArtifactRef(path=str(delivery["delivery_manifest_json"]), role="feature_delivery_manifest", media_type="application/json"),
-            ArtifactRef(path=str(scale_registry_path), role="feature_measurement_scale_registry", media_type="text/csv"),
-            ArtifactRef(path=str(computation_policy_path), role="feature_computation_policy", media_type="text/csv"),
-            ArtifactRef(path=str(native_segments_path), role="native_segment_events", media_type="text/csv"),
-            ArtifactRef(path=str(range_flags_path), role="expected_range_flags", media_type="text/csv"),
-            ArtifactRef(path=str(distribution_audit_path), role="distribution_audit", media_type="text/csv"),
-            ArtifactRef(path=str(report_path), role="feature_html_report", media_type="text/html"),
-        ],
-        config=cfg.to_dict(),
-        environment={"python": python_environment()},
-        warnings=warnings,
-        errors=errors,
-        notes=[
-            "Feature extraction uses subsystem plugins and region-aware signal policy.",
-            "Respiratory/timing features were validated in v0.26 from segmentation tables.",
-            "Rhythm/EMS features were validated in v0.27 from effective-task envelope modulation spectrum.",
-            f"Computed feature families in this pass: {computed_features}",
-            "Coordination features were validated in v0.31 as time-delay cross-correlation eigenspectrum complexity over CPP/F1/F2 trajectories.",
-            "Feature measurement scale registry documents the native physiologic scale and recommended reducers.",
-            "Feature computation policy is written to define, for each feature, the default analysis region and exact file-level scalar reduction strategy.",
-            "Scalar reduction audit is written to document the requested mode, applied family mode, and native measurement scale for every selected feature.",
-            "Native segment-event measurements are preserved for timing features; frame/trajectory persistence for signal features is planned as the next architecture extension.",
-            "Registered-but-not-yet-implemented features remain explicit NaN placeholders.",
-            "Expected-range flags are descriptive screening aids, not clinical cutoffs.",
-        ],
-    )
-    manifest_path = folders["logs"] / "stage_manifest.json"
-    manifest.write_json(manifest_path)
-
-    return StageResult(
-        status=manifest.status,
-        manifest_path=manifest_path,
-        summary_table=features_path,
-        error_table=errors_path,
-        report_path=report_path,
-    )
-
-
+    if final_segmentation_intervals_csv is None:
+        raise ValueError("Acoustic Features requires frozen authoritative final segmentation intervals")
+    return run_mixed_feature_stage(segmentation_summary_csv, output_root, cfg,
+                                   final_segmentation_intervals_csv, registry,
+                                   progress_callback=progress_callback)
 def _write_native_segment_events(seg_summary: pd.DataFrame, output_path: Path) -> None:
     """Persist segment-level native measurements used by timing features.
 

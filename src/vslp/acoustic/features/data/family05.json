@@ -1,0 +1,12 @@
+{
+  "family_id": "F05",
+  "source_document": "05_Formant_Dynamics_Codex_Implementation.docx",
+  "algorithm_version": "family05-formant-trajectory-1.0.0",
+  "parameter_set_id": "family05_targeted_formant_v1",
+  "constructs": [
+    {"construct_id":"C033","evidence_level":"STRONG","evidence_study_count":4,"evidence_entry_count":8,
+     "feature_id_templates":["f1_slope_<target>_hz_s","f2_slope_<target>_hz_s"]},
+    {"construct_id":"C034","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":2,
+     "feature_id_templates":["f1_range_<diphthong>_hz","f2_range_<diphthong>_hz"]}
+  ]
+}

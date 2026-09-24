@@ -1,0 +1,10 @@
+{
+  "manifest_version": "1",
+  "task_id": "REPLACE_WITH_EXACT_TASK_ID",
+  "phone_set": "ARPABET_CMU_39",
+  "categories": [
+    {"canonical_vowel": "i", "accepted_phone_labels": []},
+    {"canonical_vowel": "a", "accepted_phone_labels": []},
+    {"canonical_vowel": "u", "accepted_phone_labels": []}
+  ]
+}

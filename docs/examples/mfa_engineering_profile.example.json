@@ -1,0 +1,18 @@
+{
+  "profile_id": "mfa_vslp_en_engineering_v1",
+  "mode": "legacy",
+  "acoustic_model": "C:/REPLACE_WITH_PINNED_LOCAL_MODEL/english_us_arpa.zip",
+  "dictionary": "C:/REPLACE_WITH_VERSIONED_LOCAL_DICTIONARY/english_us_arpa.dict",
+  "language": "en",
+  "phone_set": "ARPABET_CMU_39",
+  "working_sample_rate_hz": 16000,
+  "speaker_policy": "explicit_deidentified_mapping",
+  "normalization_profile_id": "vslp_prompt_nfkc_v1",
+  "oov_policy": "fail",
+  "output_format": "long_textgrid",
+  "status": "engineering_not_empirically_validated",
+  "acoustic_model_sha256": "",
+  "dictionary_sha256": "",
+  "acoustic_model_version": "REPLACE_WITH_APPROVED_VERSION",
+  "dictionary_version": "REPLACE_WITH_APPROVED_VERSION"
+}

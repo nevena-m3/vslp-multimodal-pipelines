@@ -1,0 +1,19 @@
+{
+  "manifest_version": "1",
+  "task_id": "REPLACE_WITH_EXACT_TASK_ID",
+  "targets": [
+    {
+      "target_id": "replace_with_approved_target_id",
+      "target_type": "transition",
+      "expected_word": "REPLACE_WITH_EXACT_ALIGNED_WORD",
+      "expected_phone": "",
+      "alignment_selection_rule": "exact_word",
+      "window_start_fraction": 0.2,
+      "window_end_fraction": 0.8,
+      "aggregation": "median_across_equivalent_tokens",
+      "f1_feature_id": "REPLACE_WITH_EXACT_APPROVED_ID",
+      "f2_feature_id": "REPLACE_WITH_EXACT_APPROVED_ID",
+      "fitted_trajectory_source": ""
+    }
+  ]
+}

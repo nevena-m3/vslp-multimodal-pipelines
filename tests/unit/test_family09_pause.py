@@ -5,7 +5,7 @@ import json
 import numpy as np
 import pandas as pd
 
-from vslp.acoustic.features.catalog import load_feature_catalog, task_fit, task_indicator
+from vslp.acoustic.features.catalog import feature_availability, load_feature_catalog, task_fit, task_indicator
 from vslp.acoustic.features.family08 import compute_family08_timing
 from vslp.acoustic.features.family09 import (
     FAMILY09_IDS, PARAMETER_SET_ID, calculate_family09,
@@ -67,7 +67,8 @@ def test_exact_ids_evidence_task_scope_and_frozen_profile():
     assert all(task_fit(item, "Bamboo Passage") == "Recommended" for item in leaves.values())
     assert all(task_fit(item, "WSTG") == "Not specified" for item in leaves.values())
     assert leaves["pause_pattern_factor_if_frozen"]["selectable"] is False
-    assert task_indicator(leaves["pause_pattern_factor_if_frozen"], "Bamboo Passage")[0] == "RED"
+    assert task_indicator(leaves["pause_pattern_factor_if_frozen"], "Bamboo Passage")[0] == "GREEN"
+    assert feature_availability(leaves["pause_pattern_factor_if_frozen"])[0] == "Not implemented"
     assert PARAMETER_SET_ID == "family09_bamboo_reviewed_v1"
     assert leaves["pause_count"]["parameter_profile"]["active_parameters"] == {
         "minimum_internal_pause_ms": 300, "sample_sd_ddof": 1,

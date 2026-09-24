@@ -1,0 +1,13 @@
+{
+  "manifest_version": "1",
+  "prompt_version": "v1",
+  "overrides": [
+    {
+      "recording_id": "synthetic_001",
+      "alignment_transcript": "THE REVIEWED WORDS ACTUALLY SPOKEN",
+      "reason": "Participant skipped one prompt word",
+      "reviewer": "reviewer_id",
+      "reviewed_utc": "2026-01-01T00:00:00Z"
+    }
+  ]
+}

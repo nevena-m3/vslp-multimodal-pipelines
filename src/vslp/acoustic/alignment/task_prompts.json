@@ -1,0 +1,19 @@
+{
+  "registry_version": "vslp_alignment_prompts_v1",
+  "tasks": [
+    {"task_id": "wstg", "display_name": "WSTG", "task_type": "Sentence / controlled speech",
+     "alignment_applicable": true,
+     "prompts": [{"prompt_id": "wstg_we_see_three_geese", "prompt_version": "v1",
+       "exact_expected_text": "We see three geese.", "language": "en",
+       "source": "user_supplied_2026_09_23"}]},
+    {"task_id": "bamboo_passage", "display_name": "Bamboo Passage",
+     "task_type": "Passage / connected speech",
+     "alignment_applicable": true, "prompts": []},
+    {"task_id": "sustained_a", "display_name": "Sustained /a/",
+     "task_type": "Sustained phonation",
+     "alignment_applicable": false, "prompts": []},
+    {"task_id": "ddk", "display_name": "DDK", "task_type": "DDK",
+     "alignment_applicable": false,
+     "prompts": []}
+  ]
+}

@@ -400,6 +400,10 @@ def _match_metadata_to_ingest(index_df: pd.DataFrame, demo_df: pd.DataFrame, cfg
             confidence = 0.92
 
         out = row.to_dict()
+        parsed_subject = out.get("subject_id")
+        out["subject_id_source"] = (
+            "filename_parser" if pd.notna(parsed_subject) and str(parsed_subject).strip()
+            else "missing")
         if match is not None:
             meta = match._asdict()
             used_meta_rows.add(int(meta.get("metadata_row_index")))
@@ -411,6 +415,8 @@ def _match_metadata_to_ingest(index_df: pd.DataFrame, demo_df: pd.DataFrame, cfg
                         out["metadata_file_name"] = val
                     else:
                         out[col] = val if not pd.isna(val) else out.get(col, pd.NA)
+                        if col == "subject_id" and not pd.isna(val) and str(val).strip():
+                            out["subject_id_source"] = "metadata_csv"
             out["metadata_source"] = "metadata_csv"
             out["metadata_status"] = "joined_from_csv"
             out["metadata_match_type"] = match_type

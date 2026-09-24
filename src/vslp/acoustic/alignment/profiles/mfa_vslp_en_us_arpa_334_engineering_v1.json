@@ -1,0 +1,17 @@
+{
+  "profile_id": "mfa_vslp_en_us_arpa_334_engineering_v1",
+  "mode": "legacy",
+  "acoustic_model": "english_us_arpa",
+  "dictionary": "english_us_arpa",
+  "language": "en",
+  "phone_set": "ARPABET_CMU_39",
+  "working_sample_rate_hz": 16000,
+  "speaker_policy": "explicit_deidentified_mapping",
+  "normalization_profile_id": "vslp_prompt_nfkc_v1",
+  "oov_policy": "fail",
+  "output_format": "long_textgrid",
+  "status": "engineering_not_empirically_validated",
+  "launcher_type": "CONDA_ENV",
+  "conda_environment": "vslp-mfa-334",
+  "supported_mfa_version": "3.3.4"
+}

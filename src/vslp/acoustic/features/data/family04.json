@@ -1,0 +1,36 @@
+{
+  "family_id": "F04",
+  "source_document": "04_Formant_Vowel_Space_Codex_Implementation.docx",
+  "algorithm_version": "family04-parselmouth-burg-1.0.0",
+  "default_parameter_set_id": "family04_burg_native_5500_v1",
+  "sensitivity_parameter_set_id": "family04_burg_native_5000_v1",
+  "constructs": [
+    {"construct_id":"C021","evidence_level":"NOT ESTABLISHED","evidence_study_count":9,"evidence_entry_count":20},
+    {"construct_id":"C022","evidence_level":"NOT ESTABLISHED","evidence_study_count":7,"evidence_entry_count":16},
+    {"construct_id":"C023","evidence_level":"MODERATE","evidence_study_count":4,"evidence_entry_count":6},
+    {"construct_id":"C024","evidence_level":"NOT ESTABLISHED","evidence_study_count":2,"evidence_entry_count":2},
+    {"construct_id":"C025","evidence_level":"NOT ESTABLISHED","evidence_study_count":2,"evidence_entry_count":2},
+    {"construct_id":"C026","evidence_level":"NOT ESTABLISHED","evidence_study_count":2,"evidence_entry_count":2},
+    {"construct_id":"C027","evidence_level":"MODERATE","evidence_study_count":2,"evidence_entry_count":2},
+    {"construct_id":"C028","evidence_level":"MODERATE","evidence_study_count":2,"evidence_entry_count":2},
+    {"construct_id":"C029","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":1},
+    {"construct_id":"C030","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":3},
+    {"construct_id":"C031","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":1},
+    {"construct_id":"C032","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":5}
+  ],
+  "outputs": [
+    {"construct_id":"C021","feature_id":"f2_token_hz","human_name":"Second formant — token median","unit":"Hz","analysis_unit":"Aligned vowel token","formula":"median valid F2 frames over token middle 50%","output_granularity":"token"},
+    {"construct_id":"C021","feature_id":"f2_vowel_median_hz","human_name":"Second formant — named vowel median","unit":"Hz","analysis_unit":"Named vowel / recording","formula":"median valid token F2 medians by target vowel","output_granularity":"vowel"},
+    {"construct_id":"C022","feature_id":"f1_token_hz","human_name":"First formant — token median","unit":"Hz","analysis_unit":"Aligned vowel token","formula":"median valid F1 frames over token middle 50%","output_granularity":"token"},
+    {"construct_id":"C022","feature_id":"f1_vowel_median_hz","human_name":"First formant — named vowel median","unit":"Hz","analysis_unit":"Named vowel / recording","formula":"median valid token F1 medians by target vowel","output_granularity":"vowel"},
+    {"construct_id":"C023","feature_id":"vsa3_iau_hz2","human_name":"Three-vowel space area /i,a,u/","unit":"Hz²","analysis_unit":"Recording","formula":"0.5*abs(F1_i*(F2_a-F2_u)+F1_a*(F2_u-F2_i)+F1_u*(F2_i-F2_a))","output_granularity":"recording"},
+    {"construct_id":"C024","feature_id":"fri_iau","human_name":"Formant ratio index /i,a,u/","unit":"dimensionless","analysis_unit":"Recording","formula":"(F1_a+F1_i+F1_u+F2_a+F2_i)/F2_u","output_granularity":"recording"},
+    {"construct_id":"C025","feature_id":"sfri_iau","human_name":"Second formant ratio index /i,a,u/","unit":"dimensionless","analysis_unit":"Recording","formula":"(F2_a+F2_i)/F2_u","output_granularity":"recording"},
+    {"construct_id":"C026","feature_id":"f3_token_hz","human_name":"Third formant — token median","unit":"Hz","analysis_unit":"Aligned vowel token","formula":"median valid F3 frames over token middle 50%","output_granularity":"token"},
+    {"construct_id":"C026","feature_id":"f3_vowel_median_hz","human_name":"Third formant — named vowel median","unit":"Hz","analysis_unit":"Named vowel / recording","formula":"median valid token F3 medians by target vowel","output_granularity":"vowel"},
+    {"construct_id":"C027","feature_id":"vai_iau","human_name":"Vowel articulation index /i,a,u/","unit":"dimensionless","analysis_unit":"Recording","formula":"(F2_i+F1_a)/(F1_i+F1_u+F2_u+F2_a)","output_granularity":"recording"},
+    {"construct_id":"C028","feature_id":"vowel_envelope_distance_ai_source","human_name":"Vowel spectral-envelope distance /a/-/i/","unit":"source dependent","analysis_unit":"Matched vowel pair","formula":"source representation and distance not frozen","output_granularity":"recording","selectable":false,"blocked_reason":"Source-equivalent pitch-synchronous envelope, frequency grid, normalization and distance are not frozen."},
+    {"construct_id":"C029","feature_id":"fcr_iau","human_name":"Formant centralization ratio /i,a,u/","unit":"dimensionless","analysis_unit":"Recording","formula":"(F2_u+F2_a+F1_i+F1_u)/(F2_i+F1_a)","output_granularity":"recording"},
+    {"construct_id":"C031","feature_id":"f2_distance_i_a_hz","human_name":"F2 /i/-/a/ distance","unit":"Hz","analysis_unit":"Recording","formula":"abs(F2_i-F2_a)","output_granularity":"recording"}
+  ]
+}

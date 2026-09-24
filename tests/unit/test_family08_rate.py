@@ -8,6 +8,7 @@ import pandas as pd
 
 from vslp.acoustic.features.catalog import load_feature_catalog, task_fit
 from vslp.acoustic.features.family09 import FAMILY09_IDS
+from vslp.acoustic.features.family10 import FAMILY10_IDS
 from vslp.acoustic.features.family08 import (
     ALGORITHM_VERSION, FAMILY08_IDS, MIN_PAUSE_SEC, PARAMETER_SET_ID,
     calculate_family08, compute_family08_timing, load_prompt_counts,
@@ -34,7 +35,7 @@ def _timeline(*, excluded=False):
 def test_exact_ids_evidence_units_and_family_task_scope():
     catalog = load_feature_catalog()
     outputs = {item["feature_id"]: item for item in catalog["outputs"]}
-    assert set(outputs) == FAMILY08_IDS | FAMILY09_IDS
+    assert FAMILY08_IDS | FAMILY09_IDS | FAMILY10_IDS <= set(outputs)
     outputs = {key: value for key, value in outputs.items() if key in FAMILY08_IDS}
     assert all(item["construct_id"] in {"C048", "C049"} for item in outputs.values())
     assert all(item["evidence_level"] == "STRONG" for item in outputs.values())
@@ -95,7 +96,7 @@ def test_prompt_manifest_must_be_versioned_and_explicit(tmp_path):
     path.write_text(json.dumps(prompt), encoding="utf-8")
     loaded, issue = load_prompt_counts(path, "Bamboo Passage")
     assert loaded == prompt and issue == ""
-    assert load_prompt_counts(path, "WSTG")[1] == "task_not_supported_by_family08_specification"
+    assert load_prompt_counts(path, "WSTG")[1] == "prompt_manifest_schema_or_task_mismatch"
     prompt["applies_to_all_recordings"] = False
     path.write_text(json.dumps(prompt), encoding="utf-8")
     assert load_prompt_counts(path, "Bamboo Passage")[1] == "prompt_applicability_not_confirmed"

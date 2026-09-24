@@ -1,0 +1,22 @@
+{
+  "family_id": "F01",
+  "source_document": "01_F0_Pitch_Variability_Codex_Implementation.docx",
+  "algorithm_version": "family01-praat-ac-1.0.0",
+  "parameter_set_id": "family01_f0_praat_ac_v1",
+  "pitch_floor_hz": 60,
+  "pitch_ceiling_hz": 500,
+  "time_step_sec": 0.005,
+  "minimum_valid_frames": 20,
+  "minimum_sustained_tracking_yield": 0.8,
+  "outputs": [
+    {"construct_id":"C001","feature_id":"f0_mean_hz","human_name":"Fundamental frequency — mean","unit":"Hz","evidence_level":"NOT ESTABLISHED","evidence_study_count":11,"evidence_entry_count":17,"formula":"mean(valid F0 in Hz)","analysis_unit":"Voiced frames","selectable":true},
+    {"construct_id":"C001","feature_id":"f0_median_hz","human_name":"Fundamental frequency — median","unit":"Hz","evidence_level":"NOT ESTABLISHED","evidence_study_count":11,"evidence_entry_count":17,"formula":"median(valid F0 in Hz)","analysis_unit":"Voiced frames","selectable":true},
+    {"construct_id":"C002","feature_id":"f0_sd_st","human_name":"F0 variability — SD","unit":"st","evidence_level":"NOT ESTABLISHED","evidence_study_count":2,"evidence_entry_count":2,"formula":"sample SD(12 log2(F0/median F0))","analysis_unit":"Voiced frames","selectable":true},
+    {"construct_id":"C002","feature_id":"f0_iqr_st","human_name":"F0 variability — IQR","unit":"st","evidence_level":"NOT ESTABLISHED","evidence_study_count":2,"evidence_entry_count":2,"formula":"Q75(st)-Q25(st)","analysis_unit":"Voiced frames","selectable":true},
+    {"construct_id":"C002","feature_id":"f0_range_st","human_name":"F0 variability — range","unit":"st","evidence_level":"NOT ESTABLISHED","evidence_study_count":2,"evidence_entry_count":2,"formula":"max(st)-min(st)","analysis_unit":"Voiced frames","selectable":true},
+    {"construct_id":"C003","feature_id":"pfr_maxmin_st","human_name":"Phonatory frequency range — max/min","unit":"st","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":1,"formula":"12 log2(max valid F0/min valid F0)","analysis_unit":"Voiced frames","selectable":true},
+    {"construct_id":"C004","feature_id":"intonation_f0_sd_st","human_name":"Intonation F0 SD component","unit":"st","evidence_level":"LIMITED","evidence_study_count":2,"evidence_entry_count":2,"formula":"sample SD(12 log2(F0/median F0))","analysis_unit":"Voiced frames","selectable":true},
+    {"construct_id":"C004","feature_id":"intonation_f0_iqr_st","human_name":"Intonation F0 IQR component","unit":"st","evidence_level":"LIMITED","evidence_study_count":2,"evidence_entry_count":2,"formula":"Q75(st)-Q25(st)","analysis_unit":"Voiced frames","selectable":true},
+    {"construct_id":"C004","feature_id":"intonation_factor_score_if_frozen","human_name":"Intonation factor score","unit":"source-specific score","evidence_level":"LIMITED","evidence_study_count":2,"evidence_entry_count":2,"formula":"source factor transform","analysis_unit":"Whole task","selectable":false,"blocked_reason":"Source coefficients and standardization transform were not supplied."}
+  ]
+}

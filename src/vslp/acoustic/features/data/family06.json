@@ -1,0 +1,24 @@
+{
+  "family_id": "F06",
+  "source_document": "06_Segmental_Articulatory_Phonetic_Codex_Implementation.docx",
+  "algorithm_version": "family06-aligned-subevents-1.0.0",
+  "default_parameter_set_id": "family06_native_subevents_v1",
+  "constructs": [
+    {"construct_id":"C035","evidence_level":"STRONG","evidence_study_count":3,"evidence_entry_count":3},
+    {"construct_id":"C036","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":3},
+    {"construct_id":"C037","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":1},
+    {"construct_id":"C038","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":3,"feature_id_templates":["noise_duration_<target>_s"]},
+    {"construct_id":"C039","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":1,"feature_id_templates":["noise_rise_time_<definition>_s"]},
+    {"construct_id":"C040","evidence_level":"NOT ESTABLISHED","evidence_study_count":1,"evidence_entry_count":3,"feature_id_templates":["normalized_duration_contrast_<A>_<B>"]},
+    {"construct_id":"C041","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":1},
+    {"construct_id":"C042","evidence_level":"NOT ESTABLISHED","evidence_study_count":1,"evidence_entry_count":1}
+  ],
+  "outputs": [
+    {"construct_id":"C035","feature_id":"blocked_aural_analytics_ap","human_name":"Articulatory precision — Aural Analytics","unit":"dimensionless score","analysis_unit":"Aligned phones / session","formula":"Proprietary normative likelihood-ratio model","selectable":false,"blocked_reason":"Proprietary normative database, likelihood model and scaling are unavailable."},
+    {"construct_id":"C036","feature_id":"band_noise_contrast_variant1","human_name":"Bandpassed noise energy contrast — variant 1","unit":"arbitrary digital contrast","analysis_unit":"Matched noise targets","formula":"Source contrast convention and normalization not frozen","selectable":false,"blocked_reason":"Target pairing, spectral normalization and source contrast convention are incomplete."},
+    {"construct_id":"C036","feature_id":"band_noise_contrast_variant2","human_name":"Bandpassed noise energy contrast — variant 2","unit":"arbitrary digital contrast","analysis_unit":"Matched noise targets","formula":"Source contrast convention and normalization not frozen","selectable":false,"blocked_reason":"Target pairing, spectral normalization and source contrast convention are incomplete."},
+    {"construct_id":"C037","feature_id":"m1_t_minus_k_hz","human_name":"First spectral moment — /t/ minus /k/","unit":"Hz","analysis_unit":"Matched burst pairs / recording","formula":"mean(sum(f*P)/sum(P))_t - mean(sum(f*P)/sum(P))_k","selectable":true},
+    {"construct_id":"C041","feature_id":"wideband_noise_energy_0_10khz","human_name":"Wideband noise energy, 0–10 kHz","unit":"digital amplitude²·samples","analysis_unit":"Annotated noise events / recording","formula":"mean one-sided 0–10 kHz Hann-corrected FFT energy per approved token","selectable":true},
+    {"construct_id":"C042","feature_id":"stop_burst_spectral_tilt_db_khz","human_name":"Stop-burst spectral tilt","unit":"dB/kHz","analysis_unit":"Annotated stop bursts / recording","formula":"mean OLS slope of 20log10 FFT amplitude over 1.5–5 kHz","selectable":true}
+  ]
+}

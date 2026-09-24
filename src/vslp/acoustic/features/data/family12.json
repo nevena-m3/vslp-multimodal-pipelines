@@ -1,0 +1,33 @@
+{
+  "family_id": "F12",
+  "source_document": "12_Spectral_Cepstral_Codex_Implementation.docx",
+  "algorithm_version": "family12-spectral-1.0.0",
+  "mfcc_parameter_set_id": "family12_mfcc_48k_v1",
+  "spectral_parameter_set_id": "family12_spectral_48k_v1",
+  "working_sample_rate_hz": 48000,
+  "window_ms": 25,
+  "hop_ms": 10,
+  "n_fft": 2048,
+  "minimum_frames": 10,
+  "mfcc": {"n_mels":40,"n_mfcc":13,"fmin_hz":50,"fmax_hz":8000,"dct_type":2,"norm":"ortho","center":false,"preemphasis":false,"c0_retained":true,"mel_scale":"slaney","log":"natural"},
+  "spectral_contrast": {"library":"librosa","library_version":"0.11.0","fmin_hz":200,"n_bands":6,"quantile":0.02,"linear":false,"input":"STFT magnitude","log_convention":"librosa power_to_db(peak) - power_to_db(valley)","aggregation":"mean per band"},
+  "outputs": [
+    {"construct_id":"C066","feature_id":"spectral_bandwidth_p2_mean_hz","human_name":"Spectral bandwidth p2 — mean","unit":"Hz","evidence_level":"NOT ESTABLISHED","evidence_study_count":1,"evidence_entry_count":2,"analysis_unit":"Frames"},
+    {"construct_id":"C066","feature_id":"spectral_bandwidth_p2_median_hz","human_name":"Spectral bandwidth p2 — median","unit":"Hz","evidence_level":"NOT ESTABLISHED","evidence_study_count":1,"evidence_entry_count":2,"analysis_unit":"Frames"},
+    {"construct_id":"C068","feature_id":"opensmile_1_4khz_<functional>","human_name":"openSMILE 1–4 kHz magnitude functional","unit":"source-specific","evidence_level":"NOT ESTABLISHED","evidence_study_count":1,"evidence_entry_count":1,"analysis_unit":"Frames","selectable":false,"blocked_reason":"Exact openSMILE frame configuration, scale, and functional are not frozen."},
+    {"construct_id":"C069","feature_id":"zcr_mean_fraction","human_name":"Zero-crossing rate — mean","unit":"fraction","evidence_level":"NOT ESTABLISHED","evidence_study_count":1,"evidence_entry_count":1,"analysis_unit":"Frames"},
+    {"construct_id":"C069","feature_id":"zcr_median_fraction","human_name":"Zero-crossing rate — median","unit":"fraction","evidence_level":"NOT ESTABLISHED","evidence_study_count":1,"evidence_entry_count":1,"analysis_unit":"Frames"},
+    {"construct_id":"C070","feature_id":"spec_m1_hz","human_name":"Spectral moment M1","unit":"Hz","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":4,"analysis_unit":"Frames"},
+    {"construct_id":"C070","feature_id":"spec_m2_hz","human_name":"Spectral moment M2","unit":"Hz","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":4,"analysis_unit":"Frames"},
+    {"construct_id":"C070","feature_id":"spec_m3_skew","human_name":"Spectral moment M3 skewness","unit":"dimensionless","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":4,"analysis_unit":"Frames"},
+    {"construct_id":"C070","feature_id":"spec_m4_kurtosis","human_name":"Spectral moment M4 Pearson kurtosis","unit":"dimensionless","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":4,"analysis_unit":"Frames"},
+    {"construct_id":"C071","feature_id":"spectral_centroid_hz","human_name":"Spectral centroid","unit":"Hz","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":8,"analysis_unit":"Frames"},
+    {"construct_id":"C071","feature_id":"spectral_spread_hz","human_name":"Spectral spread","unit":"Hz","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":8,"analysis_unit":"Frames"},
+    {"construct_id":"C071","feature_id":"spectral_skew","human_name":"Spectral skewness","unit":"dimensionless","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":8,"analysis_unit":"Frames"},
+    {"construct_id":"C071","feature_id":"spectral_kurtosis","human_name":"Spectral Pearson kurtosis","unit":"dimensionless","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":8,"analysis_unit":"Frames"},
+    {"construct_id":"C071","feature_id":"spectral_slope_db_khz","human_name":"Spectral slope","unit":"dB/kHz","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":8,"analysis_unit":"Frames"},
+    {"construct_id":"C071","feature_id":"spectral_flux","human_name":"Spectral flux","unit":"dimensionless","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":8,"analysis_unit":"Frames"},
+    {"construct_id":"C071","feature_id":"spectral_crest","human_name":"Spectral crest","unit":"dimensionless","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":8,"analysis_unit":"Frames"},
+    {"construct_id":"C071","feature_id":"spectral_flatness","human_name":"Spectral flatness","unit":"dimensionless","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":8,"analysis_unit":"Frames"}
+  ]
+}

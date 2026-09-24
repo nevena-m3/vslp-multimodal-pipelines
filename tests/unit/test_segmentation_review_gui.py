@@ -71,8 +71,10 @@ def test_acoustic_gui_has_separate_review_stage_and_final_paths():
     window = AcousticPipelineWindow()
     tabs = [window.tabs.tabText(i) for i in range(window.tabs.count())]
     assert tabs.index("Segmentation manual review") == tabs.index("Segmentation") + 1
-    assert tabs.index("Quality Control") == tabs.index("Segmentation manual review") + 1
+    assert tabs.index("Alignment") == tabs.index("Segmentation manual review") + 1
+    assert tabs.index("Quality Control") == tabs.index("Alignment") + 1
     assert "review" in window.stage_records
+    assert "alignment" in window.stage_records
     window.close()
     assert app is not None
 
