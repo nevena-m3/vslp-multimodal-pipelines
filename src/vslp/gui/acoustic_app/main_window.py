@@ -1430,9 +1430,13 @@ class AcousticPipelineWindow(QMainWindow):
                            feature_availability(construct_outputs[0])[0] == "Implemented")
                 tasks = [self.feature_catalog["tasks_registry"][key] for key in
                          (*construct["recommended_tasks"], *construct["conditional_tasks"])]
-                node = QTreeWidgetItem([construct["construct_name"], "—", "", "",
+                templates = construct.get("source_feature_templates", [])
+                node = QTreeWidgetItem([construct["construct_name"], " / ".join(templates) or "—", "", "",
                     construct["evidence_level"] or "—", ", ".join(tasks), construct["unit"],
-                    construct["qc_range_text"], construct["signal_scope"].split("·")[-1].strip()])
+                    construct["qc_range_text"], construct.get("analysis_unit") or
+                    construct["signal_scope"].split("·")[-1].strip()])
+                if templates:
+                    node.setToolTip(1, "Unresolved source templates; no selectable output ID is frozen.")
                 node.setData(0, Qt.UserRole, ("construct", construct_id))
                 node.setFlags(node.flags() | Qt.ItemIsUserCheckable)
                 node.setCheckState(0, Qt.Unchecked)
@@ -1462,9 +1466,10 @@ class AcousticPipelineWindow(QMainWindow):
                     else:
                         node.addChild(item)
                     self.feature_items[feature_id] = item
-                if not construct_outputs:
+                if not any(feature_availability(output)[0] == "Implemented"
+                           for output in construct_outputs):
                     node.setFlags(node.flags() & ~Qt.ItemIsUserCheckable)
-                    node.setToolTip(0, "Exact output IDs will be added from the family specification.")
+                    node.setToolTip(0, "No executable output is registered for this construct.")
             if not any(parent.child(i).flags() & Qt.ItemIsUserCheckable
                        for i in range(parent.childCount())):
                 parent.setFlags(parent.flags() & ~Qt.ItemIsUserCheckable)
@@ -1759,13 +1764,22 @@ class AcousticPipelineWindow(QMainWindow):
         tree.clear()
         if kind == "construct":
             item = next(c for c in self.feature_catalog["constructs"] if c["construct_id"] == key)
+            templates = item.get("source_feature_templates", [])
             fields = [("Feature", item["construct_name"]), ("Type", "Construct"),
-                      ("Code name", "—"), ("Evidence", item["evidence_level"] or "—"),
+                      ("Code name", " / ".join(templates) or "—"),
+                      ("Evidence", item["evidence_level"] or "—"),
                       ("Recommended tasks", ", ".join(self.feature_catalog["tasks_registry"][k]
                         for k in (*item["recommended_tasks"], *item["conditional_tasks"])) or "—"),
                       ("Unit", item["unit"]), ("Range", item["qc_range_text"]),
-                      ("Analysis unit", item["signal_scope"].split("·")[-1].strip()),
+                      ("Analysis unit", item.get("analysis_unit") or
+                       item["signal_scope"].split("·")[-1].strip()),
                       ("Output status", items[0].data(0, Qt.UserRole + 2) or "—")]
+            if item.get("source_status"):
+                fields += [("Source status", item["source_status"]),
+                           ("Scientific meaning", item["scientific_meaning"]),
+                           ("Formula", item["formula"]),
+                           ("Analysis region", item["analysis_region"]),
+                           ("Scientific limitation", item["source_limitation"])]
         elif kind == "output":
             item = self.catalog_outputs[key]
             task_names = [self.feature_catalog["tasks_registry"][k]
@@ -1785,6 +1799,8 @@ class AcousticPipelineWindow(QMainWindow):
                       ("Parameter profile", item["parameter_profile"]["name"] + " (read-only)"),
                       *[(key.replace("_", " ").capitalize(), value)
                         for key, value in item["parameter_profile"]["active_parameters"].items()]]
+            if item.get("blocked_reason"):
+                fields.append(("Scientific limitation", item["blocked_reason"]))
         else:
             fields = [("Family", items[0].text(0))]
         if kind in {"construct", "output"}:

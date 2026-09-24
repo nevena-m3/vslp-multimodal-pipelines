@@ -23,6 +23,7 @@ _FAMILY09 = Path(__file__).with_name("data") / "family09.json"
 _FAMILY10 = Path(__file__).with_name("data") / "family10.json"
 _FAMILY11 = Path(__file__).with_name("data") / "family11.json"
 _FAMILY12 = Path(__file__).with_name("data") / "family12.json"
+_FAMILY13 = Path(__file__).with_name("data") / "family13.json"
 USE = {"PROD": "Production", "VARIANT": "Conditional", "TASK": "Conditional",
        "VALIDATE": "Validation required", "RESEARCH": "Research", "BLOCKED": "Blocked"}
 TASKS = {
@@ -562,6 +563,65 @@ def load_feature_catalog() -> dict[str, Any]:
             "source_document": family12["source_document"],
         })
     attach_family_outputs(matrix, "F12", outputs12)
+    family13 = json.loads(_FAMILY13.read_text(encoding="utf-8"))
+    outputs13 = []
+    for spec in family13["constructs"]:
+        construct = constructs[spec["construct_id"]]
+        for field in ("evidence_level", "evidence_study_count", "evidence_entry_count"):
+            construct[field] = spec[field]
+        construct["recommended_tasks"] = spec["recommended_tasks"]
+        construct["conditional_tasks"] = []
+        construct["family_spec_approved"] = True
+        construct["source_status"] = spec["status"]
+        construct["source_ids"] = spec.get("source_ids", [])
+        construct["source_feature_templates"] = spec.get("source_templates", [])
+        construct["source_limitation"] = spec["missing_definition"]
+        construct["scientific_meaning"] = spec["interpretation"]
+        construct["analysis_region"] = spec["representation"]
+        construct["analysis_unit"] = spec["analysis_unit"]
+        construct["unit"] = spec["unit"]
+        construct["qc_range_text"] = spec["range"]
+        construct["formula"] = spec["formula"]
+        construct["source_document"] = family13["source_document"]
+        for feature_id in spec.get("source_ids", []):
+            is_factor = feature_id.endswith("factor_if_frozen")
+            outputs13.append({
+                "construct_id": spec["construct_id"],
+                "feature_id": feature_id,
+                "human_name": spec["source_output_names"][feature_id],
+                "construct_name": construct["construct_name"],
+                "family_id": "F13", "family_name": construct["family_name"],
+                "matrix_status": construct["matrix_status"],
+                "use_status": "Research",
+                "recommended_tasks": spec["recommended_tasks"],
+                "conditional_tasks": [],
+                "evidence_level": spec["evidence_level"],
+                "evidence_study_count": spec["evidence_study_count"],
+                "evidence_entry_count": spec["evidence_entry_count"],
+                "unit": "z-score" if is_factor else "bits" if feature_id ==
+                        "ppe_source_replication_only" else "source-specific",
+                "qc_range_low": None, "qc_range_high": None,
+                "qc_range_text": "0–log2(31) bits" if feature_id ==
+                                 "ppe_source_replication_only" else "—",
+                "signal_scope": construct["signal_scope"],
+                "analysis_unit": spec["analysis_unit"],
+                "analysis_region": spec["representation"],
+                "scientific_meaning": spec["interpretation"],
+                "formula": spec["formula"],
+                "estimator": "Source procedure not reproducibly frozen",
+                "algorithm": "not_implemented",
+                "algorithm_version": "not_implemented",
+                "default_parameter_set_id": "not_frozen",
+                "parameter_profile": {"name": "No frozen source profile", "read_only": True,
+                                      "active_parameters": {}},
+                "prerequisites": {},
+                "family_spec_approved": True,
+                "selectable": False,
+                "source_status": "NOT_IMPLEMENTED",
+                "blocked_reason": spec["missing_definition"],
+                "source_document": family13["source_document"],
+            })
+    attach_family_outputs(matrix, "F13", outputs13)
     return matrix
 
 

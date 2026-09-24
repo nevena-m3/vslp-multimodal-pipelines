@@ -35,6 +35,12 @@ FAMILY04_UNAVAILABLE = {"vowel_envelope_distance_ai_source"}
 FAMILY07_UNAVAILABLE = {"vowel_duration_<phone>_s"}
 FAMILY11_UNAVAILABLE = set()
 FAMILY12_UNAVAILABLE = {"opensmile_1_4khz_<functional>"}
+FAMILY13_UNAVAILABLE = {
+    "ppe_source_replication_only", "dynamics_det_dmfcc_components",
+    "dynamics_articulation_rate", "dynamics_factor_if_frozen",
+    "rhythm_factor_if_frozen", "regularity_visibility_density",
+    "regularity_psi_components", "regularity_factor_if_frozen",
+}
 
 
 def _window() -> AcousticPipelineWindow:
@@ -54,12 +60,15 @@ def test_exact_master_constructs_and_no_legacy_leaves():
         FAMILY01_IDS | FAMILY01_UNAVAILABLE | FAMILY02_IDS | FAMILY02_UNAVAILABLE |
         FAMILY04_IDS | FAMILY04_UNAVAILABLE | FAMILY06_IDS | FAMILY06_UNAVAILABLE |
         FAMILY07_IDS | FAMILY07_UNAVAILABLE | FAMILY08_IDS | FAMILY09_IDS | FAMILY10_IDS |
-        FAMILY11_IDS | FAMILY11_UNAVAILABLE | FAMILY12_IDS | FAMILY12_UNAVAILABLE)
+        FAMILY11_IDS | FAMILY11_UNAVAILABLE | FAMILY12_IDS | FAMILY12_UNAVAILABLE |
+        FAMILY13_UNAVAILABLE)
     assert all(c["outputs"] == [] for c in catalog["constructs"]
                    if c["family_id"] not in {"F01", "F02", "F04", "F06", "F07", "F08", "F09", "F10",
-                                             "F11", "F12"})
+                                             "F11", "F12", "F13"})
     assert all(c["evidence_level"] is None for c in catalog["constructs"]
-               if c["family_id"] in {"F03", "F13"})
+               if c["family_id"] == "F03")
+    assert all(c["evidence_level"] for c in catalog["constructs"]
+               if c["family_id"] == "F13")
     assert all(c["evidence_level"] for c in catalog["constructs"]
                if c["family_id"] in {"F01", "F08", "F09"})
     assert catalog["constructs"][4]["construct_name"] == "Jitter"
@@ -175,7 +184,8 @@ def test_gui_columns_details_search_and_structured_recommendations():
         FAMILY01_IDS | FAMILY01_UNAVAILABLE | FAMILY02_IDS | FAMILY02_UNAVAILABLE |
             FAMILY04_IDS | FAMILY04_UNAVAILABLE | FAMILY06_IDS | FAMILY06_UNAVAILABLE |
         FAMILY07_IDS | FAMILY07_UNAVAILABLE | FAMILY08_IDS | FAMILY09_IDS | FAMILY10_IDS |
-        FAMILY11_IDS | FAMILY11_UNAVAILABLE | FAMILY12_IDS | FAMILY12_UNAVAILABLE)
+        FAMILY11_IDS | FAMILY11_UNAVAILABLE | FAMILY12_IDS | FAMILY12_UNAVAILABLE |
+        FAMILY13_UNAVAILABLE)
     jitter = window.construct_items["C005"]
     assert jitter.text(1) == "—"
     assert jitter.text(4) == "MODERATE"

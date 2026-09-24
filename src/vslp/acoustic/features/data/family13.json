@@ -1,0 +1,117 @@
+{
+  "family_id": "F13",
+  "source_document": "13_Nonlinear_Rhythm_Regularity_Codex_Implementation.docx",
+  "registry_version": "family13_source_audit_v1",
+  "note": "The DOCX does not contain a FEATURE ID(S) field. Exact non-implemented IDs and unresolved templates are the user-specified identities also recorded in the prior implementation inventory; no executable output is approved.",
+  "constructs": [
+    {
+      "construct_id": "C072", "status": "NOT_IMPLEMENTED",
+      "evidence_level": "NOT ESTABLISHED", "evidence_study_count": 2, "evidence_entry_count": 2,
+      "recommended_tasks": ["sustained_a"], "source_ids": ["ppe_source_replication_only"],
+      "source_output_names": {"ppe_source_replication_only": "Pitch period entropy — source replication"},
+      "interpretation": "Entropy of a whitened semitone F0 residual histogram.",
+      "representation": "stable sustained-vowel F0 contour; 31-bin whitened residual histogram",
+      "analysis_unit": "stable sustained-vowel F0 contour", "aggregation": "one base-2 Shannon entropy",
+      "formula": "-sum(p_i * log2(p_i)) across 31 residual bins",
+      "unit": "bits", "range": "0–log2(31) bits",
+      "missing_definition": "Whitening filter/coefficients, residual construction and histogram edges are not frozen."
+    },
+    {
+      "construct_id": "C073", "status": "UNRESOLVED_TEMPLATE",
+      "evidence_level": "NOT ESTABLISHED", "evidence_study_count": 2, "evidence_entry_count": 3,
+      "recommended_tasks": [],
+      "source_templates": ["shannon_amp_entropy_<binning>", "sample_entropy_m<...>_r<...>"],
+      "prior_inventory_templates": ["shannon_signal_entropy_<config>", "sample_entropy_<config>"],
+      "interpretation": "Shannon amplitude entropy and sample entropy are distinct quantities.",
+      "representation": "variant-specific signal sequence and analysis region",
+      "analysis_unit": "variant-specific frames or segments", "aggregation": "variant-specific",
+      "formula": "Shannon: -sum(p_i log(p_i)); sample entropy: -log(A/B) under a frozen embedding rule",
+      "unit": "bits or dimensionless, variant-specific", "range": "variant-specific",
+      "missing_definition": "Shannon representation, discretization/bins, log base and aggregation; sample-entropy m, r, tolerance scaling, distance metric, minimum length and aggregation."
+    },
+    {
+      "construct_id": "C074", "status": "UNRESOLVED_TEMPLATE",
+      "evidence_level": "NOT ESTABLISHED", "evidence_study_count": 2, "evidence_entry_count": 2,
+      "recommended_tasks": [],
+      "source_templates": ["wpd_shannon_entropy_<wavelet>_L<level>", "psd_spectral_entropy_<config>"],
+      "interpretation": "Entropy of either wavelet-packet energy or PSD mass; these are separate estimators.",
+      "representation": "source-specific speech segment, WPD coefficients or PSD",
+      "analysis_unit": "segment or frame, estimator-specific", "aggregation": "source-specific",
+      "formula": "-sum(p_i log(p_i)) after estimator-specific probability normalization",
+      "unit": "bits or dimensionless, variant-specific", "range": "variant-specific",
+      "missing_definition": "WPD wavelet, level, extension, node selection, energy normalization and log base; PSD estimator, frequency range, framing, normalization and aggregation."
+    },
+    {
+      "construct_id": "C075", "status": "UNRESOLVED_TEMPLATE",
+      "evidence_level": "NOT ESTABLISHED", "evidence_study_count": 1, "evidence_entry_count": 1,
+      "recommended_tasks": ["sustained_a"],
+      "source_templates": ["wavelet_energy_<wavelet>_L<level>_<node>"],
+      "interpretation": "Squared-coefficient energy of a named wavelet subband.",
+      "representation": "stable vowel or explicitly defined speech segment",
+      "analysis_unit": "named wavelet node within a defined segment", "aggregation": "sum of squared coefficients per node",
+      "formula": "E_j = sum(abs(c_j)^2); normalized share is a separate variant",
+      "unit": "digital squared-coefficient units", "range": "≥0",
+      "missing_definition": "Wavelet, level, node, boundary mode, normalized versus absolute energy, analysis region and aggregation are not frozen."
+    },
+    {
+      "construct_id": "C076", "status": "UNRESOLVED_TEMPLATE",
+      "evidence_level": "LIMITED", "evidence_study_count": 2, "evidence_entry_count": 2,
+      "recommended_tasks": ["bamboo_passage"],
+      "source_templates": ["rqa_det_mfcc<k>_<config>"],
+      "interpretation": "Fraction of recurrence points in qualifying diagonal lines of an MFCC trajectory.",
+      "representation": "source-matched connected-speech MFCC coefficient trajectory",
+      "analysis_unit": "MFCC coefficient by stationary segment", "aggregation": "source-defined coefficient/segment aggregation",
+      "formula": "DET = recurrence points in diagonal lines of length >= l_min / all recurrence points",
+      "unit": "dimensionless", "range": "0–1 when defined",
+      "missing_definition": "Coefficient selection, normalization, embedding, delay, metric, recurrence rule, Theiler window, minimum diagonal length and aggregation. Suggested m=3/tau=5/eps=0.2 is only an engineering bridge."
+    },
+    {
+      "construct_id": "C077", "status": "NOT_IMPLEMENTED",
+      "evidence_level": "LIMITED", "evidence_study_count": 1, "evidence_entry_count": 1,
+      "recommended_tasks": ["bamboo_passage"],
+      "source_ids": ["dynamics_det_dmfcc_components", "dynamics_articulation_rate", "dynamics_factor_if_frozen"],
+      "source_output_names": {
+        "dynamics_det_dmfcc_components": "Dynamics — delta-MFCC determinism components",
+        "dynamics_articulation_rate": "Dynamics — source articulation rate",
+        "dynamics_factor_if_frozen": "Articulatory dynamics factor score"
+      },
+      "interpretation": "Source composite of delta-MFCC RQA determinism and articulation rate.",
+      "representation": "first 13 delta-MFCCs in source 1-s segments plus source-defined articulation rate",
+      "analysis_unit": "sentence / source stationary segments", "aggregation": "components, then frozen factor transform",
+      "formula": "factor = w^T z([delta-MFCC DET, articulation rate]) + b",
+      "unit": "component-specific; factor z-score", "range": "source-specific",
+      "missing_definition": "Delta-MFCC RQA metric/threshold/normalization/aggregation and source articulation-rate contract; factor scaling, order, weights and intercept. Existing Family 08 rate does not establish source parity."
+    },
+    {
+      "construct_id": "C078", "status": "UNRESOLVED_TEMPLATE",
+      "evidence_level": "LIMITED", "evidence_study_count": 2, "evidence_entry_count": 2,
+      "recommended_tasks": ["bamboo_passage"],
+      "source_templates": ["rhythm_moddepth_<band>", "rhythm_psi_<coupling>"],
+      "source_ids": ["rhythm_factor_if_frozen"],
+      "source_output_names": {"rhythm_factor_if_frozen": "Rhythmic modulation factor score"},
+      "interpretation": "Critical-band envelope modulation and phase synchrony composite.",
+      "representation": "source-defined critical-band Hilbert envelopes of connected speech",
+      "analysis_unit": "connected-speech segment", "aggregation": "named components, then frozen factor transform",
+      "formula": "factor = w^T z(modulation-depth and phase-synchrony components) + b",
+      "unit": "component-specific; factor z-score", "range": "source-specific",
+      "missing_definition": "Complete critical-band inventory, envelope/modulation-depth convention, PSI coupling, normalization, pause handling, aggregation and factor scaling/loadings."
+    },
+    {
+      "construct_id": "C079", "status": "NOT_IMPLEMENTED",
+      "evidence_level": "LIMITED", "evidence_study_count": 1, "evidence_entry_count": 1,
+      "recommended_tasks": ["bamboo_passage"],
+      "source_ids": ["regularity_visibility_density", "regularity_psi_components", "regularity_factor_if_frozen"],
+      "source_output_names": {
+        "regularity_visibility_density": "Regularity — visibility-graph density",
+        "regularity_psi_components": "Regularity — phase-synchrony components",
+        "regularity_factor_if_frozen": "Speech regularity factor score"
+      },
+      "interpretation": "Visibility-graph density and selected cross-band phase-synchrony composite.",
+      "representation": "source 10-ms local-SD series and selected critical-band envelopes",
+      "analysis_unit": "sentence-level connected speech", "aggregation": "components, then frozen factor transform",
+      "formula": "factor = w^T z([visibility density, selected PSI components]) + b",
+      "unit": "component-specific; factor z-score", "range": "source-specific",
+      "missing_definition": "Visibility graph construction/density convention, full PSI band/filter/coupling contract and factor scaling/loadings. Similar Family 11 infrastructure is not proven identical."
+    }
+  ]
+}

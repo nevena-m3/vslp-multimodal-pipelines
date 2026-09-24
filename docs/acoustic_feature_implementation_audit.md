@@ -1,5 +1,9 @@
 # Acoustic Features implementation audit
 
+Historical pre-Family-13 snapshot. For the current Family 13 registry state,
+see [Family 13 implementation closure](family13_closure.md). The counts and
+Family 13 descriptions below intentionally describe the earlier audit point.
+
 Snapshot: current local `september-review` checkout, 2026-09-23. The checkout
 already contained uncommitted work. This audit changes documentation only. It
 compares the 79-construct master matrix, all 13 detailed family DOCX files,
