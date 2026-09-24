@@ -14,6 +14,7 @@ local_data/
 examples/test_runs/
 examples/test_data/audio_inputs/*
 !examples/test_data/audio_inputs/.gitkeep
+examples/test_data/metadata/*.csv
 
 # Participant-bearing MFA/intermediate alignment data
 **/004_alignment/runs/
@@ -58,3 +59,13 @@ projects/
 
 .venv-win/
 README_v*.md
+
+# Private/research-derived release exclusions
+feature_analysis/plots/
+notebooks_reference/*.ipynb
+docs/history/features/feature_gui_v075_metadata_filename_context.md
+examples/test_data/metadata/
+**/demographics*.csv
+**/participant*.csv
+**/subject*.csv
+**/.ipynb_checkpoints/
