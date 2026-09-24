@@ -65,7 +65,7 @@ def test_exact_master_constructs_and_no_legacy_leaves():
     assert all(c["outputs"] == [] for c in catalog["constructs"]
                    if c["family_id"] not in {"F01", "F02", "F04", "F06", "F07", "F08", "F09", "F10",
                                              "F11", "F12", "F13"})
-    assert all(c["evidence_level"] is None for c in catalog["constructs"]
+    assert all(c["evidence_level"] == "LIMITED" for c in catalog["constructs"]
                if c["family_id"] == "F03")
     assert all(c["evidence_level"] for c in catalog["constructs"]
                if c["family_id"] == "F13")

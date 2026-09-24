@@ -20,7 +20,7 @@ EXPECTED_UNAVAILABLE = {
     "regularity_psi_components", "regularity_factor_if_frozen",
 }
 EXPECTED_TEMPLATES = {
-    "shannon_amp_entropy_<binning>", "sample_entropy_m<...>_r<...>",
+    "shannon_signal_entropy_<config>", "sample_entropy_<config>",
     "wpd_shannon_entropy_<wavelet>_L<level>", "psd_spectral_entropy_<config>",
     "wavelet_energy_<wavelet>_L<level>_<node>", "rqa_det_mfcc<k>_<config>",
     "rhythm_moddepth_<band>", "rhythm_psi_<coupling>",
@@ -82,7 +82,7 @@ def test_family13_cannot_be_dispatched_or_selected_until_source_contract_is_froz
             "f0_mean_hz", "ppe_source_replication_only"]))
     with pytest.raises(ValueError, match="exact, approved output IDs"):
         _select_registry(FeatureExtractionConfig(selected_features=[
-            "pause_count", "shannon_amp_entropy_<binning>"]))
+            "pause_count", "shannon_signal_entropy_<config>"]))
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     QApplication.instance() or QApplication([])
     window = AcousticPipelineWindow()
@@ -90,7 +90,7 @@ def test_family13_cannot_be_dispatched_or_selected_until_source_contract_is_froz
         assert all(not window.feature_items[name].flags() & Qt.ItemIsUserCheckable
                    for name in EXPECTED_UNAVAILABLE)
         assert not window.subsystem_items["F13"].flags() & Qt.ItemIsUserCheckable
-        assert "shannon_amp_entropy_<binning>" in window.construct_items["C073"].text(1)
+        assert "shannon_signal_entropy_<config>" in window.construct_items["C073"].text(1)
         assert window.construct_items["C073"].text(3) == "Not implemented"
         assert window.construct_items["C073"].text(4) == "NOT ESTABLISHED"
         assert window.feature_items["ppe_source_replication_only"].text(1) == (

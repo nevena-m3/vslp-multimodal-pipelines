@@ -2,7 +2,7 @@
   "family_id": "F13",
   "source_document": "13_Nonlinear_Rhythm_Regularity_Codex_Implementation.docx",
   "registry_version": "family13_source_audit_v1",
-  "note": "The DOCX does not contain a FEATURE ID(S) field. Exact non-implemented IDs and unresolved templates are the user-specified identities also recorded in the prior implementation inventory; no executable output is approved.",
+  "note": "All eight DOCX constructs have FEATURE ID(S) fields in Word text boxes. The exact unavailable IDs and unresolved templates below match those fields; no executable output is approved.",
   "constructs": [
     {
       "construct_id": "C072", "status": "NOT_IMPLEMENTED",
@@ -20,8 +20,8 @@
       "construct_id": "C073", "status": "UNRESOLVED_TEMPLATE",
       "evidence_level": "NOT ESTABLISHED", "evidence_study_count": 2, "evidence_entry_count": 3,
       "recommended_tasks": [],
-      "source_templates": ["shannon_amp_entropy_<binning>", "sample_entropy_m<...>_r<...>"],
-      "prior_inventory_templates": ["shannon_signal_entropy_<config>", "sample_entropy_<config>"],
+      "source_templates": ["shannon_signal_entropy_<config>", "sample_entropy_<config>"],
+      "illustrative_configuration_names": ["shannon_amp_entropy_<binning>", "sample_entropy_m<...>_r<...>"],
       "interpretation": "Shannon amplitude entropy and sample entropy are distinct quantities.",
       "representation": "variant-specific signal sequence and analysis region",
       "analysis_unit": "variant-specific frames or segments", "aggregation": "variant-specific",

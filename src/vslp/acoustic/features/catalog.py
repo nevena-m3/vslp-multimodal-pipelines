@@ -14,6 +14,7 @@ from typing import Any
 _DATA = Path(__file__).with_name("data") / "master_matrix.json"
 _FAMILY01 = Path(__file__).with_name("data") / "family01.json"
 _FAMILY02 = Path(__file__).with_name("data") / "family02.json"
+_FAMILY03 = Path(__file__).with_name("data") / "family03.json"
 _FAMILY04 = Path(__file__).with_name("data") / "family04.json"
 _FAMILY05 = Path(__file__).with_name("data") / "family05.json"
 _FAMILY06 = Path(__file__).with_name("data") / "family06.json"
@@ -61,6 +62,23 @@ def load_feature_catalog() -> dict[str, Any]:
     matrix["tasks_registry"] = TASKS.copy()
     family01 = json.loads(_FAMILY01.read_text(encoding="utf-8"))
     constructs = {item["construct_id"]: item for item in matrix["constructs"]}
+    family03 = json.loads(_FAMILY03.read_text(encoding="utf-8"))
+    for spec in family03["constructs"]:
+        construct = constructs[spec["construct_id"]]
+        construct.update({
+            "evidence_level": "LIMITED", "evidence_study_count": 1,
+            "evidence_entry_count": spec["evidence_entry_count"],
+            "recommended_tasks": ["sustained_a"], "conditional_tasks": [],
+            "family_spec_approved": True, "source_status": "NOT_IMPLEMENTED",
+            "id_provenance": "NO_PUBLIC_ID", "source_placeholder": "blocked_proprietary",
+            "source_limitation": spec["blocked_reason"],
+            "scientific_meaning": spec["source_terminology"],
+            "analysis_region": "stable sustained phonation",
+            "analysis_unit": "vendor-defined glottal cycle phase or point",
+            "unit": spec["unit"], "qc_range_text": spec["range"],
+            "formula": "No reproducible source algorithm is disclosed.",
+            "source_document": family03["source_document"],
+        })
     family01_tasks = {
         "C001": ["sustained_a"], "C002": ["bamboo_passage"],
         "C003": ["sustained_a"], "C004": ["bamboo_passage"],
@@ -622,6 +640,16 @@ def load_feature_catalog() -> dict[str, Any]:
                 "source_document": family13["source_document"],
             })
     attach_family_outputs(matrix, "F13", outputs13)
+    for output in matrix["outputs"]:
+        is_template = "<" in output["feature_id"] or ">" in output["feature_id"]
+        output["id_provenance"] = "PROJECT_TEMPLATE" if is_template else "SOURCE_DEFINED_ID"
+        output["identity_basis"] = (
+            "Template written in detailed DOCX FEATURE ID(S) field" if is_template
+            else "Concrete ID specified by detailed DOCX FEATURE ID(S) field")
+        if output["family_id"] == "F12" and (
+                output["feature_id"].startswith("mfcc") or
+                output["feature_id"].startswith("spectral_contrast_band")):
+            output["identity_basis"] = "Deterministic expansion of explicit DOCX FEATURE ID(S) range"
     return matrix
 
 

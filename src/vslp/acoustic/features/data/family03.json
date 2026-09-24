@@ -1,0 +1,47 @@
+{
+  "family_id": "F03",
+  "source_document": "03_Laryngeal_Biomechanical_Codex_Implementation.docx",
+  "source_identity_note": "Each of the eight FEATURE ID(S) fields repeats blocked_proprietary. This is a shared source placeholder, not eight unique public feature IDs.",
+  "constructs": [
+    {
+      "construct_id": "C013", "source_terminology": "Glottal closure force",
+      "evidence_entry_count": 1, "unit": "vendor/study-specific index", "range": "No universal bound",
+      "blocked_reason": "No public formula, acoustic estimator, phase landmark definition or vendor scale is disclosed."
+    },
+    {
+      "construct_id": "C014", "source_terminology": "Open/closed/approximation quotient",
+      "evidence_entry_count": 4, "unit": "% of cycle or dimensionless proportion", "range": "0–100% or 0–1, scale dependent",
+      "blocked_reason": "Conceptual OQ/CQ ratios are stated, but the acoustic phase-boundary estimator and scale are not disclosed."
+    },
+    {
+      "construct_id": "C015", "source_terminology": "Mucosal wave correlate in opening phase",
+      "evidence_entry_count": 1, "unit": "vendor/study-specific index", "range": "No universal bound",
+      "blocked_reason": "No disclosed acoustic-to-mucosal-wave transform or source scale."
+    },
+    {
+      "construct_id": "C016", "source_terminology": "Proportion of Amplitude Tremor (Dysarthria Analyzer)",
+      "evidence_entry_count": 1, "unit": "% or dimensionless proportion; scale unconfirmed", "range": "No universal bound",
+      "blocked_reason": "Proprietary amplitude-tremor event rule, denominator and output scale are not disclosed."
+    },
+    {
+      "construct_id": "C017", "source_terminology": "Vocal fold edge separation",
+      "evidence_entry_count": 1, "unit": "vendor/study-specific index", "range": "No universal bound",
+      "blocked_reason": "No disclosed method for deriving fold-edge separation or glottal gap from the recording."
+    },
+    {
+      "construct_id": "C018", "source_terminology": "Vocal fold oedema correlate in opening phase",
+      "evidence_entry_count": 1, "unit": "vendor/study-specific index", "range": "No universal bound",
+      "blocked_reason": "No disclosed oedema-correlate estimator, phase definition or source scale."
+    },
+    {
+      "construct_id": "C019", "source_terminology": "Vocal fold structural imbalance index",
+      "evidence_entry_count": 1, "unit": "vendor/study-specific index", "range": "No universal bound",
+      "blocked_reason": "No disclosed structural-imbalance calculation or source scale."
+    },
+    {
+      "construct_id": "C020", "source_terminology": "Vocal fold vibratory instability and blockage index",
+      "evidence_entry_count": 3, "unit": "vendor/study-specific index", "range": "No universal bound",
+      "blocked_reason": "No disclosed within-cycle instability/blockage landmarks, aggregation or source scale."
+    }
+  ]
+}

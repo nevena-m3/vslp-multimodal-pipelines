@@ -2,9 +2,10 @@
 
 Source: `13_Nonlinear_Rhythm_Regularity_Codex_Implementation.docx`. This review
 ingests all eight constructs into the active 79-construct catalog. The detailed
-DOCX does **not** contain a `FEATURE ID(S)` field. The exact IDs and templates
-below come from the user's Family 13 request and the earlier implementation
-inventory; they must not be mistaken for a complete algorithm definition.
+DOCX **does** contain a `FEATURE ID(S)` field for each construct, inside Word
+text boxes. Its eight exact IDs and eight templates match the user request and
+prior inventory. The earlier paragraph/table extraction missed those fields;
+the ID provenance has now been verified from `word/document.xml`.
 
 No Family 13 output is executable yet. The registry carries eight exact,
 nonselectable IDs and eight unresolved templates on their constructs. It adds
@@ -15,7 +16,7 @@ continues to run only selected implemented leaves from other families.
 | Construct | Final state | Exact ID or template | Missing source contract |
 |---|---|---|---|
 | C072 PPE | NOT_IMPLEMENTED | `ppe_source_replication_only` | Whitening filter/coefficients, residual construction and histogram edges, despite the 31-bin base-2 entropy formula. |
-| C073 Signal entropy | UNRESOLVED_TEMPLATE | DOCX: `shannon_amp_entropy_<binning>`, `sample_entropy_m<...>_r<...>`; prior inventory: `shannon_signal_entropy_<config>`, `sample_entropy_<config>` | Signal representation/domain, Shannon bins and log base; SampEn embedding, tolerance/scaling, distance and minimum length; aggregation. The two algorithms remain separate. |
+| C073 Signal entropy | UNRESOLVED_TEMPLATE | DOCX FEATURE ID(S): `shannon_signal_entropy_<config>`, `sample_entropy_<config>` | Signal representation/domain, Shannon bins and log base; SampEn embedding, tolerance/scaling, distance and minimum length; aggregation. The body gives narrower illustrative names, not approved concrete leaves. The two algorithms remain separate. |
 | C074 Spectral entropy | UNRESOLVED_TEMPLATE | `wpd_shannon_entropy_<wavelet>_L<level>`, `psd_spectral_entropy_<config>` | WPD wavelet/level/mode/nodes/energy/log base or PSD estimator/band/frame/normalization; aggregation. PSD and WPD are not interchangeable. |
 | C075 Wavelet subband energy | UNRESOLVED_TEMPLATE | `wavelet_energy_<wavelet>_L<level>_<node>` | Wavelet, level, node, extension mode, absolute versus normalized energy, region and aggregation. |
 | C076 RQA determinism | UNRESOLVED_TEMPLATE | `rqa_det_mfcc<k>_<config>` | MFCC selection, normalization, embedding/delay, distance, recurrence rule, Theiler window, minimum diagonal length and aggregation. The document's m=3, tau=5, eps=0.2 is expressly an engineering bridge, not source parity. |

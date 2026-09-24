@@ -1776,6 +1776,8 @@ class AcousticPipelineWindow(QMainWindow):
                       ("Output status", items[0].data(0, Qt.UserRole + 2) or "—")]
             if item.get("source_status"):
                 fields += [("Source status", item["source_status"]),
+                           ("Source identity", item.get("source_placeholder") or
+                            item.get("id_provenance", "SOURCE_DEFINED_ID")),
                            ("Scientific meaning", item["scientific_meaning"]),
                            ("Formula", item["formula"]),
                            ("Analysis region", item["analysis_region"]),
