@@ -17,7 +17,7 @@ import ast
 from uuid import uuid4
 
 import pandas as pd
-from .mfa_launcher import LauncherError, MfaLauncher
+from .mfa_launcher import LauncherError, MfaLauncher, external_conda_env
 
 
 SUPPORTED = {"3.3.4": {"legacy"}, "3.4.0": {"legacy", "hf_bundle"}}
@@ -147,6 +147,11 @@ class MfaProvider:
     def _mfa(self, *args: str) -> list[str]:
         return [*self.command_prefix, *args]
 
+    def _subprocess_env(self) -> dict[str, str] | None:
+        if self.launcher and self.launcher.launcher_type == "CONDA_ENV":
+            return external_conda_env()
+        return None
+
     @staticmethod
     def _temporary_workspace(logs: Path, command: str) -> Path:
         # Kaldi/sqlite tools in MFA 3.3.4 do not reliably handle deep Windows
@@ -163,6 +168,7 @@ class MfaProvider:
             return issue
         result = self.runner(self._mfa("version"), capture_output=True, text=True,
                              encoding="utf-8", errors="replace", check=False, timeout=30,
+                              env=self._subprocess_env(),
                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         raw = (result.stdout or result.stderr or "").strip()
         match = re.search(r"(?<!\d)(3\.\d+\.\d+)(?!\d)", raw)
@@ -197,6 +203,7 @@ class MfaProvider:
             probe = self.runner(self._mfa("model", "list", kind), capture_output=True,
                                 text=True, encoding="utf-8", errors="replace",
                                 check=False, timeout=120,
+                                 env=self._subprocess_env(),
                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             try:
                 names = ast.literal_eval((probe.stdout or "").strip())
@@ -231,6 +238,7 @@ class MfaProvider:
             probe = self.runner(self._mfa(name, "--help"),
                                 capture_output=True, text=True, encoding="utf-8",
                                 errors="replace", check=False, timeout=30,
+                                 env=self._subprocess_env(),
                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             commands[name] = probe.returncode == 0
         if not all(commands.values()):
@@ -280,6 +288,7 @@ class MfaProvider:
         self.commands.append(command)
         result = self.runner(command, capture_output=True, text=True, encoding="utf-8",
                              errors="replace", check=False, timeout=3600,
+                             env=self._subprocess_env(),
                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         (logs / "mfa_validation.log").write_text(
             (result.stdout or "") + "\n" + (result.stderr or ""), encoding="utf-8")
@@ -298,6 +307,7 @@ class MfaProvider:
         self.commands.append(command)
         result = self.runner(command, capture_output=True, text=True, encoding="utf-8",
                              errors="replace", check=False, timeout=14400,
+                             env=self._subprocess_env(),
                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         logs.mkdir(parents=True, exist_ok=True)
         (logs / "mfa_alignment.log").write_text(

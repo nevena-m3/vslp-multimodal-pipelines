@@ -3,20 +3,27 @@
   "tasks": [
     {"task_id": "wstg", "display_name": "WSTG", "task_type": "Sentence / controlled speech",
      "alignment_applicable": true,
-     "prompts": [{"prompt_id": "wstg_we_see_three_geese", "prompt_version": "v1",
+     "prompts": [{"prompt_id": "wstg_we_see_three_geese", "prompt_version": "v1", "expected_repetitions": 3,
        "exact_expected_text": "We see three geese.", "language": "en",
        "source": "user_supplied_2026_09_23"}]},
     {"task_id": "bamboo_passage", "display_name": "Bamboo Passage",
      "task_type": "Passage / connected speech",
      "alignment_applicable": true,
-     "prompts": [{"prompt_id": "bamboo_passage_v1", "prompt_version": "v1",
+     "prompts": [{"prompt_id": "bamboo_passage_v1", "prompt_version": "v1", "expected_repetitions": 1,
        "exact_expected_text": "Bamboo walls are getting to be very popular. They are strong, easy to use, and good-looking. They provide a good background and can create a look of a Japanese garden. Bamboo is one of the largest and most rapidly growing grasses all over the world. Many varieties of bamboo are grown in Asia, although it is also grown in America. Last year we bought a new home and have been working on the flower garden. In a few more days, we will be done with the bamboo wall in our garden. We have really enjoyed the project.",
        "language": "en", "source": "user_lab_supplied_canonical_vslp_task_text_2026_09_24"}]},
     {"task_id": "sustained_a", "display_name": "Sustained /a/",
      "task_type": "Sustained phonation",
-     "alignment_applicable": false, "prompts": []},
+     "alignment_applicable": false, "expected_productions": 1,
+     "vowel_stimulus": "a", "prompts": []},
     {"task_id": "ddk", "display_name": "DDK", "task_type": "DDK",
      "alignment_applicable": false,
      "prompts": []}
+  ],
+  "pending_protocols": [
+    {"description": "Approximately 10 repetitions of a task ending in puppy",
+     "status": "AUTHORITATIVE_TASK_ID_AND_STIMULUS_REQUIRED"},
+    {"description": "Ten-sentence task",
+     "status": "AUTHORITATIVE_STIMULUS_INVENTORY_REQUIRED"}
   ]
 }

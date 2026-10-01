@@ -59,7 +59,9 @@ def test_family06_gui_leaf_contract():
     for feature_id in ("blocked_aural_analytics_ap", "band_noise_contrast_variant1",
                        "band_noise_contrast_variant2"):
         item = window.feature_items[feature_id]
-        assert item.text(3) == "Not implemented"
+        assert item.text(3) == (
+            "Unavailable — proprietary" if feature_id == "blocked_aural_analytics_ap"
+            else "Unavailable — source incomplete")
         assert not item.flags() & Qt.ItemIsUserCheckable
     window.close()
 

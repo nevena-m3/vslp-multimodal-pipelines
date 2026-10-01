@@ -144,6 +144,45 @@ class AlignmentConfig:
     speaker_manifest_path: str = ""
     transcript_overrides_path: str = ""
     recording_prompt_manifest_paths: dict[str, str] | None = None
+    trial_manifest_path: str = ""
+    rerun_recording_id: str = ""
+    reuse_run_id: str = ""
+    structural_auto_review: bool = False
+
+
+def _trial_units(config: AlignmentConfig, kept: pd.DataFrame) -> dict[str, list[dict]]:
+    """Explicit, reviewed trial intervals; no speech-gap or filename inference."""
+    if not config.trial_manifest_path:
+        return {str(row.recording_id): [{"trial_id": "legacy_whole_recording",
+                 "start_sec": float(row.analysis_start_sec),
+                 "end_sec": float(row.analysis_end_sec), "prompt_id": ""}]
+                for row in kept.itertuples()}
+    raw = json.loads(Path(config.trial_manifest_path).read_text(encoding="utf-8"))
+    if raw.get("schema_version") != "1":
+        raise ValueError("invalid_trial_manifest_version")
+    grouped: dict[str, list[dict]] = {str(value): [] for value in kept.recording_id}
+    by_record = {str(row.recording_id): row for row in kept.itertuples()}
+    for item in raw.get("trials", []):
+        identity = str(item.get("recording_id", ""))
+        trial_id = str(item.get("trial_id", ""))
+        if identity not in by_record or not re.fullmatch(r"[A-Za-z0-9_]+", trial_id):
+            raise ValueError("invalid_trial_identity")
+        start, end = float(item["start_sec"]), float(item["end_sec"])
+        record = by_record[identity]
+        if not (np.isfinite([start, end]).all() and
+                float(record.analysis_start_sec) <= start < end <= float(record.analysis_end_sec)):
+            raise ValueError("trial_outside_reviewed_analysis")
+        grouped[identity].append({"trial_id": trial_id, "start_sec": start,
+                                  "end_sec": end, "prompt_id": str(item.get("prompt_id", ""))})
+    for identity, items in grouped.items():
+        if not items:
+            raise ValueError(f"trial_definition_required:{identity}")
+        items.sort(key=lambda value: value["start_sec"])
+        if len({item["trial_id"] for item in items}) != len(items) or any(
+                right["start_sec"] < left["end_sec"] - 1e-7
+                for left, right in zip(items, items[1:])):
+            raise ValueError("overlapping_or_duplicate_trials")
+    return grouped
 
 
 @dataclass(frozen=True)
@@ -436,6 +475,34 @@ def run_acoustic_alignment(output_root: str | Path, config: AlignmentConfig,
     kept = decisions.loc[decisions.final_decision.isin(["KEEP_AUTO", "KEEP_MANUAL"])]
     if kept.empty:
         raise ValueError("no_kept_recordings_to_align")
+    trials_by_record = _trial_units(config, kept)
+    prior_run = None
+    prior_manifest: dict = {}
+    prior_tables: dict[str, pd.DataFrame] = {}
+    if config.rerun_recording_id:
+        if not config.reuse_run_id or config.rerun_recording_id not in set(
+                kept.recording_id.astype(str)):
+            raise ValueError("invalid_targeted_alignment_rerun")
+        prior_run = base / "runs" / config.reuse_run_id
+        prior_manifest = json.loads((prior_run / "logs" / "stage_manifest.json").read_text(
+            encoding="utf-8"))
+        if (prior_manifest["source_final_decisions_sha256"] != _hash(decision_path)
+                or prior_manifest["source_final_intervals_sha256"] != _hash(interval_path)):
+            raise ValueError("reviewed_segmentation_changed_since_alignment")
+        old_trials = json.loads((prior_run / "configs" / "alignment_trials.json").read_text(
+            encoding="utf-8"))["trials"]
+        for identity, current in trials_by_record.items():
+            if identity == config.rerun_recording_id:
+                continue
+            previous = sorted((item for item in old_trials if str(item["recording_id"]) == identity),
+                              key=lambda item: float(item["start_sec"]))
+            if current != [{key: item[key] for key in ("trial_id", "start_sec", "end_sec", "prompt_id")}
+                           for item in previous]:
+                raise ValueError("unaffected_trial_plan_changed")
+        for name in ("alignment_words", "alignment_phones", "alignment_diagnostics",
+                     "alignment_trial_diagnostics", "alignment_trial_tokens"):
+            prior_tables[name] = pd.read_csv(prior_run / "tables" / f"{name}.csv",
+                                             keep_default_na=False)
     record_prompts = {str(identity): prompt for identity in kept.recording_id.astype(str)}
     if config.recording_prompt_manifest_paths:
         for identity, source in config.recording_prompt_manifest_paths.items():
@@ -445,6 +512,31 @@ def run_acoustic_alignment(output_root: str | Path, config: AlignmentConfig,
             if individual.task_id != prompt.task_id or individual.language != prompt.language:
                 raise ValueError("PROMPT_MISMATCH")
             record_prompts[identity] = individual
+    if config.rerun_recording_id:
+        if (prior_manifest.get("mfa_profile_sha256") and config.mfa_profile_path
+                and prior_manifest["mfa_profile_sha256"] != _hash(Path(config.mfa_profile_path))):
+            raise ValueError("alignment_profile_changed_since_prior_run")
+        old_prompts_path = prior_run / "configs" / "recording_prompts.json"
+        old_prompts = json.loads(old_prompts_path.read_text(encoding="utf-8")) if old_prompts_path.is_file() else {}
+        for identity, source in (config.recording_prompt_manifest_paths or {}).items():
+            if identity != config.rerun_recording_id and identity in old_prompts:
+                if json.loads(Path(source).read_text(encoding="utf-8")) != old_prompts[identity]:
+                    raise ValueError("unaffected_prompt_changed")
+    if config.trial_manifest_path:
+        trial_snapshot_source = Path(config.trial_manifest_path)
+        for identity, trials in trials_by_record.items():
+            exclusions = intervals.loc[intervals.recording_id.astype(str).eq(identity)
+                                       & intervals.segment_role.eq("manual_exclusion")]
+            prompt_id = (json.loads(Path(config.recording_prompt_manifest_paths[identity]).read_text(
+                encoding="utf-8")).get("prompt_id", "")
+                if config.recording_prompt_manifest_paths else "")
+            for trial in trials:
+                if prompt_id and trial["prompt_id"] != prompt_id:
+                    raise ValueError("TRIAL_PROMPT_MISMATCH")
+                if any(float(row.start_sec) < trial["end_sec"]
+                       and float(row.end_sec) > trial["start_sec"]
+                       for row in exclusions.itertuples()):
+                    raise ValueError("TRIAL_CROSSES_EXCLUSION")
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + uuid4().hex[:8]
     run_dir = base / "runs" / run_id
     state_path = run_dir / "logs" / "run_state.json"
@@ -457,6 +549,9 @@ def run_acoustic_alignment(output_root: str | Path, config: AlignmentConfig,
         _atomic_json({identity: json.loads(Path(path).read_text(encoding="utf-8"))
                       for identity, path in config.recording_prompt_manifest_paths.items()},
                      run_dir / "configs" / "recording_prompts.json")
+    if config.trial_manifest_path:
+        _atomic_json(json.loads(trial_snapshot_source.read_text(encoding="utf-8")),
+                     run_dir / "configs" / "alignment_trials.json")
     word_input = _source_rows(config.words_csv, "word") if config.source == "external" else pd.DataFrame()
     phone_input = _source_rows(config.phones_csv, "phone") if config.source == "external" else pd.DataFrame()
     if config.source == "external" and config.words_csv == config.phones_csv:
@@ -464,6 +559,8 @@ def run_acoustic_alignment(output_root: str | Path, config: AlignmentConfig,
     word_rows: list[dict] = []
     phone_rows: list[dict] = []
     diagnostics: list[dict] = []
+    trial_diagnostics: list[dict] = []
+    trial_token_rows: list[dict] = []
     time_rows: list[dict] = []
     provider = config.provider or MFAProvider()
     prepared: dict[str, tuple[list[TimePiece], int]] = {}
@@ -471,6 +568,7 @@ def run_acoustic_alignment(output_root: str | Path, config: AlignmentConfig,
     source_audio_hashes: dict[str, str] = {}
     working_audio_hashes: dict[str, str] = {}
     grids: dict[str, Path] = {}
+    unit_to_trial: dict[str, tuple[str, dict]] = {}
     speakers: dict[str, str] = {}
     profile = MfaProfile.load(config.mfa_profile_path) if config.source == "mfa" and config.mfa_profile_path else None
     if profile is not None:
@@ -483,11 +581,16 @@ def run_acoustic_alignment(output_root: str | Path, config: AlignmentConfig,
         if progress_callback:
             progress_callback(0, 0, "Preparing corpus...")
         speakers = _speakers(config, kept)
+        speaker_sources = {str(item["recording_id"]): str(item.get("speaker_id_source", "unspecified"))
+                           for item in json.loads(Path(config.speaker_manifest_path).read_text(
+                               encoding="utf-8")).get("recordings", [])}
         transcripts = _transcripts(prompt, config, kept, record_prompts,
                                    run_dir / "configs" / "alignment_transcripts.json")
         corpus = run_dir / "mfa_input"
-        for record in kept.itertuples():
+        for prep_done, record in enumerate(kept.itertuples(), 1):
             identity = str(record.recording_id)
+            if config.rerun_recording_id and identity != config.rerun_recording_id:
+                continue
             try:
                 source = Path(str(record.analysis_wav_path))
                 info = sf.info(source)
@@ -495,22 +598,34 @@ def run_acoustic_alignment(output_root: str | Path, config: AlignmentConfig,
                 if not 0 <= start < end <= info.duration + 1e-7:
                     raise ValueError("invalid_reviewed_analysis_bounds")
                 record_intervals = intervals.loc[intervals.recording_id.astype(str).eq(identity)]
-                spans = _analysis_pieces(record_intervals, start, end)
-                if not spans:
-                    raise ValueError("empty_reviewed_analysis_domain")
-                speaker_dir = corpus / speakers[identity]
-                working = speaker_dir / f"{identity}.wav"
-                pieces, native_rate = _working_audio(source, spans, config.working_sample_rate_hz,
-                                                     working)
-                (speaker_dir / f"{identity}.lab").write_text(transcripts[identity], encoding="utf-8")
-                prepared[identity] = (pieces, native_rate)
+                for trial in trials_by_record[identity]:
+                    spans = _analysis_pieces(record_intervals, trial["start_sec"], trial["end_sec"])
+                    # An exclusion is a hard sequence break. Never concatenate
+                    # speech on its two sides into one MFA utterance.
+                    if (len(spans) != 1 or
+                            abs(spans[0][0] - float(trial["start_sec"])) > 1e-7 or
+                            abs(spans[0][1] - float(trial["end_sec"])) > 1e-7):
+                        raise ValueError(f"TRIAL_CROSSES_EXCLUSION:{trial['trial_id']}")
+                    unit = identity if trial["trial_id"] == "legacy_whole_recording" else (
+                        f"trial_{len(unit_to_trial) + 1:06d}")
+                    speaker_dir = corpus / speakers[identity]
+                    working = speaker_dir / f"{unit}.wav"
+                    pieces, native_rate = _working_audio(source, spans, config.working_sample_rate_hz,
+                                                         working)
+                    (speaker_dir / f"{unit}.lab").write_text(transcripts[identity], encoding="utf-8")
+                    prepared[unit] = (pieces, native_rate)
+                    unit_to_trial[unit] = (identity, trial)
+                    working_audio_hashes[unit] = _hash(working)
+                    for piece in pieces:
+                        time_rows.append({"alignment_run_id": run_id, "recording_id": identity,
+                                          "trial_id": trial["trial_id"], **piece.__dict__})
                 source_audio_hashes[identity] = _hash(source)
-                working_audio_hashes[identity] = _hash(working)
-                for piece in pieces:
-                    time_rows.append({"alignment_run_id": run_id, "recording_id": identity,
-                                      **piece.__dict__})
             except (OSError, ValueError) as exc:
                 preparation_errors[identity] = str(exc)
+            if progress_callback:
+                progress_callback(prep_done, len(kept),
+                                  f"Recordings prepared: {prep_done} / {len(kept)} · "
+                                  f"Trials prepared: {len(prepared)}")
         try:
             if prepared:
                 if profile is not None:
@@ -519,7 +634,7 @@ def run_acoustic_alignment(output_root: str | Path, config: AlignmentConfig,
                     if profile.language != prompt.language or profile.phone_set != prompt.phone_set:
                         raise ValueError("PHONESET_MAPPING_REQUIRED")
                     provider_report = provider.preflight(corpus, profile,
-                                                         [transcripts[key] for key in prepared],
+                                                         [transcripts[unit_to_trial[key][0]] for key in prepared],
                                                          run_dir / "logs")
                     _atomic_json(provider_report, run_dir / "logs" / "mfa_preflight.json")
                     if provider_report["status"] != "AVAILABLE":
@@ -542,6 +657,24 @@ def run_acoustic_alignment(output_root: str | Path, config: AlignmentConfig,
     if progress_callback:
         progress_callback(0, len(kept), "Parsing word and phone boundaries...")
     for done, record in enumerate(kept.itertuples(), 1):
+        if config.rerun_recording_id and str(record.recording_id) != config.rerun_recording_id:
+            identity = str(record.recording_id)
+            for name, output in (("alignment_words", word_rows),
+                                 ("alignment_phones", phone_rows),
+                                 ("alignment_diagnostics", diagnostics),
+                                 ("alignment_trial_diagnostics", trial_diagnostics),
+                                 ("alignment_trial_tokens", trial_token_rows)):
+                previous = prior_tables[name].loc[
+                    prior_tables[name].recording_id.astype(str).eq(identity)].copy()
+                if "alignment_run_id" in previous:
+                    previous["alignment_run_id"] = run_id
+                output.extend(previous.to_dict("records"))
+            if identity in prior_manifest.get("source_audio_sha256_by_recording", {}):
+                source_audio_hashes[identity] = prior_manifest[
+                    "source_audio_sha256_by_recording"][identity]
+            if progress_callback:
+                progress_callback(done, len(kept), f"Reused reviewed run for {record.file_name}")
+            continue
         record_intervals = intervals.loc[intervals.recording_id.astype(str).eq(str(record.recording_id))]
         start, end = float(record.analysis_start_sec), float(record.analysis_end_sec)
         spans = _analysis_pieces(record_intervals, start, end)
@@ -550,6 +683,7 @@ def run_acoustic_alignment(output_root: str | Path, config: AlignmentConfig,
         rows_w: list[dict] = []
         rows_p: list[dict] = []
         invalid = 0
+        outside = 0
         reason = ""
         try:
             record_prompt = record_prompts[str(record.recording_id)]
@@ -560,7 +694,66 @@ def run_acoustic_alignment(output_root: str | Path, config: AlignmentConfig,
                 raise ValueError("invalid_reviewed_analysis_bounds")
             if not spans:
                 raise ValueError("empty_reviewed_analysis_domain")
-            if config.source == "mfa":
+            if config.source == "mfa" and config.trial_manifest_path:
+                identity = str(record.recording_id)
+                if identity in preparation_errors:
+                    raise ValueError(preparation_errors[identity])
+                word_offset = phone_offset = 0
+                for trial_number, trial in enumerate(trials_by_record[identity], 1):
+                    unit = next((key for key, value in unit_to_trial.items()
+                                 if value[0] == identity and value[1]["trial_id"] == trial["trial_id"]), "")
+                    if unit not in grids:
+                        raise ValueError(f"ALIGNMENT_FAILED:no_textgrid:{trial['trial_id']}")
+                    pieces, native_rate = prepared[unit]
+                    raw_w, raw_p = (provider.parse_outputs(grids[unit])
+                                    if hasattr(provider, "parse_outputs") else _parse_textgrid(grids[unit]))
+                    trial_domain = _analysis_pieces(record_intervals, trial["start_sec"],
+                                                    trial["end_sec"])
+                    trial_w, bad_w, outside_w = _token_rows(
+                        raw_w, kind="word", record=record, prompt=record_prompt,
+                        run_id=run_id, source=config.source, native_rate=native_rate,
+                        pieces=pieces, domain=trial_domain)
+                    trial_p, bad_p, outside_p = _token_rows(
+                        raw_p, kind="phone", record=record, prompt=record_prompt,
+                        run_id=run_id, source=config.source, native_rate=native_rate,
+                        pieces=pieces, domain=trial_domain)
+                    if bad_w or bad_p or _validate_order(trial_w)[0] or _validate_order(trial_p)[0]:
+                        raise ValueError(f"INVALID_BOUNDARIES:{trial['trial_id']}")
+                    matched, missing_trial, extra_trial = _coverage(trial_w, record_prompt.expected_words)
+                    trial_diagnostics.append({"alignment_run_id": run_id,
+                        "recording_id": identity, "trial_id": trial["trial_id"],
+                        "prompt_id": trial["prompt_id"], "start_sec": trial["start_sec"],
+                        "end_sec": trial["end_sec"], "n_words": len(trial_w),
+                        "n_phones": len(trial_p), "expected_word_count": len(record_prompt.expected_words),
+                        "aligned_expected_word_count": matched,
+                        "word_coverage": matched / len(record_prompt.expected_words),
+                        "missing_words": json.dumps(missing_trial), "extra_tokens": extra_trial,
+                        "status": "ALIGNED" if trial_w and trial_p and matched / len(record_prompt.expected_words) >= .8
+                                  else "REVIEW_REQUIRED"})
+                    for word in trial_w:
+                        word["word_index"] += word_offset
+                        word["sequence_id"] += (trial_number - 1) * 100000
+                        trial_token_rows.append({"recording_id": identity,
+                            "trial_id": trial["trial_id"], "token_type": "word",
+                            "token_index": word["word_index"], "start_sec": word["start_sec"],
+                            "end_sec": word["end_sec"]})
+                    for phone in trial_p:
+                        if phone["word_index"]:
+                            phone["word_index"] += word_offset
+                        phone["phone_index"] += phone_offset
+                        phone["sequence_id"] += (trial_number - 1) * 100000
+                        trial_token_rows.append({"recording_id": identity,
+                            "trial_id": trial["trial_id"], "token_type": "phone",
+                            "token_index": phone["phone_index"], "start_sec": phone["start_sec"],
+                            "end_sec": phone["end_sec"]})
+                    rows_w.extend(trial_w)
+                    rows_p.extend(trial_p)
+                    word_offset += len(trial_w)
+                    phone_offset += len(trial_p)
+                    invalid += bad_w + bad_p
+                    outside += outside_w + outside_p
+                bad_w = bad_p = outside_w = outside_p = 0
+            elif config.source == "mfa":
                 identity = str(record.recording_id)
                 if identity in preparation_errors:
                     raise ValueError(preparation_errors[identity])
@@ -573,14 +766,15 @@ def run_acoustic_alignment(output_root: str | Path, config: AlignmentConfig,
             else:
                 pieces = None
                 raw_w, raw_p = word_input, phone_input
-            rows_w, bad_w, outside_w = _token_rows(raw_w, kind="word", record=record, prompt=record_prompt,
-                                        run_id=run_id, source=config.source, native_rate=native_rate,
-                                        pieces=pieces, domain=spans)
-            rows_p, bad_p, outside_p = _token_rows(raw_p, kind="phone", record=record, prompt=record_prompt,
-                                        run_id=run_id, source=config.source, native_rate=native_rate,
-                                        pieces=pieces, domain=spans)
-            invalid = bad_w + bad_p
-            outside = outside_w + outside_p
+            if not (config.source == "mfa" and config.trial_manifest_path):
+                rows_w, bad_w, outside_w = _token_rows(raw_w, kind="word", record=record, prompt=record_prompt,
+                                            run_id=run_id, source=config.source, native_rate=native_rate,
+                                            pieces=pieces, domain=spans)
+                rows_p, bad_p, outside_p = _token_rows(raw_p, kind="phone", record=record, prompt=record_prompt,
+                                            run_id=run_id, source=config.source, native_rate=native_rate,
+                                            pieces=pieces, domain=spans)
+                invalid = bad_w + bad_p
+                outside = outside_w + outside_p
             for phone in rows_p:
                 if int(phone["word_index"]) == 0:
                     owners = [word for word in rows_w
@@ -596,8 +790,9 @@ def run_acoustic_alignment(output_root: str | Path, config: AlignmentConfig,
             nonmonotonic = word_nonmonotonic + phone_nonmonotonic
             rows_w.sort(key=lambda row: row["start_sec"])
             rows_p.sort(key=lambda row: row["start_sec"])
-            aligned_expected, missing, extra = _coverage(rows_w, record_prompt.expected_words)
-            coverage = aligned_expected / len(record_prompt.expected_words)
+            expected_sequence = record_prompt.expected_words * len(trials_by_record[str(record.recording_id)])
+            aligned_expected, missing, extra = _coverage(rows_w, expected_sequence)
+            coverage = aligned_expected / len(expected_sequence)
             if invalid or overlaps or nonmonotonic:
                 status, reason = "INVALID_BOUNDARIES", "invalid_or_overlapping_tokens"
                 rows_w, rows_p = [], []
@@ -614,14 +809,16 @@ def run_acoustic_alignment(output_root: str | Path, config: AlignmentConfig,
             status = "ALIGNMENT_FAILED"
             reason = str(exc)[:500]
             rows_w, rows_p = [], []
-            aligned_expected, missing, extra, coverage = 0, list(record_prompts[str(record.recording_id)].expected_words), 0, 0.0
+            expected_sequence = (record_prompts[str(record.recording_id)].expected_words *
+                                 len(trials_by_record[str(record.recording_id)]))
+            aligned_expected, missing, extra, coverage = 0, list(expected_sequence), 0, 0.0
             overlaps = nonmonotonic = 0
             outside = 0
         word_rows.extend(rows_w)
         phone_rows.extend(rows_p)
         diagnostics.append({"alignment_run_id": run_id, "recording_id": str(record.recording_id),
                             "file_name": str(record.file_name), "status": status, "reason": reason,
-                            "expected_word_count": len(record_prompts[str(record.recording_id)].expected_words),
+                            "expected_word_count": len(expected_sequence),
                             "aligned_expected_word_count": aligned_expected, "word_coverage": coverage,
                             "missing_words": json.dumps(missing), "extra_tokens": extra,
                             "n_words": len(rows_w), "n_phones": len(rows_p),
@@ -638,6 +835,29 @@ def run_acoustic_alignment(output_root: str | Path, config: AlignmentConfig,
     _atomic_csv(pd.DataFrame(word_rows, columns=WORD_COLUMNS), words_path)
     _atomic_csv(pd.DataFrame(phone_rows, columns=PHONE_COLUMNS), phones_path)
     _atomic_csv(pd.DataFrame(diagnostics, columns=DIAGNOSTIC_COLUMNS), diagnostic_path)
+    if config.trial_manifest_path:
+        _atomic_csv(pd.DataFrame(trial_diagnostics), tables / "alignment_trial_diagnostics.csv")
+        _atomic_csv(pd.DataFrame(trial_token_rows), tables / "alignment_trial_tokens.csv")
+        if config.rerun_recording_id and prior_run is not None:
+            from .corrections import load_corrections, correction_path
+            previous_review = prior_run / "tables" / "alignment_trial_review.csv"
+            if previous_review.is_file():
+                reviews = pd.read_csv(previous_review, keep_default_na=False)
+                reviews = reviews.loc[reviews.recording_id.astype(str).ne(
+                    config.rerun_recording_id)].copy()
+            else:
+                reviews = pd.DataFrame(columns=["recording_id", "trial_id", "review_status", "reviewed_utc"])
+            current = pd.DataFrame([{"recording_id": config.rerun_recording_id,
+                                     "trial_id": item["trial_id"], "review_status": "UNREVIEWED",
+                                     "reviewed_utc": ""} for item in
+                                    trials_by_record[config.rerun_recording_id]])
+            _atomic_csv(pd.concat([reviews, current], ignore_index=True),
+                        tables / "alignment_trial_review.csv")
+            corrections = load_corrections(root, config.reuse_run_id)
+            corrections = corrections.loc[corrections.recording_id.astype(str).ne(
+                config.rerun_recording_id)]
+            if not corrections.empty:
+                _atomic_csv(corrections, correction_path(root, run_id))
     if time_rows:
         _atomic_csv(pd.DataFrame(time_rows), tables / "working_time_map.csv")
     manifest = {"stage": "alignment", "algorithm_version": ALIGNMENT_VERSION,
@@ -656,6 +876,39 @@ def run_acoustic_alignment(output_root: str | Path, config: AlignmentConfig,
                 "speaker_manifest_sha256": (_hash(Path(config.speaker_manifest_path))
                                             if config.speaker_manifest_path else ""),
                 "speaker_id_by_recording": speakers,
+                "speaker_id_source_by_recording": speaker_sources if config.source == "mfa" else {},
+                "speaker_grouping_note": (
+                    "MFA speaker grouping can affect normalization and adaptation. "
+                    "Technical recording keys do not assert participant identity."
+                    if config.source == "mfa" else ""),
+                "trial_corpus_unit_map": {key: {"recording_id": value[0],
+                    "trial_id": value[1]["trial_id"]} for key, value in unit_to_trial.items()},
+                "trial_manifest_sha256": (_hash(run_dir / "configs" / "alignment_trials.json")
+                                          if config.trial_manifest_path else ""),
+                "trial_diagnostics_sha256": (_hash(tables / "alignment_trial_diagnostics.csv")
+                                             if config.trial_manifest_path else ""),
+                "trial_tokens_sha256": (_hash(tables / "alignment_trial_tokens.csv")
+                                        if config.trial_manifest_path else ""),
+                "trial_contract_version": "reviewed_trials_v1" if config.trial_manifest_path else "legacy_single_unit",
+                "reused_alignment_run_id": config.reuse_run_id,
+                "rerun_recording_id": config.rerun_recording_id,
+                "reused_prior_manifest_sha256": (_hash(prior_run / "logs" / "stage_manifest.json")
+                                                 if prior_run else ""),
+                "observed_trials_by_recording": {identity: len(items)
+                                                 for identity, items in trials_by_record.items()},
+                "expected_trials_by_recording": {
+                    identity: json.loads(Path(path).read_text(encoding="utf-8")).get(
+                        "expected_repetitions")
+                    for identity, path in (config.recording_prompt_manifest_paths or {
+                        identity: config.prompt_manifest_path for identity in trials_by_record
+                    }).items()},
+                "protocol_repetition_shortfall_by_recording": {
+                    identity: max(0, int(expected) - len(trials_by_record[identity]))
+                    for identity, path in (config.recording_prompt_manifest_paths or {
+                        identity: config.prompt_manifest_path for identity in trials_by_record
+                    }).items()
+                    if (expected := json.loads(Path(path).read_text(
+                        encoding="utf-8")).get("expected_repetitions")) is not None},
                 "alignment_transcripts_sha256": (_hash(run_dir / "configs" / "alignment_transcripts.json")
                                                  if config.source == "mfa" else ""),
                 "normalization_profile_id": "vslp_prompt_nfkc_v1" if config.source == "mfa" else "",
@@ -680,7 +933,7 @@ def run_acoustic_alignment(output_root: str | Path, config: AlignmentConfig,
                 "prompt_id_by_recording": {
                     identity: json.loads(Path(path).read_text(encoding="utf-8")).get("prompt_id", "")
                     for identity, path in (config.recording_prompt_manifest_paths or {}).items()},
-                "expected_words_by_recording": {identity: list(item.expected_words)
+                "expected_words_by_recording": {identity: list(item.expected_words * len(trials_by_record[identity]))
                                                  for identity, item in record_prompts.items()},
                 "source_words_sha256": (_hash(Path(config.words_csv)) if config.words_csv else ""),
                 "source_phones_sha256": (_hash(Path(config.phones_csv)) if config.phones_csv else ""),
@@ -704,9 +957,61 @@ def run_acoustic_alignment(output_root: str | Path, config: AlignmentConfig,
                 "words_sha256": _hash(words_path), "phones_sha256": _hash(phones_path),
                 "words_path": str(words_path), "phones_path": str(phones_path),
                 "diagnostics_path": str(diagnostic_path)}
+    if config.trial_manifest_path:
+        from .review_policy import ALIGNMENT_REVIEW_POLICY_VERSION, trial_exception_flags
+
+        review_path = tables / "alignment_trial_review.csv"
+        previous = (pd.read_csv(review_path, keep_default_na=False)
+                    if review_path.is_file() else pd.DataFrame())
+        words_frame = pd.DataFrame(word_rows, columns=WORD_COLUMNS)
+        phones_frame = pd.DataFrame(phone_rows, columns=PHONE_COLUMNS)
+        links_frame = pd.DataFrame(trial_token_rows, columns=[
+            "recording_id", "trial_id", "token_type", "token_index",
+            "start_sec", "end_sec"])
+        review_rows = []
+        for diagnostic in trial_diagnostics:
+            identity, trial_id = str(diagnostic["recording_id"]), str(diagnostic["trial_id"])
+            if config.rerun_recording_id and identity != config.rerun_recording_id:
+                continue
+            trial = next(item for item in trials_by_record[identity]
+                         if item["trial_id"] == trial_id)
+            links_for_trial = links_frame.loc[
+                links_frame.recording_id.astype(str).eq(identity)
+                & links_frame.trial_id.astype(str).eq(trial_id)]
+            transcript_overridden = (config.source == "mfa" and
+                transcripts[identity] != normalize_transcript(record_prompts[identity].transcript))
+            expected = manifest["expected_trials_by_recording"].get(identity)
+            flags = trial_exception_flags(
+                diagnostic, trial, expected_count=int(expected) if expected is not None else None,
+                observed_count=len(trials_by_record[identity]),
+                transcript_overridden=transcript_overridden, links=links_for_trial,
+                words=words_frame, phones=phones_frame,
+                working_sample_rate_hz=int(manifest["working_sample_rate_hz"]))
+            auto = config.source == "mfa" and config.structural_auto_review and not flags
+            review_rows.append({"recording_id": identity, "trial_id": trial_id,
+                                "review_status": ("AUTO_ACCEPTED_STRUCTURAL" if auto else
+                                                  "NEEDS_REVIEW" if flags else "UNREVIEWED"),
+                                "reviewed_utc": datetime.now(timezone.utc).isoformat() if auto else "",
+                                "review_mode": "AUTO" if auto else "",
+                                "queued_for_review": not auto,
+                                "review_policy_version": ALIGNMENT_REVIEW_POLICY_VERSION,
+                                "flags_triggered": json.dumps(flags)})
+        if not previous.empty:
+            replaced = {(row["recording_id"], row["trial_id"]) for row in review_rows}
+            previous = previous.loc[~previous.apply(
+                lambda row: (str(row.recording_id), str(row.trial_id)) in replaced,
+                axis=1)]
+        _atomic_csv(pd.concat([previous, pd.DataFrame(review_rows)], ignore_index=True),
+                    review_path)
+        manifest["alignment_review_policy_version"] = ALIGNMENT_REVIEW_POLICY_VERSION
     manifest_path = run_dir / "logs" / "stage_manifest.json"
     if progress_callback and config.source == "mfa":
         progress_callback(0, 0, "Validating Alignment...")
+    if config.trial_manifest_path:
+        from .qc import create_alignment_qc
+        qc_paths = create_alignment_qc(root, run_dir, manifest)
+        manifest["alignment_qc_artifacts"] = {key: {"path": path, "sha256": _hash(Path(path))}
+                                               for key, path in qc_paths.items()}
     _atomic_json(manifest, manifest_path)
     registry_path = base / "logs" / "alignment_registry.json"
     registry = {"runs": list_alignment_runs(root)}
@@ -721,13 +1026,19 @@ def run_acoustic_alignment(output_root: str | Path, config: AlignmentConfig,
     return StageResult(status, manifest_path, diagnostic_path)
 
 
-def freeze_alignment(output_root: str | Path, alignment_run_id: str) -> StageResult:
+def freeze_alignment(output_root: str | Path, alignment_run_id: str,
+                     supersede: bool = False) -> StageResult:
     root = Path(output_root)
     base, final = _paths(root)
     run_dir = base / "runs" / alignment_run_id
     manifest_path = run_dir / "logs" / "stage_manifest.json"
-    if final.exists() and (final / "final_alignment_manifest.json").exists():
+    replacing = (final / "final_alignment_manifest.json").exists()
+    if replacing and not supersede:
         raise FileExistsError("frozen_alignment_is_immutable")
+    if replacing:
+        old_store, issue = load_final_alignment(root, require_current_trials=False)
+        if old_store is None:
+            raise ValueError(f"existing_frozen_alignment_invalid:{issue}")
     if not manifest_path.is_file():
         raise FileNotFoundError("alignment_run_not_found")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -737,6 +1048,30 @@ def freeze_alignment(output_root: str | Path, alignment_run_id: str) -> StageRes
         raise ValueError("reviewed_segmentation_changed_since_alignment")
     if manifest["number_aligned"] + manifest.get("number_partial", 0) == 0:
         raise ValueError("no_successful_alignment_to_freeze")
+    if manifest.get("trial_contract_version") == "reviewed_trials_v1":
+        if manifest.get("trial_manifest_sha256") != _hash(
+                run_dir / "configs" / "alignment_trials.json"):
+            raise ValueError("trial_plan_hash_mismatch")
+        trial_diagnostics_path = run_dir / "tables" / "alignment_trial_diagnostics.csv"
+        trial_tokens_path = run_dir / "tables" / "alignment_trial_tokens.csv"
+        review_path = run_dir / "tables" / "alignment_trial_review.csv"
+        if (manifest.get("trial_diagnostics_sha256") != _hash(trial_diagnostics_path)
+                or manifest.get("trial_tokens_sha256") != _hash(trial_tokens_path)):
+            raise ValueError("trial_alignment_hash_mismatch")
+        if not review_path.is_file():
+            raise ValueError("alignment_trial_review_required")
+        trial_diagnostics = pd.read_csv(trial_diagnostics_path, keep_default_na=False)
+        trial_plan = json.loads((run_dir / "configs" / "alignment_trials.json").read_text(
+            encoding="utf-8"))["trials"]
+        if len(trial_diagnostics) != len(trial_plan):
+            raise ValueError("alignment_trial_results_incomplete")
+        reviews = pd.read_csv(review_path, keep_default_na=False)
+        expected_keys = set(zip(trial_diagnostics.recording_id.astype(str),
+                                trial_diagnostics.trial_id.astype(str)))
+        actual_keys = list(zip(reviews.recording_id.astype(str), reviews.trial_id.astype(str)))
+        if (set(actual_keys) != expected_keys or len(actual_keys) != len(set(actual_keys))
+                or not reviews.review_status.isin(["ACCEPTED", "AUTO_ACCEPTED_STRUCTURAL"]).all()):
+            raise ValueError("alignment_trial_review_required:all_alignment_trials_must_be_accepted")
     words = pd.read_csv(manifest["words_path"], keep_default_na=False)
     phones = pd.read_csv(manifest["phones_path"], keep_default_na=False)
     diagnostics = pd.read_csv(manifest["diagnostics_path"], keep_default_na=False)
@@ -744,22 +1079,134 @@ def freeze_alignment(output_root: str | Path, alignment_run_id: str) -> StageRes
         raise ValueError("alignment_schema_missing")
     if manifest["words_sha256"] != _hash(Path(manifest["words_path"])) or manifest["phones_sha256"] != _hash(Path(manifest["phones_path"])):
         raise ValueError("alignment_run_hash_mismatch")
+    from .corrections import load_corrections, reviewed_tables
+    corrections = load_corrections(root, alignment_run_id)
+    if not corrections.empty:
+        if not corrections.reviewer_state.eq("APPROVED").all():
+            raise ValueError("manual_alignment_corrections_require_acceptance")
+        words, phones = reviewed_tables(root, alignment_run_id)
     _validate_frozen_structure(words, phones, diagnostics, root, alignment_run_id, manifest)
-    words_out = final / "final_alignment_words.csv"
-    phones_out = final / "final_alignment_phones.csv"
-    diagnostics_out = final / "final_alignment_diagnostics.csv"
+    if manifest.get("trial_contract_version") == "reviewed_trials_v1":
+        links = pd.read_csv(trial_tokens_path, keep_default_na=False)
+        token_rows = {}
+        for kind, source, index_name in (("word", words, "word_index"),
+                                         ("phone", phones, "phone_index")):
+            linked = links.loc[links.token_type.eq(kind)]
+            expected = set(zip(source.recording_id.astype(str), source[index_name].astype(int)))
+            actual = list(zip(linked.recording_id.astype(str), linked.token_index.astype(int)))
+            if len(actual) != len(set(actual)) or set(actual) != expected:
+                raise ValueError("trial_token_identity_mismatch")
+            token_rows.update({(kind, str(row.recording_id), int(getattr(row, index_name))): row
+                               for row in source.itertuples()})
+        bounds = {(str(item["recording_id"]), str(item["trial_id"])): item
+                  for item in trial_plan}
+        # Original-time remapping from 16-kHz working samples can differ from a
+        # confirmed trial edge by less than half one working sample. No clipping.
+        tolerance = 0.5 / int(manifest["working_sample_rate_hz"])
+        for item in links.itertuples():
+            trial = bounds.get((str(item.recording_id), str(item.trial_id)))
+            token = token_rows[(str(item.token_type), str(item.recording_id),
+                                int(item.token_index))]
+            start, end = float(token.start_sec), float(token.end_sec)
+            if not trial or not (float(trial["start_sec"]) - tolerance <= start
+                                  < end <= float(trial["end_sec"]) + tolerance):
+                detail = {"recording_id": str(item.recording_id),
+                          "file_name": str(token.file_name), "trial_id": str(item.trial_id),
+                          "tier": str(item.token_type), "token_index": int(item.token_index),
+                          "trial_start_sec": None if not trial else float(trial["start_sec"]),
+                          "trial_end_sec": None if not trial else float(trial["end_sec"]),
+                          "token_start_sec": start, "token_end_sec": end,
+                          "source": str(token.alignment_source)}
+                raise ValueError("trial_token_boundary_mismatch:" + json.dumps(detail))
+    destination = base / f".final_pending_{uuid4().hex}" if replacing else final
+    words_out = destination / "final_alignment_words.csv"
+    phones_out = destination / "final_alignment_phones.csv"
+    diagnostics_out = destination / "final_alignment_diagnostics.csv"
     _atomic_csv(words, words_out)
     _atomic_csv(phones, phones_out)
     _atomic_csv(diagnostics, diagnostics_out)
+    if manifest.get("trial_contract_version") == "reviewed_trials_v1":
+        _atomic_csv(pd.DataFrame(trial_plan), destination / "final_alignment_trials.csv")
+        for source_name, final_name in (
+                ("alignment_trial_diagnostics.csv", "final_alignment_trial_diagnostics.csv"),
+                ("alignment_trial_tokens.csv", "final_alignment_trial_tokens.csv"),
+                ("alignment_trial_review.csv", "final_alignment_trial_review.csv")):
+            _atomic_csv(pd.read_csv(run_dir / "tables" / source_name, keep_default_na=False),
+                        destination / final_name)
+        final_links = pd.read_csv(destination / "final_alignment_trial_tokens.csv",
+                                  keep_default_na=False)
+        for kind, source in (("word", words), ("phone", phones)):
+            subset = source.set_index(["recording_id", f"{kind}_index"])
+            for index, link in final_links.loc[final_links.token_type.eq(kind)].iterrows():
+                key = (str(link.recording_id), int(link.token_index))
+                if key in subset.index:
+                    final_links.at[index, "start_sec"] = subset.loc[key, "start_sec"]
+                    final_links.at[index, "end_sec"] = subset.loc[key, "end_sec"]
+        _atomic_csv(final_links, destination / "final_alignment_trial_tokens.csv")
+        final_reviews = pd.read_csv(destination / "final_alignment_trial_review.csv",
+                                    keep_default_na=False)
+        manual_keys = set(zip(corrections.recording_id.astype(str),
+                              corrections.trial_id.astype(str)))
+        final_reviews["final_status"] = [
+            "ACCEPTED_MANUAL" if (str(row.recording_id), str(row.trial_id)) in manual_keys
+            else "AUTO_ACCEPTED_STRUCTURAL" if row.review_status == "AUTO_ACCEPTED_STRUCTURAL"
+            else "ACCEPTED_MFA" for row in final_reviews.itertuples()]
+        _atomic_csv(final_reviews, destination / "final_alignment_trial_review.csv")
+        _atomic_csv(corrections, destination / "final_alignment_manual_corrections.csv")
+        from .qc import create_alignment_qc
+        final_qc = create_alignment_qc(root, run_dir, manifest, final_dir=destination)
     result = {**manifest, "alignment_status": "FROZEN",
               "frozen_utc": datetime.now(timezone.utc).isoformat(),
               "final_words_sha256": _hash(words_out), "final_phones_sha256": _hash(phones_out),
               "final_diagnostics_sha256": _hash(diagnostics_out),
-              "final_words_path": str(words_out), "final_phones_path": str(phones_out),
-              "final_diagnostics_path": str(diagnostics_out)}
-    final_manifest = final / "final_alignment_manifest.json"
+              "final_words_path": str(final / words_out.name),
+              "final_phones_path": str(final / phones_out.name),
+              "final_diagnostics_path": str(final / diagnostics_out.name),
+              "supersedes_alignment_run_id": (old_store.manifest["alignment_run_id"]
+                                               if replacing else "")}
+    if manifest.get("trial_contract_version") == "reviewed_trials_v1":
+        result["final_trial_artifact_sha256"] = {
+            name: _hash(destination / name) for name in (
+                "final_alignment_trials.csv",
+                "final_alignment_trial_diagnostics.csv", "final_alignment_trial_tokens.csv",
+                "final_alignment_trial_review.csv",
+                "final_alignment_manual_corrections.csv")}
+        result["final_trial_tokens_path"] = str(final / "final_alignment_trial_tokens.csv")
+        result["final_trial_diagnostics_path"] = str(final / "final_alignment_trial_diagnostics.csv")
+        result["final_trial_review_path"] = str(final / "final_alignment_trial_review.csv")
+        result["final_manual_corrections_path"] = str(
+            final / "final_alignment_manual_corrections.csv")
+        result["reviewed_boundary_source"] = "mfa_plus_approved_manual_corrections_v1"
+        result["final_alignment_qc_artifacts"] = {
+            key: {"path": str(final / Path(path).relative_to(destination)),
+                  "sha256": _hash(Path(path))}
+            for key, path in final_qc.items()}
+    final_manifest = destination / "final_alignment_manifest.json"
     _atomic_json(result, final_manifest)
-    return StageResult("completed", final_manifest, diagnostics_out)
+    if replacing:
+        archive = base / "archived_final" / (
+            f"{old_store.manifest['alignment_run_id']}_{uuid4().hex[:8]}")
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        final.rename(archive)
+        try:
+            destination.rename(final)
+        except OSError:
+            archive.rename(final)
+            raise
+        # Archived data are retained; update path references for local reload.
+        archived_manifest_path = archive / "final_alignment_manifest.json"
+        archived_manifest = json.loads(archived_manifest_path.read_text(encoding="utf-8"))
+        for key in ("final_words_path", "final_phones_path", "final_diagnostics_path",
+                    "final_trial_tokens_path", "final_trial_diagnostics_path",
+                    "final_trial_review_path", "final_manual_corrections_path"):
+            if archived_manifest.get(key):
+                archived_manifest[key] = str(archive / Path(archived_manifest[key]).name)
+        for artifact in archived_manifest.get("final_alignment_qc_artifacts", {}).values():
+            if artifact.get("path"):
+                artifact["path"] = str(archive / Path(artifact["path"]).relative_to(final))
+        _atomic_json(archived_manifest, archived_manifest_path)
+    return StageResult("completed", final / "final_alignment_manifest.json",
+                       final / "final_alignment_diagnostics.csv")
 
 
 def _validate_frozen_structure(words: pd.DataFrame, phones: pd.DataFrame,
@@ -823,6 +1270,21 @@ class AlignmentStore:
         phones = self.get_phone_tokens(recording_id)
         return phones.loc[phones.phone_normalized.astype(str).eq(label.upper())].copy()
 
+    def get_trial_tokens(self, recording_id: str, trial_id: str,
+                         token_type: str = "word") -> pd.DataFrame:
+        """Resolve a frozen trial through its auxiliary identity map."""
+        path = self.manifest.get("final_trial_tokens_path", "")
+        if not path:
+            return pd.DataFrame()
+        mapping = pd.read_csv(path, keep_default_na=False)
+        indices = mapping.loc[mapping.recording_id.astype(str).eq(str(recording_id))
+                              & mapping.trial_id.astype(str).eq(str(trial_id))
+                              & mapping.token_type.eq(token_type), "token_index"]
+        source = self.words if token_type == "word" else self.phones
+        index_name = "word_index" if token_type == "word" else "phone_index"
+        return source.loc[source.recording_id.astype(str).eq(str(recording_id))
+                          & source[index_name].isin(indices)].copy()
+
     def family07_rows(self) -> pd.DataFrame:
         words = self.words.rename(columns={"word": "label"}).copy()
         words["token_type"] = "word"
@@ -837,7 +1299,8 @@ class AlignmentStore:
         return combined
 
 
-def load_final_alignment(output_root: str | Path) -> tuple[AlignmentStore | None, str]:
+def load_final_alignment(output_root: str | Path, *,
+                         require_current_trials: bool = True) -> tuple[AlignmentStore | None, str]:
     root = Path(output_root)
     _, final = _paths(root)
     manifest_path = final / "final_alignment_manifest.json"
@@ -849,6 +1312,28 @@ def load_final_alignment(output_root: str | Path) -> tuple[AlignmentStore | None
         if (manifest["source_final_decisions_sha256"] != _hash(review / "final_segmentation_decisions.csv")
                 or manifest["source_final_intervals_sha256"] != _hash(review / "final_segmentation_intervals.csv")):
             return None, "alignment_review_source_mismatch"
+        choices_path = root / "configs" / "alignment_choices.json"
+        if (require_current_trials and manifest.get("trial_contract_version") == "reviewed_trials_v1"
+                and choices_path.is_file()):
+            choices = json.loads(choices_path.read_text(encoding="utf-8"))
+            if choices.get("pending_trial_revision"):
+                return None, "stale_alignment_trial_revision"
+            plan_path = (root / "acoustic" / "004_alignment" / "runs" /
+                         manifest["alignment_run_id"] / "configs" / "alignment_trials.json")
+            plan = json.loads(plan_path.read_text(encoding="utf-8"))
+            frozen_trials = {(str(item["recording_id"]), str(item["trial_id"])): item
+                             for item in plan["trials"]}
+            current_trials = {(str(identity), str(item["trial_id"])): item
+                              for identity, items in choices.get("trials", {}).items()
+                              for item in items}
+            if current_trials and (set(current_trials) != set(frozen_trials) or any(
+                    current_trials[key].get("prompt_id", "") != frozen_trials[key].get("prompt_id", "")
+                    or abs(float(current_trials[key]["start_sec"]) -
+                           float(frozen_trials[key]["start_sec"])) > 1e-9
+                    or abs(float(current_trials[key]["end_sec"]) -
+                           float(frozen_trials[key]["end_sec"])) > 1e-9
+                    for key in current_trials)):
+                return None, "stale_alignment_trial_revision"
         words_path = final / "final_alignment_words.csv"
         phones_path = final / "final_alignment_phones.csv"
         diagnostics_path = final / "final_alignment_diagnostics.csv"
@@ -856,6 +1341,12 @@ def load_final_alignment(output_root: str | Path) -> tuple[AlignmentStore | None
                 or manifest["final_phones_sha256"] != _hash(phones_path)
                 or manifest["final_diagnostics_sha256"] != _hash(diagnostics_path)):
             return None, "alignment_hash_mismatch"
+        for name, expected in manifest.get("final_trial_artifact_sha256", {}).items():
+            if _hash(final / name) != expected:
+                return None, "alignment_trial_hash_mismatch"
+        for artifact in manifest.get("final_alignment_qc_artifacts", {}).values():
+            if _hash(Path(artifact["path"])) != artifact["sha256"]:
+                return None, "alignment_qc_hash_mismatch"
         words = pd.read_csv(words_path, keep_default_na=False)
         phones = pd.read_csv(phones_path, keep_default_na=False)
         diagnostics = pd.read_csv(diagnostics_path, keep_default_na=False)

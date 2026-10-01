@@ -275,7 +275,11 @@ class SegmentationReviewWidget(QWidget):
             self.continue_button.setEnabled(frozen)
             required = self._decisions.review_required.astype(str).str.lower().isin(["true", "1", "yes"])
             pending = required & self._decisions.final_decision.isin(["", "PENDING"])
-            self.progress_label.setText(f"Required: {int(required.sum() - pending.sum())}/{int(required.sum())}")
+            automatic = self._decisions.automatic_status.eq("ACCEPTED") & ~required & self._decisions.reviewer.eq("")
+            self.progress_label.setText(
+                f"{len(self._decisions)} recordings · {int(automatic.sum())} auto-passed · "
+                f"{int(pending.sum())} need review · "
+                f"{int(required.sum() - pending.sum())}/{int(required.sum())} required cases reviewed")
             self._filter_rows()
         except Exception as exc:  # noqa: BLE001
             QMessageBox.warning(self, "Manual review", str(exc))

@@ -91,12 +91,12 @@ def test_family13_cannot_be_dispatched_or_selected_until_source_contract_is_froz
                    for name in EXPECTED_UNAVAILABLE)
         assert not window.subsystem_items["F13"].flags() & Qt.ItemIsUserCheckable
         assert "shannon_signal_entropy_<config>" in window.construct_items["C073"].text(1)
-        assert window.construct_items["C073"].text(3) == "Not implemented"
+        assert window.construct_items["C073"].text(3) == "Definition required"
         assert window.construct_items["C073"].text(4) == "NOT ESTABLISHED"
         assert window.feature_items["ppe_source_replication_only"].text(1) == (
             "ppe_source_replication_only")
         assert window.feature_items["ppe_source_replication_only"].text(3) == (
-            "Not implemented")
+            "Unavailable — source incomplete")
         window.select_all_features()
         assert not EXPECTED_UNAVAILABLE.intersection(window._selected_feature_names())
         assert all("<" not in name for name in window._selected_feature_names())

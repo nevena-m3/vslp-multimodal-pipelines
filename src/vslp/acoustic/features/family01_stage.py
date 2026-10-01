@@ -9,12 +9,19 @@ import numpy as np
 import pandas as pd
 import soundfile as sf
 
+from vslp.acoustic.alignment.trials import confirmed_task_trials
 from vslp.acoustic.features.family01 import FAMILY01_IDS, calculate_f0_features, praat_f0_track
 from vslp.acoustic.features.family02 import FAMILY02_IDS, calculate_voice_quality
 from vslp.acoustic.segment.review import load_final_segmentation
 from vslp.core.feature_contract import build_feature_delivery, write_feature_handoff
 from vslp.core.provenance import sha256_file
 from vslp.core.schemas import ArtifactRef, StageManifest, StageResult
+
+
+def _trial_at_time(trials: list[dict], time_sec: float) -> str:
+    matches = [str(item["trial_id"]) for item in trials
+               if float(item["start_sec"]) <= time_sec < float(item["end_sec"])]
+    return matches[0] if len(matches) == 1 else ""
 
 
 def _region_tracks(row, intervals: pd.DataFrame, audio: np.ndarray, sr: int):
@@ -70,6 +77,7 @@ def run_family01_stage(decisions_csv: str | Path, root: str | Path, config,
         progress_callback(0, len(kept), "Acoustic Features")
     for index, row in enumerate(kept.itertuples(), 1):
         record_id = str(row.recording_id)
+        confirmed_trials = confirmed_task_trials(root, record_id)
         timeline = all_intervals.loc[all_intervals.recording_id.astype(str).eq(record_id)]
         result = {feature_id: (np.nan, "analysis_unavailable") for feature_id in selected}
         track = None
@@ -92,6 +100,7 @@ def run_family01_stage(decisions_csv: str | Path, root: str | Path, config,
                     track_rows.extend({
                         "recording_id": record_id, "file_name": row.file_name,
                         "time_sec": float(t), "f0_hz": float(hz), "voiced_valid": bool(valid),
+                        "trial_id": _trial_at_time(confirmed_trials, float(t)),
                         "analysis_region": track.analysis_region, "algorithm_version": track.algorithm_version,
                         "parameter_set_id": track.parameter_set_id, "sample_rate_hz": int(sr),
                     } for t, hz, valid in zip(track.time_sec, track.f0_hz, track.voiced_valid, strict=True))
@@ -113,6 +122,7 @@ def run_family01_stage(decisions_csv: str | Path, root: str | Path, config,
                     periods = cycle_audit.get("period_sec", np.array([]))
                     pulse_rows.extend({"recording_id": record_id, "file_name": row.file_name,
                                        "pulse_index": i + 1, "time_sec": float(start + t),
+                                       "trial_id": _trial_at_time(confirmed_trials, float(start + t)),
                                        "following_period_sec": float(periods[i]) if i < len(periods) else np.nan,
                                        "analysis_region": "final_reviewed_stable_phonation",
                                        "algorithm_version": "family02-praat-1.0.0",

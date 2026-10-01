@@ -29,6 +29,11 @@ def test_reviewed_stable_region_native_rate_and_audit(tmp_path, monkeypatch):
         "task_id": "sustained_a", "task_type": "Sustained phonation",
         "task_name": "Sustained /a/", "run_id": "run01",
     }), encoding="utf-8")
+    from vslp.acoustic.alignment.task_workflow import save_project_choices
+    save_project_choices(tmp_path, {"schema_version": "1", "recordings": {},
+        "trials": {"r1": [{"trial_id": "trial_001", "start_sec": .2, "end_sec": .9},
+                           {"trial_id": "trial_002", "start_sec": 1.0,
+                            "end_sec": 1.8}]}})
     kept = pd.DataFrame([{
         "recording_id": "r1", "file_name": "vowel.wav",
         "segmentation_method": "sustained_phonation",
@@ -50,6 +55,7 @@ def test_reviewed_stable_region_native_rate_and_audit(tmp_path, monkeypatch):
     assert tracks.sample_rate_hz.eq(sr).all()
     assert tracks.time_sec.min() >= .5
     assert tracks.time_sec.max() <= 1.5
+    assert set(tracks.trial_id.dropna()) == {"trial_001", "trial_002"}
     assert sha256_file(wav) == original_hash
 
 

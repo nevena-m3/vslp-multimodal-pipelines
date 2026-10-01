@@ -13,6 +13,14 @@ class LauncherError(RuntimeError):
     """A configured external MFA environment cannot be launched."""
 
 
+def external_conda_env() -> dict[str, str]:
+    """Keep application-local Python packages out of Conda and MFA subprocesses."""
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
+    environment.pop("PYTHONHOME", None)
+    return environment
+
+
 def find_conda(configured: str = "") -> str | None:
     candidates = [configured, os.environ.get("CONDA_EXE", ""), shutil.which("conda") or ""]
     if os.name == "nt":
@@ -48,6 +56,7 @@ class MfaLauncher:
             result = self.runner([conda, "env", "list", "--json"], capture_output=True,
                                  text=True, encoding="utf-8", errors="replace", check=False,
                                  timeout=60,
+                                 env=external_conda_env(),
                                  creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
             if result.returncode:
                 raise LauncherError("CONDA_ENVIRONMENT_QUERY_FAILED")

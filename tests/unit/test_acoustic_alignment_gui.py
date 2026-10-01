@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QPushButton
 
 from vslp.gui.acoustic_app.alignment_widget import AlignmentWidget
 from vslp.acoustic.alignment.self_test import MfaSelfTestResult
@@ -24,6 +24,11 @@ def test_alignment_task_first_controls_and_advanced_import(tmp_path):
     assert widget.run_button.text() == "RUN ALIGNMENT"
     assert not widget.run_button.isEnabled()
     widget.advanced_toggle.click()
+    assert widget.diagnostics_dialog.isVisible()
+    assert widget.plot.parent() is widget
+    assert not any(button.text() in {"FREEZE ALIGNMENT", "Accept Alignment",
+                                     "Edit trial boundaries"}
+                   for button in widget.diagnostics_dialog.findChildren(QPushButton))
     widget.source.setCurrentIndex(1)
     assert widget.words._alignment_row.isVisible()
     assert widget.model.isVisible()

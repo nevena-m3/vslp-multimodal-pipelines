@@ -14,7 +14,8 @@ from vslp.acoustic.alignment import (
     AlignmentConfig, freeze_alignment, list_alignment_runs, load_final_alignment,
     run_acoustic_alignment,
 )
-from vslp.acoustic.alignment.stage import PHONE_SET, WORD_COLUMNS, PHONE_COLUMNS
+from vslp.acoustic.alignment.stage import (PHONE_SET, WORD_COLUMNS, PHONE_COLUMNS,
+                                            _working_audio, map_interval)
 
 
 def _reviewed_root(tmp_path):
@@ -100,8 +101,10 @@ def test_provider_working_time_map_and_missing_prompt(tmp_path):
     class FakeProvider:
         name = "fake"
         version = "1"
+        invoked = False
 
         def align_corpus(self, corpus, output, profile, logs):
+            self.invoked = True
             assert sf.info(corpus / "speaker_1" / "r1.wav").samplerate == 16000
             assert (corpus / "speaker_1" / "r1.lab").read_text() == "ONE TWO THREE"
             output.mkdir(parents=True)
@@ -131,20 +134,23 @@ intervals [1]:
         run_acoustic_alignment(root, AlignmentConfig(source="mfa"))
     speakers = root / "speakers.json"
     speakers.write_text(json.dumps({"recordings": [{"recording_id": "r1", "speaker_id": "speaker_1"}]}))
+    provider = FakeProvider()
     result = run_acoustic_alignment(root, AlignmentConfig(
-        source="mfa", prompt_manifest_path=str(prompt), provider=FakeProvider(),
+        source="mfa", prompt_manifest_path=str(prompt), provider=provider,
         speaker_manifest_path=str(speakers)))
-    assert result.status == "completed"
-    run_id = list_alignment_runs(root)[0]["alignment_run_id"]
-    mapped = pd.read_csv(root / "acoustic" / "004_alignment" / "runs" / run_id /
-                         "tables" / "alignment_words.csv")
-    assert mapped.start_sec.tolist() == pytest.approx([1.2, 4.6, 5.1])
-    assert mapped.sequence_id.tolist() == [1, 2, 2]
+    assert result.status == "completed_with_warnings"
+    assert not provider.invoked
+    assert "TRIAL_CROSSES_EXCLUSION" in pd.read_csv(result.summary_table).reason.iloc[0]
+    pieces, rate = _working_audio(wave, [(1, 4), (4.5, 9)], 16000,
+                                  root / "private_time_map_test.wav")
+    assert rate == 48000
+    assert [map_interval(start, end, pieces)[0] for start, end in
+            [(0.2, 0.5), (3.1, 3.4), (3.6, 4.0)]] == pytest.approx([1.2, 4.6, 5.1])
+    assert [map_interval(start, end, pieces)[2] for start, end in
+            [(0.2, 0.5), (3.1, 3.4), (3.6, 4.0)]] == [1, 2, 2]
     assert sha256(wave.read_bytes()).hexdigest() == original_hash
-    freeze_alignment(root, run_id)
-    store, issue = load_final_alignment(root)
-    assert issue == ""
-    assert len(store.get_word_tokens("r1")) == 3
+    with pytest.raises(ValueError, match="token_crosses_excluded_gap"):
+        map_interval(2.9, 3.1, pieces)
 
 
 def test_batch_progress_includes_failed_recording(tmp_path):

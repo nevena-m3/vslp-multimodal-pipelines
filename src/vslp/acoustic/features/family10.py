@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from vslp.acoustic.alignment.trials import confirmed_task_trials, trial_identity_for_interval
 from vslp.acoustic.segment.review import load_final_segmentation
 from vslp.core.feature_contract import build_feature_delivery, write_feature_handoff
 from vslp.core.provenance import sha256_file
@@ -205,7 +206,12 @@ def run_family10_stage(
         else:
             events, summary, issue = (pd.DataFrame(columns=EVENT_COLUMNS), {},
                                       "missing_final_ddk_segmentation")
-        event_tables.append(events)
+        audit_events = events.copy()
+        confirmed = confirmed_task_trials(root, record_id)
+        audit_events["trial_id"] = [trial_identity_for_interval(
+            root, record_id, float(item.event_start_sec), float(item.event_end_sec), confirmed)
+            for item in events.itertuples()]
+        event_tables.append(audit_events)
         results = calculate_family10(events, summary, selected)
         value_row = {
             "recording_id": record_id, "file_name": row.file_name,
@@ -264,7 +270,7 @@ def run_family10_stage(
     pd.DataFrame(values_rows).to_csv(values_path, index=False)
     pd.DataFrame(status_rows).to_csv(status_path, index=False)
     registry.to_csv(registry_path, index=False)
-    pd.concat(event_tables, ignore_index=True).reindex(columns=EVENT_COLUMNS).to_csv(
+    pd.concat(event_tables, ignore_index=True).reindex(columns=[*EVENT_COLUMNS, "trial_id"]).to_csv(
         events_path, index=False)
     if execution_stage_dir is None:
         handoff = write_feature_handoff(

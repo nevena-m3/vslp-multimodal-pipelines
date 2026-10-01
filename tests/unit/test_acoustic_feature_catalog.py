@@ -26,6 +26,9 @@ from vslp.acoustic.features.family10 import FAMILY10_IDS
 from vslp.acoustic.features.family11 import FAMILY11_IDS
 from vslp.acoustic.features.family12 import FAMILY12_IDS
 from vslp.gui.acoustic_app.main_window import AcousticPipelineWindow
+from vslp.gui.acoustic_app.feature_presentation import (
+    construct_presentation_status, output_presentation_status,
+)
 
 FAMILY01_UNAVAILABLE = {"intonation_factor_score_if_frozen"}
 FAMILY02_UNAVAILABLE = {"gne_source_replication_only", "pvi_9_14hz_source", "cpp_db",
@@ -220,9 +223,9 @@ def test_gui_columns_details_search_and_structured_recommendations():
 def test_constructs_are_visible_but_unselectable_and_buttons_choose_no_fake_outputs():
     window = _window()
     window.task_name_edit.setText("WSTG")
-    assert window.construct_items["C005"].flags() & Qt.ItemIsUserCheckable
+    assert not window.construct_items["C005"].flags() & Qt.ItemIsUserCheckable
     assert not window.construct_items["C013"].flags() & Qt.ItemIsUserCheckable
-    assert window.subsystem_items["F02"].flags() & Qt.ItemIsUserCheckable
+    assert not window.subsystem_items["F02"].flags() & Qt.ItemIsUserCheckable
     window.select_recommended_features()
     selected = window._selected_feature_names()
     assert all(window.feature_items[name].data(0, Qt.UserRole + 1) == "GREEN"
@@ -240,6 +243,47 @@ def test_constructs_are_visible_but_unselectable_and_buttons_choose_no_fake_outp
     window.close()
 
 
+def test_presentation_statuses_are_derived_without_changing_registry_availability():
+    catalog = load_feature_catalog()
+    constructs = {item["construct_id"]: item for item in catalog["constructs"]}
+    outputs = {item["feature_id"]: item for item in catalog["outputs"]}
+    assert construct_presentation_status(constructs["C005"]) == "IMPLEMENTED"
+    assert construct_presentation_status(constructs["C004"]) == "PARTIALLY_IMPLEMENTED"
+    assert construct_presentation_status(constructs["C057"]) == "PARTIALLY_IMPLEMENTED"
+    assert construct_presentation_status(constructs["C033"]) == "UNRESOLVED_DEFINITION"
+    assert construct_presentation_status(constructs["C013"]) == "NOT_IMPLEMENTED_PROPRIETARY"
+    assert construct_presentation_status(constructs["C072"]) == "NOT_IMPLEMENTED_SOURCE_INCOMPLETE"
+    assert output_presentation_status(outputs["vowel_duration_<phone>_s"]) == "UNRESOLVED_DEFINITION"
+    assert output_presentation_status(outputs["blocked_aural_analytics_ap"]) == "NOT_IMPLEMENTED_PROPRIETARY"
+    assert output_presentation_status(outputs["ppe_source_replication_only"]) == "NOT_IMPLEMENTED_SOURCE_INCOMPLETE"
+    assert output_presentation_status(outputs["pause_pattern_factor_if_frozen"]) == "FACTOR_NOT_FROZEN"
+    assert feature_availability(outputs["pause_pattern_factor_if_frozen"])[0] == "Not implemented"
+
+
+def test_runnable_view_shows_only_concrete_selectable_leaves():
+    window = _window()
+    assert window.construct_items["C004"].text(3) == "Partially implemented"
+    assert window.construct_items["C057"].text(3) == "Partially implemented"
+    assert window.construct_items["C033"].text(3) == "Definition required"
+    assert window.construct_items["C013"].text(3) == "Unavailable — proprietary"
+    assert window.feature_items["ppe_source_replication_only"].text(3) == "Unavailable — source incomplete"
+    assert window.feature_items["dynamics_factor_if_frozen"].text(3) == "Factor not frozen"
+    assert window.subsystem_items["F03"].text(3) == "Container"
+    window.feature_view_combo.setCurrentIndex(window.feature_view_combo.findData("runnable"))
+    assert not window.feature_items["f0_mean_hz"].isHidden()
+    assert window.feature_items["ppe_source_replication_only"].isHidden()
+    assert window.feature_items["vowel_duration_<phone>_s"].isHidden()
+    assert window.subsystem_items["F03"].isHidden()
+    assert window.subsystem_items["F13"].isHidden()
+    assert all(item.isHidden() or item.flags() & Qt.ItemIsUserCheckable
+               for item in window.feature_items.values())
+    window.select_all_features()
+    assert len(window._selected_feature_names()) == 115
+    window.feature_view_combo.setCurrentIndex(window.feature_view_combo.findData("all"))
+    assert not window.feature_items["ppe_source_replication_only"].isHidden()
+    window.close()
+
+
 def test_implemented_leaf_rendering_and_advisory_gray_or_amber_selection():
     window = _window()
     window.task_name_edit.setText("WSTG")
@@ -254,7 +298,7 @@ def test_implemented_leaf_rendering_and_advisory_gray_or_amber_selection():
         assert leaf.text(2) == "" and not leaf.icon(2).isNull()
         assert leaf.icon(3).isNull()
     for feature_id in {"pause_pattern_factor_if_frozen"}:
-        assert window.feature_items[feature_id].text(3) == "Not implemented"
+        assert window.feature_items[feature_id].text(3) == "Factor not frozen"
         assert not window.feature_items[feature_id].flags() & Qt.ItemIsUserCheckable
     assert window.construct_items["C050"] is window.feature_items["total_pause_duration_s"]
     assert window.construct_items["C050"].text(1) == "total_pause_duration_s"
@@ -414,7 +458,7 @@ def test_family01_and_family02_exact_leaf_availability_and_evidence():
     for feature_id in FAMILY01_UNAVAILABLE | FAMILY02_UNAVAILABLE:
         item = window.feature_items[feature_id]
         assert item.text(1) == feature_id
-        assert item.text(3) == "Not implemented"
+        assert item.text(3) in {"Factor not frozen", "Unavailable — source incomplete"}
         assert not item.flags() & Qt.ItemIsUserCheckable
     window.close()
 
@@ -429,7 +473,7 @@ def test_family07_registry_gui_and_selection_dependent_alignment():
         assert item.text(4) in {"LIMITED", "NOT ESTABLISHED"}
         assert item.flags() & Qt.ItemIsUserCheckable
     blocked = window.feature_items["vowel_duration_<phone>_s"]
-    assert blocked.text(3) == "Not implemented"
+    assert blocked.text(3) == "Definition required"
     assert not blocked.flags() & Qt.ItemIsUserCheckable
     window.feature_items["speech_time_s"].setCheckState(0, Qt.Checked)
     assert window.feature_alignment_row.isHidden()

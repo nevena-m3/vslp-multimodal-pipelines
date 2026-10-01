@@ -386,7 +386,9 @@ def initialize_segmentation_review(segmentation_summary_csv: str | Path,
                           ArtifactRef(path=str(paths["decisions"]), role="review_decisions", media_type="text/csv"),
                           ArtifactRef(path=str(paths["overrides"]), role="manual_boundaries", media_type="text/csv"),
                           ArtifactRef(path=str(paths["exclusions"]), role="reviewed_exclusions", media_type="text/csv")],
-        config={"automatic_summary_sha256": source_hash}, environment={"python": python_environment()},
+        config={"automatic_summary_sha256": source_hash,
+                "review_policy_version": "segmentation_existing_structural_v1"},
+        environment={"python": python_environment()},
         notes=["Automatic segmentation artifacts are immutable; review decisions are separate."])
     paths["manifest"].parent.mkdir(parents=True, exist_ok=True)
     manifest.write_json(paths["manifest"])
@@ -940,6 +942,7 @@ def finalize_segmentation_review(output_root: str | Path) -> StageResult:
                   "review_run_id": paths["review_run_id"],
                   "freeze_timestamp_utc": datetime.now(timezone.utc).isoformat(),
                   "automatic_segmentation_method": sorted(frozen.segmentation_method.unique().tolist()),
+                  "review_policy_version": "segmentation_existing_structural_v1",
                   "automatic_parameters": sorted(frozen.segmentation_parameters.unique().tolist()),
                   **counts, "decisions_sha256": sha256_file(paths["final_decisions"]),
                   "intervals_sha256": sha256_file(paths["final_intervals"])}, paths["final_manifest"])

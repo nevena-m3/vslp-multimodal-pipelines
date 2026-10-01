@@ -50,7 +50,8 @@ from vslp.acoustic.features.catalog import (
 from vslp.acoustic.alignment import freeze_alignment, load_final_alignment, run_acoustic_alignment
 from vslp.acoustic.alignment.self_test import run_mfa_self_test
 from vslp.acoustic.alignment.task_workflow import (
-    check_mfa_environment, check_task_preflight, run_task_alignment, task_entry,
+    check_mfa_environment, check_task_preflight, load_project_choices,
+    run_task_alignment, save_project_choices, task_entry,
 )
 from vslp.acoustic.features.scales import build_feature_family_policy_summary
 from vslp.acoustic.features.stage import (
@@ -66,6 +67,9 @@ from vslp.acoustic.segment.task_methods import DDKConfig, PhonationConfig
 from vslp.acoustic.segment.review import initialize_segmentation_review, select_segmentation_run
 from vslp.gui.acoustic_app.review_widget import SegmentationReviewWidget
 from vslp.gui.acoustic_app.alignment_widget import AlignmentWidget
+from vslp.gui.acoustic_app.feature_presentation import (
+    LABELS, construct_presentation_status, output_presentation_status,
+)
 from vslp.acoustic.quality.stage import (
     QC_FAMILIES,
     FAMILY_FEATURES,
@@ -251,6 +255,11 @@ class AcousticPipelineWindow(QMainWindow):
         self.alignment_widget.preflight_requested.connect(self.check_alignment_preflight)
         self.alignment_widget.environment_requested.connect(self.check_alignment_environment)
         self.alignment_widget.run_task_requested.connect(self.run_task_alignment)
+        self.alignment_widget.rerun_recording_requested.connect(
+            self.rerun_recording_alignment)
+        self.alignment_widget.return_to_features_requested.connect(
+            self._return_to_acoustic_features)
+        self.alignment_widget.plot_requested.connect(self.generate_alignment_trial_plot)
         tabs.addTab(self.alignment_widget, "Alignment")
         tabs.addTab(self._build_quality_tab(), "Quality Control")
         qc_index = tabs.count() - 1
@@ -262,7 +271,9 @@ class AcousticPipelineWindow(QMainWindow):
         tabs.addTab(self._build_inspector_tab(), "Inspector")
         tabs.addTab(self._build_reports_tab(), "Reports & Outputs")
 
-        log_group = QGroupBox("Run Log")
+        log_group = QGroupBox("Technical log")
+        log_group.setCheckable(True)
+        log_group.setChecked(True)
         log_layout = QVBoxLayout(log_group)
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
@@ -274,6 +285,14 @@ class AcousticPipelineWindow(QMainWindow):
         log_layout.addWidget(self.progress)
         log_layout.addWidget(self.progress_label)
         log_layout.addWidget(self.log_box)
+        def show_log(opened: bool) -> None:
+            self.progress.setVisible(opened)
+            self.progress_label.setVisible(opened)
+            self.log_box.setVisible(opened)
+            log_group.setMaximumHeight(16777215 if opened else 30)
+        log_group.toggled.connect(show_log)
+        tabs.currentChanged.connect(
+            lambda index: log_group.setChecked(tabs.tabText(index) != "Alignment"))
         run_splitter = QSplitter(Qt.Vertical)
         run_splitter.addWidget(tabs)
         run_splitter.addWidget(log_group)
@@ -1002,6 +1021,11 @@ class AcousticPipelineWindow(QMainWindow):
         self.feature_search_edit.setPlaceholderText("Search feature, code name, family, or task")
         self.feature_search_edit.textChanged.connect(self._filter_feature_tree)
         selector_layout.addWidget(self.feature_search_edit)
+        self.feature_view_combo = QComboBox()
+        self.feature_view_combo.addItem("All features", "all")
+        self.feature_view_combo.addItem("RUNNABLE FEATURES", "runnable")
+        self.feature_view_combo.currentIndexChanged.connect(self._filter_feature_tree)
+        selector_layout.addWidget(self.feature_view_combo)
 
         self.feature_tree = QTreeWidget()
         self.feature_tree.setHeaderLabels(["Feature", "Code name", "Task recommendation",
@@ -1420,18 +1444,23 @@ class AcousticPipelineWindow(QMainWindow):
             family_id = family["family_id"]
             parent = QTreeWidgetItem([family["family_name"]])
             parent.setData(0, Qt.UserRole, ("family", family_id))
-            parent.setFlags(parent.flags() | Qt.ItemIsUserCheckable)
+            parent.setData(0, Qt.UserRole + 3, "Container")
+            parent.setText(3, LABELS["CONTAINER"])
             parent.setCheckState(0, Qt.Unchecked)
+            parent.setFlags(parent.flags() & ~Qt.ItemIsUserCheckable)
             self.feature_tree.addTopLevelItem(parent)
             self.subsystem_items[family_id] = parent
             for construct in (c for c in self.feature_catalog["constructs"] if c["family_id"] == family_id):
                 construct_id = construct["construct_id"]
                 construct_outputs = outputs_by_construct.get(construct_id, [])
                 flatten = (len(construct_outputs) == 1 and
+                           not (construct.get("source_feature_templates") or
+                                construct.get("feature_id_templates")) and
                            feature_availability(construct_outputs[0])[0] == "Implemented")
                 tasks = [self.feature_catalog["tasks_registry"][key] for key in
                          (*construct["recommended_tasks"], *construct["conditional_tasks"])]
-                templates = construct.get("source_feature_templates", [])
+                templates = (construct.get("source_feature_templates") or
+                             construct.get("feature_id_templates") or [])
                 node = QTreeWidgetItem([construct["construct_name"], " / ".join(templates) or "—", "", "",
                     construct["evidence_level"] or "—", ", ".join(tasks), construct["unit"],
                     construct["qc_range_text"], construct.get("analysis_unit") or
@@ -1439,8 +1468,9 @@ class AcousticPipelineWindow(QMainWindow):
                 if templates:
                     node.setToolTip(1, "Unresolved source templates; no selectable output ID is frozen.")
                 node.setData(0, Qt.UserRole, ("construct", construct_id))
-                node.setFlags(node.flags() | Qt.ItemIsUserCheckable)
+                node.setData(0, Qt.UserRole + 3, "Construct / container")
                 node.setCheckState(0, Qt.Unchecked)
+                node.setFlags(node.flags() & ~Qt.ItemIsUserCheckable)
                 parent.addChild(node)
                 self.construct_items[construct_id] = node
                 for output in construct_outputs:
@@ -1448,11 +1478,23 @@ class AcousticPipelineWindow(QMainWindow):
                     tasks = [self.feature_catalog["tasks_registry"][t] for t in output["recommended_tasks"]]
                     tasks += [f"{self.feature_catalog['tasks_registry'][t]} (conditional)"
                               for t in output["conditional_tasks"]]
-                    item = QTreeWidgetItem([construct["construct_name"] if flatten else output["human_name"], feature_id, "", "",
+                    needs_alignment = (feature_availability(output)[0] == "Implemented" and
+                                       output["prerequisites"].get("requires_alignment", False))
+                    display_name = (construct["construct_name"] if flatten else output["human_name"])
+                    if needs_alignment:
+                        display_name += "  ·  Requires Alignment"
+                    item = QTreeWidgetItem([display_name, feature_id, "", "",
                         output["evidence_level"] or construct["evidence_level"] or "—",
                         ", ".join(tasks),
                         output["unit"], output["qc_range_text"], output["analysis_unit"]])
                     item.setData(0, Qt.UserRole, ("output", feature_id))
+                    if needs_alignment:
+                        item.setToolTip(0, "Requires final linguistic word/phone Alignment.")
+                    item.setData(0, Qt.UserRole + 3,
+                                 "Runnable output" if feature_availability(output)[0] == "Implemented"
+                                 else "Unavailable exact output or unresolved template")
+                    if needs_alignment:
+                        item.setToolTip(0, "Requires frozen final linguistic Alignment")
                     item.setCheckState(0, Qt.Unchecked)
                     if feature_availability(output)[0] == "Implemented":
                         item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
@@ -1467,13 +1509,8 @@ class AcousticPipelineWindow(QMainWindow):
                     else:
                         node.addChild(item)
                     self.feature_items[feature_id] = item
-                if not any(feature_availability(output)[0] == "Implemented"
-                           for output in construct_outputs):
-                    node.setFlags(node.flags() & ~Qt.ItemIsUserCheckable)
-                    node.setToolTip(0, "No executable output is registered for this construct.")
-            if not any(parent.child(i).flags() & Qt.ItemIsUserCheckable
-                       for i in range(parent.childCount())):
-                parent.setFlags(parent.flags() & ~Qt.ItemIsUserCheckable)
+                if not construct_outputs:
+                    node.setToolTip(0, "Construct definition; no concrete selectable output is frozen.")
             parent.setExpanded(True)
         self._updating_feature_tree = False
         self._filter_feature_tree()
@@ -1542,6 +1579,7 @@ class AcousticPipelineWindow(QMainWindow):
         if not hasattr(self, "feature_tree"):
             return
         query = self.feature_search_edit.text().strip().casefold()
+        runnable_only = self.feature_view_combo.currentData() == "runnable"
         for construct in self.feature_catalog["constructs"]:
             node = self.construct_items[construct["construct_id"]]
             if node.data(0, Qt.UserRole)[0] == "output":
@@ -1550,7 +1588,8 @@ class AcousticPipelineWindow(QMainWindow):
                               (*output["recommended_tasks"], *output["conditional_tasks"])]
                 searchable = " ".join((output["human_name"], output["feature_id"],
                                         output["family_name"], output["construct_name"], *task_names)).casefold()
-                node.setHidden(bool(query and query not in searchable))
+                node.setHidden(bool((query and query not in searchable) or
+                                    (runnable_only and feature_availability(output)[0] != "Implemented")))
                 continue
             for index in range(node.childCount()):
                 leaf = node.child(index)
@@ -1559,14 +1598,17 @@ class AcousticPipelineWindow(QMainWindow):
                               (*output["recommended_tasks"], *output["conditional_tasks"])]
                 text = " ".join((output["human_name"], output["feature_id"], output["family_name"],
                                  output["construct_name"], *task_names)).casefold()
-                leaf.setHidden(bool(query and query not in text))
+                leaf.setHidden(bool((query and query not in text) or
+                                    (runnable_only and feature_availability(output)[0] != "Implemented")))
             construct_text = " ".join((construct["construct_name"], construct["family_name"],
                 *(self.feature_catalog["tasks_registry"][k] for k, v in construct["tasks"].items() if v))).casefold()
-            node.setHidden(bool(query and query not in construct_text and
-                                not any(not node.child(i).isHidden() for i in range(node.childCount()))))
+            visible_child = any(not node.child(i).isHidden() for i in range(node.childCount()))
+            node.setHidden(bool((runnable_only and not visible_child) or
+                                (query and query not in construct_text and not visible_child)))
         for parent in self.subsystem_items.values():
-            parent.setHidden(bool(query and not any(not parent.child(i).isHidden() for i in range(parent.childCount()))
-                                  and query not in parent.text(0).casefold()))
+            visible_child = any(not parent.child(i).isHidden() for i in range(parent.childCount()))
+            parent.setHidden(bool((runnable_only and not visible_child) or
+                                  (query and not visible_child and query not in parent.text(0).casefold())))
 
     def _selected_feature_names(self) -> list[str]:
         return [feature_id for feature_id, item in self.feature_items.items()
@@ -1728,11 +1770,10 @@ class AcousticPipelineWindow(QMainWindow):
                 if item.data(0, Qt.UserRole)[0] == "output":
                     continue
                 state, tooltip = task_indicator(construct, task, task_type=task_type)
-                available = ("Implemented" if any(
-                    feature_availability(output)[0] == "Implemented"
-                    for output in construct["outputs"]) else "Not implemented")
-                explanation = ("At least one exact executable leaf is registered." if available == "Implemented"
-                               else "No executable leaf is registered for this construct.")
+                status = construct_presentation_status(construct)
+                available = LABELS[status]
+                explanation = ("Construct / container; select concrete runnable outputs below. "
+                               + (construct.get("source_limitation") or ""))
                 item.setIcon(2, icons[state])
                 item.setText(2, "")
                 item.setText(3, available)
@@ -1743,7 +1784,10 @@ class AcousticPipelineWindow(QMainWindow):
             for feature_id, item in self.feature_items.items():
                 output = self.catalog_outputs[feature_id]
                 state, tooltip = task_indicator(output, task, task_type=task_type)
-                available, explanation = feature_availability(output)
+                status = output_presentation_status(output)
+                available = LABELS[status]
+                explanation = ("Runnable exact output." if status == "IMPLEMENTED" else
+                               output.get("blocked_reason") or "A concrete definition is required.")
                 item.setIcon(2, icons[state])
                 item.setText(2, "")
                 item.setText(3, available)
@@ -1765,7 +1809,8 @@ class AcousticPipelineWindow(QMainWindow):
         tree.clear()
         if kind == "construct":
             item = next(c for c in self.feature_catalog["constructs"] if c["construct_id"] == key)
-            templates = item.get("source_feature_templates", [])
+            templates = (item.get("source_feature_templates") or
+                         item.get("feature_id_templates") or [])
             fields = [("Feature", item["construct_name"]), ("Type", "Construct"),
                       ("Code name", " / ".join(templates) or "—"),
                       ("Evidence", item["evidence_level"] or "—"),
@@ -2179,6 +2224,13 @@ class AcousticPipelineWindow(QMainWindow):
         self._worker.failed.connect(self._cleanup_thread)
         self._thread.start()
 
+    def generate_alignment_trial_plot(self, run_id: str, recording_id: str,
+                                      trial_id: str) -> None:
+        from vslp.acoustic.alignment.qc import generate_selected_trial_plot
+        self._run_worker("alignment_qc_plot", generate_selected_trial_plot,
+                         {"root": self._output_root(), "run_id": run_id,
+                          "recording_id": recording_id, "trial_id": trial_id})
+
     def _cleanup_thread(self, *_args) -> None:
         if self._thread is not None:
             self._thread.quit(); self._thread.wait()
@@ -2190,12 +2242,19 @@ class AcousticPipelineWindow(QMainWindow):
 
     def _on_worker_started(self, name: str) -> None:
         self._set_busy(True)
+        if name == "alignment":
+            self.alignment_widget.alignment_started()
+        if name in {"alignment_preflight", "alignment_environment",
+                    "alignment_self_test", "alignment"}:
+            self.log_box.clear()
         if name in self.stage_records:
             self.stage_records[name].status = "running"
             self._refresh_stage_cards()
         self.append_log(f"=== {'Acoustic Features' if name == 'features' else name} ===")
 
     def _on_worker_progress(self, done: int, total: int, message: str) -> None:
+        if self._worker is not None and self._worker.name == "alignment":
+            self.alignment_widget.alignment_progress(done, total, message)
         if total > 0:
             self.progress.setRange(0, total)
             self.progress.setValue(max(0, min(done, total)))
@@ -2206,6 +2265,8 @@ class AcousticPipelineWindow(QMainWindow):
             self.progress_label.setText(message)
 
     def _on_worker_failed(self, name: str, err: str) -> None:
+        if name == "alignment":
+            self.alignment_widget.alignment_finished(err)
         if name == "alignment_preflight":
             self.alignment_widget.show_preflight_result(
                 {"status": "ACTION_REQUIRED", "issue": err.splitlines()[0]})
@@ -2218,6 +2279,31 @@ class AcousticPipelineWindow(QMainWindow):
         self.append_log(f"ERROR in {label}:\n{err}")
         if name == "alignment":
             code = err.splitlines()[0]
+            if code.startswith("trial_token_boundary_mismatch:"):
+                try:
+                    detail = json.loads(code.partition(":")[2])
+                    trial = detail["trial_id"]
+                    tier = detail["tier"]
+                    message = (f"{detail['file_name']} — {trial} contains a {tier} boundary "
+                               "outside its confirmed trial bounds.\n\n"
+                               f"Trial: {detail['trial_start_sec']:.6f}–"
+                               f"{detail['trial_end_sec']:.6f} s\n"
+                               f"{tier.title()} {detail['token_index']}: "
+                               f"{detail['token_start_sec']:.6f}–"
+                               f"{detail['token_end_sec']:.6f} s\n"
+                               f"Source: {detail['source']}")
+                    dialog = QMessageBox(self)
+                    dialog.setWindowTitle("Review Alignment boundary")
+                    dialog.setText(message)
+                    review_button = dialog.addButton("REVIEW THIS TRIAL", QMessageBox.AcceptRole)
+                    dialog.addButton(QMessageBox.Close)
+                    dialog.exec()
+                    if dialog.clickedButton() is review_button:
+                        self.tabs.setCurrentWidget(self.alignment_widget)
+                        self.alignment_widget.focus_trial(detail["recording_id"], trial)
+                    return
+                except (KeyError, ValueError, TypeError):
+                    pass
             messages = {
                 "MFA_NOT_INSTALLED": "MFA is not installed in the active environment.",
                 "MFA_VERSION_UNSUPPORTED": "The installed MFA version is not supported by this alignment profile.",
@@ -2523,6 +2609,35 @@ class AcousticPipelineWindow(QMainWindow):
         if not selected_features:
             QMessageBox.warning(self, "No features selected", "Select at least one feature in the feature tree.")
             return
+        alignment_features = [feature_id for feature_id in selected_features
+                              if self.catalog_outputs[feature_id]["prerequisites"].get(
+                                  "requires_alignment", False)]
+        if alignment_features:
+            final_alignment, _issue = load_final_alignment(output_root)
+            if final_alignment is None:
+                other_features = [feature_id for feature_id in selected_features
+                                  if feature_id not in alignment_features]
+                dialog = QMessageBox(self)
+                dialog.setWindowTitle("Alignment needed for selected features")
+                dialog.setText(
+                    f"{len(selected_features)} selected outputs include "
+                    f"{len(alignment_features)} features that require linguistic Alignment.\n"
+                    f"The remaining {len(other_features)} can run without it.")
+                align_button = dialog.addButton("RUN REQUIRED ALIGNMENT", QMessageBox.AcceptRole)
+                other_button = dialog.addButton("RUN NON-ALIGNMENT FEATURES ONLY",
+                                                QMessageBox.ActionRole)
+                dialog.addButton("CANCEL", QMessageBox.RejectRole)
+                other_button.setEnabled(bool(other_features))
+                dialog.exec()
+                if dialog.clickedButton() is align_button:
+                    self._return_to_features_after_alignment = True
+                    self.alignment_widget._feature_return_pending = True
+                    self.tabs.setCurrentWidget(self.alignment_widget)
+                    self.alignment_widget.refresh()
+                    return
+                if dialog.clickedButton() is not other_button:
+                    return
+                selected_features = other_features
         cfg = FeatureExtractionConfig(
             selected_features=selected_features,
             prompt_manifest_path=self.feature_prompt_manifest_edit.text().strip() or None,
@@ -2687,22 +2802,11 @@ table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{border-bottom:
         if not decisions.is_file() or not intervals.is_file():
             QMessageBox.warning(self, "Review required", "Freeze final segmentation first.")
             return
-        selected = self._selected_feature_names()
-        manifest_path = self._output_root() / "project_manifest.json"
-        project = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.is_file() else {}
-        task = task_entry(str(project.get("task_id", "")))
-        needs_alignment = bool(task and task["alignment_applicable"]) and any(
-            self.catalog_outputs[feature_id]["prerequisites"].get("requires_alignment", False)
-            for feature_id in selected)
-        next_tab = "Alignment" if needs_alignment else "Acoustic Features"
         self.tabs.setCurrentIndex(next(i for i in range(self.tabs.count())
-                                       if self.tabs.tabText(i) == next_tab))
+                                       if self.tabs.tabText(i) == "Acoustic Features"))
         self._refresh_feature_count_label()
-        self.append_log(
-            "Final reviewed segmentation ready. Continue to Alignment, inspect and freeze it "
-            "before Acoustic Features." if needs_alignment else
-            "Final reviewed segmentation ready. Continue to Acoustic Features; "
-            "Alignment is not required by the selected outputs.")
+        self.append_log("Final reviewed segmentation ready. Select Acoustic Features; "
+                        "Alignment will be requested only if selected outputs need it.")
 
     def run_alignment(self, config: object) -> None:
         if not self._require_project_initialized():
@@ -2713,8 +2817,26 @@ table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{border-bottom:
     def freeze_alignment(self, run_id: str) -> None:
         if not run_id or not self._require_project_initialized():
             return
+        frozen = (self._output_root() / "acoustic" / "004_alignment" / "final" /
+                  "final_alignment_manifest.json")
+        supersede = False
+        if frozen.is_file():
+            current_id = json.loads(frozen.read_text(encoding="utf-8")).get("alignment_run_id")
+            if current_id == run_id:
+                QMessageBox.information(self, "Alignment already frozen",
+                                        "This Alignment run is already frozen.")
+                return
+            answer = QMessageBox.question(
+                self, "Replace frozen Alignment",
+                "Freeze this reviewed run as the new authoritative Alignment? "
+                "The previous frozen result will be retained in the Alignment archive.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if answer != QMessageBox.Yes:
+                return
+            supersede = True
         self._run_worker("alignment", freeze_alignment,
-                         {"output_root": self._output_root(), "alignment_run_id": run_id})
+                         {"output_root": self._output_root(), "alignment_run_id": run_id,
+                          "supersede": supersede})
 
     def run_mfa_self_test(self, profile_path: str, fallback_wav_path: str) -> None:
         self._run_worker("alignment_self_test", run_mfa_self_test,
@@ -2735,6 +2857,13 @@ table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{border-bottom:
     def run_task_alignment(self, output_root: str, profile_path: str) -> None:
         self._run_worker("alignment", run_task_alignment,
                          {"output_root": output_root, "profile_path": profile_path})
+
+    def rerun_recording_alignment(self, output_root: str, profile_path: str,
+                                  recording_id: str, previous_run_id: str) -> None:
+        self._run_worker("alignment", run_task_alignment,
+                         {"output_root": output_root, "profile_path": profile_path,
+                          "rerun_recording_id": recording_id,
+                          "reuse_run_id": previous_run_id})
 
     def _on_worker_finished(self, name: str, result: object) -> None:  # type: ignore[override]
         if name == "alignment_preflight":
@@ -2805,8 +2934,26 @@ table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{border-bottom:
             except Exception as exc:  # noqa: BLE001
                 self.append_log(f"Review queue could not be initialized: {exc}")
         if name == "alignment":
+            self.alignment_widget.alignment_finished()
+            if manifest and Path(manifest).is_file():
+                aligned = json.loads(Path(manifest).read_text(encoding="utf-8"))
+                run_id = aligned.get("alignment_run_id", "")
+                if run_id:
+                    choices = load_project_choices(self._output_root())
+                    choices["selected_run_id"] = run_id
+                    save_project_choices(self._output_root(), choices)
             self.alignment_widget.refresh()
             self._refresh_feature_count_label()
+            if (getattr(self, "_return_to_features_after_alignment", False)
+                    and manifest and Path(manifest).name == "final_alignment_manifest.json"):
+                self.alignment_widget._feature_return_pending = True
+                self.alignment_widget._show_step()
         if name == "quality":
             self._update_quality_feedback()
         self.refresh_latest_outputs()
+
+    def _return_to_acoustic_features(self) -> None:
+        self._return_to_features_after_alignment = False
+        self.alignment_widget._feature_return_pending = False
+        self.tabs.setCurrentIndex(next(i for i in range(self.tabs.count())
+                                   if self.tabs.tabText(i) == "Acoustic Features"))

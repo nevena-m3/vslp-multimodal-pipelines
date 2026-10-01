@@ -272,6 +272,11 @@ def test_family10_consumes_frozen_reviewed_ddk_events_and_exclusion(tmp_path: Pa
         exclusion_intervals=[{"start_sec": 2.0, "end_sec": 2.2,
                               "exclusion_reason": "Cough / throat clear"}])
     finalize_segmentation_review(tmp_path)
+    from vslp.acoustic.alignment.task_workflow import save_project_choices
+    save_project_choices(tmp_path, {"schema_version": "1", "recordings": {},
+        "trials": {"r": [{"trial_id": "trial_001", "start_sec": .2, "end_sec": 1.9},
+                          {"trial_id": "trial_002", "start_sec": 2.3,
+                           "end_sec": 3.2}]}})
     final = tmp_path / "acoustic" / "003_segmentation_review" / "final"
     result = run_acoustic_feature_extraction(
         final / "final_segmentation_decisions.csv", tmp_path,
@@ -291,6 +296,8 @@ def test_family10_consumes_frozen_reviewed_ddk_events_and_exclusion(tmp_path: Pa
     assert status.family_id.eq("F10").all()
     assert status.segmentation_run_id.eq("seg_test").all()
     assert events.event_kind.eq("manual_exclusion").sum() == 1
+    assert set(events.loc[events.event_kind.eq("ddk_event"), "trial_id"]) == {
+        "trial_001", "trial_002"}
     assert events.loc[events.event_time_sec.eq(1.6), "next_event_interval_sec"].isna().all()
     assert original_hashes == (sha256_file(wav), sha256_file(automatic_segments))
 
