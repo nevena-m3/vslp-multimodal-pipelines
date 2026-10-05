@@ -32,6 +32,7 @@ TASKS = {
     "bamboo_passage": "Bamboo Passage",
     "ddk": "DDK",
     "wstg": "WSTG",
+    "sentence_s5": "S5",
 }
 REGISTERED_EXECUTORS = frozenset({"F01", "F02", "F04", "F06", "F07", "F08", "F09",
                                   "F10", "F11", "F12"})
@@ -80,22 +81,38 @@ def load_feature_catalog() -> dict[str, Any]:
             "source_document": family03["source_document"],
         })
     family01_tasks = {
-        "C001": ["sustained_a"], "C002": ["bamboo_passage"],
-        "C003": ["sustained_a"], "C004": ["bamboo_passage"],
+        construct_id: [task for task, key in (("sustained_a", "sustained_vowel"),
+                                             ("sentence_s5", "sentence:S5"),
+                                             ("bamboo_passage", "bamboo_passage"))
+                       if recommendations.get(key)]
+        for construct_id, recommendations in family01["task_recommendations"].items()
     }
     outputs01 = []
     for spec in family01["outputs"]:
         construct = constructs[spec["construct_id"]]
+        leaf_recommendations = spec.get(
+            "recommended_for_task", family01["task_recommendations"][spec["construct_id"]])
+        leaf_tasks = [task for task, key in (("sustained_a", "sustained_vowel"),
+                                              ("sentence_s5", "sentence:S5"),
+                                              ("bamboo_passage", "bamboo_passage"))
+                      if leaf_recommendations.get(key)]
         construct["recommended_tasks"] = family01_tasks[spec["construct_id"]]
         construct["conditional_tasks"] = []
+        construct["recommended_for_task"] = family01["task_recommendations"][spec["construct_id"]]
         outputs01.append({
             **spec,
             "construct_name": construct["construct_name"],
             "family_id": "F01", "family_name": construct["family_name"],
             "matrix_status": construct["matrix_status"],
             "use_status": "Research" if spec["construct_id"] == "C004" else "Production",
-            "recommended_tasks": family01_tasks[spec["construct_id"]],
+            "recommended_tasks": (leaf_tasks
+                                  if spec["selectable"] else []),
             "conditional_tasks": [],
+            "executable_for_task": bool(spec["selectable"]),
+            "recommended_for_task": (leaf_recommendations
+                                     if spec["selectable"] else {}),
+            "stable_region_policy_id": family01["stable_region_policy_id"],
+            "interpretation_note": spec.get("interpretation_note", ""),
             "qc_range_low": 60 if spec["unit"] == "Hz" else None,
             "qc_range_high": 500 if spec["unit"] == "Hz" else None,
             "qc_range_text": "60–500 Hz" if spec["unit"] == "Hz" else "—",
@@ -642,8 +659,9 @@ def load_feature_catalog() -> dict[str, Any]:
     attach_family_outputs(matrix, "F13", outputs13)
     for output in matrix["outputs"]:
         is_template = "<" in output["feature_id"] or ">" in output["feature_id"]
-        output["id_provenance"] = "PROJECT_TEMPLATE" if is_template else "SOURCE_DEFINED_ID"
-        output["identity_basis"] = (
+        output["id_provenance"] = output.get(
+            "id_provenance", "PROJECT_TEMPLATE" if is_template else "SOURCE_DEFINED_ID")
+        output["identity_basis"] = output.get("identity_basis") or (
             "Template written in detailed DOCX FEATURE ID(S) field" if is_template
             else "Concrete ID specified by detailed DOCX FEATURE ID(S) field")
         if output["family_id"] == "F12" and (
@@ -687,6 +705,13 @@ def task_key(task_name: str) -> str | None:
 
 def task_fit(item: dict[str, Any], task_name: str, task_type: str | None = None) -> str:
     """Use only explicit exact-task or source-approved task-type mappings."""
+    if item.get("family_id") == "F01" and "recommended_for_task" in item:
+        from vslp.acoustic.features.family01_task import recommendation_key, task_context
+
+        context = task_context({"task_name": task_name, "task_id": task_key(task_name),
+                                "task_type": task_type})
+        return ("Recommended" if item["recommended_for_task"].get(
+            recommendation_key(context), False) else "Not specified")
     key = task_key(task_name)
     if key is not None and key in item.get("recommended_tasks", ()):
         return "Recommended"

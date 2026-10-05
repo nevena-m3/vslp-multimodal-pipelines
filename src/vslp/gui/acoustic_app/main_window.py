@@ -1849,6 +1849,8 @@ class AcousticPipelineWindow(QMainWindow):
                         for key, value in item["parameter_profile"]["active_parameters"].items()]]
             if item.get("blocked_reason"):
                 fields.append(("Scientific limitation", item["blocked_reason"]))
+            if item.get("interpretation_note"):
+                fields.append(("Interpretation", item["interpretation_note"]))
         else:
             fields = [("Family", items[0].text(0))]
         if kind in {"construct", "output"}:

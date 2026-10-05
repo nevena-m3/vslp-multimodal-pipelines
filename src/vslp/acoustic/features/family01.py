@@ -12,7 +12,7 @@ ALGORITHM_VERSION = "family01-praat-ac-1.0.0"
 PARAMETER_SET_ID = "family01_f0_praat_ac_v1"
 FAMILY01_IDS = frozenset({"f0_mean_hz", "f0_median_hz", "f0_sd_st", "f0_iqr_st",
                           "f0_range_st", "pfr_maxmin_st", "intonation_f0_sd_st",
-                          "intonation_f0_iqr_st"})
+                          "intonation_f0_iqr_st", "observed_f0_range_p05_p95_st"})
 PITCH_FLOOR_HZ = 60.0
 PITCH_CEILING_HZ = 500.0
 TIME_STEP_SEC = 0.005
@@ -71,6 +71,8 @@ def calculate_f0_features(track: F0Track, *, sustained: bool) -> dict[str, tuple
         "f0_iqr_st": float(np.percentile(semitones, 75) - np.percentile(semitones, 25)),
         "f0_range_st": float(np.max(semitones) - np.min(semitones)),
         "pfr_maxmin_st": float(12.0 * np.log2(np.max(valid) / np.min(valid))),
+        "observed_f0_range_p05_p95_st": float(
+            np.percentile(semitones, 95) - np.percentile(semitones, 5)),
         "intonation_f0_sd_st": float(np.std(semitones, ddof=1)),
         "intonation_f0_iqr_st": float(
             np.percentile(semitones, 75) - np.percentile(semitones, 25)),

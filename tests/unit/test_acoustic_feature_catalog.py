@@ -85,6 +85,7 @@ def test_task_registry_is_explicit_and_has_no_semantic_classes():
     assert TASKS == {
         "sustained_a": "Sustained /a/", "bamboo_passage": "Bamboo Passage",
         "ddk": "DDK", "wstg": "WSTG",
+        "sentence_s5": "S5",
     }
     assert task_key("WSTG") == "wstg"
     assert task_key("We See Three Geese") is None
@@ -278,7 +279,7 @@ def test_runnable_view_shows_only_concrete_selectable_leaves():
     assert all(item.isHidden() or item.flags() & Qt.ItemIsUserCheckable
                for item in window.feature_items.values())
     window.select_all_features()
-    assert len(window._selected_feature_names()) == 115
+    assert len(window._selected_feature_names()) == 116
     window.feature_view_combo.setCurrentIndex(window.feature_view_combo.findData("all"))
     assert not window.feature_items["ppe_source_replication_only"].isHidden()
     window.close()

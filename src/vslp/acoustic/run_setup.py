@@ -10,6 +10,7 @@ import tempfile
 
 from vslp.core.project import task_run_folder_name
 from vslp.acoustic.features.catalog import task_key
+from vslp.acoustic.features.family01_task import task_context
 
 TASK_TYPES = (
     "Sustained phonation", "Passage / connected speech",
@@ -102,6 +103,9 @@ def initialize_acoustic_run(
         "layout": {"configs": "configs", "logs": "logs", "acoustic": "acoustic"},
         "components": {"acoustic": {"directory": "acoustic", "primary_task": task, "input_folder": str(source), "gui_version": gui_version}},
     }
+    selected_task = task_context(manifest)
+    manifest["task_family"] = selected_task["task_family"]
+    manifest["task_item"] = selected_task["task_item"]
     (run_root / "project_manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     (run_root / "configs" / "setup_config.json").write_text(json.dumps(setup_values, indent=2) + "\n", encoding="utf-8")
     (run_root / "logs" / "setup.log").write_text(

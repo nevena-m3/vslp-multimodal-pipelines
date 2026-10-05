@@ -20,6 +20,9 @@ def test_exact_ids_and_semitone_statistics():
     assert np.isclose(values["f0_iqr_st"][0], 12.0)
     assert np.isclose(values["f0_range_st"][0], 12.0)
     assert np.isclose(values["pfr_maxmin_st"][0], 12.0)
+    semitones = 12 * np.log2(hz / 150)
+    assert np.isclose(values["observed_f0_range_p05_p95_st"][0],
+                      np.percentile(semitones, 95) - np.percentile(semitones, 5))
     assert np.isclose(values["f0_sd_st"][0], np.std(12 * np.log2(hz / 150), ddof=1))
 
 
@@ -29,6 +32,15 @@ def test_tracking_failure_is_nan_with_reason():
                     44100, 0, .2, "stable_phonation")
     assert all(np.isnan(value) and reason == "insufficient_valid_f0_frames"
                for value, reason in calculate_f0_features(track, sustained=True).values())
+
+
+def test_robust_observed_range_resists_one_extreme_frame():
+    hz = np.r_[np.full(39, 180.), 400.]
+    track = F0Track(np.arange(40) * .005, hz, np.ones(40, dtype=bool),
+                    16000, 0., .2, "reviewed_sentence_voiced_frames")
+    values = calculate_f0_features(track, sustained=False)
+    assert values["observed_f0_range_p05_p95_st"][0] == 0.0
+    assert values["pfr_maxmin_st"][0] > 0.0
     track = F0Track(track.time_sec, hz, np.arange(40) < 30,
                     44100, 0, .2, "stable_phonation")
     assert all(np.isnan(value) and reason == "poor_sustained_tracking_yield"
