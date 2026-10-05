@@ -30,9 +30,9 @@ def test_inventory_counts_identity_and_unavailable_selection():
             encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle))
     assert Counter(r["status"] for r in rows) == {
-        "IMPLEMENTED": 116, "NOT_IMPLEMENTED": 21, "UNRESOLVED_TEMPLATE": 19}
+        "IMPLEMENTED": 147, "NOT_IMPLEMENTED": 18, "UNRESOLVED_TEMPLATE": 19}
     assert Counter(r["id_provenance"] for r in rows) == {
-        "SOURCE_DEFINED_ID": 136, "PROJECT_DEFINED_ID": 1, "PROJECT_TEMPLATE": 19}
+        "SOURCE_DEFINED_ID": 136, "PROJECT_DEFINED_ID": 29, "PROJECT_TEMPLATE": 19}
     assert all(r["selectable_in_gui"] == "False" for r in rows
                if r["status"] != "IMPLEMENTED")
     assert all(r["not_implemented_reason_class"] in {
@@ -41,12 +41,18 @@ def test_inventory_counts_identity_and_unavailable_selection():
         "OTHER_EXPLICIT_REASON"}
         for r in rows if r["status"] == "NOT_IMPLEMENTED")
     catalog = load_feature_catalog()
-    assert len(catalog["constructs"]) == 79
+    assert len(catalog["constructs"]) == 80
     assert {o["feature_id"] for o in catalog["outputs"] if "<" not in o["feature_id"]} == {
         r["feature_id"] for r in rows if r["status"] != "UNRESOLVED_TEMPLATE"}
     assert all(o["id_provenance"] == ("PROJECT_TEMPLATE" if "<" in o["feature_id"]
                                       else "PROJECT_DEFINED_ID" if o["feature_id"] ==
-                                      "observed_f0_range_p05_p95_st" else "SOURCE_DEFINED_ID")
+                                      "observed_f0_range_p05_p95_st" or o["feature_id"] in
+                                          {"gne_mean", "gne_sd", "h1_h2_db_raw",
+                                           "h1star_h2star_db"} or o["family_id"] == "F02"
+                                      and o["feature_id"] in {f"h{n}_{kind}"
+                                                              for n in range(1, 9)
+                                                              for kind in ("mean", "sd", "relh")}
+                                      else "SOURCE_DEFINED_ID")
                for o in catalog["outputs"])
 
 

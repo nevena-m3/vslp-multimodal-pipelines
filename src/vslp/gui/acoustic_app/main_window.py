@@ -1788,6 +1788,9 @@ class AcousticPipelineWindow(QMainWindow):
                 available = LABELS[status]
                 explanation = ("Runnable exact output." if status == "IMPLEMENTED" else
                                output.get("blocked_reason") or "A concrete definition is required.")
+                if status == "IMPLEMENTED" and output.get("implementation_class") == (
+                        "research_source_replication"):
+                    explanation = "Runnable research replication; source parity pending."
                 item.setIcon(2, icons[state])
                 item.setText(2, "")
                 item.setText(3, available)
@@ -1847,6 +1850,10 @@ class AcousticPipelineWindow(QMainWindow):
                       ("Parameter profile", item["parameter_profile"]["name"] + " (read-only)"),
                       *[(key.replace("_", " ").capitalize(), value)
                         for key, value in item["parameter_profile"]["active_parameters"].items()]]
+            if item["family_id"] == "F02":
+                fields.extend([("Implementation class", item.get("implementation_class", "")),
+                               ("Source parity", item.get("source_parity_status", "")),
+                               ("Validation", "Engineering tested; clinical validity not established")])
             if item.get("blocked_reason"):
                 fields.append(("Scientific limitation", item["blocked_reason"]))
             if item.get("interpretation_note"):

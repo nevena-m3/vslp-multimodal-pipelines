@@ -31,8 +31,7 @@ from vslp.gui.acoustic_app.feature_presentation import (
 )
 
 FAMILY01_UNAVAILABLE = {"intonation_factor_score_if_frozen"}
-FAMILY02_UNAVAILABLE = {"gne_source_replication_only", "pvi_9_14hz_source", "cpp_db",
-                        "cpps_db", "harmonic_h1_h8_mean", "harmonic_h1_h8_sd",
+FAMILY02_UNAVAILABLE = {"cpps_db", "harmonic_h1_h8_mean", "harmonic_h1_h8_sd",
                         "relh_h1_h8"}
 FAMILY04_UNAVAILABLE = {"vowel_envelope_distance_ai_source"}
 FAMILY07_UNAVAILABLE = {"vowel_duration_<phone>_s"}
@@ -56,9 +55,10 @@ def test_exact_master_constructs_and_no_legacy_leaves():
     catalog = load_feature_catalog()
     source = json.loads((Path(__file__).parents[2] / "src/vslp/acoustic/features/data/master_matrix.json").read_text(encoding="utf-8"))
     assert len(catalog["families"]) == 13
-    assert len(catalog["constructs"]) == 79
-    assert [c["construct_id"] for c in catalog["constructs"]] == [
+    assert len(catalog["constructs"]) == 80
+    assert [c["construct_id"] for c in catalog["constructs"][:79]] == [
         c["construct_id"] for c in source["constructs"]]
+    assert catalog["constructs"][79]["construct_id"] == "C080"
     assert {o["feature_id"] for o in catalog["outputs"]} == (
         FAMILY01_IDS | FAMILY01_UNAVAILABLE | FAMILY02_IDS | FAMILY02_UNAVAILABLE |
         FAMILY04_IDS | FAMILY04_UNAVAILABLE | FAMILY06_IDS | FAMILY06_UNAVAILABLE |
@@ -85,7 +85,7 @@ def test_task_registry_is_explicit_and_has_no_semantic_classes():
     assert TASKS == {
         "sustained_a": "Sustained /a/", "bamboo_passage": "Bamboo Passage",
         "ddk": "DDK", "wstg": "WSTG",
-        "sentence_s5": "S5",
+        "sentence_s5": "S5", "sentence_s6": "S6",
     }
     assert task_key("WSTG") == "wstg"
     assert task_key("We See Three Geese") is None
@@ -183,7 +183,7 @@ def test_gui_columns_details_search_and_structured_recommendations():
         "Recommended tasks", "Unit", "Range", "Analysis unit",
     ]
     assert len(window.subsystem_items) == 13
-    assert len(window.construct_items) == 79
+    assert len(window.construct_items) == 80
     assert set(window.feature_items) == (
         FAMILY01_IDS | FAMILY01_UNAVAILABLE | FAMILY02_IDS | FAMILY02_UNAVAILABLE |
             FAMILY04_IDS | FAMILY04_UNAVAILABLE | FAMILY06_IDS | FAMILY06_UNAVAILABLE |
@@ -279,7 +279,7 @@ def test_runnable_view_shows_only_concrete_selectable_leaves():
     assert all(item.isHidden() or item.flags() & Qt.ItemIsUserCheckable
                for item in window.feature_items.values())
     window.select_all_features()
-    assert len(window._selected_feature_names()) == 116
+    assert len(window._selected_feature_names()) == 147
     window.feature_view_combo.setCurrentIndex(window.feature_view_combo.findData("all"))
     assert not window.feature_items["ppe_source_replication_only"].isHidden()
     window.close()
@@ -450,6 +450,18 @@ def test_family10_gui_implementation_independent_of_reviewed_run(tmp_path: Path)
 
 def test_family01_and_family02_exact_leaf_availability_and_evidence():
     window = _window()
+    assert window.feature_items["jitter_local_pct"].text(0) == "Jitter — local (%)"
+    assert window.feature_items["shimmer_apq11_pct"].text(0) == "Shimmer — APQ11 (%)"
+    assert "Cepstral peak prominence" in window.feature_items["cpp_db"].text(0)
+    assert "Smoothed" in window.feature_items["cpps_db"].text(0)
+    research = window.feature_items["gne_source_replication_only"]
+    assert "research replication" in research.toolTip(3).lower()
+    window.feature_tree.setCurrentItem(research)
+    details = {window.feature_detail_box.topLevelItem(i).text(0):
+               window.feature_detail_box.topLevelItem(i).text(1)
+               for i in range(window.feature_detail_box.topLevelItemCount())}
+    assert details["Source parity"] == "pending"
+    assert "clinical validity not established" in details["Validation"]
     for feature_id in FAMILY01_IDS | FAMILY02_IDS:
         item = window.feature_items[feature_id]
         assert item.text(1) == feature_id

@@ -27,7 +27,7 @@ def test_exact_ids_profile_and_constant_period_behavior():
     x, sr = _tone()
     values, audit = calculate_voice_quality(x, sr)
     assert set(values) == FAMILY02_IDS
-    assert PARAMETER_SET_ID == "family02_stable_vowel_praat_v1"
+    assert PARAMETER_SET_ID == "family02_task_aware_v2"
     assert audit["n_cycles"] >= 100
     assert values["jitter_local_pct"][0] < .01
     assert values["shimmer_local_pct"][0] < .01
@@ -49,7 +49,8 @@ def test_perturbation_and_noise_directions():
 
 def test_dfp_formula_and_insufficient_cycles():
     periods = np.array([.01, .011, .010, .012, .011])
-    assert directional_perturbation_factor(periods) == 100.0
+    # Original source uses the number of adjacent-period differences (N-1).
+    assert directional_perturbation_factor(periods) == 75.0
     assert np.isnan(directional_perturbation_factor(periods[:3]))
     x = np.zeros(4410, dtype=np.float32)
     values, _ = calculate_voice_quality(x, 44100)

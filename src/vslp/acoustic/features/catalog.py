@@ -1,4 +1,4 @@
-"""Source-bound registry for the 79 master-matrix constructs.
+"""Source-bound registry for the 79 master-matrix constructs and approved additions.
 
 The matrix has no exact output IDs. Family specifications may add leaf outputs;
 until then no feature algorithm is approved for production execution.
@@ -33,6 +33,7 @@ TASKS = {
     "ddk": "DDK",
     "wstg": "WSTG",
     "sentence_s5": "S5",
+    "sentence_s6": "S6",
 }
 REGISTERED_EXECUTORS = frozenset({"F01", "F02", "F04", "F06", "F07", "F08", "F09",
                                   "F10", "F11", "F12"})
@@ -146,10 +147,53 @@ def load_feature_catalog() -> dict[str, Any]:
         })
     attach_family_outputs(matrix, "F01", outputs01)
     family02 = json.loads(_FAMILY02.read_text(encoding="utf-8"))
+    for addition in family02.get("project_constructs", []):
+        if addition["construct_id"] in constructs:
+            raise ValueError("Duplicate project construct ID")
+        construct = {
+            **constructs["C012"], **addition, "outputs": [],
+            "recommended_tasks": ["sustained_a"], "conditional_tasks": [],
+            "family_spec_approved": True,
+        }
+        matrix["constructs"].append(construct)
+        constructs[addition["construct_id"]] = construct
     outputs02 = []
     for spec in family02["outputs"]:
         construct = constructs[spec["construct_id"]]
-        construct["recommended_tasks"] = ["sustained_a"]
+        recommendations = spec.get("recommended_for_task", family02[
+            "task_recommendations"][spec["construct_id"]])
+        task_keys = {"sustained_vowel": "sustained_a", "sentence:S5": "sentence_s5",
+                     "sentence:S6": "sentence_s6", "bamboo_passage": "bamboo_passage",
+                     "ddk": "ddk"}
+        recommended_tasks = [task_keys[key] for key, enabled in recommendations.items()
+                             if enabled and key in task_keys]
+        profile_name = ({"C008": "gne_vslp_replication_v1",
+                         "C009": "pvi_vslp_replication_v1",
+                         "C010": "cpp_praat_unsmoothed_v1",
+                         "C012": "harmonic_vslp_replication_v1",
+                         "C080": "h1h2_iseli_2007_v1"}.get(spec["construct_id"]))
+        if spec["feature_id"] == "cpps_db":
+            profile_name = None
+        parameter_values = (family02["replication_profiles"][profile_name]
+                            if profile_name else {
+                                "pitch_floor_hz": 60, "pitch_ceiling_hz": 500,
+                                "period_floor_sec": 0.8 / 500,
+                                "period_ceiling_sec": 1.25 / 60,
+                                "max_period_factor": 1.3,
+                                "max_amplitude_factor": 1.6,
+                                "hnr_time_step_sec": 0.01,
+                                "hnr_periods_per_window": 4.5})
+        lineage = {"C008": "gne", "C009": "pvi", "C012": "harmonic",
+                   "C080": "h1h2"}.get(
+            spec["construct_id"])
+        provenance = family02.get("source_parameter_provenance", {})
+        source_parameters = {key: parameter_values[key] for key in provenance.get(
+            f"{lineage}_source", []) if key in parameter_values}
+        vslp_parameters = {key: parameter_values[key] for key in provenance.get(
+            f"{lineage}_vslp", []) if key in parameter_values}
+        construct["recommended_for_task"] = family02["task_recommendations"][spec[
+            "construct_id"]]
+        construct["recommended_tasks"] = recommended_tasks
         construct["conditional_tasks"] = []
         outputs02.append({
             **spec,
@@ -158,24 +202,26 @@ def load_feature_catalog() -> dict[str, Any]:
             "matrix_status": construct["matrix_status"],
             "use_status": "Research" if spec["construct_id"] in {"C008", "C009", "C012"}
                           else "Production",
-            "recommended_tasks": ["sustained_a"], "conditional_tasks": [],
+            "recommended_tasks": recommended_tasks, "conditional_tasks": [],
+            "recommended_for_task": recommendations,
+            "executable_for_task": {key: bool(spec.get("selectable", True))
+                                    for key in recommendations},
             "qc_range_low": None, "qc_range_high": None,
             "qc_range_text": "0–100%" if spec["feature_id"] == "dfp_pct" else "—",
             "signal_scope": construct["signal_scope"],
-            "analysis_region": "final reviewed stable phonation region",
-            "estimator": "Praat PointProcess periodic cc and Harmonicity cross-correlation",
-            "algorithm": family02["algorithm_version"],
-            "algorithm_version": family02["algorithm_version"],
-            "default_parameter_set_id": family02["parameter_set_id"],
-            "parameter_profile": {"name": "Frozen stable-vowel Praat", "read_only": True,
-                                  "active_parameters": {
-                                      "pitch_floor_hz": 60, "pitch_ceiling_hz": 500,
-                                      "period_floor_sec": 0.8 / 500,
-                                      "period_ceiling_sec": 1.25 / 60,
-                                      "max_period_factor": 1.3,
-                                      "max_amplitude_factor": 1.6,
-                                      "hnr_time_step_sec": 0.01,
-                                      "hnr_periods_per_window": 4.5}},
+            "analysis_region": "centered reviewed stable vowel or eligible voiced trial islands",
+            "estimator": spec.get("estimator", "Praat PointProcess periodic cc and Harmonicity cross-correlation"),
+            "algorithm": spec.get("algorithm_version", family02["algorithm_version"]),
+            "algorithm_version": spec.get("algorithm_version", family02["algorithm_version"]),
+            "default_parameter_set_id": profile_name or family02["parameter_set_id"],
+            "parameter_profile": {"name": profile_name or "Frozen Praat perturbation/HNR",
+                                  "read_only": True,
+                                  "active_parameters": parameter_values},
+            "source_derived_parameters": source_parameters,
+            "vslp_replication_parameters": vslp_parameters,
+            "source_parity_status": spec.get("source_parity_status",
+                                              "reference_validation_pending"),
+            "implementation_class": spec.get("implementation_class", "production_candidate"),
             "prerequisites": {
                 "requires_audio": True, "requires_segmentation": True,
                 "requires_final_reviewed_segmentation": True,
@@ -186,7 +232,7 @@ def load_feature_catalog() -> dict[str, Any]:
             "family_spec_approved": True,
             "selectable": spec.get("selectable", True),
             "blocked_reason": spec.get("blocked_reason", ""),
-            "source_document": family02["source_document"],
+            "source_document": spec.get("source_document", family02["source_document"]),
         })
     attach_family_outputs(matrix, "F02", outputs02)
     family04 = json.loads(_FAMILY04.read_text(encoding="utf-8"))
@@ -709,7 +755,7 @@ def task_key(task_name: str) -> str | None:
 
 def task_fit(item: dict[str, Any], task_name: str, task_type: str | None = None) -> str:
     """Use only explicit exact-task or source-approved task-type mappings."""
-    if item.get("family_id") == "F01" and "recommended_for_task" in item:
+    if item.get("family_id") in {"F01", "F02"} and "recommended_for_task" in item:
         from vslp.acoustic.features.family01_task import recommendation_key, task_context
 
         context = task_context({"task_name": task_name, "task_id": task_key(task_name),

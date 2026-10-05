@@ -112,7 +112,8 @@ def _select_registry(cfg: FeatureExtractionConfig) -> pd.DataFrame:
                          "construct_id": output["construct_id"],
                          "construct_role": output.get("construct_role", ""),
                          "deprecated_alias_of": output.get("deprecated_alias_of", ""),
-                         "executable_for_task": output.get("executable_for_task", True),
+                         "executable_for_task": json.dumps(
+                             output.get("executable_for_task", True), sort_keys=True),
                          "recommended_for_task": json.dumps(
                              output.get("recommended_for_task", {}), sort_keys=True),
                          "meaning": output["human_name"], "unit": output["unit"],
@@ -121,6 +122,17 @@ def _select_registry(cfg: FeatureExtractionConfig) -> pd.DataFrame:
                          "implementation_status": output["use_status"],
                          "algorithm_version": output["algorithm_version"],
                          "parameter_set_id": output["default_parameter_set_id"],
+                         "parameter_profile": json.dumps(
+                             output.get("parameter_profile", {}), sort_keys=True),
+                         "source_derived_parameters": json.dumps(
+                             output.get("source_derived_parameters", {}), sort_keys=True),
+                         "vslp_replication_parameters": json.dumps(
+                             output.get("vslp_replication_parameters", {}), sort_keys=True),
+                         "source_parity_status": output.get("source_parity_status", ""),
+                         "implementation_class": output.get("implementation_class", ""),
+                         "source_task_support": output.get("source_task_support", ""),
+                         "vslp_recommended_extension": output.get(
+                             "vslp_recommended_extension", ""),
                          "analysis_region": output["analysis_region"],
                          "output_granularity": output.get("output_granularity", "recording"),
                          "source_document": output["source_document"]})

@@ -16,7 +16,15 @@ from vslp.acoustic.features.family01 import (
     calculate_f0_features, praat_f0_track,
 )
 from vslp.acoustic.features.family01_task import task_context
-from vslp.acoustic.features.family02 import FAMILY02_IDS, calculate_voice_quality
+from vslp.acoustic.features.family02 import (
+    ALGORITHM_VERSION as F02_ALGORITHM_VERSION, FAMILY02_IDS, HARMONIC_IDS,
+    PARAMETER_SET_ID as F02_PARAMETER_SET_ID, calculate_voice_quality,
+    trial_perturbation_from_runs,
+)
+from vslp.acoustic.features.family02_research import harmonic_statistics
+from vslp.acoustic.features.family02_harmonic_difference import (
+    FEATURE_IDS as H1H2_IDS, harmonic_difference_trial,
+)
 from vslp.acoustic.segment.review import load_final_segmentation
 from vslp.core.feature_contract import build_feature_delivery, write_feature_handoff
 from vslp.core.provenance import sha256_file
@@ -137,6 +145,103 @@ def _f01_interpretation(feature_id: str, family: str) -> str:
     return "Task-specific valid voiced-frame F0 level"
 
 
+def _f02_voiced_islands(track: F0Track, sr: int) -> list[tuple[float, float]]:
+    """Keep cycle calculations within contiguous voiced runs in original time."""
+    mask = track.voiced_valid
+    edges = np.diff(np.r_[False, mask, False].astype(int))
+    spans = []
+    for first, last in zip(np.flatnonzero(edges == 1), np.flatnonzero(edges == -1),
+                           strict=True):
+        start = max(track.analysis_start_sec, float(track.time_sec[first]) - TIME_STEP_SEC / 2)
+        end = min(track.analysis_end_sec, float(track.time_sec[last - 1]) + TIME_STEP_SEC / 2)
+        if end - start >= .08 and round(end * sr) > round(start * sr):
+            spans.append((start, end))
+    return spans
+
+
+def _f02_trial_values(parts: list[F0Track], audio: np.ndarray, sr: int,
+                      selected: set[str], sustained: bool):
+    base_selected = selected - H1H2_IDS
+    islands = ([(part.analysis_start_sec, part.analysis_end_sec) for part in parts]
+               if sustained else [island for part in parts
+                                  for island in _f02_voiced_islands(part, sr)])
+    measures: dict[str, list[float]] = {key: [] for key in base_selected}
+    period_runs: list[np.ndarray] = []
+    amplitude_runs: list[np.ndarray] = []
+    frame_values: dict[str, list[np.ndarray]] = {key: [] for key in
+                                                ("hnr_mean_db", "cpp_db", "gne_mean")}
+    harmonic_rows: list[np.ndarray] = []
+    pulses = []
+    audit = {"n_cycles": 0, "n_pulses": 0, "hnr_valid_frames": 0,
+             "cpp_valid_frames": 0, "harmonic_window_count": 0,
+             "pvi_interpolated_fraction": np.nan}
+    for start, end in islands:
+        segment = audio[round(start * sr):round(end * sr)]
+        if segment.size < sr // 10:
+            continue
+        if not base_selected:
+            continue
+        values, local = calculate_voice_quality(
+            segment, sr, base_selected, minimum_usable_cycles=100 if sustained else 4)
+        for key in audit:
+            if key == "pvi_interpolated_fraction":
+                if np.isfinite(local.get(key, np.nan)):
+                    audit[key] = local[key]
+            else:
+                audit[key] += local.get(key, 0)
+        for feature_id in base_selected:
+            value, reason = values[feature_id]
+            if not reason and np.isfinite(value):
+                measures[feature_id].append(float(value))
+        if len(local.get("period_sec", [])):
+            period_runs.append(local["period_sec"])
+        if len(local.get("amplitude_values", [])):
+            amplitude_runs.append(local["amplitude_values"])
+        for feature_id, audit_key in (("hnr_mean_db", "hnr_frame_values"),
+                                      ("cpp_db", "cpp_frame_values"),
+                                      ("gne_mean", "gne_frame_values")):
+            values_array = local.get(audit_key, np.array([]))
+            if len(values_array):
+                frame_values[feature_id].append(values_array)
+        windows = local.get("harmonic_windows", np.empty((0, 8)))
+        if len(windows):
+            harmonic_rows.append(windows)
+        times = local.get("pulse_time_sec", np.array([]))
+        periods = local.get("period_sec", np.array([]))
+        pulses.extend((float(start + t), float(periods[i]) if i < len(periods) else np.nan)
+                      for i, t in enumerate(times))
+    result = {}
+    primitive = trial_perturbation_from_runs(period_runs, amplitude_runs)
+    if audit["n_cycles"] < (100 if sustained else 4):
+        primitive = {key: np.nan for key in primitive}
+    harmonics = harmonic_statistics(np.concatenate(harmonic_rows)) if harmonic_rows else {}
+    for feature_id in base_selected:
+        if feature_id in primitive:
+            value = primitive[feature_id]
+        elif feature_id in harmonics:
+            value = harmonics[feature_id]
+        elif feature_id in {"hnr_mean_db", "cpp_db", "gne_mean", "gne_sd",
+                            "gne_source_replication_only"}:
+            source = ("gne_mean" if feature_id.startswith("gne_") else feature_id)
+            frames = np.concatenate(frame_values[source]) if frame_values[source] else []
+            value = (float(np.std(frames, ddof=1)) if len(frames) >= 2 else np.nan)
+            if feature_id != "gne_sd":
+                value = float(np.mean(frames)) if len(frames) else np.nan
+        elif len(measures[feature_id]) == 1:
+            value = measures[feature_id][0]
+        else:
+            value = np.nan
+        result[feature_id] = ((float(value), "") if np.isfinite(value) else
+                              (np.nan, "no_valid_trial_primitives"))
+    if selected & H1H2_IDS:
+        harmonic_values, frame_rows, harmonic_audit = harmonic_difference_trial(
+            parts, audio, sr)
+        result.update({key: harmonic_values[key] for key in selected & H1H2_IDS})
+        audit["harmonic_difference_frames"] = frame_rows
+        audit["harmonic_difference_audit"] = harmonic_audit
+    return result, audit, pulses, islands
+
+
 def _approved_sentence_intonation(track: F0Track, intervals: pd.DataFrame,
                                   audit_rows: list[dict] | None = None) -> dict[str, float] | None:
     """Use explicit approved sentence labels in final reviewed segmentation, if present."""
@@ -212,6 +317,8 @@ def run_family01_stage(decisions_csv: str | Path, root: str | Path, config,
     selected02 = selected & FAMILY02_IDS
     stage = execution_stage_dir or root / "acoustic" / "005_features"
     values, statuses, track_rows, pulse_rows, trial_rows = [], [], [], [], []
+    voice_trial_rows = []
+    h1h2_frame_rows = []
     legacy_rows = []
     sentence_rows = []
     task = task_context(run)
@@ -233,6 +340,7 @@ def run_family01_stage(decisions_csv: str | Path, root: str | Path, config,
         used_start = np.nan
         used_end = np.nan
         used_duration = np.nan
+        sr = np.nan
         cycle_audit = {"n_cycles": 0, "n_pulses": 0, "hnr_valid_frames": 0}
         try:
             audio, sr = sf.read(row.analysis_wav_path, dtype="float32", always_2d=False)
@@ -393,26 +501,103 @@ def run_family01_stage(decisions_csv: str | Path, root: str | Path, config,
                     result.update({k: (np.nan, str(exc).splitlines()[0]) for k in selected01})
             if selected02:
                 try:
-                    if str(row.segmentation_method) != "sustained_phonation":
-                        raise ValueError("stable_phonation_region_unavailable")
-                    start, end = float(row.stable_region_start), float(row.stable_region_end)
-                    if not 0 <= start < end <= len(audio) / sr:
-                        raise ValueError("stable_phonation_region_unavailable")
-                    region_audio = audio[round(start * sr):round(end * sr)]
-                    used_region, used_start, used_end = (
-                        "final_reviewed_stable_phonation", start, end)
-                    voice_values, cycle_audit = calculate_voice_quality(region_audio, int(sr))
-                    result.update({k: v for k, v in voice_values.items() if k in selected02})
-                    times = cycle_audit.get("pulse_time_sec", np.array([]))
-                    periods = cycle_audit.get("period_sec", np.array([]))
-                    pulse_rows.extend({"recording_id": record_id, "file_name": row.file_name,
-                                       "pulse_index": i + 1, "time_sec": float(start + t),
-                                       "trial_id": _trial_at_time(confirmed_trials, float(start + t)),
-                                       "following_period_sec": float(periods[i]) if i < len(periods) else np.nan,
-                                       "analysis_region": "final_reviewed_stable_phonation",
-                                       "algorithm_version": "family02-praat-1.0.0",
-                                       "parameter_set_id": "family02_stable_vowel_praat_v1"}
-                                      for i, t in enumerate(times))
+                    if not span_tracks:
+                        track, _, span_tracks = _region_tracks(
+                            row, timeline, audio, int(sr), task["task_family"], confirmed_trials)
+                    used_region = track.analysis_region
+                    used_start, used_end = track.analysis_start_sec, track.analysis_end_sec
+                    used_duration = sum(part.analysis_end_sec - part.analysis_start_sec
+                                        for part, *_ in span_tracks)
+                    trial_groups = confirmed_trials or [{"trial_id": "", "start_sec": used_start,
+                                                          "end_sec": used_end}]
+                    active02 = selected02
+                    voice_by_trial = []
+                    for trial in trial_groups:
+                        trial_id = str(trial["trial_id"])
+                        parts = [part for part, identity, *_ in span_tracks
+                                 if identity == trial_id]
+                        trial_values, trial_audit, pulses, islands = _f02_trial_values(
+                            parts, audio, int(sr), active02,
+                            task["task_family"] == "sustained_vowel")
+                        voice_by_trial.append(trial_values)
+                        h1h2_frame_rows.extend({
+                            "recording_id": record_id, "task_family": task["task_family"],
+                            "task_item": task["task_item"], "trial_id": trial_id,
+                            "native_sample_rate_hz": int(sr),
+                            "f0_estimator_version": track.algorithm_version,
+                            "spectral_estimator_version": "hann_fft8192_linear_interpolation_v1",
+                            "formant_estimator_version": "praat_burg_family04_profile_v1",
+                            "bandwidth_estimator_version": "praat_burg_or_mannell_1998_v1",
+                            "correction_model": "Iseli_2007", "correction_formants": "F1,F2",
+                            "parameter_set_id": "family02_h1h2_iseli_2007_v1",
+                            "source_parity_status": "pending", **frame}
+                            for frame in trial_audit.get("harmonic_difference_frames", []))
+                        for key in ("n_cycles", "n_pulses", "hnr_valid_frames"):
+                            cycle_audit[key] += trial_audit[key]
+                        pulse_rows.extend({
+                            "recording_id": record_id, "file_name": row.file_name,
+                            "pulse_index": len(pulse_rows) + i + 1, "time_sec": time,
+                            "trial_id": trial_id, "following_period_sec": period,
+                            "analysis_region": used_region,
+                            "algorithm_version": F02_ALGORITHM_VERSION,
+                            "parameter_set_id": F02_PARAMETER_SET_ID,
+                        } for i, (time, period) in enumerate(pulses))
+                        voice_trial_rows.append({
+                            "recording_id": record_id, "task_family": task["task_family"],
+                            "task_item": task["task_item"], "trial_id": trial_id,
+                            "analysis_unit": "stable central vowel" if task["task_family"] ==
+                            "sustained_vowel" else "contiguous voiced islands within trial",
+                            "measurement_context": task["task_family"],
+                            "sample_rate_hz": int(sr),
+                            "native_sample_rate_hz": int(sr),
+                            "internal_sample_rate_hz": 8000 if active02 & {
+                                "gne_source_replication_only", "gne_mean", "gne_sd"}
+                            else np.nan,
+                            "trial_start_sec": trial["start_sec"],
+                            "trial_end_sec": trial["end_sec"],
+                            "analysis_start_sec": min((a for a, _ in islands), default=np.nan),
+                            "analysis_end_sec": max((b for _, b in islands), default=np.nan),
+                            "analysis_duration_sec": sum(b - a for a, b in islands),
+                            "voiced_islands": json.dumps(islands),
+                            "aggregation_method": "primitive_terms_within_trial",
+                            "n_cycles": trial_audit["n_cycles"],
+                            "hnr_valid_frames": trial_audit["hnr_valid_frames"],
+                            "cpp_valid_frames": trial_audit["cpp_valid_frames"],
+                            "pvi_interpolated_fraction": trial_audit["pvi_interpolated_fraction"],
+                            "h1h2_n_candidate_frames": trial_audit.get(
+                                "harmonic_difference_audit", {}).get("n_candidate_frames", 0),
+                            "h1h2_n_valid_raw_frames": trial_audit.get(
+                                "harmonic_difference_audit", {}).get("n_valid_raw_frames", 0),
+                            "h1h2_n_valid_corrected_frames": trial_audit.get(
+                                "harmonic_difference_audit", {}).get("n_valid_corrected_frames", 0),
+                            "h1h2_valid_frame_fraction": json.dumps(
+                                trial_audit.get("harmonic_difference_audit", {}).get(
+                                    "valid_frame_fraction", {}), sort_keys=True),
+                            "h1h2_bandwidth_sources": json.dumps(
+                                trial_audit.get("harmonic_difference_audit", {}).get(
+                                    "bandwidth_sources", [])),
+                            "h1h2_qc_flags": json.dumps(trial_audit.get(
+                                "harmonic_difference_audit", {}).get("qc_flags", [])),
+                            "feature_failures": json.dumps({key: trial_values[key][1]
+                                                            for key in active02
+                                                            if trial_values[key][1]},
+                                                           sort_keys=True),
+                            "source_parity_status": "pending" if selected02 & (
+                                HARMONIC_IDS | H1H2_IDS | {"gne_source_replication_only", "gne_mean",
+                                                "gne_sd",
+                                                "pvi_9_14hz_source"}) else "not_established",
+                            **{key: trial_values[key][0] for key in active02},
+                        })
+                    for feature_id in active02:
+                        valid = [float(item[feature_id][0]) for item in voice_by_trial
+                                 if not item[feature_id][1] and np.isfinite(item[feature_id][0])]
+                        failure = (next((item[feature_id][1] for item in voice_by_trial
+                                         if item[feature_id][1]), "no_valid_trial_measurement")
+                                   if feature_id in H1H2_IDS else "no_valid_trial_measurement")
+                        result[feature_id] = ((float(np.median(valid)), "") if valid else
+                                              (np.nan, failure))
+                    for feature_id in selected02 - active02:
+                        result[feature_id] = (np.nan, "requires_reviewed_sustained_a")
                 except (ValueError, RuntimeError) as exc:
                     result.update({k: (np.nan, str(exc)) for k in selected02})
         except (OSError, ValueError, RuntimeError) as exc:
@@ -432,6 +617,8 @@ def run_family01_stage(decisions_csv: str | Path, root: str | Path, config,
             "analysis_start_sec": used_start,
             "analysis_end_sec": used_end,
             "analysis_duration_sec": used_duration,
+            "sample_rate_hz": sr,
+            "native_sample_rate_hz": sr,
             "n_candidate_frames": int(track.f0_hz.size) if track else 0,
             "n_valid_f0_frames": int(track.voiced_valid.sum()) if track else 0,
             "n_valid_frames": int(track.voiced_valid.sum()) if track else 0,
@@ -456,29 +643,50 @@ def run_family01_stage(decisions_csv: str | Path, root: str | Path, config,
             spec = registry.loc[registry.feature.eq(feature_id)].iloc[0]
             statuses.append({**base, "feature": feature_id, "feature_id": feature_id,
                              "family_id": spec.family_id, "value": value, "unit": spec.unit,
+                             "internal_sample_rate_hz": (8000 if feature_id in {
+                                 "gne_source_replication_only", "gne_mean", "gne_sd"}
+                                 else np.nan),
+                             "deprecated_alias_of": ("gne_mean" if feature_id ==
+                                                     "gne_source_replication_only" else
+                                                     FAMILY01_ALIASES.get(feature_id, "")),
                              "analysis_unit": ("sentence" if feature_id in FAMILY01_ALIASES and
                                                intonation_analysis_unit == "sentence" else
                                                "passage_fallback" if feature_id in FAMILY01_ALIASES and
                                                intonation_analysis_unit == "passage_fallback" else
                                                "recording median of valid trial values"
-                                               if feature_id in selected01 else "stable phonation"),
+                                               if feature_id in selected else "stable phonation"),
                              "construct_role": ("intonation_component" if feature_id in
                                                 FAMILY01_ALIASES or feature_id in {"f0_sd_st",
                                                 "f0_iqr_st"} and intonation_analysis_unit ==
                                                 "sentence" else "f0_variability" if feature_id in
                                                 {"f0_sd_st", "f0_iqr_st"} else ""),
-                             "deprecated_alias_of": FAMILY01_ALIASES.get(feature_id, ""),
                              "aggregation_method": ("median_valid_trials_v1"
-                                                    if feature_id in selected01 else ""),
+                                                    if feature_id in selected else ""),
+                             "measurement_context": (task["task_family"] if feature_id in
+                                                     selected02 else ""),
+                             "source_parity_status": ("pending" if feature_id in
+                                                      HARMONIC_IDS | H1H2_IDS | {
+                                                          "gne_source_replication_only",
+                                                          "gne_mean", "gne_sd",
+                                                          "pvi_9_14hz_source"} else
+                                                      "reference_validation_pending"),
+                             "source_task_support": ("sustained_vowel" if feature_id ==
+                                                     "dfp_pct" else ""),
+                             "vslp_recommended_extension": ("S5" if feature_id ==
+                                                            "dfp_pct" else ""),
                              "scientific_interpretation": _f01_interpretation(
                                  feature_id, task["task_family"]) if feature_id in selected01 else "",
                              "native_measurement_table": "f0_tracks.csv" if feature_id in selected01 else "",
                              "trial_measurement_table": (
                                  "f0_sentence_summaries.csv" if feature_id in
                                  FAMILY01_ALIASES and task["task_family"] == "bamboo_passage"
-                                 else "f0_trial_summaries.csv" if feature_id in selected01 else ""),
+                                 else "f0_trial_summaries.csv" if feature_id in selected01
+                                 else "voice_quality_trial_summaries.csv" if feature_id in
+                                 selected02 else ""),
                              "algorithm": spec.algorithm_version, "algorithm_version": spec.algorithm_version,
                              "parameter_set_id": spec.parameter_set_id,
+                             "source_derived_parameters": spec.source_derived_parameters,
+                             "vslp_replication_parameters": spec.vslp_replication_parameters,
                              "status": "unavailable" if reason else "computed",
                              "failure_reason": reason})
         if progress_callback:
@@ -494,6 +702,10 @@ def run_family01_stage(decisions_csv: str | Path, root: str | Path, config,
                      if selected01 and task["task_family"] == "bamboo_passage" else None)
     legacy_path = tables / "native_measurements" / "f0_legacy_pooled_recording.csv" if selected01 else None
     pulse_path = tables / "native_measurements" / "voice_pulses.csv" if selected02 else None
+    voice_trial_path = (tables / "native_measurements" / "voice_quality_trial_summaries.csv"
+                        if selected02 else None)
+    h1h2_frame_path = (tables / "native_measurements" / "h1h2_frames.csv"
+                       if selected02 & H1H2_IDS else None)
     pd.DataFrame(values).to_csv(values_path, index=False)
     pd.DataFrame(statuses).to_csv(status_path, index=False)
     if track_path:
@@ -506,6 +718,9 @@ def run_family01_stage(decisions_csv: str | Path, root: str | Path, config,
     if pulse_path:
         pulse_path.parent.mkdir(parents=True, exist_ok=True)
         pd.DataFrame(pulse_rows).to_csv(pulse_path, index=False)
+        pd.DataFrame(voice_trial_rows).to_csv(voice_trial_path, index=False)
+        if h1h2_frame_path:
+            pd.DataFrame(h1h2_frame_rows).to_csv(h1h2_frame_path, index=False)
     registry.to_csv(registry_path, index=False)
     if execution_stage_dir is None:
         handoff = write_feature_handoff(tables, pd.DataFrame(values), registry,
@@ -525,7 +740,11 @@ def run_family01_stage(decisions_csv: str | Path, root: str | Path, config,
                             if sentence_path else []),
                           *([ArtifactRef(str(legacy_path), "f0_legacy_pooled_recording", "text/csv")]
                             if legacy_path else []),
-                          *([ArtifactRef(str(pulse_path), "praat_pulses", "text/csv")] if pulse_path else [])],
+                          *([ArtifactRef(str(pulse_path), "praat_pulses", "text/csv")] if pulse_path else []),
+                          *([ArtifactRef(str(voice_trial_path), "voice_quality_trial_summaries",
+                                         "text/csv")] if voice_trial_path else []),
+                          *([ArtifactRef(str(h1h2_frame_path), "h1h2_frame_audit", "text/csv")]
+                            if h1h2_frame_path else [])],
         config={"selected_features": sorted(selected),
                 "parameter_set_ids": sorted({s["parameter_set_id"] for s in statuses}),
                 "task_family": task["task_family"], "task_item": task["task_item"],
