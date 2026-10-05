@@ -13,6 +13,9 @@ PARAMETER_SET_ID = "family01_f0_praat_ac_v1"
 FAMILY01_IDS = frozenset({"f0_mean_hz", "f0_median_hz", "f0_sd_st", "f0_iqr_st",
                           "f0_range_st", "pfr_maxmin_st", "intonation_f0_sd_st",
                           "intonation_f0_iqr_st", "observed_f0_range_p05_p95_st"})
+FAMILY01_ALIASES = {"intonation_f0_sd_st": "f0_sd_st",
+                    "intonation_f0_iqr_st": "f0_iqr_st"}
+FAMILY01_PRIMARY_IDS = FAMILY01_IDS - FAMILY01_ALIASES.keys()
 PITCH_FLOOR_HZ = 60.0
 PITCH_CEILING_HZ = 500.0
 TIME_STEP_SEC = 0.005
@@ -61,7 +64,7 @@ def calculate_f0_features(track: F0Track, *, sustained: bool) -> dict[str, tuple
               "poor_sustained_tracking_yield" if sustained and track.tracking_yield < MIN_SUSTAINED_YIELD
               else "")
     if reason:
-        return {feature_id: (np.nan, reason) for feature_id in FAMILY01_IDS}
+        return {feature_id: (np.nan, reason) for feature_id in FAMILY01_PRIMARY_IDS}
     median = float(np.median(valid))
     semitones = 12.0 * np.log2(valid / median)
     values = {
@@ -73,8 +76,5 @@ def calculate_f0_features(track: F0Track, *, sustained: bool) -> dict[str, tuple
         "pfr_maxmin_st": float(12.0 * np.log2(np.max(valid) / np.min(valid))),
         "observed_f0_range_p05_p95_st": float(
             np.percentile(semitones, 95) - np.percentile(semitones, 5)),
-        "intonation_f0_sd_st": float(np.std(semitones, ddof=1)),
-        "intonation_f0_iqr_st": float(
-            np.percentile(semitones, 75) - np.percentile(semitones, 25)),
     }
     return {feature_id: (value, "") for feature_id, value in values.items()}

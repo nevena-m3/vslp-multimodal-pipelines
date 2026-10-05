@@ -149,7 +149,7 @@ def test_task_identity_reaches_f01_without_alignment(
     monkeypatch.setattr("vslp.acoustic.features.family01_stage.load_final_segmentation",
                         lambda *_: kept)
     cfg = FeatureExtractionConfig(selected_features=["f0_mean_hz", "pfr_maxmin_st",
-                                                    "intonation_f0_sd_st"])
+                                                    "f0_sd_st", "intonation_f0_sd_st"])
     result = run_family01_stage(decisions, tmp_path, cfg, intervals, _select_registry(cfg))
     values = pd.read_csv(result.summary_table)
     assert values.task_family.iloc[0] == expected_family
@@ -158,11 +158,35 @@ def test_task_identity_reaches_f01_without_alignment(
         assert values.stimulus_text.iloc[0] == "We were away a year ago"
     if expected_family == "bamboo_passage":
         assert values.intonation_analysis_unit.iloc[0] == "passage_fallback"
+        audit = pd.read_csv(tmp_path / "acoustic" / "005_features" / "tables" /
+                            "native_measurements" / "f0_sentence_summaries.csv")
+        assert audit.intonation_analysis_unit.eq("passage_fallback").all()
+        assert audit.construct_role.eq("intonation_component").all()
+    if expected_family == "sentence":
+        assert values.intonation_analysis_unit.iloc[0] == "sentence"
+        assert values.intonation_f0_sd_st.iloc[0] == values.f0_sd_st.iloc[0]
     assert abs(values.f0_mean_hz.iloc[0] - 180) < 2
     tracks = pd.read_csv(tmp_path / "acoustic" / "005_features" / "tables" /
                          "native_measurements" / "f0_tracks.csv")
     assert tracks.analysis_region.eq(region).all()
     assert tracks.time_sec.between(.2, 1.8).all()
+    if expected_family == "bamboo_passage":
+        pd.DataFrame([
+            {"recording_id": "r3", "segment_role": "speech", "start_sec": .2,
+             "end_sec": 1.0, "sentence_id": "one", "sentence_review_status": "APPROVED"},
+            {"recording_id": "r3", "segment_role": "speech", "start_sec": 1.0,
+             "end_sec": 1.8, "sentence_id": "two", "sentence_review_status": "APPROVED"},
+        ]).to_csv(intervals, index=False)
+        result = run_family01_stage(decisions, tmp_path, cfg, intervals,
+                                    _select_registry(cfg))
+        sentence_values = pd.read_csv(result.summary_table)
+        sentence_audit = pd.read_csv(tmp_path / "acoustic" / "005_features" /
+                                     "tables" / "native_measurements" /
+                                     "f0_sentence_summaries.csv")
+        assert sentence_values.intonation_analysis_unit.iloc[0] == "sentence"
+        assert set(sentence_audit.sentence_id) == {"one", "two"}
+        assert np.isclose(sentence_values.intonation_f0_sd_st.iloc[0],
+                          np.median(sentence_audit.f0_sd_st))
 
 
 def test_sustained_trial_first_median_preserves_legacy_pooled_audit(tmp_path, monkeypatch):

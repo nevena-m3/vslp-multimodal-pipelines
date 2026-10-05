@@ -90,6 +90,8 @@ def load_feature_catalog() -> dict[str, Any]:
     outputs01 = []
     for spec in family01["outputs"]:
         construct = constructs[spec["construct_id"]]
+        if spec["construct_id"] == "C004":
+            construct.update(family01["intonation_construct"])
         leaf_recommendations = spec.get(
             "recommended_for_task", family01["task_recommendations"][spec["construct_id"]])
         leaf_tasks = [task for task, key in (("sustained_a", "sustained_vowel"),
@@ -113,6 +115,8 @@ def load_feature_catalog() -> dict[str, Any]:
                                      if spec["selectable"] else {}),
             "stable_region_policy_id": family01["stable_region_policy_id"],
             "interpretation_note": spec.get("interpretation_note", ""),
+            "deprecated_alias_of": spec.get("deprecated_alias_of", ""),
+            "construct_role": spec.get("construct_role", ""),
             "qc_range_low": 60 if spec["unit"] == "Hz" else None,
             "qc_range_high": 500 if spec["unit"] == "Hz" else None,
             "qc_range_text": "60–500 Hz" if spec["unit"] == "Hz" else "—",

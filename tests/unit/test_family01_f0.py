@@ -5,7 +5,8 @@ from __future__ import annotations
 import numpy as np
 
 from vslp.acoustic.features.family01 import (
-    FAMILY01_IDS, F0Track, PARAMETER_SET_ID, calculate_f0_features, praat_f0_track,
+    FAMILY01_ALIASES, FAMILY01_PRIMARY_IDS, F0Track, PARAMETER_SET_ID,
+    calculate_f0_features, praat_f0_track,
 )
 
 
@@ -14,7 +15,8 @@ def test_exact_ids_and_semitone_statistics():
     track = F0Track(np.arange(hz.size) * .005, hz, np.ones(hz.size, dtype=bool),
                     48000, 0, .2, "stable_phonation")
     values = calculate_f0_features(track, sustained=True)
-    assert set(values) == FAMILY01_IDS
+    assert set(values) == FAMILY01_PRIMARY_IDS
+    assert not set(FAMILY01_ALIASES) & set(values)
     assert values["f0_mean_hz"] == (150.0, "")
     assert values["f0_median_hz"] == (150.0, "")
     assert np.isclose(values["f0_iqr_st"][0], 12.0)

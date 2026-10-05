@@ -110,6 +110,8 @@ def _select_registry(cfg: FeatureExtractionConfig) -> pd.DataFrame:
             rows.append({"feature": output["feature_id"], "subsystem": output["family_name"],
                          "family": output["family_name"], "family_id": output["family_id"],
                          "construct_id": output["construct_id"],
+                         "construct_role": output.get("construct_role", ""),
+                         "deprecated_alias_of": output.get("deprecated_alias_of", ""),
                          "executable_for_task": output.get("executable_for_task", True),
                          "recommended_for_task": json.dumps(
                              output.get("recommended_for_task", {}), sort_keys=True),

@@ -11,7 +11,7 @@ import soundfile as sf
 
 from vslp.acoustic.alignment.trials import confirmed_task_trials
 from vslp.acoustic.features.family01 import (
-    FAMILY01_IDS, F0Track, MIN_SUSTAINED_YIELD, MIN_VALID_FRAMES,
+    FAMILY01_ALIASES, FAMILY01_IDS, F0Track, MIN_SUSTAINED_YIELD, MIN_VALID_FRAMES,
     PITCH_CEILING_HZ, PITCH_FLOOR_HZ, TIME_STEP_SEC,
     calculate_f0_features, praat_f0_track,
 )
@@ -129,15 +129,16 @@ def _f0_qc(span_tracks: list[tuple]) -> dict[str, bool]:
 def _f01_interpretation(feature_id: str, family: str) -> str:
     if feature_id in {"pfr_maxmin_st", "observed_f0_range_p05_p95_st"}:
         return "Observed F0 span within the analyzed task; not elicited physiologic range"
-    if feature_id.startswith("intonation_"):
-        return "Primitive voiced-F0 variability component; not a validated latent factor"
+    if feature_id in FAMILY01_ALIASES:
+        return "Deprecated alias of sentence-level primitive F0 variability; not a latent factor"
     if feature_id in {"f0_sd_st", "f0_iqr_st", "f0_range_st"}:
         return ("Within-phonation F0 variability" if family == "sustained_vowel" else
                 "Task-specific connected-speech/prosodic F0 variability")
     return "Task-specific valid voiced-frame F0 level"
 
 
-def _approved_sentence_intonation(track: F0Track, intervals: pd.DataFrame) -> dict[str, float] | None:
+def _approved_sentence_intonation(track: F0Track, intervals: pd.DataFrame,
+                                  audit_rows: list[dict] | None = None) -> dict[str, float] | None:
     """Use explicit approved sentence labels in final reviewed segmentation, if present."""
     required = {"sentence_id", "sentence_review_status", "segment_role",
                 "start_sec", "end_sec"}
@@ -148,9 +149,10 @@ def _approved_sentence_intonation(track: F0Track, intervals: pd.DataFrame) -> di
     if sentences.empty or not sentences.sentence_review_status.astype(str).eq("APPROVED").all():
         return None
     counts = np.zeros(track.time_sec.size, dtype=int)
-    values: dict[str, list[float]] = {key: [] for key in
-                                      ("intonation_f0_sd_st", "intonation_f0_iqr_st")}
-    for _, group in sentences.groupby("sentence_id", sort=False):
+    values: dict[str, list[float]] = {key: [] for key in ("f0_sd_st", "f0_iqr_st")}
+    pending_rows = []
+    for sentence_index, (sentence_id, group) in enumerate(
+            sentences.groupby("sentence_id", sort=False), 1):
         mask = np.zeros(track.time_sec.size, dtype=bool)
         for item in group.itertuples():
             mask |= (track.time_sec >= float(item.start_sec)) & (
@@ -160,14 +162,32 @@ def _approved_sentence_intonation(track: F0Track, intervals: pd.DataFrame) -> di
             continue
         sentence_track = F0Track(track.time_sec[mask], track.f0_hz[mask],
                                  track.voiced_valid[mask], track.sample_rate_hz,
-                                 float(track.time_sec[mask].min()),
-                                 float(track.time_sec[mask].max()), "approved_reviewed_sentence")
+                                 float(group.start_sec.min()),
+                                 float(group.end_sec.max()), "approved_reviewed_sentence")
         calculated = calculate_f0_features(sentence_track, sustained=False)
+        pending_rows.append({
+            "sentence_id": str(sentence_id), "sentence_index": sentence_index,
+            "analysis_start_sec": sentence_track.analysis_start_sec,
+            "analysis_end_sec": sentence_track.analysis_end_sec,
+            "analysis_duration_sec": (sentence_track.analysis_end_sec -
+                                      sentence_track.analysis_start_sec),
+            "n_candidate_frames": int(sentence_track.f0_hz.size),
+            "n_valid_f0_frames": int(sentence_track.voiced_valid.sum()),
+            "tracking_yield": sentence_track.tracking_yield,
+            "f0_sd_st": calculated["f0_sd_st"][0],
+            "f0_iqr_st": calculated["f0_iqr_st"][0],
+            "qc_status": calculated["f0_sd_st"][1] or "valid",
+            "f0_qc_flags": json.dumps(_f0_qc([(sentence_track,)]), sort_keys=True),
+            "construct_role": "intonation_component",
+            "intonation_analysis_unit": "sentence",
+        })
         for key in values:
             if not calculated[key][1]:
                 values[key].append(calculated[key][0])
     if not np.all(counts[track.voiced_valid] == 1):
         return None
+    if audit_rows is not None:
+        audit_rows.extend(pending_rows)
     return {key: float(np.median(numbers)) for key, numbers in values.items()
             if numbers} or None
 
@@ -187,10 +207,13 @@ def run_family01_stage(decisions_csv: str | Path, root: str | Path, config,
     run = json.loads((root / "project_manifest.json").read_text(encoding="utf-8"))
     selected = set(config.selected_features) & (FAMILY01_IDS | FAMILY02_IDS)
     selected01 = selected & FAMILY01_IDS
+    selected_primary = {FAMILY01_ALIASES.get(feature_id, feature_id)
+                        for feature_id in selected01}
     selected02 = selected & FAMILY02_IDS
     stage = execution_stage_dir or root / "acoustic" / "005_features"
     values, statuses, track_rows, pulse_rows, trial_rows = [], [], [], [], []
     legacy_rows = []
+    sentence_rows = []
     task = task_context(run)
     f01_profile = json.loads((Path(__file__).with_name("data") / "family01.json").read_text(
         encoding="utf-8"))
@@ -204,7 +227,8 @@ def run_family01_stage(decisions_csv: str | Path, root: str | Path, config,
         track = None
         span_tracks = []
         qc_flags: dict[str, bool] = {}
-        intonation_analysis_unit = "not_applicable"
+        intonation_analysis_unit = (
+            "sentence" if task["task_family"] == "sentence" else "not_applicable")
         used_region = "unavailable"
         used_start = np.nan
         used_end = np.nan
@@ -231,7 +255,7 @@ def run_family01_stage(decisions_csv: str | Path, root: str | Path, config,
                     pooled = calculate_f0_features(track, sustained=sustained)
                     legacy_rows.append({"recording_id": record_id,
                                         "aggregation_policy": "legacy_pooled_valid_frames_v1",
-                                        **{key: pooled[key][0] for key in selected01}})
+                                        **{key: pooled[key][0] for key in selected_primary}})
                     for span_index, (native, trial_id, trial_start, trial_end) in enumerate(
                             span_tracks, 1):
                         track_rows.extend({
@@ -251,6 +275,7 @@ def run_family01_stage(decisions_csv: str | Path, root: str | Path, config,
                     trial_groups = confirmed_trials or [{"trial_id": "", "start_sec": used_start,
                                                           "end_sec": used_end}]
                     intonation_modes: set[str] = set()
+                    trial_results: list[dict[str, tuple[float, str]]] = []
                     for trial in trial_groups:
                         trial_id = str(trial["trial_id"])
                         parts = [native for native, identity, *_ in span_tracks
@@ -268,19 +293,63 @@ def run_family01_stage(decisions_csv: str | Path, root: str | Path, config,
                                 trial_track.voiced_valid.sum() < MIN_VALID_FRAMES)
                             trial_qc["low_tracking_yield"] = bool(
                                 sustained and trial_track.tracking_yield < MIN_SUSTAINED_YIELD)
+                            sentence_values = None
                             if task["task_family"] == "bamboo_passage":
-                                sentence_values = _approved_sentence_intonation(trial_track, timeline)
+                                pending_sentences: list[dict] = []
+                                sentence_values = _approved_sentence_intonation(
+                                    trial_track, timeline, pending_sentences)
                                 intonation_analysis_unit = (
                                     "sentence" if sentence_values else "passage_fallback")
                                 intonation_modes.add(intonation_analysis_unit)
                                 if sentence_values:
-                                    trial_values.update({key: (value, "")
-                                                         for key, value in sentence_values.items()})
+                                    sentence_rows.extend({"recording_id": record_id,
+                                                          "task_family": task["task_family"],
+                                                          "task_item": task["task_item"],
+                                                          "trial_id": trial_id,
+                                                          "pitch_floor_hz": PITCH_FLOOR_HZ,
+                                                          "pitch_ceiling_hz": PITCH_CEILING_HZ,
+                                                          "time_step_sec": TIME_STEP_SEC,
+                                                          "algorithm_version": track.algorithm_version,
+                                                          "parameter_set_id": track.parameter_set_id,
+                                                          **item} for item in pending_sentences)
+                                else:
+                                    sentence_rows.append({
+                                        "recording_id": record_id, "trial_id": trial_id,
+                                        "task_family": task["task_family"],
+                                        "task_item": task["task_item"],
+                                        "pitch_floor_hz": PITCH_FLOOR_HZ,
+                                        "pitch_ceiling_hz": PITCH_CEILING_HZ,
+                                        "time_step_sec": TIME_STEP_SEC,
+                                        "algorithm_version": track.algorithm_version,
+                                        "parameter_set_id": track.parameter_set_id,
+                                        "sentence_id": "", "sentence_index": np.nan,
+                                        "analysis_start_sec": trial_track.analysis_start_sec,
+                                        "analysis_end_sec": trial_track.analysis_end_sec,
+                                        "analysis_duration_sec": (trial_track.analysis_end_sec -
+                                                                  trial_track.analysis_start_sec),
+                                        "n_candidate_frames": int(trial_track.f0_hz.size),
+                                        "n_valid_f0_frames": int(trial_track.voiced_valid.sum()),
+                                        "tracking_yield": trial_track.tracking_yield,
+                                        "f0_sd_st": trial_values["f0_sd_st"][0],
+                                        "f0_iqr_st": trial_values["f0_iqr_st"][0],
+                                        "qc_status": trial_values["f0_sd_st"][1] or "valid",
+                                        "f0_qc_flags": json.dumps(trial_qc, sort_keys=True),
+                                        "construct_role": "intonation_component",
+                                        "intonation_analysis_unit": "passage_fallback",
+                                    })
                         else:
                             trial_track = None
                             trial_values = {feature_id: (np.nan, "no_eligible_trial_frames")
-                                            for feature_id in selected01}
+                                            for feature_id in selected_primary}
                             trial_qc = {}
+                            sentence_values = None
+                        output_values = dict(trial_values)
+                        for alias, primitive in FAMILY01_ALIASES.items():
+                            if alias in selected01:
+                                output_values[alias] = (
+                                    (sentence_values[primitive], "") if sentence_values and
+                                    primitive in sentence_values else trial_values[primitive])
+                        trial_results.append(output_values)
                         trial_rows.append({
                             "recording_id": record_id, "file_name": row.file_name,
                             "task_family": task["task_family"], "task_item": task["task_item"],
@@ -297,21 +366,21 @@ def run_family01_stage(decisions_csv: str | Path, root: str | Path, config,
                             if trial_track else 0,
                             "tracking_yield": trial_track.tracking_yield if trial_track else 0.0,
                             "f0_qc_flags": json.dumps(trial_qc, sort_keys=True),
-                            "feature_failures": json.dumps({feature_id: trial_values[feature_id][1]
+                            "feature_failures": json.dumps({feature_id: output_values[feature_id][1]
                                                             for feature_id in selected01
-                                                            if trial_values[feature_id][1]},
+                                                            if output_values[feature_id][1]},
                                                            sort_keys=True),
                             "aggregation_policy": "valid_frames_within_trial",
                             "intonation_analysis_unit": intonation_analysis_unit,
                             "algorithm_version": track.algorithm_version,
                             "parameter_set_id": track.parameter_set_id,
                             **{feature_id: trial_values[feature_id][0]
-                               for feature_id in selected01},
+                               for feature_id in selected_primary},
                         })
                     for feature_id in selected01:
-                        valid_trials = [float(item[feature_id]) for item in trial_rows
-                                        if item["recording_id"] == record_id and
-                                        np.isfinite(item[feature_id])]
+                        valid_trials = [float(item[feature_id][0]) for item in trial_results
+                                        if not item[feature_id][1] and
+                                        np.isfinite(item[feature_id][0])]
                         result[feature_id] = (
                             (float(np.median(valid_trials)), "") if valid_trials else
                             (np.nan, "no_valid_trial_measurement"))
@@ -387,13 +456,27 @@ def run_family01_stage(decisions_csv: str | Path, root: str | Path, config,
             spec = registry.loc[registry.feature.eq(feature_id)].iloc[0]
             statuses.append({**base, "feature": feature_id, "feature_id": feature_id,
                              "family_id": spec.family_id, "value": value, "unit": spec.unit,
-                             "analysis_unit": "recording median of valid trial values"
-                             if feature_id in selected01 else "stable phonation",
+                             "analysis_unit": ("sentence" if feature_id in FAMILY01_ALIASES and
+                                               intonation_analysis_unit == "sentence" else
+                                               "passage_fallback" if feature_id in FAMILY01_ALIASES and
+                                               intonation_analysis_unit == "passage_fallback" else
+                                               "recording median of valid trial values"
+                                               if feature_id in selected01 else "stable phonation"),
+                             "construct_role": ("intonation_component" if feature_id in
+                                                FAMILY01_ALIASES or feature_id in {"f0_sd_st",
+                                                "f0_iqr_st"} and intonation_analysis_unit ==
+                                                "sentence" else "f0_variability" if feature_id in
+                                                {"f0_sd_st", "f0_iqr_st"} else ""),
+                             "deprecated_alias_of": FAMILY01_ALIASES.get(feature_id, ""),
+                             "aggregation_method": ("median_valid_trials_v1"
+                                                    if feature_id in selected01 else ""),
                              "scientific_interpretation": _f01_interpretation(
                                  feature_id, task["task_family"]) if feature_id in selected01 else "",
                              "native_measurement_table": "f0_tracks.csv" if feature_id in selected01 else "",
-                             "trial_measurement_table": "f0_trial_summaries.csv"
-                             if feature_id in selected01 else "",
+                             "trial_measurement_table": (
+                                 "f0_sentence_summaries.csv" if feature_id in
+                                 FAMILY01_ALIASES and task["task_family"] == "bamboo_passage"
+                                 else "f0_trial_summaries.csv" if feature_id in selected01 else ""),
                              "algorithm": spec.algorithm_version, "algorithm_version": spec.algorithm_version,
                              "parameter_set_id": spec.parameter_set_id,
                              "status": "unavailable" if reason else "computed",
@@ -407,6 +490,8 @@ def run_family01_stage(decisions_csv: str | Path, root: str | Path, config,
     registry_path = tables / "selected_acoustic_feature_registry.csv"
     track_path = tables / "native_measurements" / "f0_tracks.csv" if selected01 else None
     trial_path = tables / "native_measurements" / "f0_trial_summaries.csv" if selected01 else None
+    sentence_path = (tables / "native_measurements" / "f0_sentence_summaries.csv"
+                     if selected01 and task["task_family"] == "bamboo_passage" else None)
     legacy_path = tables / "native_measurements" / "f0_legacy_pooled_recording.csv" if selected01 else None
     pulse_path = tables / "native_measurements" / "voice_pulses.csv" if selected02 else None
     pd.DataFrame(values).to_csv(values_path, index=False)
@@ -416,6 +501,8 @@ def run_family01_stage(decisions_csv: str | Path, root: str | Path, config,
         pd.DataFrame(track_rows).to_csv(track_path, index=False)
         pd.DataFrame(trial_rows).to_csv(trial_path, index=False)
         pd.DataFrame(legacy_rows).to_csv(legacy_path, index=False)
+        if sentence_path:
+            pd.DataFrame(sentence_rows).to_csv(sentence_path, index=False)
     if pulse_path:
         pulse_path.parent.mkdir(parents=True, exist_ok=True)
         pd.DataFrame(pulse_rows).to_csv(pulse_path, index=False)
@@ -434,6 +521,8 @@ def run_family01_stage(decisions_csv: str | Path, root: str | Path, config,
                           *([ArtifactRef(str(track_path), "shared_f0_track", "text/csv")] if track_path else []),
                           *([ArtifactRef(str(trial_path), "f0_trial_summaries", "text/csv")]
                             if trial_path else []),
+                          *([ArtifactRef(str(sentence_path), "f0_sentence_summaries", "text/csv")]
+                            if sentence_path else []),
                           *([ArtifactRef(str(legacy_path), "f0_legacy_pooled_recording", "text/csv")]
                             if legacy_path else []),
                           *([ArtifactRef(str(pulse_path), "praat_pulses", "text/csv")] if pulse_path else [])],

@@ -29,13 +29,19 @@ def test_recommendation_is_separate_from_executability():
     for feature_id in FAMILY01_IDS:
         assert outputs[feature_id]["executable_for_task"] is True
         assert task_fit(outputs[feature_id], "DDK", "DDK") != "Recommended"
-    for feature_id in FAMILY01_IDS - {"pfr_maxmin_st"}:
+    for feature_id in FAMILY01_IDS - {"pfr_maxmin_st", "intonation_f0_sd_st",
+                                      "intonation_f0_iqr_st"}:
         assert task_fit(outputs[feature_id], sentence,
                         "Sentence / controlled speech") == "Recommended"
         assert task_fit(outputs[feature_id], "Bamboo Passage",
                         "Passage / connected speech") == "Recommended"
     assert task_fit(outputs["pfr_maxmin_st"], sentence,
                     "Sentence / controlled speech") != "Recommended"
+    for alias, primitive in (("intonation_f0_sd_st", "f0_sd_st"),
+                             ("intonation_f0_iqr_st", "f0_iqr_st")):
+        assert outputs[alias]["deprecated_alias_of"] == primitive
+        assert task_fit(outputs[alias], sentence,
+                        "Sentence / controlled speech") != "Recommended"
     for feature_id in ("f0_mean_hz", "f0_median_hz", "f0_sd_st", "f0_iqr_st",
                        "f0_range_st"):
         assert task_fit(outputs[feature_id], sustained, "Sustained phonation") == "Recommended"
@@ -57,6 +63,11 @@ def test_recommendation_is_separate_from_executability():
     constructs = {item["construct_id"]: item for item in catalog["constructs"]}
     assert task_fit(constructs["C001"], sustained, "Sustained phonation") == "Recommended"
     assert task_fit(constructs["C003"], sustained, "Sustained phonation") != "Recommended"
+    assert task_fit(constructs["C004"], sentence,
+                    "Sentence / controlled speech") == "Recommended"
+    assert constructs["C004"]["qc_range_text"] == "—"
+    assert constructs["C004"]["unit"] == "source-specific factor score"
+    assert "not an unweighted" in constructs["C004"]["factor_limitation"]
 
 
 def test_explicit_task_identity_and_s5_text():
@@ -166,14 +177,18 @@ def test_bamboo_intonation_uses_only_explicit_approved_sentence_intervals():
         {"sentence_id": "two", "sentence_review_status": "APPROVED",
          "segment_role": "speech", "start_sec": .2, "end_sec": .4},
     ])
-    result = _approved_sentence_intonation(track, annotated)
+    rows = []
+    result = _approved_sentence_intonation(track, annotated, rows)
+    assert len(rows) == 2
+    assert all(item["construct_role"] == "intonation_component" for item in rows)
+    assert [item["sentence_id"] for item in rows] == ["one", "two"]
     first = calculate_f0_features(F0Track(times[:40], hz[:40],
                                   np.ones(40, dtype=bool), 16000, 0., .2, "sentence"),
                                   sustained=False)
     second = calculate_f0_features(F0Track(times[40:], hz[40:],
                                    np.ones(40, dtype=bool), 16000, .2, .4, "sentence"),
                                    sustained=False)
-    for key in ("intonation_f0_sd_st", "intonation_f0_iqr_st"):
+    for key in ("f0_sd_st", "f0_iqr_st"):
         assert np.isclose(result[key], np.median([first[key][0], second[key][0]]))
     annotated.loc[0, "sentence_review_status"] = "UNREVIEWED"
     assert _approved_sentence_intonation(track, annotated) is None
