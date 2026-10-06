@@ -52,8 +52,8 @@ def test_family13_registry_has_evidence_but_no_executable_or_template_leaf():
     constructs = {c["construct_id"]: c for c in catalog["constructs"]}
     leaves = {o["feature_id"]: o for o in catalog["outputs"] if o["family_id"] == "F13"}
     assert len(catalog["constructs"]) == 80
-    assert len(catalog["outputs"]) == 167
-    assert sum(feature_availability(o)[0] == "Implemented" for o in catalog["outputs"]) == 147
+    assert len(catalog["outputs"]) == 178
+    assert sum(feature_availability(o)[0] == "Implemented" for o in catalog["outputs"]) == 157
     assert set(leaves) == EXPECTED_UNAVAILABLE
     assert all(feature_availability(o)[0] == "Not implemented" and not o["selectable"]
                and o["blocked_reason"] for o in leaves.values())

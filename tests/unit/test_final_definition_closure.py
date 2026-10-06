@@ -12,17 +12,18 @@ from vslp.acoustic.features.mixed_dispatch import _executors
 ROOT = Path(__file__).parents[2]
 
 
-def test_family03_has_evidence_but_no_invented_public_ids():
+def test_family03_open_outputs_preserve_proprietary_non_equivalence():
     catalog = load_feature_catalog()
     constructs = [c for c in catalog["constructs"] if c["family_id"] == "F03"]
     assert len(constructs) == 8
-    assert all(c["id_provenance"] == "NO_PUBLIC_ID" and
-               c["source_placeholder"] == "blocked_proprietary" and
-               c["source_status"] == "NOT_IMPLEMENTED" and
-               c["evidence_level"] == "LIMITED" and
-               c["evidence_entry_count"] > 0 and c["outputs"] == []
-               for c in constructs)
-    assert not any(o["family_id"] == "F03" for o in catalog["outputs"])
+    active = [c for c in constructs if c["active_in_gui"]]
+    retired = [c for c in constructs if not c["active_in_gui"]]
+    assert {c["construct_id"] for c in active} == {"C013", "C014", "C016", "C020"}
+    assert all(c["evidence_level"] == "LIMITED" and c["outputs"] for c in active)
+    assert all(c["id_provenance"] == "NO_PUBLIC_ID" and not c["outputs"]
+               for c in retired)
+    assert all(not o["source_equivalent"] for o in catalog["outputs"]
+               if o["family_id"] == "F03")
 
 
 def test_inventory_counts_identity_and_unavailable_selection():
@@ -30,9 +31,9 @@ def test_inventory_counts_identity_and_unavailable_selection():
             encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle))
     assert Counter(r["status"] for r in rows) == {
-        "IMPLEMENTED": 147, "NOT_IMPLEMENTED": 18, "UNRESOLVED_TEMPLATE": 19}
+        "IMPLEMENTED": 157, "NOT_IMPLEMENTED": 19, "UNRESOLVED_TEMPLATE": 19}
     assert Counter(r["id_provenance"] for r in rows) == {
-        "SOURCE_DEFINED_ID": 136, "PROJECT_DEFINED_ID": 29, "PROJECT_TEMPLATE": 19}
+        "SOURCE_DEFINED_ID": 136, "PROJECT_DEFINED_ID": 40, "PROJECT_TEMPLATE": 19}
     assert all(r["selectable_in_gui"] == "False" for r in rows
                if r["status"] != "IMPLEMENTED")
     assert all(r["not_implemented_reason_class"] in {
@@ -48,7 +49,8 @@ def test_inventory_counts_identity_and_unavailable_selection():
                                       else "PROJECT_DEFINED_ID" if o["feature_id"] ==
                                       "observed_f0_range_p05_p95_st" or o["feature_id"] in
                                           {"gne_mean", "gne_sd", "h1_h2_db_raw",
-                                           "h1star_h2star_db"} or o["family_id"] == "F02"
+                                           "h1star_h2star_db"} or o["family_id"] == "F03"
+                                      or o["family_id"] == "F02"
                                       and o["feature_id"] in {f"h{n}_{kind}"
                                                               for n in range(1, 9)
                                                               for kind in ("mean", "sd", "relh")}

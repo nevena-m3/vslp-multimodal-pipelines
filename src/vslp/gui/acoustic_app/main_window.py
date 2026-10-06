@@ -1450,7 +1450,8 @@ class AcousticPipelineWindow(QMainWindow):
             parent.setFlags(parent.flags() & ~Qt.ItemIsUserCheckable)
             self.feature_tree.addTopLevelItem(parent)
             self.subsystem_items[family_id] = parent
-            for construct in (c for c in self.feature_catalog["constructs"] if c["family_id"] == family_id):
+            for construct in (c for c in self.feature_catalog["constructs"]
+                              if c["family_id"] == family_id and c.get("active_in_gui", True)):
                 construct_id = construct["construct_id"]
                 construct_outputs = outputs_by_construct.get(construct_id, [])
                 flatten = (len(construct_outputs) == 1 and
@@ -1581,6 +1582,8 @@ class AcousticPipelineWindow(QMainWindow):
         query = self.feature_search_edit.text().strip().casefold()
         runnable_only = self.feature_view_combo.currentData() == "runnable"
         for construct in self.feature_catalog["constructs"]:
+            if not construct.get("active_in_gui", True):
+                continue
             node = self.construct_items[construct["construct_id"]]
             if node.data(0, Qt.UserRole)[0] == "output":
                 output = self.catalog_outputs[node.data(0, Qt.UserRole)[1]]
@@ -1738,7 +1741,8 @@ class AcousticPipelineWindow(QMainWindow):
             for label, state in (("Recommended for current task", "GREEN"),
                                  ("Conditional", "AMBER")):
                 matches = [c for c in self.feature_catalog["constructs"]
-                           if self.construct_items[c["construct_id"]].data(0, Qt.UserRole + 1) == state]
+                           if c.get("active_in_gui", True)
+                           and self.construct_items[c["construct_id"]].data(0, Qt.UserRole + 1) == state]
                 group = QTreeWidgetItem([f"{label} ({len(matches)})", ""])
                 tree.addTopLevelItem(group)
                 for construct in matches:
@@ -1766,6 +1770,8 @@ class AcousticPipelineWindow(QMainWindow):
         self._updating_feature_tree = True
         try:
             for construct in self.feature_catalog["constructs"]:
+                if not construct.get("active_in_gui", True):
+                    continue
                 item = self.construct_items[construct["construct_id"]]
                 if item.data(0, Qt.UserRole)[0] == "output":
                     continue

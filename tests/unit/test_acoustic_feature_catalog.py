@@ -16,6 +16,7 @@ from vslp.acoustic.features.catalog import (
 from vslp.acoustic.features.stage import FeatureExtractionConfig, _select_registry
 from vslp.acoustic.features.family01 import FAMILY01_IDS
 from vslp.acoustic.features.family02 import FAMILY02_IDS
+from vslp.acoustic.features.family03 import FAMILY03_IDS
 from vslp.acoustic.features.family04 import FAMILY04_IDS
 from vslp.acoustic.features.family06 import IMPLEMENTED_IDS as FAMILY06_IDS
 from vslp.acoustic.features.family06 import UNAVAILABLE_IDS as FAMILY06_UNAVAILABLE
@@ -61,12 +62,13 @@ def test_exact_master_constructs_and_no_legacy_leaves():
     assert catalog["constructs"][79]["construct_id"] == "C080"
     assert {o["feature_id"] for o in catalog["outputs"]} == (
         FAMILY01_IDS | FAMILY01_UNAVAILABLE | FAMILY02_IDS | FAMILY02_UNAVAILABLE |
+        FAMILY03_IDS |
         FAMILY04_IDS | FAMILY04_UNAVAILABLE | FAMILY06_IDS | FAMILY06_UNAVAILABLE |
         FAMILY07_IDS | FAMILY07_UNAVAILABLE | FAMILY08_IDS | FAMILY09_IDS | FAMILY10_IDS |
         FAMILY11_IDS | FAMILY11_UNAVAILABLE | FAMILY12_IDS | FAMILY12_UNAVAILABLE |
         FAMILY13_UNAVAILABLE)
     assert all(c["outputs"] == [] for c in catalog["constructs"]
-                   if c["family_id"] not in {"F01", "F02", "F04", "F06", "F07", "F08", "F09", "F10",
+                   if c["family_id"] not in {"F01", "F02", "F03", "F04", "F06", "F07", "F08", "F09", "F10",
                                              "F11", "F12", "F13"})
     assert all(c["evidence_level"] == "LIMITED" for c in catalog["constructs"]
                if c["family_id"] == "F03")
@@ -183,9 +185,10 @@ def test_gui_columns_details_search_and_structured_recommendations():
         "Recommended tasks", "Unit", "Range", "Analysis unit",
     ]
     assert len(window.subsystem_items) == 13
-    assert len(window.construct_items) == 80
+    assert len(window.construct_items) == 76
     assert set(window.feature_items) == (
         FAMILY01_IDS | FAMILY01_UNAVAILABLE | FAMILY02_IDS | FAMILY02_UNAVAILABLE |
+        FAMILY03_IDS |
             FAMILY04_IDS | FAMILY04_UNAVAILABLE | FAMILY06_IDS | FAMILY06_UNAVAILABLE |
         FAMILY07_IDS | FAMILY07_UNAVAILABLE | FAMILY08_IDS | FAMILY09_IDS | FAMILY10_IDS |
         FAMILY11_IDS | FAMILY11_UNAVAILABLE | FAMILY12_IDS | FAMILY12_UNAVAILABLE |
@@ -252,7 +255,7 @@ def test_presentation_statuses_are_derived_without_changing_registry_availabilit
     assert construct_presentation_status(constructs["C004"]) == "PARTIALLY_IMPLEMENTED"
     assert construct_presentation_status(constructs["C057"]) == "PARTIALLY_IMPLEMENTED"
     assert construct_presentation_status(constructs["C033"]) == "UNRESOLVED_DEFINITION"
-    assert construct_presentation_status(constructs["C013"]) == "NOT_IMPLEMENTED_PROPRIETARY"
+    assert construct_presentation_status(constructs["C013"]) == "IMPLEMENTED"
     assert construct_presentation_status(constructs["C072"]) == "NOT_IMPLEMENTED_SOURCE_INCOMPLETE"
     assert output_presentation_status(outputs["vowel_duration_<phone>_s"]) == "UNRESOLVED_DEFINITION"
     assert output_presentation_status(outputs["blocked_aural_analytics_ap"]) == "NOT_IMPLEMENTED_PROPRIETARY"
@@ -266,7 +269,7 @@ def test_runnable_view_shows_only_concrete_selectable_leaves():
     assert window.construct_items["C004"].text(3) == "Partially implemented"
     assert window.construct_items["C057"].text(3) == "Partially implemented"
     assert window.construct_items["C033"].text(3) == "Definition required"
-    assert window.construct_items["C013"].text(3) == "Unavailable — proprietary"
+    assert window.construct_items["C013"].text(3) == "Implemented"
     assert window.feature_items["ppe_source_replication_only"].text(3) == "Unavailable — source incomplete"
     assert window.feature_items["dynamics_factor_if_frozen"].text(3) == "Factor not frozen"
     assert window.subsystem_items["F03"].text(3) == "Container"
@@ -274,12 +277,12 @@ def test_runnable_view_shows_only_concrete_selectable_leaves():
     assert not window.feature_items["f0_mean_hz"].isHidden()
     assert window.feature_items["ppe_source_replication_only"].isHidden()
     assert window.feature_items["vowel_duration_<phone>_s"].isHidden()
-    assert window.subsystem_items["F03"].isHidden()
+    assert not window.subsystem_items["F03"].isHidden()
     assert window.subsystem_items["F13"].isHidden()
     assert all(item.isHidden() or item.flags() & Qt.ItemIsUserCheckable
                for item in window.feature_items.values())
     window.select_all_features()
-    assert len(window._selected_feature_names()) == 147
+    assert len(window._selected_feature_names()) == 157
     window.feature_view_combo.setCurrentIndex(window.feature_view_combo.findData("all"))
     assert not window.feature_items["ppe_source_replication_only"].isHidden()
     window.close()

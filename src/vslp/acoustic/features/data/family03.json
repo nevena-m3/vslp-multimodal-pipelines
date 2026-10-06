@@ -43,5 +43,22 @@
       "evidence_entry_count": 3, "unit": "vendor/study-specific index", "range": "No universal bound",
       "blocked_reason": "No disclosed within-cycle instability/blockage landmarks, aggregation or source scale."
     }
+  ],
+  "active_construct_ids": ["C013", "C014", "C016", "C020"],
+  "retired_construct_ids": ["C015", "C017", "C018", "C019"],
+  "algorithm_version": "family03-open-review-1.0.0",
+  "parameter_set_id": "family03_reviewed_a_v1",
+  "open_outputs": [
+    {"construct_id": "C013", "feature_id": "glottal_mfdr", "human_name": "Glottal maximum flow declination rate", "unit": "uncalibrated flow proxy/s", "formula": "median cycle abs(min(dg/dt))", "method_class": "STANDARD_OPEN_METHOD"},
+    {"construct_id": "C013", "feature_id": "glottal_naq", "human_name": "Glottal normalized amplitude quotient", "unit": "dimensionless", "formula": "median cycle peak-to-peak flow / (period × MFDR)", "method_class": "STANDARD_OPEN_METHOD"},
+    {"construct_id": "C014", "feature_id": "glottal_open_quotient", "human_name": "Glottal open quotient", "unit": "proportion", "formula": "median cycle (next GCI − opening)/period", "method_class": "VSLP_OPERATIONAL_ANALOGUE"},
+    {"construct_id": "C014", "feature_id": "glottal_closed_quotient", "human_name": "Glottal closed quotient", "unit": "proportion", "formula": "median cycle (opening − current GCI)/period", "method_class": "VSLP_OPERATIONAL_ANALOGUE"},
+    {"construct_id": "C014", "feature_id": "glottal_closing_quotient", "human_name": "Glottal closing quotient", "unit": "proportion", "formula": "median cycle (next GCI − maximum flow)/period", "method_class": "VSLP_OPERATIONAL_ANALOGUE"},
+    {"construct_id": "C014", "feature_id": "glottal_speed_quotient", "human_name": "Glottal speed quotient", "unit": "dimensionless", "formula": "median cycle opening duration / closing duration", "method_class": "VSLP_OPERATIONAL_ANALOGUE"},
+    {"construct_id": "C016", "feature_id": "amplitude_tremor_mdat_pct", "human_name": "MDAT source-track amplitude tremor", "unit": "%", "formula": "median modulation depth of qualifying dominant source track; current <=2-s protocol is too short", "method_class": "SOURCE_LINEAGE_REIMPLEMENTATION", "selectable": false, "blocked_reason": "The <=2-s VSLP stable-vowel protocol cannot form the required multiwindow >=3-s or >=50%-duration source track."},
+    {"construct_id": "C016", "feature_id": "amplitude_tremor_depth_short_v1_pct", "human_name": "Amplitude tremor depth — VSLP short window", "unit": "%", "formula": "strongest 1–20-Hz normalized Hilbert-envelope modulation depth in 2-s window", "method_class": "VSLP_OPERATIONAL_ANALOGUE"},
+    {"construct_id": "C020", "feature_id": "cycle_waveform_instability", "human_name": "Glottal-cycle waveform instability", "unit": "dimensionless", "formula": "median within-run 1 − Pearson r of normalized adjacent flow cycles", "method_class": "VSLP_OPERATIONAL_ANALOGUE"},
+    {"construct_id": "C020", "feature_id": "cycle_amplitude_instability_pct", "human_name": "Glottal-cycle amplitude instability", "unit": "%", "formula": "100 × 1.4826 × MAD(cycle peak-to-peak flow) / median(cycle peak-to-peak flow)", "method_class": "VSLP_OPERATIONAL_ANALOGUE"},
+    {"construct_id": "C020", "feature_id": "vibration_blockage_pct", "human_name": "Vibration blockage — operational proportion", "unit": "%", "formula": "100 × interior >=3-cycle periodic-loss duration / eligible stable duration", "method_class": "VSLP_OPERATIONAL_ANALOGUE"}
   ]
 }

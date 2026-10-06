@@ -35,7 +35,7 @@ TASKS = {
     "sentence_s5": "S5",
     "sentence_s6": "S6",
 }
-REGISTERED_EXECUTORS = frozenset({"F01", "F02", "F04", "F06", "F07", "F08", "F09",
+REGISTERED_EXECUTORS = frozenset({"F01", "F02", "F03", "F04", "F06", "F07", "F08", "F09",
                                   "F10", "F11", "F12"})
 
 
@@ -65,6 +65,7 @@ def load_feature_catalog() -> dict[str, Any]:
     family01 = json.loads(_FAMILY01.read_text(encoding="utf-8"))
     constructs = {item["construct_id"]: item for item in matrix["constructs"]}
     family03 = json.loads(_FAMILY03.read_text(encoding="utf-8"))
+    active03 = set(family03["active_construct_ids"])
     for spec in family03["constructs"]:
         construct = constructs[spec["construct_id"]]
         construct.update({
@@ -80,7 +81,75 @@ def load_feature_catalog() -> dict[str, Any]:
             "unit": spec["unit"], "qc_range_text": spec["range"],
             "formula": "No reproducible source algorithm is disclosed.",
             "source_document": family03["source_document"],
+            "active_in_gui": spec["construct_id"] in active03,
         })
+    names03 = {
+        "C013": "Glottal closure / phonatory effort",
+        "C014": "Glottal cycle phase quotients",
+        "C016": "Amplitude tremor",
+        "C020": "Vibratory instability / blockage",
+    }
+    for construct_id, name in names03.items():
+        constructs[construct_id].update(
+            construct_name=name, matrix_status="PROD", use_status="Production",
+            source_status="OPEN_VSLP_METHOD; VCS parity not claimed",
+            source_limitation="Open analogue; proprietary VCS Pr parity not claimed.",
+            source_placeholder="", id_provenance="SOURCE_DEFINED_ID",
+            recommended_tasks=["sustained_a"], conditional_tasks=[],
+            analysis_region="centered reviewed stable /a/ <=2 s",
+            analysis_unit="glottal cycles or amplitude modulation within trial",
+            unit="varies by output", formula="See explicit open VSLP child outputs.",
+            qc_range_text="No clinical range established",
+        )
+    outputs03 = []
+    recommendation03 = {"sustained_vowel": True, "sentence:S5": False,
+                        "sentence:S6": False, "bamboo_passage": False,
+                        "sentence:other": False, "ddk": False}
+    for spec in family03["open_outputs"]:
+        construct = constructs[spec["construct_id"]]
+        selectable = spec.get("selectable", True)
+        outputs03.append({
+            **spec, "construct_name": construct["construct_name"],
+            "family_id": "F03", "family_name": construct["family_name"],
+            "matrix_status": "PROD", "use_status": "Production" if selectable else "Research",
+            "evidence_level": "LIMITED", "evidence_study_count": 1,
+            "evidence_entry_count": construct["evidence_entry_count"],
+            "recommended_tasks": ["sustained_a"] if selectable else [],
+            "conditional_tasks": [],
+            "recommended_for_task": recommendation03 if selectable else {},
+            "executable_for_task": {key: bool(selectable and key == "sustained_vowel")
+                                    for key in recommendation03},
+            "qc_range_low": None, "qc_range_high": None,
+            "qc_range_text": "0–1" if spec["feature_id"] in {
+                "glottal_open_quotient", "glottal_closed_quotient",
+                "glottal_closing_quotient"} else "—",
+            "signal_scope": "Speech · Cycles",
+            "analysis_region": "centered reviewed stable /a/ <=2 s",
+            "analysis_unit": "reviewed trial; cycles or modulation frames",
+            "estimator": "QCP-lineage GIF or 50-Hz Hilbert amplitude modulation",
+            "algorithm": family03["algorithm_version"],
+            "algorithm_version": family03["algorithm_version"],
+            "default_parameter_set_id": family03["parameter_set_id"],
+            "parameter_profile": {"name": family03["parameter_set_id"],
+                                  "read_only": True},
+            "source_derived_parameters": {}, "vslp_replication_parameters": {},
+            "source_parity_status": "pending",
+            "implementation_class": spec["method_class"],
+            "id_provenance": "PROJECT_DEFINED_ID",
+            "identity_basis": "Open VSLP/source-lineage output; not a proprietary VCS Pr value",
+            "prerequisites": {
+                "requires_audio": True, "requires_segmentation": True,
+                "requires_final_reviewed_segmentation": True,
+                "requires_alignment": False, "requires_task": True,
+                "requires_unscaled_audio": False, "requires_voiced_region": True,
+                "requires_ddk_events": False, "requires_vowel_tokens": False,
+                "requires_prompt_manifest": False},
+            "family_spec_approved": True, "selectable": selectable,
+            "blocked_reason": spec.get("blocked_reason", ""),
+            "source_equivalent": False,
+            "source_document": family03["source_document"],
+        })
+    attach_family_outputs(matrix, "F03", outputs03)
     family01_tasks = {
         construct_id: [task for task, key in (("sustained_a", "sustained_vowel"),
                                              ("sentence_s5", "sentence:S5"),

@@ -16,6 +16,7 @@ from vslp.core.schemas import ArtifactRef, StageManifest, StageResult
 
 def _executors():
     from vslp.acoustic.features.family01_stage import run_family01_stage
+    from vslp.acoustic.features.family03_stage import run_family03_stage
     from vslp.acoustic.features.family04_stage import run_family04_stage
     from vslp.acoustic.features.family06_stage import run_family06_stage
     from vslp.acoustic.features.family08 import run_reviewed_timing_stage
@@ -26,6 +27,7 @@ def _executors():
     # F07/F08/F09 share reviewed timing; F11/F12 share waveform framing.
     return {
         "voice": ({"F01", "F02"}, run_family01_stage),
+        "glottal": ({"F03"}, run_family03_stage),
         "formants": ({"F04"}, run_family04_stage),
         "segmental": ({"F06"}, run_family06_stage),
         "timing": ({"F07", "F08", "F09"}, run_reviewed_timing_stage),
