@@ -36,7 +36,9 @@ def task_context(manifest: dict) -> dict[str, str]:
             match = re.fullmatch(r"Sustained /([^/]+)/", task_name, flags=re.IGNORECASE)
             item = match.group(1) if match else ""
     if family == "sentence" and not item:
-        if task_id in {"s5", "sentence_s5"} or task_name.casefold() == "s5":
+        if task_id in {"s3", "sentence_s3"} or task_name.casefold() == "s3":
+            item = "S3"
+        elif task_id in {"s5", "sentence_s5"} or task_name.casefold() == "s5":
             item = "S5"
         elif task_id in {"s6", "sentence_s6"} or task_name.casefold() == "s6":
             item = "S6"
@@ -49,7 +51,7 @@ def task_context(manifest: dict) -> dict[str, str]:
     if family == "bamboo_passage" and not item:
         item = "bamboo"
     stimulus = ""
-    if family == "sentence" and item.casefold() in {"s5", "s6"}:
+    if family == "sentence" and item.casefold() in {"s3", "s5", "s6"}:
         named = next((task for task in registry["tasks"]
                       if task["task_id"] == f"sentence_{item.casefold()}"), None)
         if named and named.get("prompts"):

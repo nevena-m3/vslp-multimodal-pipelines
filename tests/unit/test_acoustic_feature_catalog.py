@@ -17,7 +17,7 @@ from vslp.acoustic.features.stage import FeatureExtractionConfig, _select_regist
 from vslp.acoustic.features.family01 import FAMILY01_IDS
 from vslp.acoustic.features.family02 import FAMILY02_IDS
 from vslp.acoustic.features.family03 import FAMILY03_IDS
-from vslp.acoustic.features.family04 import FAMILY04_IDS
+from vslp.acoustic.features.family04 import FAMILY04_IDS, TOKEN_IDS, VOWEL_IDS
 from vslp.acoustic.features.family06 import IMPLEMENTED_IDS as FAMILY06_IDS
 from vslp.acoustic.features.family06 import UNAVAILABLE_IDS as FAMILY06_UNAVAILABLE
 from vslp.acoustic.features.family07 import FAMILY07_IDS
@@ -34,7 +34,7 @@ from vslp.gui.acoustic_app.feature_presentation import (
 FAMILY01_UNAVAILABLE = {"intonation_factor_score_if_frozen"}
 FAMILY02_UNAVAILABLE = {"cpps_db", "harmonic_h1_h8_mean", "harmonic_h1_h8_sd",
                         "relh_h1_h8"}
-FAMILY04_UNAVAILABLE = {"vowel_envelope_distance_ai_source"}
+FAMILY04_UNAVAILABLE = set()
 FAMILY07_UNAVAILABLE = {"vowel_duration_<phone>_s"}
 FAMILY11_UNAVAILABLE = set()
 FAMILY12_UNAVAILABLE = {"opensmile_1_4khz_<functional>"}
@@ -87,7 +87,7 @@ def test_task_registry_is_explicit_and_has_no_semantic_classes():
     assert TASKS == {
         "sustained_a": "Sustained /a/", "bamboo_passage": "Bamboo Passage",
         "ddk": "DDK", "wstg": "WSTG",
-        "sentence_s5": "S5", "sentence_s6": "S6",
+        "sentence_s3": "S3", "sentence_s5": "S5", "sentence_s6": "S6",
     }
     assert task_key("WSTG") == "wstg"
     assert task_key("We See Three Geese") is None
@@ -189,7 +189,8 @@ def test_gui_columns_details_search_and_structured_recommendations():
     assert set(window.feature_items) == (
         FAMILY01_IDS | FAMILY01_UNAVAILABLE | FAMILY02_IDS | FAMILY02_UNAVAILABLE |
         FAMILY03_IDS |
-            FAMILY04_IDS | FAMILY04_UNAVAILABLE | FAMILY06_IDS | FAMILY06_UNAVAILABLE |
+            (FAMILY04_IDS - TOKEN_IDS - VOWEL_IDS) | FAMILY04_UNAVAILABLE |
+            FAMILY06_IDS | FAMILY06_UNAVAILABLE |
         FAMILY07_IDS | FAMILY07_UNAVAILABLE | FAMILY08_IDS | FAMILY09_IDS | FAMILY10_IDS |
         FAMILY11_IDS | FAMILY11_UNAVAILABLE | FAMILY12_IDS | FAMILY12_UNAVAILABLE |
         FAMILY13_UNAVAILABLE)
@@ -282,7 +283,7 @@ def test_runnable_view_shows_only_concrete_selectable_leaves():
     assert all(item.isHidden() or item.flags() & Qt.ItemIsUserCheckable
                for item in window.feature_items.values())
     window.select_all_features()
-    assert len(window._selected_feature_names()) == 157
+    assert len(window._selected_feature_names()) == 166
     window.feature_view_combo.setCurrentIndex(window.feature_view_combo.findData("all"))
     assert not window.feature_items["ppe_source_replication_only"].isHidden()
     window.close()
@@ -364,9 +365,10 @@ def test_specialized_scientific_inputs_appear_only_for_selected_dependencies():
     assert all(control.isHidden() for control in controls[1:])
     prompt.setCheckState(0, Qt.Unchecked)
 
-    vowel = window.feature_items["f1_vowel_median_hz"]
+    assert "f1_vowel_median_hz" not in window.feature_items  # audit table, not GUI leaf
+    vowel = window.feature_items["vsa3_iau_hz2"]
     vowel.setCheckState(0, Qt.Checked)
-    assert not window.feature_vowel_mapping_row.isHidden()
+    assert window.feature_vowel_mapping_row.isHidden()  # frozen AA/IY/UW registry map
     assert window.feature_prompt_row.isHidden()
     assert all(control.isHidden() for control in controls[2:])
     vowel.setCheckState(0, Qt.Unchecked)

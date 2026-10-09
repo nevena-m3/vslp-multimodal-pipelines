@@ -33,6 +33,7 @@ TASKS = {
     "ddk": "DDK",
     "wstg": "WSTG",
     "sentence_s5": "S5",
+    "sentence_s3": "S3",
     "sentence_s6": "S6",
 }
 REGISTERED_EXECUTORS = frozenset({"F01", "F02", "F03", "F04", "F06", "F07", "F08", "F09",
@@ -307,17 +308,17 @@ def load_feature_catalog() -> dict[str, Any]:
     family04 = json.loads(_FAMILY04.read_text(encoding="utf-8"))
     family05 = json.loads(_FAMILY05.read_text(encoding="utf-8"))
     family04_tasks = {
-        "C021": (["bamboo_passage"], ["wstg"]),
-        "C022": (["bamboo_passage"], ["wstg"]),
+        "C021": (["sustained_a", "sentence_s5", "bamboo_passage"], []),
+        "C022": (["sentence_s5", "bamboo_passage"], []),
         "C023": (["bamboo_passage"], []),
         "C024": (["bamboo_passage"], []),
         "C025": (["bamboo_passage"], []),
-        "C026": (["bamboo_passage"], ["wstg"]),
+        "C026": (["wstg"], []),
         "C027": (["bamboo_passage"], []),
-        "C028": ([], []),
+        "C028": (["sentence_s3"], []),
         "C029": (["bamboo_passage"], []),
-        "C030": ([], ["bamboo_passage"]),
-        "C031": ([], []),
+        "C030": (["sentence_s3"], []),
+        "C031": (["sentence_s3"], []),
         "C032": (["bamboo_passage"], []),
     }
     for spec in family04["constructs"]:
@@ -326,17 +327,23 @@ def load_feature_catalog() -> dict[str, Any]:
             construct[field] = spec[field]
         construct["recommended_tasks"], construct["conditional_tasks"] = family04_tasks[spec["construct_id"]]
     outputs04 = []
+    f04_project_ids = {"f1_median_hz", "f2_median_hz", "f3_median_hz",
+                       "vowel_distance_ai_hz", "vowel_distance_au_hz",
+                       "vowel_distance_iu_hz"} | {
+                           spec["feature_id"] for spec in family04["outputs"]
+                           if spec["construct_id"] == "C032"}
     for spec in family04["outputs"]:
         construct = constructs[spec["construct_id"]]
         granularity = spec["output_granularity"]
-        requires_mapping = granularity != "token"
+        requires_mapping = False  # AA/IY/UW mapping is frozen in the task registry.
+        recommendations = spec.get("recommended_tasks", construct["recommended_tasks"])
         outputs04.append({
             **spec,
             "construct_name": construct["construct_name"],
             "family_id": "F04", "family_name": construct["family_name"],
             "matrix_status": construct["matrix_status"],
-            "use_status": "Production" if spec.get("selectable", True) else "Blocked",
-            "recommended_tasks": construct["recommended_tasks"],
+            "use_status": "Production" if spec.get("selectable", True) else "Audit only",
+            "recommended_tasks": recommendations,
             "conditional_tasks": construct["conditional_tasks"],
             "conditional_reason": ("requires explicitly targeted aligned vowels"
                                    if construct["conditional_tasks"] else ""),
@@ -346,13 +353,17 @@ def load_feature_catalog() -> dict[str, Any]:
             "qc_range_low": None, "qc_range_high": None,
             "qc_range_text": ("150–1200 Hz" if spec["feature_id"].startswith("f1_") else
                               "500–3500 Hz" if spec["feature_id"].startswith("f2_token") or
-                              spec["feature_id"].startswith("f2_vowel") else
+                              spec["feature_id"].startswith("f2_vowel") or
+                              spec["feature_id"] == "f2_median_hz" else
                               "1200–5000 Hz" if spec["feature_id"].startswith("f3_") else
                               "≥0 Hz²" if spec["feature_id"] == "vsa3_iau_hz2" else
                               "≥0 Hz" if spec["feature_id"] == "f2_distance_i_a_hz" else "—"),
             "signal_scope": construct["signal_scope"],
             "analysis_region": ("middle 50% of frozen aligned vowel token"
-                                if granularity == "token" else "named frozen-alignment vowel centroids"),
+                                if granularity == "token" else
+                                "reviewed /a/ midpoint or aligned vowel-token medians"
+                                if spec["feature_id"] in {"f1_median_hz", "f2_median_hz", "f3_median_hz"}
+                                else "named frozen-alignment vowel centroids"),
             "estimator": ("Praat/parselmouth Burg; token median"
                           if granularity == "token" else "median token centroids / exact formula"),
             "algorithm": family04["algorithm_version"],
@@ -369,6 +380,8 @@ def load_feature_catalog() -> dict[str, Any]:
             "prerequisites": {"requires_audio": True, "requires_segmentation": True,
                               "requires_final_reviewed_segmentation": True,
                               "requires_alignment": True,
+                              "alignment_exempt_tasks": ["sustained_a"] if spec["feature_id"]
+                              in {"f1_median_hz", "f2_median_hz", "f3_median_hz"} else [],
                               "requires_vowel_tokens": True,
                               "requires_vowel_category_mapping": requires_mapping,
                               "requires_task": True,
@@ -377,6 +390,13 @@ def load_feature_catalog() -> dict[str, Any]:
                               "requires_prompt_manifest": False},
             "family_spec_approved": True,
             "selectable": spec.get("selectable", True),
+            "method_class": ("VSLP_TASK_ADAPTATION" if spec["feature_id"] == "f3_median_hz"
+                             else spec.get("method_class", "STANDARD_SOURCE_FROZEN")),
+            "active_in_gui": granularity == "recording",
+            "id_provenance": ("PROJECT_DEFINED_ID" if spec["feature_id"] in f04_project_ids
+                              else "SOURCE_DEFINED_ID"),
+            "source_parity_status": "pending" if spec["construct_id"] == "C028"
+                                    else "implementation_tested_reference_pending",
             "blocked_reason": spec.get("blocked_reason", ""),
             "source_document": family04["source_document"],
         })
@@ -822,6 +842,13 @@ def task_key(task_name: str) -> str | None:
     return next((key for key, label in TASKS.items() if label.casefold() == normalized), None)
 
 
+def requires_alignment_for_task(output: dict[str, Any], task_name: str) -> bool:
+    """A sustained midpoint can use reviewed segmentation without word/phone tiers."""
+    requirement = output.get("prerequisites", {})
+    return bool(requirement.get("requires_alignment") and task_key(task_name)
+                not in requirement.get("alignment_exempt_tasks", ()))
+
+
 def task_fit(item: dict[str, Any], task_name: str, task_type: str | None = None) -> str:
     """Use only explicit exact-task or source-approved task-type mappings."""
     if item.get("family_id") in {"F01", "F02"} and "recommended_for_task" in item:
@@ -906,7 +933,7 @@ def prerequisite_issues(output: dict[str, Any], *, task_name: str,
             has_ddk = False
         if not has_ddk:
             issues.append("Frozen reviewed DDK events are unavailable")
-    if requires.get("requires_alignment") and not alignment_available:
+    if requires_alignment_for_task(output, task_name) and not alignment_available:
         issues.append("Required vowel/phone alignment is unavailable")
     if requires.get("requires_vowel_category_mapping") and not vowel_mapping_available:
         issues.append("Versioned vowel-category mapping is unavailable")

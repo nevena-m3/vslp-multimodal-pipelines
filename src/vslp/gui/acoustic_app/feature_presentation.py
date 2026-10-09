@@ -33,7 +33,8 @@ def output_presentation_status(output: dict) -> str:
 
 def construct_presentation_status(construct: dict) -> str:
     """Derive a construct label from exact leaves plus unresolved templates."""
-    outputs = construct.get("outputs", [])
+    outputs = [output for output in construct.get("outputs", [])
+               if output.get("active_in_gui", True)]
     statuses = [output_presentation_status(output) for output in outputs]
     templates = (construct.get("source_feature_templates") or
                  construct.get("feature_id_templates") or [])

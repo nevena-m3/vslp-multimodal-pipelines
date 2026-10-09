@@ -10,7 +10,8 @@ import pytest
 
 from vslp.acoustic.features.catalog import feature_availability, load_feature_catalog
 from vslp.acoustic.features.family04 import (
-    DEFAULT_PROFILE_ID, DERIVED_IDS, FAMILY04_IDS, SENSITIVITY_PROFILE_ID,
+    CORNER_IDS, DEFAULT_PROFILE_ID, FAMILY04_IDS, GENERIC_IDS,
+    SENSITIVITY_PROFILE_ID, TOKEN_IDS, VOWEL_IDS,
     aggregate_vowel_centroids, derive_iau_features, load_vowel_category_mapping,
     profile_by_id, summarize_formant_token, track_aligned_vowels, vowel_dispersion,
     vowel_distance,
@@ -28,8 +29,10 @@ def test_registry_exact_ids_evidence_and_templates():
     assert all(outputs[key]["evidence_level"] for key in outputs)
     assert outputs["f2_token_hz"]["evidence_study_count"] == 9
     assert outputs["vsa3_iau_hz2"]["evidence_level"] == "MODERATE"
-    assert all(feature_availability(outputs[key])[0] == "Implemented" for key in FAMILY04_IDS)
-    assert feature_availability(outputs["vowel_envelope_distance_ai_source"])[0] == "Not implemented"
+    assert all(feature_availability(outputs[key])[0] == "Implemented"
+               for key in FAMILY04_IDS - TOKEN_IDS - VOWEL_IDS)
+    assert all(not outputs[key]["selectable"] for key in TOKEN_IDS | VOWEL_IDS)
+    assert len(FAMILY04_IDS - TOKEN_IDS - VOWEL_IDS) == 21
     assert outputs["f1_token_hz"]["output_granularity"] == "token"
     assert outputs["f1_vowel_median_hz"]["output_granularity"] == "vowel"
 
@@ -79,9 +82,14 @@ def test_shared_tracker_uses_aligned_token_and_preserves_waveform():
 
     audio = np.zeros(16000, dtype="float32")
     copy = audio.copy()
-    tokens = pd.DataFrame([{"start_sec": .1, "end_sec": .2, "word_index": 1,
-                            "phone_index": 1, "phone_raw": "IY1",
-                            "phone_normalized": "IY"}])
+    tokens = pd.DataFrame([{"start_sec": .1, "end_sec": .2,
+                            "parent_word_index": 1, "parent_word_id": "w1",
+                            "parent_word_text": "key", "phone_id": "p1",
+                            "phone_index_in_trial": 2, "phone_index_in_word": 1,
+                            "sequence_id": "s1", "trial_id": "t1",
+                            "boundary_source": "REVIEWED_MANUAL_CORRECTION",
+                            "alignment_review_status": "HUMAN_ACCEPTED",
+                            "phone_raw": "IY1", "phone_normalized": "IY"}])
     measurements, frames = track_aligned_vowels(
         audio, 16000, tokens, profile_by_id(), recording_id="r", file_name="x.wav",
         task_id="bamboo", task_type="Passage / connected speech", alignment_run_id="a",
@@ -90,8 +98,51 @@ def test_shared_tracker_uses_aligned_token_and_preserves_waveform():
     assert measurements.iloc[0].f1_token_hz == 400
     assert measurements.iloc[0].vowel_category == "i"
     assert measurements.iloc[0].n_valid_frames >= 3
+    assert measurements.iloc[0].phone_id == "p1"
+    assert measurements.iloc[0].word_id == "w1"
+    assert measurements.iloc[0].sequence_id == "s1"
+    assert measurements.iloc[0].phone_index_in_trial == 2
+    assert measurements.iloc[0].boundary_source == "REVIEWED_MANUAL_CORRECTION"
+    assert measurements.iloc[0].token_start_sec == .1
+    assert "phone_index" not in measurements.columns
     assert frames.in_middle_50_percent.sum() == measurements.iloc[0].n_valid_frames
     assert not hasattr(profile_by_id(), "sex")
+
+
+def test_burg_support_stays_within_phone_trial_and_exclusion_free_audio():
+    class FrozenFormant:
+        def xs(self):
+            return np.array([.104, .110, .120, .130, .140, .150, .160, .170,
+                             .180, .190, .196])
+
+        def get_value_at_time(self, number, time):
+            return (400., 1800., 2900.)[number - 1]
+
+    token = {"start_sec": .10, "end_sec": .20, "trial_start_sec": .10,
+             "trial_end_sec": .20, "phone_raw": "IY1", "phone_normalized": "IY"}
+
+    def measure(**updates):
+        row = {**token, **updates}
+        return track_aligned_vowels(
+            np.zeros(16000), 16000, pd.DataFrame([row]), profile_by_id(),
+            recording_id="r", file_name="x.wav", task_id="sentence_s3",
+            task_type="sentence", alignment_run_id="a",
+            hard_exclusions=updates.get("hard_exclusions", []),
+            formant_object=FrozenFormant())
+
+    clean, frames = measure()
+    assert clean.tracking_status.iloc[0] == "OK"
+    assert frames.time_sec.min() >= .1125  # .10 + half the Burg window
+    assert frames.time_sec.max() <= .1875  # .20 - half the Burg window
+    assert .104 not in frames.time_sec.tolist() and .196 not in frames.time_sec.tolist()
+    # The final trial boundary can also remove otherwise central frame centres.
+    tight, _ = measure(trial_start_sec=.115, trial_end_sec=.20,
+                       start_sec=.115)
+    assert tight.tracking_status.iloc[0] == "OK"
+    excluded, exclusion_frames = measure(hard_exclusions=[(.14, .18)])
+    assert all(not (time - .0125 < .18 and time + .0125 > .14)
+               for time in exclusion_frames.time_sec)
+    assert excluded.tracking_status.iloc[0] == "INSUFFICIENT_VALID_FRAMES"
 
 
 def test_native_rate_parselmouth_burg_synthetic_behavior():
@@ -111,7 +162,8 @@ def test_native_rate_parselmouth_burg_synthetic_behavior():
 
 
 def test_mapping_is_explicit_versioned_and_rejects_overlap(tmp_path):
-    assert load_vowel_category_mapping(None, "bamboo")[1] == "missing_vowel_category_mapping"
+    assert load_vowel_category_mapping(None, "bamboo_passage")[0] == {
+        "AA": "a", "IY": "i", "UW": "u"}
     path = tmp_path / "vowels.json"
     value = {"manifest_version": "1", "task_id": "bamboo", "phone_set": "ARPABET_CMU_39",
              "categories": [{"canonical_vowel": "i", "accepted_phone_labels": ["IY"]},
@@ -140,16 +192,17 @@ def test_vowel_aggregation_and_all_exact_iau_formulas():
     assert vowels.loc[vowels.target_vowel.eq("i"), "f2_vowel_median_hz"].iloc[0] == 2300
     assert vowels.review_flags.eq("low_n_vowel_tokens").all()
     results = derive_iau_features(vowels, True)
-    assert set(results) == DERIVED_IDS
+    assert set(results) == CORNER_IDS
     assert results["vsa3_iau_hz2"] == (322500, "")
     assert results["fri_iau"][0] == pytest.approx(4950 / 900)
     assert results["sfri_iau"][0] == pytest.approx(3500 / 900)
     assert results["vai_iau"][0] == pytest.approx(3100 / 2750)
     assert results["fcr_iau"][0] == pytest.approx(2750 / 3100)
-    assert results["f2_distance_i_a_hz"] == (1100, "")
     missing = derive_iau_features(vowels.loc[vowels.target_vowel.ne("u")], True)
     assert missing["vsa3_iau_hz2"][1] == "missing_required_vowel"
-    assert missing["f2_distance_i_a_hz"] == (1100, "")
     assert derive_iau_features(vowels, False)["vsa3_iau_hz2"][1] == "missing_vowel_category_mapping"
+    assert results["vowel_dispersion_ai_hz"][0] == pytest.approx(np.hypot(500, 1100))
+    assert results["vowel_dispersion_mean_3corner_hz"][0] >= 0
+    assert GENERIC_IDS <= FAMILY04_IDS
     assert vowel_distance((0, 0), (3, 4)) == 5
     assert vowel_dispersion([(0, 0), (3, 4)]) == 5

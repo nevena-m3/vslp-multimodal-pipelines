@@ -13,7 +13,7 @@ Vowel tokens shorter than 50 ms fail. Token values are medians of at least three
 
 ## Mapping and artifacts
 
-`docs/examples/vowel_category_manifest.example.json` is a schema example with empty category mappings. The project must explicitly supply its own phone-label to canonical-vowel mapping. Missing mappings produce `missing_vowel_category_mapping` for named-vowel and derived outputs; token F1/F2/F3 remain measurable.
+`docs/examples/vowel_category_manifest.example.json` is a schema example. Registered VSLP F04 tasks use the frozen versioned AA→/a/, IY→/i/, UW→/u/ mapping without project-by-project re-entry. An explicit mapping manifest remains a compatibility option. An invalid or unavailable mapping produces `missing_vowel_category_mapping` for named-vowel and derived outputs; token F1/F2/F3 remain measurable.
 
 Family 04 writes `formant_token_measurements.csv`, `formant_vowel_measurements.csv`, and compact per-recording formant-frame NPZ files under `acoustic/005_features/tables/native_measurements/`. Token and named-vowel IDs are dimensions of those long-form tables; they are not collapsed into a recording-level scalar. Scalar /i,a,u/ outputs use named centroids and the exact formulas recorded in the registry. Output provenance includes the frozen Alignment run, segmentation hashes, mapping hash, native sample rate, Praat/Parselmouth versions, and profile ID.
 

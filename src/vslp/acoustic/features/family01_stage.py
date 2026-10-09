@@ -16,6 +16,7 @@ from vslp.acoustic.features.family01 import (
     calculate_f0_features, praat_f0_track,
 )
 from vslp.acoustic.features.family01_task import task_context
+from vslp.acoustic.features.stable_phonation import centered_stable_spans
 from vslp.acoustic.features.family02 import (
     ALGORITHM_VERSION as F02_ALGORITHM_VERSION, FAMILY02_IDS, HARMONIC_IDS,
     PARAMETER_SET_ID as F02_PARAMETER_SET_ID, calculate_voice_quality,
@@ -84,19 +85,7 @@ def _region_tracks(row, intervals: pd.DataFrame, audio: np.ndarray, sr: int,
                               if max(a, excluded_end) < b])
             spans.extend((a, b, trial_id, trial_start, trial_end) for a, b in fragments)
     if sustained:
-        # A central phonation window must be contiguous: never bridge an exclusion.
-        by_trial: dict[str, list[tuple[float, float, str, float, float]]] = {}
-        for span in spans:
-            by_trial.setdefault(span[2], []).append(span)
-        centered = []
-        for candidates in by_trial.values():
-            start, end, trial_id, trial_start, trial_end = max(
-                candidates, key=lambda span: (span[1] - span[0], -span[0]))
-            width = min(2.0, end - start)
-            middle = (start + end) / 2.0
-            centered.append((middle - width / 2.0, middle + width / 2.0,
-                             trial_id, trial_start, trial_end))
-        spans = centered
+        spans = centered_stable_spans(row, intervals, len(audio) / sr, trials)
     if not spans:
         raise ValueError("final_reviewed_speech_region_unavailable")
     span_tracks = []

@@ -59,8 +59,12 @@ def _case(tmp_path, monkeypatch, *, aligned=False, normalized=False, ddk=False):
     }])
     for module in ("mixed_dispatch", "family01_stage", "family04_stage", "family06_stage", "family08",
                    "family10", "family11_12_stage"):
-        monkeypatch.setattr(f"vslp.acoustic.features.{module}.load_final_segmentation",
-                            lambda *_: kept)
+        try:
+            monkeypatch.setattr(f"vslp.acoustic.features.{module}.load_final_segmentation",
+                                lambda *_: kept)
+        except ImportError as exc:
+            if module != "family11_12_stage" or "librosa" not in str(exc):
+                raise
     if normalized:
         prep = root / "acoustic" / "001_preprocess" / "tables"
         prep.mkdir(parents=True)
@@ -80,13 +84,25 @@ def _case(tmp_path, monkeypatch, *, aligned=False, normalized=False, ddk=False):
         class Alignment:
             manifest = {"alignment_run_id": "align1", "provider": "validated_external",
                         "final_words_sha256": "b" * 64, "final_phones_sha256": "c" * 64,
-                        "final_words_path": str(words), "final_phones_path": str(phones)}
+                        "final_words_path": str(words), "final_phones_path": str(phones),
+                        "final_alignment_contract_version": "FINAL_ALIGNMENT_CONTRACT_V1",
+                        "final_alignment_contract_artifact_sha256": {
+                            "final_alignment_canonical_words.csv": "b" * 64,
+                            "final_alignment_canonical_phones.csv": "c" * 64}}
+            trials = pd.DataFrame([{"recording_id": "r1", "trial_id": "trial_001",
+                                    "start_sec": .2, "end_sec": 1.8}])
 
             @staticmethod
             def get_vowel_tokens(_recording_id):
                 return pd.DataFrame([{"start_sec": .3, "end_sec": .5,
                                       "phone_raw": "IY1", "phone_normalized": "IY",
-                                      "word_index": 1, "phone_index": 1}])
+                                      "word_index": 1, "phone_index": 1,
+                                      "trial_id": "trial_001",
+                                      "parent_word_text": "test"}])
+
+            @staticmethod
+            def get_word_tokens(_recording_id):
+                return pd.DataFrame([{"word_index": 1, "word": "test"}])
 
         monkeypatch.setattr("vslp.acoustic.features.family04_stage.load_final_alignment",
                             lambda *_: (Alignment(), ""))
@@ -118,6 +134,9 @@ def _run(root, decisions, intervals, ids, mapping=None):
 
 def test_voice_and_pause_succeed_in_one_run(tmp_path, monkeypatch):
     root, decisions, intervals, _ = _case(tmp_path, monkeypatch)
+    monkeypatch.setattr("vslp.acoustic.alignment.load_final_alignment",
+                        lambda *_: (_ for _ in ()).throw(AssertionError(
+                            "nonalignment_selection_loaded_alignment")))
     _, status, values = _run(root, decisions, intervals, ["f0_mean_hz", "pause_count"])
     assert set(status.feature_id) == {"f0_mean_hz", "pause_count"}
     assert status.failure_reason.eq("").all()
@@ -125,14 +144,30 @@ def test_voice_and_pause_succeed_in_one_run(tmp_path, monkeypatch):
     assert values.pause_count.iloc[0] == 1
 
 
+def test_missing_alignment_does_not_block_mixed_non_alignment_subset(tmp_path, monkeypatch):
+    root, decisions, intervals, mapping = _case(tmp_path, monkeypatch)
+    _, status, values = _run(root, decisions, intervals,
+                             ["f0_mean_hz", "pause_count", "f1_median_hz", "npvi_v_pct"],
+                             mapping)
+    by_id = status.set_index("feature_id")
+    assert by_id.loc["f0_mean_hz", "failure_reason"] == ""
+    assert by_id.loc["pause_count", "failure_reason"] == ""
+    assert by_id.loc["f0_mean_hz", "input_contract"] == "FINAL_REVIEWED_SEGMENTATION"
+    assert by_id.loc["pause_count", "input_contract"] == "FINAL_REVIEWED_TIMING"
+    assert by_id.loc["f1_median_hz", "input_contract"] == "FINAL_ALIGNMENT_CONTRACT_V1"
+    assert by_id.loc["npvi_v_pct", "input_contract"] == "FINAL_ALIGNMENT_CONTRACT_V1"
+    assert np.isfinite(values.f0_mean_hz.iloc[0])
+    assert values.pause_count.iloc[0] == 1
+
+
 @pytest.mark.parametrize("aligned", [True, False])
 def test_formants_and_pause_isolate_alignment(tmp_path, monkeypatch, aligned):
     root, decisions, intervals, mapping = _case(tmp_path, monkeypatch, aligned=aligned)
     _, status, values = _run(root, decisions, intervals,
-                             ["f1_vowel_median_hz", "pause_count"], mapping)
+                             ["f1_median_hz", "pause_count"], mapping)
     assert values.pause_count.iloc[0] == 1
-    formant = status.loc[status.feature_id.eq("f1_vowel_median_hz")].iloc[0]
-    assert formant.status == ("computed_native" if aligned else "unavailable")
+    formant = status.loc[status.feature_id.eq("f1_median_hz")].iloc[0]
+    assert formant.status == ("computed" if aligned else "unavailable")
     assert formant.failure_reason == ("" if aligned else "missing_alignment")
     if aligned:
         audit = (root / "acoustic" / "005_features" / "family_runs" / "formants" /
@@ -161,12 +196,12 @@ def test_normalization_failure_only_affects_absolute_energy(tmp_path, monkeypatc
 
 def test_four_families_selected_only_unique_and_audited(tmp_path, monkeypatch):
     root, decisions, intervals, mapping = _case(tmp_path, monkeypatch, aligned=True)
-    ids = ["f0_mean_hz", "f1_token_hz", "pause_count", "mfcc01_mean"]
+    ids = ["f0_mean_hz", "f1_median_hz", "pause_count", "mfcc01_mean"]
     result, status, values = _run(root, decisions, intervals, ids, mapping)
     assert set(status.feature_id) == set(ids)
     assert not status.duplicated(["recording_id", "feature_id"]).any()
     assert set(values.columns) >= {"f0_mean_hz", "pause_count", "mfcc01_mean"}
-    assert "f1_token_hz" not in values
+    assert "f1_median_hz" in values
     manifest = json.loads(Path(result.manifest_path).read_text(encoding="utf-8"))
     assert set(manifest["config"]["families_invoked"]) == {"F01", "F04", "F09", "F12"}
     assert manifest["config"]["failed_outputs"] == 0
@@ -226,14 +261,14 @@ def test_reviewed_ddk_and_spectrum_succeed_in_one_selected_only_run(tmp_path, mo
 
 def test_ten_implemented_families_dispatch_together_with_local_failures(tmp_path, monkeypatch):
     root, decisions, intervals, _ = _case(tmp_path, monkeypatch, ddk=True)
-    selected = ["f0_mean_hz", "hnr_mean_db", "f1_vowel_median_hz",
+    selected = ["f0_mean_hz", "hnr_mean_db", "f1_median_hz",
                 "m1_t_minus_k_hz", "speech_time_s", "speaking_rate_syll_s",
                 "pause_count", "ddk_rate_syll_s", "amp_mean_fs", "mfcc01_mean"]
     result, status, values = _run(root, decisions, intervals, selected)
     assert result.status == "completed_with_warnings"
     assert set(status.feature_id) == set(selected)
     assert not status.duplicated(["recording_id", "feature_id"]).any()
-    assert status.loc[status.feature_id.eq("f1_vowel_median_hz"),
+    assert status.loc[status.feature_id.eq("f1_median_hz"),
                       "failure_reason"].iloc[0] == "missing_alignment"
     assert status.loc[status.feature_id.eq("m1_t_minus_k_hz"),
                       "failure_reason"].iloc[0] in {"missing_alignment", "missing_target_definition"}

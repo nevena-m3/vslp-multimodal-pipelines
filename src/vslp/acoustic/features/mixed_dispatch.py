@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from importlib import import_module
 from pathlib import Path
 
 import numpy as np
@@ -15,24 +16,22 @@ from vslp.core.schemas import ArtifactRef, StageManifest, StageResult
 
 
 def _executors():
-    from vslp.acoustic.features.family01_stage import run_family01_stage
-    from vslp.acoustic.features.family03_stage import run_family03_stage
-    from vslp.acoustic.features.family04_stage import run_family04_stage
-    from vslp.acoustic.features.family06_stage import run_family06_stage
-    from vslp.acoustic.features.family08 import run_reviewed_timing_stage
-    from vslp.acoustic.features.family10 import run_family10_stage
-    from vslp.acoustic.features.family11_12_stage import run_family11_12_stage
+    def lazy(module_name: str, function_name: str):
+        def execute(*args, **kwargs):
+            return getattr(import_module(module_name), function_name)(*args, **kwargs)
+
+        return execute
 
     # Executor grouping is deliberate: F01/F02 share audio and voicing work;
     # F07/F08/F09 share reviewed timing; F11/F12 share waveform framing.
     return {
-        "voice": ({"F01", "F02"}, run_family01_stage),
-        "glottal": ({"F03"}, run_family03_stage),
-        "formants": ({"F04"}, run_family04_stage),
-        "segmental": ({"F06"}, run_family06_stage),
-        "timing": ({"F07", "F08", "F09"}, run_reviewed_timing_stage),
-        "ddk": ({"F10"}, run_family10_stage),
-        "spectrum": ({"F11", "F12"}, run_family11_12_stage),
+        "voice": ({"F01", "F02"}, lazy("vslp.acoustic.features.family01_stage", "run_family01_stage")),
+        "glottal": ({"F03"}, lazy("vslp.acoustic.features.family03_stage", "run_family03_stage")),
+        "formants": ({"F04"}, lazy("vslp.acoustic.features.family04_stage", "run_family04_stage")),
+        "segmental": ({"F06"}, lazy("vslp.acoustic.features.family06_stage", "run_family06_stage")),
+        "timing": ({"F07", "F08", "F09"}, lazy("vslp.acoustic.features.family08", "run_reviewed_timing_stage")),
+        "ddk": ({"F10"}, lazy("vslp.acoustic.features.family10", "run_family10_stage")),
+        "spectrum": ({"F11", "F12"}, lazy("vslp.acoustic.features.family11_12_stage", "run_family11_12_stage")),
     }
 
 
@@ -192,6 +191,35 @@ def run_mixed_feature_stage(decisions_csv: str | Path, root: str | Path, config,
             if column in ddk_rows:
                 by_record = ddk_rows.groupby("recording_id")[column].first()
                 wide[column] = wide.recording_id.map(by_record)
+    from vslp.acoustic.features.catalog import (TASKS, load_feature_catalog,
+                                                requires_alignment_for_task)
+    approved = {item["feature_id"]: item for item in load_feature_catalog()["outputs"]}
+    task_name = str(project.get("task_name") or TASKS.get(task_id, ""))
+    alignment_selected = {feature_id for feature_id in selected
+                          if requires_alignment_for_task(approved[feature_id], task_name)}
+    alignment = None
+    if alignment_selected:
+        from vslp.acoustic.alignment import load_final_alignment
+
+        alignment, _alignment_issue = load_final_alignment(root)
+    alignment_provenance = (alignment.manifest if alignment is not None else {})
+
+    def input_contract(feature_id: str) -> str:
+        if feature_id in alignment_selected:
+            return "FINAL_ALIGNMENT_CONTRACT_V1"
+        family = approved[feature_id]["family_id"]
+        if family == "F10":
+            return "FINAL_DDK_EVENTS"
+        if family in {"F07", "F08", "F09"}:
+            return "FINAL_REVIEWED_TIMING"
+        return "FINAL_REVIEWED_SEGMENTATION"
+
+    long["input_contract"] = long.feature_id.map(input_contract)
+    long["alignment_contract_version"] = long.feature_id.map(
+        lambda feature_id: input_contract(feature_id) if feature_id in alignment_selected else "")
+    long["alignment_run_id"] = long.feature_id.map(
+        lambda feature_id: alignment_provenance.get("alignment_run_id", "")
+        if feature_id in alignment_selected else "")
     tables.mkdir(parents=True, exist_ok=True)
     values_path = tables / "acoustic_features_per_file.csv"
     status_path = tables / "acoustic_feature_status_long.csv"
@@ -204,12 +232,6 @@ def run_mixed_feature_stage(decisions_csv: str | Path, root: str | Path, config,
     build_feature_delivery(root, "acoustic", handoff)
     failures = int(long.failure_reason.astype(str).ne("").sum())
     success = len(long) - failures
-    from vslp.acoustic.features.catalog import load_feature_catalog
-    from vslp.acoustic.alignment import load_final_alignment
-
-    approved = {item["feature_id"]: item for item in load_feature_catalog()["outputs"]}
-    alignment, _alignment_issue = load_final_alignment(root)
-    alignment_provenance = (alignment.manifest if alignment is not None else {})
     manifest = StageManifest(
         stage_name="acoustic_features", stage_version="mixed-family-dispatch-1.0.0",
         status="completed_with_warnings" if failures else "completed",
@@ -228,8 +250,16 @@ def run_mixed_feature_stage(decisions_csv: str | Path, root: str | Path, config,
                 "prerequisites": {feature_id: approved[feature_id]["prerequisites"]
                                   for feature_id in selected},
                 "alignment_run_id": alignment_provenance.get("alignment_run_id", ""),
-                "alignment_words_sha256": alignment_provenance.get("final_words_sha256", ""),
-                "alignment_phones_sha256": alignment_provenance.get("final_phones_sha256", ""),
+                "alignment_contract_version": alignment_provenance.get(
+                    "final_alignment_contract_version", ""),
+                "input_contract_by_feature": {feature_id: input_contract(feature_id)
+                                              for feature_id in selected},
+                "alignment_words_sha256": alignment_provenance.get(
+                    "final_alignment_contract_artifact_sha256", {}).get(
+                        "final_alignment_canonical_words.csv", ""),
+                "alignment_phones_sha256": alignment_provenance.get(
+                    "final_alignment_contract_artifact_sha256", {}).get(
+                        "final_alignment_canonical_phones.csv", ""),
                 "source_segmentation_decisions_sha256": sha256_file(decisions),
                 "source_segmentation_intervals_sha256": sha256_file(intervals)})
     manifest_path = stage / "logs" / "stage_manifest.json"

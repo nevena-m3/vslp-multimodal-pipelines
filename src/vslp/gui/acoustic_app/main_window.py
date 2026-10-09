@@ -46,6 +46,7 @@ from PySide6.QtWidgets import (
 
 from vslp.acoustic.features.catalog import (
     feature_availability, load_feature_catalog, prerequisite_issues, task_indicator,
+    requires_alignment_for_task,
 )
 from vslp.acoustic.alignment import freeze_alignment, load_final_alignment, run_acoustic_alignment
 from vslp.acoustic.alignment.self_test import run_mfa_self_test
@@ -1439,6 +1440,8 @@ class AcousticPipelineWindow(QMainWindow):
         self.construct_items.clear()
         outputs_by_construct = {}
         for output in self.feature_catalog["outputs"]:
+            if not output.get("active_in_gui", True):
+                continue
             outputs_by_construct.setdefault(output["construct_id"], []).append(output)
         for family in self.feature_catalog["families"]:
             family_id = family["family_id"]
@@ -1480,7 +1483,7 @@ class AcousticPipelineWindow(QMainWindow):
                     tasks += [f"{self.feature_catalog['tasks_registry'][t]} (conditional)"
                               for t in output["conditional_tasks"]]
                     needs_alignment = (feature_availability(output)[0] == "Implemented" and
-                                       output["prerequisites"].get("requires_alignment", False))
+                                       requires_alignment_for_task(output, self.task_name_edit.text()))
                     display_name = (construct["construct_name"] if flatten else output["human_name"])
                     if needs_alignment:
                         display_name += "  ·  Requires Alignment"
@@ -1626,7 +1629,7 @@ class AcousticPipelineWindow(QMainWindow):
             self, "feature_prompt_manifest_edit") and self.feature_prompt_manifest_edit.text().strip() else None
         output = self.catalog_outputs[feature_id]
         alignment_available = False
-        if output["prerequisites"].get("requires_alignment"):
+        if requires_alignment_for_task(output, task):
             alignment, _alignment_issue = load_final_alignment(root) if root else (None, "missing_alignment")
             alignment_available = alignment is not None
         prompt_available = False
@@ -1708,7 +1711,7 @@ class AcousticPipelineWindow(QMainWindow):
             self.catalog_outputs[f]["prerequisites"].get("requires_prompt_manifest", False)
             for f in selected))
         self.feature_alignment_row.setVisible(any(
-            self.catalog_outputs[f]["prerequisites"].get("requires_alignment", False)
+            requires_alignment_for_task(self.catalog_outputs[f], self.task_name_edit.text())
             for f in selected))
         self.feature_vowel_mapping_row.setVisible(any(
             self.catalog_outputs[f]["prerequisites"].get("requires_vowel_category_mapping", False)
@@ -1789,6 +1792,12 @@ class AcousticPipelineWindow(QMainWindow):
                 item.setData(0, Qt.UserRole + 2, available)
             for feature_id, item in self.feature_items.items():
                 output = self.catalog_outputs[feature_id]
+                base_name = item.text(0).removesuffix("  ·  Requires Alignment")
+                needs_alignment = (feature_availability(output)[0] == "Implemented" and
+                                   requires_alignment_for_task(output, task))
+                item.setText(0, base_name + ("  ·  Requires Alignment" if needs_alignment else ""))
+                item.setToolTip(0, "Requires final linguistic word/phone Alignment."
+                                if needs_alignment else "")
                 state, tooltip = task_indicator(output, task, task_type=task_type)
                 status = output_presentation_status(output)
                 available = LABELS[status]
@@ -2625,8 +2634,8 @@ class AcousticPipelineWindow(QMainWindow):
             QMessageBox.warning(self, "No features selected", "Select at least one feature in the feature tree.")
             return
         alignment_features = [feature_id for feature_id in selected_features
-                              if self.catalog_outputs[feature_id]["prerequisites"].get(
-                                  "requires_alignment", False)]
+                              if requires_alignment_for_task(
+                                  self.catalog_outputs[feature_id], self.task_name_edit.text())]
         if alignment_features:
             final_alignment, _issue = load_final_alignment(output_root)
             if final_alignment is None:
