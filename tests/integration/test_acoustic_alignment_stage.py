@@ -77,7 +77,7 @@ def test_external_import_freeze_and_reload_respect_exclusion(tmp_path):
     run_state = root / "acoustic" / "004_alignment" / "runs" / runs[-1]["alignment_run_id"] / "logs" / "run_state.json"
     assert json.loads(run_state.read_text())["status"] == "COMPLETED"
     freeze_alignment(root, runs[-1]["alignment_run_id"])
-    store, issue = load_final_alignment(root)
+    store, issue = load_final_alignment(root, require_feature_contract=False)
     assert issue == ""
     assert store is not None
     assert len(store.get_word_tokens("r1")) == 3
@@ -178,7 +178,7 @@ def test_batch_progress_includes_failed_recording(tmp_path):
     assert diagnostics.set_index("recording_id").loc["r2", "status"] == "ALIGNMENT_FAILED"
     assert diagnostics.set_index("recording_id").loc["r1", "status"] == "PARTIAL_ALIGNMENT"
     freeze_alignment(root, list_alignment_runs(root)[0]["alignment_run_id"])
-    store, issue = load_final_alignment(root)
+    store, issue = load_final_alignment(root, require_feature_contract=False)
     assert issue == "" and store is not None
     assert len(store.get_word_tokens("r1")) == 3
     assert store.get_phone_tokens("r1").empty

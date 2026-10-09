@@ -41,6 +41,7 @@ def _require_reacceptance(root: str | Path, run_id: str, recording_id: str,
         str(trial_id)) & table.review_status.isin(["ACCEPTED", "AUTO_ACCEPTED_STRUCTURAL"])
     if mask.any():
         table.loc[mask, "review_status"] = "NEEDS_REVIEW"
+        table.loc[mask, "alignment_review_status"] = "NEEDS_REVIEW"
         table.loc[mask, "reviewed_utc"] = ""
         if "review_mode" in table:
             table.loc[mask, "review_mode"] = "HUMAN_CORRECTION_PENDING"

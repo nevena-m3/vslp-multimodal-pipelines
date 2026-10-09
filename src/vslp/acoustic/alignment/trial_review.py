@@ -11,6 +11,11 @@ import pandas as pd
 
 STATUSES = frozenset({"UNREVIEWED", "ACCEPTED", "AUTO_ACCEPTED_STRUCTURAL",
                       "NEEDS_REVIEW", "STALE_AFTER_TRIAL_EDIT"})
+ALIGNMENT_REVIEW_STATES = frozenset({"NOT_RUN", "AUTO_ACCEPTED_STRUCTURAL",
+                                    "NEEDS_REVIEW", "HUMAN_ACCEPTED", "STALE"})
+LEGACY_ALIGNMENT_STATES = {"UNREVIEWED": "NEEDS_REVIEW", "ACCEPTED": "HUMAN_ACCEPTED",
+                           "AUTO_ACCEPTED_STRUCTURAL": "AUTO_ACCEPTED_STRUCTURAL",
+                           "NEEDS_REVIEW": "NEEDS_REVIEW", "STALE_AFTER_TRIAL_EDIT": "STALE"}
 
 
 def trial_review_table(root: str | Path, run_id: str) -> pd.DataFrame:
@@ -29,6 +34,11 @@ def trial_review_table(root: str | Path, run_id: str) -> pd.DataFrame:
         trials["reviewed_utc"] = ""
     trials["review_status"] = trials.review_status.fillna("UNREVIEWED")
     trials["reviewed_utc"] = trials.reviewed_utc.fillna("")
+    if "alignment_review_status" not in trials:
+        trials["alignment_review_status"] = trials.review_status.map(LEGACY_ALIGNMENT_STATES)
+    else:
+        trials["alignment_review_status"] = trials.alignment_review_status.fillna(
+            trials.review_status.map(LEGACY_ALIGNMENT_STATES))
     return trials
 
 
@@ -71,6 +81,8 @@ def set_trial_review(root: str | Path, run_id: str, recording_id: str,
                                         < float(phone.end_sec) <= float(owners.iloc[0].end_sec)):
                 raise ValueError("corrected_phone_word_relationship_invalid")
     table.loc[matches, "review_status"] = status
+    table.loc[matches, "alignment_review_status"] = (
+        "HUMAN_ACCEPTED" if status == "ACCEPTED" else "NEEDS_REVIEW")
     table.loc[matches, "reviewed_utc"] = datetime.now(timezone.utc).isoformat()
     for name, value in (("review_mode", "HUMAN"), ("review_policy_version", "")):
         if name not in table:
@@ -95,5 +107,6 @@ def mark_recording_stale(root: str | Path, run_id: str, recording_id: str) -> No
     mask = table.recording_id.astype(str).eq(str(recording_id))
     if mask.any():
         table.loc[mask, "review_status"] = "STALE_AFTER_TRIAL_EDIT"
+        table.loc[mask, "alignment_review_status"] = "STALE"
         table.loc[mask, "reviewed_utc"] = datetime.now(timezone.utc).isoformat()
         table.to_csv(base / "alignment_trial_review.csv", index=False)

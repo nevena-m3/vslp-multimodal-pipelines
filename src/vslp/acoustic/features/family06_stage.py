@@ -25,13 +25,18 @@ def _aligned_target(store, recording_id: str, target: dict):
     """Match exact frozen word and phone identity plus explicit token indices."""
     words = store.get_word_tokens(recording_id)
     phones = store.get_phone_tokens(recording_id)
+    if target.get("trial_id"):
+        words = words.loc[words.trial_id.astype(str).eq(str(target["trial_id"]))]
+        phones = phones.loc[phones.trial_id.astype(str).eq(str(target["trial_id"]))]
     word = words.loc[words.word_index.eq(int(target["word_index"]))
                   & words.word.astype(str).eq(str(target["word"]))]
     phone = phones.loc[phones.word_index.eq(int(target["word_index"]))
-                       & phones.phone_index.eq(int(target["phone_index"]))
+                       & phones.phone_index_in_word.eq(int(target["phone_index"]))
                        & phones.phone_normalized.astype(str).eq(str(target["phone"]).upper())]
     if len(word) != 1 or len(phone) != 1:
         raise ValueError("missing_approved_aligned_target")
+    if str(phone.iloc[0].parent_word_id) != str(word.iloc[0].word_id):
+        raise ValueError("aligned_target_parent_word_mismatch")
     if ("alignment_status" in word and str(word.iloc[0].alignment_status) != "ALIGNED") or (
             "alignment_status" in phone and str(phone.iloc[0].alignment_status) != "ALIGNED"):
         raise ValueError("invalid_aligned_target_status")
