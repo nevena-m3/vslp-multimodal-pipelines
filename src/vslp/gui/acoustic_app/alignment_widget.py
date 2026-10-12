@@ -825,9 +825,16 @@ class AlignmentWidget(QWidget):
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if answer != QMessageBox.Yes:
                 return
-        entries = [{"trial_id": f"trial_{number:03d}", "start_sec": left,
-                    "end_sec": right, "prompt_id": prompt_id}
-                   for number, (left, right) in enumerate(sorted(bounds), 1)]
+        from vslp.acoustic.alignment.reviewed_trials import confirmed_trial_rows
+        context = project_alignment_context(self.root_provider())
+        try:
+            entries = confirmed_trial_rows(
+                self.root_provider(), recording_id=record_id,
+                task_id=context["task_id"], prompt_id=prompt_id,
+                bounds=sorted(bounds))
+        except ValueError as exc:
+            self.action_hint.setText("Trial confirmation unavailable: " + str(exc))
+            return
         choices.setdefault("trials", {})[record_id] = entries
         context = project_alignment_context(self.root_provider())
         context["choices"] = choices
