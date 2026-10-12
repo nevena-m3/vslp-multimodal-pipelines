@@ -28,6 +28,7 @@ def _executors():
         "voice": ({"F01", "F02"}, lazy("vslp.acoustic.features.family01_stage", "run_family01_stage")),
         "glottal": ({"F03"}, lazy("vslp.acoustic.features.family03_stage", "run_family03_stage")),
         "formants": ({"F04"}, lazy("vslp.acoustic.features.family04_stage", "run_family04_stage")),
+        "formant_dynamics": ({"F05"}, lazy("vslp.acoustic.features.family05_stage", "run_family05_stage")),
         "segmental": ({"F06"}, lazy("vslp.acoustic.features.family06_stage", "run_family06_stage")),
         "timing": ({"F07", "F08", "F09"}, lazy("vslp.acoustic.features.family08", "run_reviewed_timing_stage")),
         "ddk": ({"F10"}, lazy("vslp.acoustic.features.family10", "run_family10_stage")),

@@ -1,6 +1,14 @@
 {
   "registry_version": "vslp_alignment_prompts_v1",
   "tasks": [
+    {"task_id": "sentence_s2", "display_name": "S2", "task_type": "Sentence / controlled speech",
+     "alignment_applicable": true,
+     "prompts": [{"prompt_id": "sentence_s2_buy_bobby_a_puppy", "prompt_version": "v1",
+       "expected_repetitions": 3, "exact_expected_text": "Buy Bobby a puppy.",
+       "current_protocol_expected_repetitions": 3,
+       "historical_jafari_protocol_repetitions": 10,
+       "historical_protocol_is_not_current_task_contract": true,
+       "language": "en", "source": "current_vslp_task_inventory_buy_bobby_a_puppy_3_times_2026_10_12"}]},
     {"task_id": "wstg", "display_name": "WSTG", "task_type": "Sentence / controlled speech",
      "alignment_applicable": true,
      "prompts": [{"prompt_id": "wstg_we_see_three_geese", "prompt_version": "v1", "expected_repetitions": 3,
@@ -36,8 +44,6 @@
      "prompts": []}
   ],
   "pending_protocols": [
-    {"description": "Approximately 10 repetitions of a task ending in puppy",
-     "status": "AUTHORITATIVE_TASK_ID_AND_STIMULUS_REQUIRED"},
     {"description": "Ten-sentence task",
      "status": "AUTHORITATIVE_STIMULUS_INVENTORY_REQUIRED"}
   ]

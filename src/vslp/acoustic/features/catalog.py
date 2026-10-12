@@ -33,10 +33,11 @@ TASKS = {
     "ddk": "DDK",
     "wstg": "WSTG",
     "sentence_s5": "S5",
+    "sentence_s2": "S2",
     "sentence_s3": "S3",
     "sentence_s6": "S6",
 }
-REGISTERED_EXECUTORS = frozenset({"F01", "F02", "F03", "F04", "F06", "F07", "F08", "F09",
+REGISTERED_EXECUTORS = frozenset({"F01", "F02", "F03", "F04", "F05", "F06", "F07", "F08", "F09",
                                   "F10", "F11", "F12"})
 
 
@@ -405,9 +406,56 @@ def load_feature_catalog() -> dict[str, Any]:
         construct = constructs[spec["construct_id"]]
         for field in ("evidence_level", "evidence_study_count", "evidence_entry_count"):
             construct[field] = spec[field]
-        construct["feature_id_templates"] = spec["feature_id_templates"]
-        construct["recommended_tasks"] = []
-        construct["conditional_tasks"] = (["bamboo_passage"] if spec["construct_id"] == "C033" else [])
+        construct["historical_feature_id_templates"] = spec["feature_id_templates"]
+        construct["feature_id_templates"] = []
+        construct["recommended_tasks"] = (["sentence_s2", "sentence_s5"]
+                                          if spec["construct_id"] == "C033" else ["sentence_s2"])
+        construct["conditional_tasks"] = []
+    outputs05 = []
+    for spec in family05["outputs"]:
+        construct = constructs[spec["construct_id"]]
+        outputs05.append({
+            **spec, "family_id": "F05", "family_name": "Formant dynamics",
+            "construct_name": construct["construct_name"],
+            "matrix_status": "PROD", "use_status": "Production",
+            "evidence_level": construct["evidence_level"],
+            "evidence_study_count": construct["evidence_study_count"],
+            "evidence_entry_count": construct["evidence_entry_count"],
+            "recommended_tasks": [spec["task_id"]], "conditional_tasks": [],
+            "recommended_for_task": {"sentence_s2": spec["task_id"] == "sentence_s2",
+                                     "sentence_s5": spec["task_id"] == "sentence_s5"},
+            "executable_for_task": {"sentence_s2": spec["task_id"] == "sentence_s2",
+                                    "sentence_s5": spec["task_id"] == "sentence_s5"},
+            "qc_range_low": None, "qc_range_high": None,
+            "qc_range_text": "No clinical range established",
+            "signal_scope": "Speech · Aligned diphthong token",
+            "analysis_region": "central 20–80% of final target phone",
+            "analysis_unit": "token → trial median → recording median",
+            "output_granularity": "recording",
+            "formula": ("signed robust fitted slope" if spec["construct_id"] == "C033"
+                        else "absolute fitted endpoint difference"),
+            "estimator": "F04 Praat Burg frames + bisquare IRLS",
+            "algorithm": family05["algorithm_version"],
+            "algorithm_version": family05["algorithm_version"],
+            "default_parameter_set_id": family05["parameter_set_id"],
+            "parameter_profile": {"name": family05["parameter_set_id"], "read_only": True,
+                                  "active_parameters": {"formant_profile_id": family05["formant_profile_id"],
+                                                        "analysis_window": [0.2, 0.8],
+                                                        "minimum_frames": 5}},
+            "prerequisites": {"requires_audio": True, "requires_segmentation": True,
+                              "requires_final_reviewed_segmentation": True,
+                              "requires_alignment": True, "requires_task": True,
+                              "requires_vowel_tokens": True,
+                              "requires_ddk_events": False,
+                              "requires_prompt_manifest": False},
+            "family_spec_approved": True, "selectable": True,
+            "active_in_gui": True, "blocked_reason": "",
+            "method_class": ("VSLP_TASK_ADAPTATION" if spec["task_id"] == "sentence_s5"
+                             else "SOURCE_LINEAGE"),
+            "source_parity_status": "pending",
+            "source_document": family05["source_document"],
+        })
+    attach_family_outputs(matrix, "F05", outputs05)
     family06 = json.loads(_FAMILY06.read_text(encoding="utf-8"))
     for spec in family06["constructs"]:
         construct = constructs[spec["construct_id"]]

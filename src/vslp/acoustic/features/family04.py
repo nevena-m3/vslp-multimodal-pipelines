@@ -115,10 +115,12 @@ def _valid_formants(values: tuple[float, float, float]) -> bool:
 
 
 def summarize_formant_token(frame_table: pd.DataFrame, token_start: float, token_end: float,
-                            profile: FormantProfile) -> dict[str, object]:
-    """Median and IQR of ordered F1/F2/F3 frames from the middle 50% only."""
+                            profile: FormantProfile,
+                            analysis_window: tuple[float, float] = (.25, .75)) -> dict[str, object]:
+    """Median/IQR from the chosen central window (F04 default is middle 50%)."""
     duration = token_end - token_start
-    middle_start, middle_end = token_start + .25 * duration, token_end - .25 * duration
+    middle_start = token_start + analysis_window[0] * duration
+    middle_end = token_start + analysis_window[1] * duration
     result: dict[str, object] = {
         "token_start_sec": token_start, "token_end_sec": token_end,
         "token_duration_sec": duration, "measurement_start_sec": middle_start,
@@ -178,7 +180,8 @@ def track_aligned_vowels(audio: np.ndarray, sample_rate: int, vowel_tokens: pd.D
                          task_item: str = "", trial_id: str = "",
                          category_mapping: dict[str, str] | None = None,
                          hard_exclusions: list[tuple[float, float]] | None = None,
-                         formant_object=None) -> tuple[pd.DataFrame, pd.DataFrame]:
+                         formant_object=None,
+                         analysis_window: tuple[float, float] = (.25, .75)) -> tuple[pd.DataFrame, pd.DataFrame]:
     """One Burg track per recording, shared by Families 04 and 05."""
     if sample_rate <= 2 * profile.ceiling_hz:
         raise ValueError("incompatible_native_sample_rate_formant_ceiling")
@@ -198,7 +201,8 @@ def track_aligned_vowels(audio: np.ndarray, sample_rate: int, vowel_tokens: pd.D
         if not 0 <= start < end <= len(signal) / sample_rate + 1e-7:
             raise ValueError("aligned_vowel_outside_canonical_audio")
         duration = end - start
-        measurement_start, measurement_end = start + .25 * duration, end - .25 * duration
+        measurement_start = start + analysis_window[0] * duration
+        measurement_end = start + analysis_window[1] * duration
         trial_start = float(getattr(token, "trial_start_sec", start))
         trial_end = float(getattr(token, "trial_end_sec", end))
         if not np.isfinite([trial_start, trial_end]).all() or not trial_start <= start < end <= trial_end:
@@ -220,11 +224,11 @@ def track_aligned_vowels(audio: np.ndarray, sample_rate: int, vowel_tokens: pd.D
                      "f1_hz": values[0], "f2_hz": values[1], "f3_hz": values[2],
                      "b1_hz": widths[0], "b2_hz": widths[1], "b3_hz": widths[2],
                      "valid_ordered": valid,
-                     "in_middle_50_percent": measurement_start <= time <= measurement_end}
+                     "in_middle_50_percent": start + .25 * duration <= time <= end - .25 * duration}
             frame_rows.append(frame)
             local.append(frame)
         summary = summarize_formant_token(pd.DataFrame(local, columns=FRAME_COLUMNS),
-                                          start, end, profile)
+                                          start, end, profile, analysis_window)
         normalized = str(token.phone_normalized).upper()
         token_rows.append({"recording_id": recording_id, "file_name": file_name,
                            "task_id": task_id, "task_type": task_type,

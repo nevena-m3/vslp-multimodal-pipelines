@@ -1,12 +1,24 @@
 {
   "family_id": "F05",
   "source_document": "05_Formant_Dynamics_Codex_Implementation.docx",
-  "algorithm_version": "family05-formant-trajectory-1.0.0",
-  "parameter_set_id": "family05_targeted_formant_v1",
+  "algorithm_version": "family05-bisquare-irls-1.0.0",
+  "parameter_set_id": "family05_targeted_formant_v2",
+  "formant_profile_id": "family04_burg_native_5500_v1",
+  "source_low_level_parity": "pending",
   "constructs": [
     {"construct_id":"C033","evidence_level":"STRONG","evidence_study_count":4,"evidence_entry_count":8,
      "feature_id_templates":["f1_slope_<target>_hz_s","f2_slope_<target>_hz_s"]},
     {"construct_id":"C034","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":2,
      "feature_id_templates":["f1_range_<diphthong>_hz","f2_range_<diphthong>_hz"]}
+  ],
+  "outputs": [
+    {"construct_id":"C033","feature_id":"f1_transition_slope_buy_ay_hz_s","human_name":"F1 transition slope — S2 buy /AY/","task_id":"sentence_s2","target_id":"buy_ay","formant_number":1,"unit":"Hz/s"},
+    {"construct_id":"C033","feature_id":"f2_transition_slope_buy_ay_hz_s","human_name":"F2 transition slope — S2 buy /AY/","task_id":"sentence_s2","target_id":"buy_ay","formant_number":2,"unit":"Hz/s"},
+    {"construct_id":"C033","feature_id":"f1_transition_slope_away_ey_hz_s","human_name":"F1 transition slope — S5 away /EY/","task_id":"sentence_s5","target_id":"away_ey","formant_number":1,"unit":"Hz/s"},
+    {"construct_id":"C033","feature_id":"f2_transition_slope_away_ey_hz_s","human_name":"F2 transition slope — S5 away /EY/","task_id":"sentence_s5","target_id":"away_ey","formant_number":2,"unit":"Hz/s"},
+    {"construct_id":"C033","feature_id":"f1_transition_slope_ago_ow_hz_s","human_name":"F1 transition slope — S5 ago /OW/","task_id":"sentence_s5","target_id":"ago_ow","formant_number":1,"unit":"Hz/s"},
+    {"construct_id":"C033","feature_id":"f2_transition_slope_ago_ow_hz_s","human_name":"F2 transition slope — S5 ago /OW/","task_id":"sentence_s5","target_id":"ago_ow","formant_number":2,"unit":"Hz/s"},
+    {"construct_id":"C034","feature_id":"f1_range_buy_ay_hz","human_name":"F1 fitted range — S2 buy /AY/","task_id":"sentence_s2","target_id":"buy_ay","formant_number":1,"unit":"Hz"},
+    {"construct_id":"C034","feature_id":"f2_range_buy_ay_hz","human_name":"F2 fitted range — S2 buy /AY/","task_id":"sentence_s2","target_id":"buy_ay","formant_number":2,"unit":"Hz"}
   ]
 }
