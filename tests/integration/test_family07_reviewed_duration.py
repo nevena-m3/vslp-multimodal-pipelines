@@ -12,7 +12,17 @@ from vslp.acoustic.alignment import AlignmentConfig, freeze_alignment, list_alig
 from vslp.acoustic.alignment.stage import PHONE_SET
 from vslp.acoustic.features.family07 import FAMILY07_IDS
 from vslp.acoustic.features.family08 import run_reviewed_timing_stage
-from vslp.acoustic.features.stage import FeatureExtractionConfig, _select_registry
+from vslp.acoustic.features.stage import FeatureExtractionConfig
+
+
+def _legacy_registry(ids):
+    """Keep the old timing executor regression separate from the F07 v2 catalog."""
+    return pd.DataFrame([{"feature": feature, "family_id": "F07",
+                          "unit": "%" if feature.endswith("_pct") else "s",
+                          "qc_range_text": "legacy regression only",
+                          "algorithm_version": "family07-reviewed-duration-1.0.0",
+                          "parameter_set_id": "legacy_f07",
+                          "analysis_region": "reviewed timing"} for feature in ids])
 
 
 def test_family07_stage_uses_reviewed_timing_alignment_and_audit(tmp_path, monkeypatch):
@@ -79,20 +89,21 @@ def test_family07_stage_uses_reviewed_timing_alignment_and_audit(tmp_path, monke
     freeze_alignment(tmp_path, list_alignment_runs(tmp_path)[0]["alignment_run_id"])
     cfg = FeatureExtractionConfig(selected_features=sorted(FAMILY07_IDS))
     result = run_reviewed_timing_stage(decisions, tmp_path, cfg, intervals,
-                                       _select_registry(cfg))
+                                       _legacy_registry(FAMILY07_IDS))
     values = pd.read_csv(result.summary_table)
     assert values.speech_time_s.iloc[0] == 7.1
-    assert np.isclose(values.task_elapsed_duration_s.iloc[0], 5.85)
-    assert values.task_boundary_method.iloc[0] == "first_to_last_valid_aligned_word"
-    assert np.isclose(values.mean_word_duration_s.iloc[0], .325)
-    vowel_durations = np.array([.1, .2, .3, .4])
-    assert np.isclose(values.delta_v_s.iloc[0], np.std(vowel_durations, ddof=1))
-    assert np.isclose(values.varco_v_pct.iloc[0],
-                      100 * np.std(vowel_durations, ddof=1) / vowel_durations.mean())
+    assert np.isclose(values.task_elapsed_duration_s.iloc[0], 7.5)
+    assert values.task_boundary_method.iloc[0] == "reviewed_speech_boundary_fallback"
+    # The v1 executor remains a compatibility path. Its old provider rows no
+    # longer satisfy the frozen feature-facing V1 loader; production F07 v2 is
+    # exercised in test_family07_v2_stage.py.
+    assert np.isnan(values.mean_word_duration_s.iloc[0])
+    assert np.isnan(values.delta_v_s.iloc[0])
     assert values.task_type.iloc[0] == "Passage / connected speech"
     audit = pd.read_csv(tmp_path / "acoustic" / "005_features" / "tables" /
                         "native_measurements" / "family07_duration_events.csv")
-    assert set(audit.event_type) >= {"word", "vowel", "pause", "excluded_contamination"}
+    assert set(audit.event_type) >= {"pause", "excluded_contamination"}
+    assert not {"word", "vowel"} & set(audit.event_type)
     assert not audit.loc[audit.event_type.eq("manual_exclusion")].any().any()
 
 
@@ -117,7 +128,7 @@ def test_family07_alignment_outputs_fail_explicitly_when_alignment_missing(tmp_p
                         lambda *_: kept)
     cfg = FeatureExtractionConfig(selected_features=["mean_word_duration_s"])
     result = run_reviewed_timing_stage(decisions, tmp_path, cfg, intervals,
-                                       _select_registry(cfg))
+                                       _legacy_registry({"mean_word_duration_s"}))
     status = pd.read_csv(result.summary_table.parent / "acoustic_feature_status_long.csv")
     assert status.failure_reason.iloc[0] == "missing_alignment"
     assert np.isnan(status.value.iloc[0])

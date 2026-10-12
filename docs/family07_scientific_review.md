@@ -1,0 +1,21 @@
+# Family 07 — segment duration and temporal variability
+
+**Implementation for scientific review.** Five historical constructs (C043–C047) remain; C043 is deferred and nonselectable. Four historical constructs are active, plus two VSLP-derived S3 constructs, yielding 11 selectable leaves. Implementation tests do not establish boundary accuracy, source parity, ALS sensitivity, or clinical validity. Reference, real-data, and clinical validation are pending.
+
+| Construct | Public outputs | Task | Authority and formula |
+|---|---|---|---|
+| C043 average word duration | `mean_word_duration_s` — deferred | None | Historical record only; `excluded_from_current_F07_freeze`. |
+| C044 speech duration | `bamboo_speech_duration_s` | Bamboo | Sum durations of eligible frozen reviewed patient-speech intervals; hard exclusions contribute nothing. |
+| C045 total/effective duration | `bamboo_total_duration_s` | Bamboo | Last valid reviewed speech offset minus first valid reviewed speech onset. Includes internal pauses. This is effective task duration, not cumulative speech or file duration. |
+| C046 Vocalic duration | `s3_vocalic_duration_mean_s`, `s3_vocalic_duration_median_s`, `s3_vocalic_duration_sd_s`, `s3_vocalic_duration_iqr_s` | S3 | All accepted canonical vowel phones in each Final Alignment V1 trial; mean, median, sample SD (`ddof=1`), Q75−Q25; strict vowel coverage. |
+| C047 variability | `delta_v_s`, `varco_v_pct`, `npvi_v_pct` | Bamboo | Ordered accepted vowel durations within each trial: sample SD, 100·SD/mean, and 100·mean of adjacent normalized absolute differences. Adjacent pairs stay within one sequence. |
+| VSLP S3 sentence duration | `s3_sentence_duration_s` | S3 | End minus start of a human-confirmed trial in `alignment_choices.json` whose Segmentation Review hash is current. No Final Alignment product is loaded for this leaf. |
+| VSLP S3 vocalic proportion | `s3_vocalic_proportion_pct` | S3 | 100·sum of accepted vowel durations / reviewed sentence duration; complete coverage required. `s3_total_vocalic_duration_s` is retained in the trial audit, not selectable. This is `VSLP_DERIVED_MEASURE`. |
+
+S3 is “The blue spot is on the key again.” The frozen expected word/vowel sequence is `the/AH blue/UW spot/AA is/IH on/AA the/AH key/IY again/AH again/EH` (nine vowel tokens), using the highest-weight entries in the installed `english_us_arpa` dictionary. Dictionary variants exist for **the**, **on**, and **again**. A different aligned variant or parent-word sequence fails the strict public coverage gate until explicitly reviewed; F07 does not infer pronunciation from audio. ARPABET stress is stripped only for vowel-class and sequence comparison; raw phone labels remain in the token audit.
+
+Vowel tokens shorter than 30 ms are rejected. Valid 30–50 ms tokens carry a short-vowel review flag. Nonfinite, reversed, out-of-trial, out-of-reviewed-speech, exclusion-overlapping, and unresolved Alignment tokens are rejected with reasons. S3 public vocalic outputs require the exact nine-token word/vowel sequence. For Bamboo, the dictionary variants do not support a reliable single expected vowel count, so the agreed initial gate is **at least 30 valid vowel tokens per trial**; this is a minimum sample size, not 30 expected vowels or an 80% coverage claim. Trial values are computed first; recording values are medians of valid trial values. No trajectories or nPVI adjacency cross trials, exclusion-free sequences, or rejected vowel tokens.
+
+F07 is mixed at the leaf level. C044, C045, and S3 sentence duration use frozen reviewed timing and do not load Final Alignment or invoke MFA. C046, C047, and S3 vocalic proportion load only the provider-independent, frozen/current Final Alignment V1 contract. F07 never reads TextGrid, raw provider timestamps, or MFA working audio. Hard exclusions never count as speech or valid vowels; an exclusion inside a confirmed S3 sentence makes its continuous duration unavailable.
+
+Audit artifacts include `family07_timing_events.csv`, `family07_vocalic_tokens.csv`, and `family07_trials.csv`. Failures remain NaN with explicit reasons; zero is not a missingness substitute. No F07 feature is clinically validated by these implementation tests.

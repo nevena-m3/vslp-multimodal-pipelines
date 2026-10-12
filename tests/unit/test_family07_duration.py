@@ -29,16 +29,15 @@ def _timing():
 
 
 def test_exact_ids_and_reviewed_timing_values():
+    # This module tests the retained v1 calculator used by the legacy timing
+    # executor. The production F07 registry and dispatcher use family07_v2.
     assert FAMILY07_IDS == {"mean_word_duration_s", "speech_time_s",
                             "task_elapsed_duration_s", "delta_v_s",
                             "varco_v_pct", "npvi_v_pct"}
     catalog = {item["feature_id"]: item for item in load_feature_catalog()["outputs"]}
-    assert {feature_id: catalog[feature_id]["unit"] for feature_id in FAMILY07_IDS} == {
-        "mean_word_duration_s": "s", "speech_time_s": "s",
-        "task_elapsed_duration_s": "s", "delta_v_s": "s",
-        "varco_v_pct": "%", "npvi_v_pct": "%",
-    }
-    assert all(catalog[feature_id]["evidence_level"] for feature_id in FAMILY07_IDS)
+    assert not catalog["mean_word_duration_s"]["selectable"]
+    assert {catalog[feature_id]["unit"] for feature_id in
+            {"delta_v_s", "varco_v_pct", "npvi_v_pct"}} == {"s", "%"}
     values, _ = calculate_family07(pd.DataFrame(), _timing(), None,
                                    {"speech_time_s", "task_elapsed_duration_s"})
     assert values["speech_time_s"] == (5.6, "")
@@ -103,3 +102,30 @@ def test_short_vowels_and_insufficient_variability_are_nan():
     review_events = derive_duration_events("r1", "x.wav", _review_events(), review_alignment)
     assert review_events.loc[review_events.event_type.eq("vowel"), "review_flag"].iloc[0] == (
         "vowel_duration_below_50ms_review")
+
+
+def test_final_trial_sequence_never_creates_cross_trial_vowel_pair():
+    alignment = pd.DataFrame([
+        {"recording_id": "r1", "trial_id": trial, "sequence_id": trial,
+         "token_type": "vowel", "label": "a", "start_sec": start,
+         "end_sec": start + duration, "alignment_source": "MFA"}
+        for trial, start, duration in (("trial_001", 1.0, .10),
+                                       ("trial_001", 1.4, .20),
+                                       ("trial_002", 4.0, .30),
+                                       ("trial_002", 4.5, .40))
+    ])
+    events = derive_duration_events("r1", "x.wav", _review_events(), alignment)
+    _, support = calculate_family07(events, _timing(), alignment, {"npvi_v_pct"})
+    assert support["n_adjacent_vowel_pairs"] == 2
+
+
+def test_task_elapsed_remains_reviewed_timing_even_when_alignment_exists():
+    alignment = pd.DataFrame([{"recording_id": "r1", "sequence_id": "trial_001",
+                               "token_type": "word", "label": "word",
+                               "start_sec": 1.5, "end_sec": 2.0,
+                               "expected_count": 1}])
+    events = derive_duration_events("r1", "x.wav", _review_events(), alignment)
+    values, support = calculate_family07(events, _timing(), alignment,
+                                         {"task_elapsed_duration_s"})
+    assert values["task_elapsed_duration_s"] == (6.0, "")
+    assert support["task_boundary_method"] == "reviewed_speech_boundary_fallback"

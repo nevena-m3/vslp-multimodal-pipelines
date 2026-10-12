@@ -23,14 +23,15 @@ def _executors():
         return execute
 
     # Executor grouping is deliberate: F01/F02 share audio and voicing work;
-    # F07/F08/F09 share reviewed timing; F11/F12 share waveform framing.
+    # F07 has mixed leaf prerequisites; F08/F09 share reviewed timing.
     return {
         "voice": ({"F01", "F02"}, lazy("vslp.acoustic.features.family01_stage", "run_family01_stage")),
         "glottal": ({"F03"}, lazy("vslp.acoustic.features.family03_stage", "run_family03_stage")),
         "formants": ({"F04"}, lazy("vslp.acoustic.features.family04_stage", "run_family04_stage")),
         "formant_dynamics": ({"F05"}, lazy("vslp.acoustic.features.family05_stage", "run_family05_stage")),
         "segmental": ({"F06"}, lazy("vslp.acoustic.features.family06_v2_stage", "run_family06_stage")),
-        "timing": ({"F07", "F08", "F09"}, lazy("vslp.acoustic.features.family08", "run_reviewed_timing_stage")),
+        "duration": ({"F07"}, lazy("vslp.acoustic.features.family07_v2_stage", "run_family07_stage")),
+        "timing": ({"F08", "F09"}, lazy("vslp.acoustic.features.family08", "run_reviewed_timing_stage")),
         "ddk": ({"F10"}, lazy("vslp.acoustic.features.family10", "run_family10_stage")),
         "spectrum": ({"F11", "F12"}, lazy("vslp.acoustic.features.family11_12_stage", "run_family11_12_stage")),
     }

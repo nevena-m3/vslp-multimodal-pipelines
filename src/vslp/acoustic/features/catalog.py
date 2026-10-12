@@ -512,24 +512,43 @@ def load_feature_catalog() -> dict[str, Any]:
         })
     attach_family_outputs(matrix, "F06", outputs06)
     family07 = json.loads(_FAMILY07.read_text(encoding="utf-8"))
+    constructs["C043"]["active_in_gui"] = False
+    constructs["C043"]["recommended_tasks"] = []
+    constructs["C046"]["construct_name"] = "Vocalic duration"
+    for construct_id, label, parent in (
+        ("VSLP_F07_S3_SENTENCE_DURATION", "S3 sentence duration", "C045"),
+        ("VSLP_F07_S3_VOCALIC_PROPORTION", "S3 vocalic proportion", "C046"),
+    ):
+        addition = {**constructs[parent], "construct_id": construct_id,
+                    "construct_name": label, "outputs": [], "active_in_gui": True,
+                    "id_provenance": "PROJECT_DEFINED_ID",
+                    "recommended_tasks": ["sentence_s3"], "conditional_tasks": []}
+        matrix["constructs"].append(addition)
+        constructs[construct_id] = addition
     outputs07 = []
     for spec in family07["outputs"]:
         construct = constructs[spec["construct_id"]]
         construct["recommended_tasks"] = spec["recommended_tasks"]
-        construct["conditional_tasks"] = spec.get("conditional_tasks", [])
+        construct["conditional_tasks"] = []
         requires_alignment = bool(spec["requires_alignment"])
         outputs07.append({
             **spec,
             "construct_name": construct["construct_name"],
             "family_id": "F07", "family_name": construct["family_name"],
-            "matrix_status": construct["matrix_status"], "use_status": "Production",
-            "conditional_tasks": spec.get("conditional_tasks", []),
+            "matrix_status": construct["matrix_status"],
+            "use_status": "Production" if spec["selectable"] else "Blocked",
+            "evidence_level": construct.get("evidence_level") or "NOT ESTABLISHED",
+            "evidence_study_count": construct.get("evidence_study_count", 0),
+            "evidence_entry_count": construct.get("evidence_entry_count", 0),
+            "analysis_unit": "trial then recording",
+            "active_in_gui": bool(spec["selectable"]),
+            "conditional_tasks": [],
             "qc_range_low": None, "qc_range_high": None,
             "signal_scope": construct["signal_scope"],
-            "analysis_region": ("validated aligned token intervals" if requires_alignment else
-                                "final reviewed patient timing domain"),
-            "estimator": ("aligned token duration statistics" if requires_alignment else
-                          "shared reviewed timing representation"),
+            "analysis_region": ("Final Alignment V1 canonical vowel intervals" if requires_alignment else
+                                "final reviewed timing and confirmed trial domain"),
+            "estimator": ("canonical vowel duration statistics" if requires_alignment else
+                          "frozen reviewed speech/trial boundaries"),
             "algorithm": family07["algorithm_version"],
             "algorithm_version": family07["algorithm_version"],
             "default_parameter_set_id": (family07["alignment_parameter_set_id"]
@@ -540,14 +559,13 @@ def load_feature_catalog() -> dict[str, Any]:
                         "Frozen reviewed-timing profile",
                 "read_only": True,
                 "active_parameters": ({
-                    "minimum_alignment_coverage": family07["minimum_alignment_coverage"],
                     "minimum_vowel_duration_sec": family07["minimum_vowel_duration_sec"],
                     "review_vowel_duration_sec": family07["review_vowel_duration_sec"],
                     "sample_sd_ddof": family07["sample_sd_ddof"],
+                    "minimum_bamboo_vowel_count": family07["minimum_bamboo_vowel_count"],
                     "sequence_break_on_manual_exclusion": True,
                 } if requires_alignment else {
-                    "minimum_internal_pause_ms": 300,
-                    "manual_exclusion_policy": "outside analyzable patient timeline",
+                    "manual_exclusion_policy": "hard exclusion is never patient speech",
                     "boundary_source": "frozen reviewed segmentation",
                 })},
             "prerequisites": {
@@ -556,11 +574,13 @@ def load_feature_catalog() -> dict[str, Any]:
                 "requires_alignment": requires_alignment, "requires_task": True,
                 "requires_unscaled_audio": False, "requires_voiced_region": False,
                 "requires_ddk_events": False, "requires_vowel_tokens":
-                    spec["construct_id"] in {"C046", "C047"},
+                    spec["construct_id"] in {"C046", "C047", "VSLP_F07_S3_VOCALIC_PROPORTION"},
                 "requires_prompt_manifest": False},
             "family_spec_approved": True,
             "selectable": spec.get("selectable", True),
             "blocked_reason": spec.get("blocked_reason", ""),
+            "id_provenance": ("PROJECT_DEFINED_ID" if spec["construct_id"].startswith("VSLP_")
+                              else "SOURCE_DEFINED_ID"),
             "source_document": family07["source_document"],
         })
     attach_family_outputs(matrix, "F07", outputs07)

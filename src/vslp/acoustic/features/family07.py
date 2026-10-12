@@ -128,17 +128,7 @@ def calculate_family07(events: pd.DataFrame, timing: dict[str, float],
     coverage = len(words) / expected if np.isfinite(expected) and expected > 0 else np.nan
     support["alignment_coverage"] = coverage
     if "task_elapsed_duration_s" in selected:
-        task_elapsed = float(timing["elapsed_task_sec"])
-        if not words.empty and np.isfinite(coverage) and coverage >= MIN_ALIGNMENT_COVERAGE:
-            start, end = float(words.start_sec.min()), float(words.end_sec.max())
-            exclusions = events.loc[events.event_type.eq("excluded_contamination")]
-            excluded = sum(max(0.0, min(end, float(item.end_sec)) -
-                               max(start, float(item.start_sec)))
-                           for item in exclusions.itertuples())
-            if end - start - excluded > 0:
-                task_elapsed = end - start - excluded
-                support["task_boundary_method"] = "first_to_last_valid_aligned_word"
-        result["task_elapsed_duration_s"] = (task_elapsed, "")
+        result["task_elapsed_duration_s"] = (float(timing["elapsed_task_sec"]), "")
     if "mean_word_duration_s" in selected:
         reason = ("missing_alignment" if alignment_rows is None or alignment_rows.empty else
                   "expected_word_count_missing" if not np.isfinite(expected) else

@@ -59,7 +59,8 @@ def test_exact_ids_evidence_task_scope_and_frozen_profile():
     assert set(leaves) == FAMILY09_IDS
     assert {item["construct_id"] for item in leaves.values()} == {
         f"C{number:03d}" for number in range(50, 58)}
-    assert len(catalog["families"]) == 13 and len(catalog["constructs"]) == 80
+    # F07 adds two project-defined S3 constructs without renumbering F09.
+    assert len(catalog["families"]) == 13 and len(catalog["constructs"]) == 82
     assert leaves["pause_count"]["unit"] == "count"
     assert leaves["percent_pause_ge300ms"]["unit"] == "%"
     assert leaves["cv_pause_duration"]["evidence_level"] == "NOT ESTABLISHED"

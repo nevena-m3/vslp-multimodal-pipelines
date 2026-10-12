@@ -1,20 +1,25 @@
 {
   "family_id": "F07",
   "source_document": "07_Segment_Duration_Temporal_Codex_Implementation.docx",
-  "algorithm_version": "family07-reviewed-duration-1.0.0",
-  "timing_parameter_set_id": "family07_reviewed_timing_v1",
-  "alignment_parameter_set_id": "family07_alignment_tokens_v1",
-  "minimum_alignment_coverage": 0.8,
+  "algorithm_version": "family07-reviewed-v2.0.0",
+  "timing_parameter_set_id": "family07_reviewed_timing_v2",
+  "alignment_parameter_set_id": "family07_final_alignment_v1_v2",
   "minimum_vowel_duration_sec": 0.03,
   "review_vowel_duration_sec": 0.05,
   "sample_sd_ddof": 1,
+  "minimum_bamboo_vowel_count": 30,
   "outputs": [
-    {"construct_id":"C043","feature_id":"mean_word_duration_s","human_name":"Mean word duration","unit":"s","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":1,"formula":"mean(aligned word offset - onset)","analysis_unit":"Aligned word tokens","recommended_tasks":["bamboo_passage"],"requires_alignment":true,"qc_range_text":"0.05–2.0 s"},
-    {"construct_id":"C044","feature_id":"speech_time_s","human_name":"Cumulative patient speech duration","unit":"s","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":1,"formula":"effective elapsed task duration - internal pauses >=300 ms","analysis_unit":"Reviewed timing events","recommended_tasks":["bamboo_passage"],"requires_alignment":false,"qc_range_text":"0–600 s"},
-    {"construct_id":"C045","feature_id":"task_elapsed_duration_s","human_name":"Task elapsed duration","unit":"s","evidence_level":"NOT ESTABLISHED","evidence_study_count":1,"evidence_entry_count":1,"formula":"reviewed task onset to offset minus excluded contamination","analysis_unit":"Whole reviewed task","recommended_tasks":["bamboo_passage"],"requires_alignment":false,"qc_range_text":"0–600 s"},
-    {"construct_id":"C046","feature_id":"vowel_duration_<phone>_s","human_name":"Vowel duration by target phone","unit":"s","evidence_level":"MODERATE","evidence_study_count":5,"evidence_entry_count":9,"formula":"aligned vowel offset - onset","analysis_unit":"Aligned vowel tokens","recommended_tasks":["bamboo_passage"],"conditional_tasks":["wstg"],"requires_alignment":true,"qc_range_text":"0.03–1.0 s","selectable":false,"blocked_reason":"Target phone inventory and corresponding concrete output IDs are not frozen."},
-    {"construct_id":"C047","feature_id":"delta_v_s","human_name":"Vowel-duration variability — deltaV","unit":"s","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":3,"formula":"sample SD(vowel durations), ddof=1","analysis_unit":"Aligned vowel sequence","recommended_tasks":["bamboo_passage"],"requires_alignment":true,"qc_range_text":"0–1 s"},
-    {"construct_id":"C047","feature_id":"varco_v_pct","human_name":"Vowel-duration variability — VarcoV","unit":"%","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":3,"formula":"100 * sample SD(vowel durations) / mean(vowel durations)","analysis_unit":"Aligned vowel sequence","recommended_tasks":["bamboo_passage"],"requires_alignment":true,"qc_range_text":"0–300%"},
-    {"construct_id":"C047","feature_id":"npvi_v_pct","human_name":"Vowel-duration variability — nPVI-V","unit":"%","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":3,"formula":"100/(N-1) * sum(|d_i-d_i+1| / ((d_i+d_i+1)/2)) within sequences","analysis_unit":"Ordered aligned vowel pairs","recommended_tasks":["bamboo_passage"],"requires_alignment":true,"qc_range_text":"0–300%"}
+    {"construct_id":"C043","feature_id":"mean_word_duration_s","human_name":"Average word duration — historical deferred","unit":"s","formula":"historical average word duration","recommended_tasks":[],"requires_alignment":true,"selectable":false,"blocked_reason":"excluded_from_current_F07_freeze","qc_range_text":"—"},
+    {"construct_id":"C044","feature_id":"bamboo_speech_duration_s","human_name":"Speech duration — Bamboo","unit":"s","formula":"sum(eligible reviewed speech interval durations)","recommended_tasks":["bamboo_passage"],"requires_alignment":false,"selectable":true,"qc_range_text":"0–600 s"},
+    {"construct_id":"C045","feature_id":"bamboo_total_duration_s","human_name":"Total/effective duration — Bamboo","unit":"s","formula":"last reviewed speech offset - first reviewed speech onset","recommended_tasks":["bamboo_passage"],"requires_alignment":false,"selectable":true,"qc_range_text":"0–600 s"},
+    {"construct_id":"C046","feature_id":"s3_vocalic_duration_mean_s","human_name":"Vocalic duration mean — S3","unit":"s","formula":"mean(valid S3 vowel durations)","recommended_tasks":["sentence_s3"],"requires_alignment":true,"selectable":true,"qc_range_text":"0.03–1.0 s"},
+    {"construct_id":"C046","feature_id":"s3_vocalic_duration_median_s","human_name":"Vocalic duration median — S3","unit":"s","formula":"median(valid S3 vowel durations)","recommended_tasks":["sentence_s3"],"requires_alignment":true,"selectable":true,"qc_range_text":"0.03–1.0 s"},
+    {"construct_id":"C046","feature_id":"s3_vocalic_duration_sd_s","human_name":"Vocalic duration sample SD — S3","unit":"s","formula":"sample SD(valid S3 vowel durations), ddof=1","recommended_tasks":["sentence_s3"],"requires_alignment":true,"selectable":true,"qc_range_text":"0–1.0 s"},
+    {"construct_id":"C046","feature_id":"s3_vocalic_duration_iqr_s","human_name":"Vocalic duration IQR — S3","unit":"s","formula":"Q75 - Q25 of valid S3 vowel durations","recommended_tasks":["sentence_s3"],"requires_alignment":true,"selectable":true,"qc_range_text":"0–1.0 s"},
+    {"construct_id":"C047","feature_id":"delta_v_s","human_name":"Vowel-duration variability — Bamboo deltaV","unit":"s","formula":"sample SD(vowel durations), ddof=1 per trial","recommended_tasks":["bamboo_passage"],"requires_alignment":true,"selectable":true,"qc_range_text":"0–1 s"},
+    {"construct_id":"C047","feature_id":"varco_v_pct","human_name":"Vowel-duration variability — Bamboo VarcoV","unit":"%","formula":"100 * sample SD / mean per trial","recommended_tasks":["bamboo_passage"],"requires_alignment":true,"selectable":true,"qc_range_text":"0–300%"},
+    {"construct_id":"C047","feature_id":"npvi_v_pct","human_name":"Vowel-duration variability — Bamboo nPVI-V","unit":"%","formula":"100 * mean(adjacent normalized absolute duration differences) per trial and sequence","recommended_tasks":["bamboo_passage"],"requires_alignment":true,"selectable":true,"qc_range_text":"0–300%"},
+    {"construct_id":"VSLP_F07_S3_SENTENCE_DURATION","feature_id":"s3_sentence_duration_s","human_name":"Sentence duration — S3","unit":"s","formula":"human-confirmed reviewed trial end - start","recommended_tasks":["sentence_s3"],"requires_alignment":false,"selectable":true,"qc_range_text":"0–600 s"},
+    {"construct_id":"VSLP_F07_S3_VOCALIC_PROPORTION","feature_id":"s3_vocalic_proportion_pct","human_name":"Vocalic proportion — S3","unit":"%","formula":"100 * sum(valid S3 vowel durations) / reviewed sentence duration","recommended_tasks":["sentence_s3"],"requires_alignment":true,"selectable":true,"qc_range_text":"0–100%"}
   ]
 }
