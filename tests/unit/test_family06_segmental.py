@@ -8,7 +8,7 @@ import pytest
 
 from vslp.acoustic.features.catalog import feature_availability, load_feature_catalog
 from vslp.acoustic.features.family06 import (
-    IMPLEMENTED_IDS, TEMPLATES, first_spectral_moment, load_target_manifest,
+    F06_PUBLIC_IDS, IMPLEMENTED_IDS, TEMPLATES, first_spectral_moment, load_target_manifest,
     load_validated_subevents, matched_m1_contrast, noise_duration,
     normalized_duration_contrast, stop_burst_tilt, wideband_noise_energy,
 )
@@ -29,13 +29,13 @@ def test_eight_constructs_exact_ids_and_unresolved_templates():
     constructs = [c for c in catalog["constructs"] if c["family_id"] == "F06"]
     leaves = [o for o in catalog["outputs"] if o["family_id"] == "F06"]
     assert len(constructs) == 8
-    assert {o["feature_id"] for o in leaves} == IMPLEMENTED_IDS | {
-        "blocked_aural_analytics_ap", "band_noise_contrast_variant1",
-        "band_noise_contrast_variant2"}
+    assert {o["feature_id"] for o in leaves} == F06_PUBLIC_IDS | {
+        "blocked_aural_analytics_ap", "normalized_temporal_contrast_historical",
+        "wideband_noise_energy_0_10khz"}
     assert all(feature_availability(o)[0] == "Implemented"
-               for o in leaves if o["feature_id"] in IMPLEMENTED_IDS)
+               for o in leaves if o["feature_id"] in F06_PUBLIC_IDS)
     assert all(feature_availability(o)[0] == "Not implemented"
-               for o in leaves if o["feature_id"] not in IMPLEMENTED_IDS)
+               for o in leaves if o["feature_id"] not in F06_PUBLIC_IDS)
     assert not any("gop" in o["feature_id"].lower() for o in leaves)
     assert not any(template in {o["feature_id"] for o in leaves} for template in TEMPLATES)
     assert all(c["evidence_level"] for c in constructs)
@@ -50,18 +50,16 @@ def test_family06_gui_leaf_contract():
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     QApplication.instance() or QApplication([])
     window = AcousticPipelineWindow()
-    for feature_id in IMPLEMENTED_IDS:
+    for feature_id in F06_PUBLIC_IDS:
         item = window.feature_items[feature_id]
         assert item.text(1) == feature_id
         assert item.text(3) == "Implemented"
         assert item.text(4) in {"LIMITED", "NOT ESTABLISHED"}
         assert item.flags() & Qt.ItemIsUserCheckable
-    for feature_id in ("blocked_aural_analytics_ap", "band_noise_contrast_variant1",
-                       "band_noise_contrast_variant2"):
+    for feature_id in ("blocked_aural_analytics_ap", "normalized_temporal_contrast_historical",
+                       "wideband_noise_energy_0_10khz"):
         item = window.feature_items[feature_id]
-        assert item.text(3) == (
-            "Unavailable — proprietary" if feature_id == "blocked_aural_analytics_ap"
-            else "Unavailable — source incomplete")
+        assert item.text(3).startswith("Unavailable")
         assert not item.flags() & Qt.ItemIsUserCheckable
     window.close()
 

@@ -1,24 +1,37 @@
 {
   "family_id": "F06",
   "source_document": "06_Segmental_Articulatory_Phonetic_Codex_Implementation.docx",
-  "algorithm_version": "family06-aligned-subevents-1.0.0",
-  "default_parameter_set_id": "family06_native_subevents_v1",
+  "algorithm_version": "family06-native-subevents-2.0.0",
+  "default_parameter_set_id": "family06_native_subevents_v2",
   "constructs": [
     {"construct_id":"C035","evidence_level":"STRONG","evidence_study_count":3,"evidence_entry_count":3},
     {"construct_id":"C036","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":3},
     {"construct_id":"C037","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":1},
-    {"construct_id":"C038","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":3,"feature_id_templates":["noise_duration_<target>_s"]},
-    {"construct_id":"C039","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":1,"feature_id_templates":["noise_rise_time_<definition>_s"]},
-    {"construct_id":"C040","evidence_level":"NOT ESTABLISHED","evidence_study_count":1,"evidence_entry_count":3,"feature_id_templates":["normalized_duration_contrast_<A>_<B>"]},
+    {"construct_id":"C038","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":3},
+    {"construct_id":"C039","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":1},
+    {"construct_id":"C040","evidence_level":"NOT ESTABLISHED","evidence_study_count":1,"evidence_entry_count":3},
     {"construct_id":"C041","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":1},
     {"construct_id":"C042","evidence_level":"NOT ESTABLISHED","evidence_study_count":1,"evidence_entry_count":1}
   ],
   "outputs": [
-    {"construct_id":"C035","feature_id":"blocked_aural_analytics_ap","human_name":"Articulatory precision — Aural Analytics","unit":"dimensionless score","analysis_unit":"Aligned phones / session","formula":"Proprietary normative likelihood-ratio model","selectable":false,"blocked_reason":"Proprietary normative database, likelihood model and scaling are unavailable."},
-    {"construct_id":"C036","feature_id":"band_noise_contrast_variant1","human_name":"Bandpassed noise energy contrast — variant 1","unit":"arbitrary digital contrast","analysis_unit":"Matched noise targets","formula":"Source contrast convention and normalization not frozen","selectable":false,"blocked_reason":"Target pairing, spectral normalization and source contrast convention are incomplete."},
-    {"construct_id":"C036","feature_id":"band_noise_contrast_variant2","human_name":"Bandpassed noise energy contrast — variant 2","unit":"arbitrary digital contrast","analysis_unit":"Matched noise targets","formula":"Source contrast convention and normalization not frozen","selectable":false,"blocked_reason":"Target pairing, spectral normalization and source contrast convention are incomplete."},
-    {"construct_id":"C037","feature_id":"m1_t_minus_k_hz","human_name":"First spectral moment — /t/ minus /k/","unit":"Hz","analysis_unit":"Matched burst pairs / recording","formula":"mean(sum(f*P)/sum(P))_t - mean(sum(f*P)/sum(P))_k","selectable":true},
-    {"construct_id":"C041","feature_id":"wideband_noise_energy_0_10khz","human_name":"Wideband noise energy, 0–10 kHz","unit":"digital amplitude²·samples","analysis_unit":"Annotated noise events / recording","formula":"mean one-sided 0–10 kHz Hann-corrected FFT energy per approved token","selectable":true},
-    {"construct_id":"C042","feature_id":"stop_burst_spectral_tilt_db_khz","human_name":"Stop-burst spectral tilt","unit":"dB/kHz","analysis_unit":"Annotated stop bursts / recording","formula":"mean OLS slope of 20log10 FFT amplitude over 1.5–5 kHz","selectable":true}
+    {"construct_id":"C035","feature_id":"blocked_aural_analytics_ap","human_name":"Articulatory precision — Aural Analytics","unit":"dimensionless score","analysis_unit":"Aligned phones / session","formula":"Proprietary normative likelihood-ratio model","selectable":false,"blocked_reason":"proprietary_normative_model_not_available"},
+    {"construct_id":"C040","feature_id":"normalized_temporal_contrast_historical","human_name":"Normalized temporal contrast — historical","unit":"dimensionless","analysis_unit":"Historical","formula":"Not frozen for a VSLP task","selectable":false,"blocked_reason":"DEFERRED_TASK_NOT_FROZEN"},
+    {"construct_id":"C041","feature_id":"wideband_noise_energy_0_10khz","human_name":"Wideband noise energy — historical","unit":"digital power","analysis_unit":"Historical","formula":"0–10 kHz","selectable":false,"blocked_reason":"DEFERRED_TASK_NOT_FROZEN"},
+    {"construct_id":"C036","feature_id":"band_noise_a_see_s","human_name":"Bandpassed noise A — WSTG see /S/","unit":"digital power","analysis_unit":"Recording","formula":"E(720–10000) − E(4200–10000)","task_id":"wstg","target_id":"see_s","selectable":true},
+    {"construct_id":"C036","feature_id":"band_noise_a_geese_s","human_name":"Bandpassed noise A — WSTG geese /S/","unit":"digital power","analysis_unit":"Recording","formula":"E(720–10000) − E(4200–10000)","task_id":"wstg","target_id":"geese_s","selectable":true},
+    {"construct_id":"C036","feature_id":"band_noise_a_three_th","human_name":"Bandpassed noise A — WSTG three /TH/","unit":"digital power","analysis_unit":"Recording","formula":"E(720–10000) − E(4200–10000)","task_id":"wstg","target_id":"three_th","selectable":true},
+    {"construct_id":"C036","feature_id":"band_noise_b_see_s","human_name":"Bandpassed noise B — WSTG see /S/","unit":"digital power","analysis_unit":"Recording","formula":"E(720–6500) − E(720–2150)","task_id":"wstg","target_id":"see_s","selectable":true},
+    {"construct_id":"C036","feature_id":"band_noise_b_geese_s","human_name":"Bandpassed noise B — WSTG geese /S/","unit":"digital power","analysis_unit":"Recording","formula":"E(720–6500) − E(720–2150)","task_id":"wstg","target_id":"geese_s","selectable":true},
+    {"construct_id":"C036","feature_id":"band_noise_b_three_th","human_name":"Bandpassed noise B — WSTG three /TH/","unit":"digital power","analysis_unit":"Recording","formula":"E(720–6500) − E(720–2150)","task_id":"wstg","target_id":"three_th","selectable":true},
+    {"construct_id":"C036","feature_id":"band_noise_a_s_minus_th","human_name":"Bandpassed noise A — WSTG /S/ minus /TH/","unit":"digital power","analysis_unit":"Recording","formula":"median(see/S,geese/S) − three/TH","task_id":"wstg","target_id":"s_minus_th","selectable":true},
+    {"construct_id":"C036","feature_id":"band_noise_b_s_minus_th","human_name":"Bandpassed noise B — WSTG /S/ minus /TH/","unit":"digital power","analysis_unit":"Recording","formula":"median(see/S,geese/S) − three/TH","task_id":"wstg","target_id":"s_minus_th","selectable":true},
+    {"construct_id":"C037","feature_id":"spectral_m1_t_minus_k_hz","human_name":"First spectral moment — S3 spot /T/ minus key /K/","unit":"Hz","analysis_unit":"Recording","formula":"M1(spot/T) − M1(key/K)","task_id":"sentence_s3","target_id":"t_minus_k","selectable":true},
+    {"construct_id":"C038","feature_id":"fricative_noise_duration_s_ms","human_name":"Fricative noise duration — WSTG /S/","unit":"ms","analysis_unit":"Recording","formula":"median(see/S,geese/S)","task_id":"wstg","target_id":"s","selectable":true},
+    {"construct_id":"C038","feature_id":"fricative_noise_duration_th_ms","human_name":"Fricative noise duration — WSTG three /TH/","unit":"ms","analysis_unit":"Recording","formula":"duration(three/TH)","task_id":"wstg","target_id":"three_th","selectable":true},
+    {"construct_id":"C038","feature_id":"fricative_noise_duration_s_minus_th_ms","human_name":"Fricative noise duration — WSTG /S/ minus /TH/","unit":"ms","analysis_unit":"Recording","formula":"median(see/S,geese/S) − three/TH","task_id":"wstg","target_id":"s_minus_th","selectable":true},
+    {"construct_id":"C039","feature_id":"noise_rise_time_judge_jh_ms","human_name":"Noise rise time — S7 judge /JH/","unit":"ms","analysis_unit":"Recording","formula":"t90 − t10","task_id":"sentence_s7","target_id":"judge_jh","selectable":true},
+    {"construct_id":"C039","feature_id":"noise_rise_time_sentenced_t_ms","human_name":"Noise rise time — S7 sentenced /T/","unit":"ms","analysis_unit":"Recording","formula":"t90 − t10","task_id":"sentence_s7","target_id":"sentenced_t","selectable":true},
+    {"construct_id":"C039","feature_id":"noise_rise_time_t_minus_jh_ms","human_name":"Noise rise time — S7 /T/ minus /JH/","unit":"ms","analysis_unit":"Recording","formula":"sentenced/T − judge/JH","task_id":"sentence_s7","target_id":"t_minus_jh","selectable":true},
+    {"construct_id":"C042","feature_id":"spectral_tilt_k_minus_t_db_per_khz","human_name":"Stop-burst spectral tilt — S9 keep /K/ minus at /T/","unit":"dB/kHz","analysis_unit":"Recording","formula":"tilt(keep/K) − tilt(at/T)","task_id":"sentence_s9","target_id":"k_minus_t","selectable":true}
   ]
 }

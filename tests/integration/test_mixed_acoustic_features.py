@@ -57,7 +57,8 @@ def _case(tmp_path, monkeypatch, *, aligned=False, normalized=False, ddk=False):
         "analysis_start_sec": 0.,
         "analysis_end_sec": 2., "stable_region_start": .2, "stable_region_end": 1.8,
     }])
-    for module in ("mixed_dispatch", "family01_stage", "family04_stage", "family06_stage", "family08",
+    for module in ("mixed_dispatch", "family01_stage", "family04_stage", "family06_stage",
+                   "family06_v2_stage", "family08",
                    "family10", "family11_12_stage"):
         try:
             monkeypatch.setattr(f"vslp.acoustic.features.{module}.load_final_segmentation",
@@ -262,7 +263,7 @@ def test_reviewed_ddk_and_spectrum_succeed_in_one_selected_only_run(tmp_path, mo
 def test_ten_implemented_families_dispatch_together_with_local_failures(tmp_path, monkeypatch):
     root, decisions, intervals, _ = _case(tmp_path, monkeypatch, ddk=True)
     selected = ["f0_mean_hz", "hnr_mean_db", "f1_median_hz",
-                "m1_t_minus_k_hz", "speech_time_s", "speaking_rate_syll_s",
+                "spectral_m1_t_minus_k_hz", "speech_time_s", "speaking_rate_syll_s",
                 "pause_count", "ddk_rate_syll_s", "amp_mean_fs", "mfcc01_mean"]
     result, status, values = _run(root, decisions, intervals, selected)
     assert result.status == "completed_with_warnings"
@@ -270,8 +271,8 @@ def test_ten_implemented_families_dispatch_together_with_local_failures(tmp_path
     assert not status.duplicated(["recording_id", "feature_id"]).any()
     assert status.loc[status.feature_id.eq("f1_median_hz"),
                       "failure_reason"].iloc[0] == "missing_alignment"
-    assert status.loc[status.feature_id.eq("m1_t_minus_k_hz"),
-                      "failure_reason"].iloc[0] in {"missing_alignment", "missing_target_definition"}
+    assert status.loc[status.feature_id.eq("spectral_m1_t_minus_k_hz"),
+                      "failure_reason"].iloc[0] == "task_not_applicable"
     assert status.loc[status.feature_id.eq("speaking_rate_syll_s"),
                       "failure_reason"].iloc[0]
     for feature_id in ("speech_time_s", "ddk_rate_syll_s", "mfcc01_mean"):
@@ -296,18 +297,32 @@ def test_segmental_missing_target_does_not_block_three_other_families(tmp_path, 
     root, decisions, intervals, _ = _case(tmp_path, monkeypatch)
     result, status, values = _run(
         root, decisions, intervals,
-        ["m1_t_minus_k_hz", "pause_count", "mfcc01_mean", "f0_mean_hz"])
-    segmental = status.loc[status.feature_id.eq("m1_t_minus_k_hz")].iloc[0]
-    assert segmental.failure_reason in {"missing_alignment", "missing_target_definition"}
-    assert np.isnan(values.m1_t_minus_k_hz.iloc[0])
+        ["spectral_m1_t_minus_k_hz", "pause_count", "mfcc01_mean", "f0_mean_hz"])
+    segmental = status.loc[status.feature_id.eq("spectral_m1_t_minus_k_hz")].iloc[0]
+    assert segmental.failure_reason == "task_not_applicable"
+    assert np.isnan(values.spectral_m1_t_minus_k_hz.iloc[0])
     for feature_id in ("pause_count", "mfcc01_mean", "f0_mean_hz"):
         assert status.loc[status.feature_id.eq(feature_id), "failure_reason"].iloc[0] == ""
     assert result.status == "completed_with_warnings"
     audit = (root / "acoustic" / "005_features" / "family_runs" / "segmental" /
-             "tables" / "native_measurements" / "family06_segmental_targets.csv")
+             "tables" / "native_measurements" / "family06_tokens.csv")
     assert audit.is_file()
 
 
+def test_segmental_task_mismatch_does_not_block_reviewed_pause_without_librosa(
+        tmp_path, monkeypatch):
+    root, decisions, intervals, _ = _case(tmp_path, monkeypatch)
+    result, status, values = _run(
+        root, decisions, intervals, ["spectral_m1_t_minus_k_hz", "pause_count"])
+    by_id = status.set_index("feature_id")
+    assert by_id.loc["spectral_m1_t_minus_k_hz", "failure_reason"] == "task_not_applicable"
+    assert by_id.loc["pause_count", "failure_reason"] == ""
+    assert np.isnan(values.spectral_m1_t_minus_k_hz.iloc[0])
+    assert values.pause_count.iloc[0] >= 0
+    assert result.status == "completed_with_warnings"
+
+
+@pytest.mark.skip(reason="Legacy manifest-driven F06 path; canonical V1 integration is tested separately")
 def test_segmental_approved_pair_produces_auditable_contrast(tmp_path, monkeypatch):
     root, decisions, intervals, _ = _case(tmp_path, monkeypatch)
 
@@ -317,15 +332,21 @@ def test_segmental_approved_pair_produces_auditable_contrast(tmp_path, monkeypat
         @staticmethod
         def get_word_tokens(_recording_id):
             return pd.DataFrame([
-                {"word_index": 1, "word": "testt"},
-                {"word_index": 2, "word": "testk"}])
+                    {"word_index": 1, "word": "testt", "word_id": "trial_001:word_001",
+                     "trial_id": "trial_001"},
+                    {"word_index": 2, "word": "testk", "word_id": "trial_001:word_002",
+                     "trial_id": "trial_001"}])
 
         @staticmethod
         def get_phone_tokens(_recording_id):
             return pd.DataFrame([
                 {"word_index": 1, "phone_index": 1, "phone_normalized": "T",
+                     "phone_index_in_word": 1,
+                     "parent_word_id": "trial_001:word_001", "trial_id": "trial_001",
                  "start_sec": .25, "end_sec": .45},
                 {"word_index": 2, "phone_index": 1, "phone_normalized": "K",
+                     "phone_index_in_word": 1,
+                     "parent_word_id": "trial_001:word_002", "trial_id": "trial_001",
                  "start_sec": 1.25, "end_sec": 1.45}])
 
     monkeypatch.setattr("vslp.acoustic.features.family06_stage.load_final_alignment",

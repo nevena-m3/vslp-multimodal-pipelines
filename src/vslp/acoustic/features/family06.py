@@ -13,8 +13,9 @@ ALGORITHM_VERSION = "family06-aligned-subevents-1.0.0"
 PARAMETER_SET_ID = "family06_native_subevents_v1"
 IMPLEMENTED_IDS = frozenset({"m1_t_minus_k_hz", "wideband_noise_energy_0_10khz",
                              "stop_burst_spectral_tilt_db_khz"})
-UNAVAILABLE_IDS = frozenset({"blocked_aural_analytics_ap", "band_noise_contrast_variant1",
-                              "band_noise_contrast_variant2"})
+UNAVAILABLE_IDS = frozenset({"blocked_aural_analytics_ap",
+                              "normalized_temporal_contrast_historical",
+                              "wideband_noise_energy_0_10khz"})
 TEMPLATES = ("noise_duration_<target>_s", "noise_rise_time_<definition>_s",
              "normalized_duration_contrast_<A>_<B>")
 M1_WINDOW_SEC = 0.020
@@ -188,3 +189,135 @@ def normalized_duration_contrast(duration_a: float, duration_b: float) -> float:
     if not np.isfinite([duration_a, duration_b]).all() or min(duration_a, duration_b) <= 0:
         raise ValueError("invalid_duration_pair")
     return (duration_a - duration_b) / ((duration_a + duration_b) / 2)
+
+
+# The legacy generic target-manifest functions above remain for historical
+# audit compatibility. Production V1 targets below are explicit and task bound.
+F06_VERSION = "family06-native-subevents-2.0.0"
+F06_PARAMETER_SET_ID = "family06_native_subevents_v2"
+M1_BAND_HZ = (500., 5000.)
+TARGETS_V2 = {
+    "see_s": ("wstg", "wstg_we_see_three_geese", "see", "S"),
+    "geese_s": ("wstg", "wstg_we_see_three_geese", "geese", "S"),
+    "three_th": ("wstg", "wstg_we_see_three_geese", "three", "TH"),
+    "spot_t": ("sentence_s3", "sentence_s3_blue_spot_key", "spot", "T"),
+    "key_k": ("sentence_s3", "sentence_s3_blue_spot_key", "key", "K"),
+    "judge_jh": ("sentence_s7", "sentence_s7_municipal_judge", "judge", "JH"),
+    "sentenced_t": ("sentence_s7", "sentence_s7_municipal_judge", "sentenced", "T"),
+    "keep_k": ("sentence_s9", "sentence_s9_peter_will_keep", "keep", "K"),
+    "at_t": ("sentence_s9", "sentence_s9_peter_will_keep", "at", "T"),
+}
+F06_PUBLIC_IDS = frozenset({
+    *(f"band_noise_{variant}_{target}" for variant in ("a", "b")
+      for target in ("see_s", "geese_s", "three_th")),
+    "band_noise_a_s_minus_th", "band_noise_b_s_minus_th",
+    "spectral_m1_t_minus_k_hz",
+    "fricative_noise_duration_s_ms", "fricative_noise_duration_th_ms",
+    "fricative_noise_duration_s_minus_th_ms",
+    "noise_rise_time_judge_jh_ms", "noise_rise_time_sentenced_t_ms",
+    "noise_rise_time_t_minus_jh_ms",
+    "spectral_tilt_k_minus_t_db_per_khz",
+})
+
+
+def resolve_v1_target(store, recording_id: str, trial_id: str,
+                      target_id: str) -> tuple[pd.DataFrame, str]:
+    """Use only feature-facing canonical word/phone identity from frozen V1."""
+    task_id, prompt_id, word_text, phone_label = TARGETS_V2[target_id]
+    trial = store.trials.loc[store.trials.recording_id.astype(str).eq(recording_id)
+                             & store.trials.trial_id.astype(str).eq(trial_id)]
+    if len(trial) != 1 or str(trial.iloc[0].task_id) != task_id:
+        return pd.DataFrame(), "wrong_task"
+    if str(trial.iloc[0].prompt_id) != prompt_id:
+        return pd.DataFrame(), "wrong_prompt"
+    words = store.words_for_trial(recording_id, trial_id)
+    parents = words.loc[words.canonical_word_text.astype(str).str.casefold().eq(word_text)]
+    if parents.empty:
+        return pd.DataFrame(), "target_word_missing"
+    phones = store.phones_for_trial(recording_id, trial_id)
+    matching_label = phones.loc[phones.phone_normalized.astype(str).str.upper().eq(phone_label)]
+    if matching_label.empty:
+        return pd.DataFrame(), "target_phone_missing"
+    matched = matching_label.loc[matching_label.parent_word_id.astype(str).isin(
+        parents.word_id.astype(str))]
+    if matched.empty or not matched.parent_word_text.astype(str).str.casefold().eq(word_text).all():
+        return pd.DataFrame(), "wrong_parent_word"
+    if target_id == "sentenced_t":
+        # english_us_arpa: S EH1 N T AH0 N S T. V1 phone_index_in_word is
+        # 1-based provider order. Require the prefix as well as position 4 so
+        # a later T cannot shift into position 4 after missing earlier phones.
+        if "phone_index_in_word" not in phones.columns:
+            return pd.DataFrame(), "target_phone_position_unavailable"
+        prefixes = []
+        for parent_id in parents.word_id.astype(str):
+            prefix = phones.loc[phones.parent_word_id.astype(str).eq(parent_id)].copy()
+            prefix["_position"] = pd.to_numeric(prefix.phone_index_in_word,
+                                                   errors="coerce")
+            prefix = prefix.sort_values("_position")
+            if (prefix.head(4)._position.tolist() == [1, 2, 3, 4]
+                    and prefix.head(4).phone_normalized.astype(str).str.upper().tolist()
+                    == ["S", "EH", "N", "T"]):
+                prefixes.append(parent_id)
+        selected = matched.loc[pd.to_numeric(matched.phone_index_in_word,
+                                              errors="coerce").eq(4)
+                               & matched.parent_word_id.astype(str).isin(prefixes)]
+        if selected.empty:
+            return pd.DataFrame(), "target_phone_missing"
+        if selected.groupby(selected.parent_word_id.astype(str)).size().gt(1).any():
+            return pd.DataFrame(), "ambiguous_target_phone"
+        return selected.copy(), ""
+    if matched.groupby(matched.parent_word_id.astype(str)).size().gt(1).any():
+        return pd.DataFrame(), "ambiguous_target_phone"
+    return matched.copy(), ""
+
+
+def _one_sided_power(audio: np.ndarray, rate: int, start: float,
+                     duration: float, required_hz: float) -> tuple[np.ndarray, np.ndarray, float]:
+    if rate / 2 <= required_hz:
+        raise ValueError("sample_rate_insufficient")
+    frame = _window(audio, rate, start, duration)
+    frame = frame - np.mean(frame)  # DC only; never alter native source audio.
+    window = np.hanning(len(frame))
+    n_fft = max(FFT_SIZE, 1 << (len(frame) - 1).bit_length())
+    frequency = np.fft.rfftfreq(n_fft, 1 / rate)
+    power = np.abs(np.fft.rfft(frame * window, n=n_fft)) ** 2
+    if len(power) > 2:
+        power[1:-1] *= 2
+    denominator = rate * float(np.sum(window ** 2))
+    if denominator <= 0:
+        raise ValueError("insufficient_spectral_support")
+    return frequency, power / denominator, rate / n_fft
+
+
+def band_noise_power(audio: np.ndarray, rate: int, start: float,
+                     end: float, variant: str) -> float:
+    """One-sided integrated digital PSD; A/B retain their source band formulae."""
+    ceiling = {"a": 10000., "b": 6500.}.get(variant)
+    if ceiling is None:
+        raise ValueError("unknown_noise_band_variant")
+    frequency, density, step = _one_sided_power(audio, rate, start,
+                                                 end - start, ceiling)
+
+    def energy(low: float, high: float) -> float:
+        return float(density[(frequency >= low) & (frequency <= high)].sum() * step)
+
+    if variant == "a":
+        value = energy(720, 10000) - energy(4200, 10000)
+    elif variant == "b":
+        value = energy(720, 6500) - energy(720, 2150)
+    if value < -1e-12:
+        raise ValueError("invalid_band_contrast_power")
+    return max(0., value)  # remove only floating-point subtraction roundoff
+
+
+def first_spectral_moment_band(audio: np.ndarray, rate: int,
+                               burst_start: float) -> float:
+    """Hann one-sided power centroid over the common 500–5000-Hz band."""
+    frequency, density, _ = _one_sided_power(audio, rate, burst_start,
+                                              M1_WINDOW_SEC, M1_BAND_HZ[1])
+    mask = (frequency >= M1_BAND_HZ[0]) & (frequency <= M1_BAND_HZ[1])
+    values = density[mask]
+    total = float(values.sum())
+    if total <= 0 or not np.isfinite(total):
+        raise ValueError("insufficient_spectral_support")
+    return float(np.dot(frequency[mask], values) / total)

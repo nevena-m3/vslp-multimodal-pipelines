@@ -18,7 +18,7 @@ from vslp.acoustic.features.family01 import FAMILY01_IDS
 from vslp.acoustic.features.family02 import FAMILY02_IDS
 from vslp.acoustic.features.family03 import FAMILY03_IDS
 from vslp.acoustic.features.family04 import FAMILY04_IDS, TOKEN_IDS, VOWEL_IDS
-from vslp.acoustic.features.family06 import IMPLEMENTED_IDS as FAMILY06_IDS
+from vslp.acoustic.features.family06 import F06_PUBLIC_IDS as FAMILY06_IDS
 from vslp.acoustic.features.family06 import UNAVAILABLE_IDS as FAMILY06_UNAVAILABLE
 from vslp.acoustic.features.family07 import FAMILY07_IDS
 from vslp.acoustic.features.family08 import FAMILY08_IDS
@@ -87,7 +87,8 @@ def test_task_registry_is_explicit_and_has_no_semantic_classes():
     assert TASKS == {
         "sustained_a": "Sustained /a/", "bamboo_passage": "Bamboo Passage",
         "ddk": "DDK", "wstg": "WSTG",
-        "sentence_s3": "S3", "sentence_s5": "S5", "sentence_s6": "S6",
+        "sentence_s2": "S2", "sentence_s3": "S3", "sentence_s5": "S5",
+        "sentence_s6": "S6", "sentence_s7": "S7", "sentence_s9": "S9",
     }
     assert task_key("WSTG") == "wstg"
     assert task_key("We See Three Geese") is None
@@ -373,10 +374,10 @@ def test_specialized_scientific_inputs_appear_only_for_selected_dependencies():
     assert all(control.isHidden() for control in controls[2:])
     vowel.setCheckState(0, Qt.Unchecked)
 
-    target = window.feature_items["m1_t_minus_k_hz"]
+    target = window.feature_items["spectral_m1_t_minus_k_hz"]
     target.setCheckState(0, Qt.Checked)
-    assert not window.feature_segmental_target_row.isHidden()
-    assert not window.feature_subevents_row.isHidden()
+    assert window.feature_segmental_target_row.isHidden()
+    assert window.feature_subevents_row.isHidden()
     assert all(control.isHidden() for control in controls[:2])
     target.setCheckState(0, Qt.Unchecked)
     assert all(control.isHidden() for control in controls)

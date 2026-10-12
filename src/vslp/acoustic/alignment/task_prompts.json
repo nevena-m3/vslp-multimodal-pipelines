@@ -1,6 +1,18 @@
 {
   "registry_version": "vslp_alignment_prompts_v1",
   "tasks": [
+    {"task_id": "sentence_s7", "display_name": "S7", "task_type": "Sentence / controlled speech",
+     "alignment_applicable": true,
+     "prompts": [{"prompt_id": "sentence_s7_municipal_judge", "prompt_version": "v1",
+       "expected_repetitions": 1,
+       "exact_expected_text": "The municipal judge sentenced the criminal.",
+       "language": "en", "source": "user_supplied_f06_scientific_review_2026_10_11"}]},
+    {"task_id": "sentence_s9", "display_name": "S9", "task_type": "Sentence / controlled speech",
+     "alignment_applicable": true,
+     "prompts": [{"prompt_id": "sentence_s9_peter_will_keep", "prompt_version": "v1",
+       "expected_repetitions": 1,
+       "exact_expected_text": "Peter will keep at the peak.",
+       "language": "en", "source": "user_supplied_f06_scientific_review_2026_10_11"}]},
     {"task_id": "sentence_s2", "display_name": "S2", "task_type": "Sentence / controlled speech",
      "alignment_applicable": true,
      "prompts": [{"prompt_id": "sentence_s2_buy_bobby_a_puppy", "prompt_version": "v1",

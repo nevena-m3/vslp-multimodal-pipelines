@@ -1636,7 +1636,9 @@ class AcousticPipelineWindow(QMainWindow):
         vowel_mapping_available = False
         target_manifest_available = False
         acoustic_subevents_available = False
-        if output["family_id"] == "F06":
+        if (output["family_id"] == "F06"
+                and (output["prerequisites"].get("requires_target_manifest")
+                     or output["prerequisites"].get("requires_acoustic_subevents"))):
             from vslp.acoustic.features.family06 import load_target_manifest, load_validated_subevents
 
             task_id = ""

@@ -36,6 +36,8 @@ TASKS = {
     "sentence_s2": "S2",
     "sentence_s3": "S3",
     "sentence_s6": "S6",
+    "sentence_s7": "S7",
+    "sentence_s9": "S9",
 }
 REGISTERED_EXECUTORS = frozenset({"F01", "F02", "F03", "F04", "F05", "F06", "F07", "F08", "F09",
                                   "F10", "F11", "F12"})
@@ -463,8 +465,12 @@ def load_feature_catalog() -> dict[str, Any]:
             construct[field] = spec[field]
         construct["feature_id_templates"] = spec.get("feature_id_templates", [])
         # Detailed target-task contracts supersede the matrix's broad WSTG mark.
-        construct["recommended_tasks"] = []
-        construct["conditional_tasks"] = (["wstg"] if spec["construct_id"] == "C035" else [])
+        construct["recommended_tasks"] = {
+            "C036": ["wstg"], "C037": ["sentence_s3"],
+            "C038": ["wstg"], "C039": ["sentence_s7"],
+            "C042": ["sentence_s9"],
+        }.get(spec["construct_id"], [])
+        construct["conditional_tasks"] = []
     outputs06 = []
     for spec in family06["outputs"]:
         construct = constructs[spec["construct_id"]]
@@ -474,7 +480,7 @@ def load_feature_catalog() -> dict[str, Any]:
             "family_id": "F06", "family_name": construct["family_name"],
             "matrix_status": construct["matrix_status"],
             "use_status": "Conditional" if executable else "Blocked",
-            "recommended_tasks": construct["recommended_tasks"],
+            "recommended_tasks": ([spec["task_id"]] if executable else []),
             "conditional_tasks": construct["conditional_tasks"],
             "conditional_reason": "Requires licensed source algorithm" if spec["construct_id"] == "C035" else "",
             "evidence_level": construct["evidence_level"],
@@ -483,23 +489,24 @@ def load_feature_catalog() -> dict[str, Any]:
             "qc_range_low": None, "qc_range_high": None,
             "qc_range_text": construct["qc_range_text"],
             "signal_scope": construct["signal_scope"],
-            "analysis_region": ("validated external burst/noise annotation over frozen aligned target"
-                                if executable else "source-defined target, unresolved"),
+            "analysis_region": ("versioned native acoustic subevent within Final Alignment V1 phone"
+                                if executable else "historical inactive construct"),
             "estimator": spec["formula"], "algorithm": family06["algorithm_version"],
             "algorithm_version": family06["algorithm_version"],
             "default_parameter_set_id": family06["default_parameter_set_id"],
-            "parameter_profile": {"name": "Frozen aligned sub-events", "read_only": True,
+            "parameter_profile": {"name": "VSLP native acoustic subevents v2", "read_only": True,
                                   "active_parameters": {"m1_window_ms": 20,
                                                         "m1_fft_minimum": 2048,
                                                         "tilt_window_ms": 10,
                                                         "tilt_band_hz": [1500, 5000],
-                                                        "wideband_hz": [0, 10000],
+                                                        "band_a_hz": [720, 10000, 4200, 10000],
+                                                        "band_b_hz": [720, 6500, 720, 2150],
                                                         "source_audio_policy": "native rate; no upsampling"}},
             "prerequisites": {"requires_audio": executable,
                               "requires_final_reviewed_segmentation": executable,
                               "requires_alignment": executable,
-                              "requires_target_manifest": executable,
-                              "requires_acoustic_subevents": executable,
+                              "requires_target_manifest": False,
+                              "requires_acoustic_subevents": False,
                               "requires_task": executable},
             "family_spec_approved": True, "source_document": family06["source_document"],
         })
