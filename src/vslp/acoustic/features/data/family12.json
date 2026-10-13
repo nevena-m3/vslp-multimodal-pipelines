@@ -1,7 +1,7 @@
 {
   "family_id": "F12",
   "source_document": "12_Spectral_Cepstral_Codex_Implementation.docx",
-  "algorithm_version": "family12-spectral-1.0.0",
+  "algorithm_version": "family12-spectral-2.0.1",
   "mfcc_parameter_set_id": "family12_mfcc_48k_v1",
   "spectral_parameter_set_id": "family12_spectral_48k_v1",
   "working_sample_rate_hz": 48000,
@@ -9,25 +9,1233 @@
   "hop_ms": 10,
   "n_fft": 2048,
   "minimum_frames": 10,
-  "mfcc": {"n_mels":40,"n_mfcc":13,"fmin_hz":50,"fmax_hz":8000,"dct_type":2,"norm":"ortho","center":false,"preemphasis":false,"c0_retained":true,"mel_scale":"slaney","log":"natural"},
-  "spectral_contrast": {"library":"librosa","library_version":"0.11.0","fmin_hz":200,"n_bands":6,"quantile":0.02,"linear":false,"input":"STFT magnitude","log_convention":"librosa power_to_db(peak) - power_to_db(valley)","aggregation":"mean per band"},
+  "mfcc": {
+    "n_mels": 40,
+    "n_mfcc": 13,
+    "fmin_hz": 50,
+    "fmax_hz": 8000,
+    "dct_type": 2,
+    "norm": "ortho",
+    "center": false,
+    "preemphasis": false,
+    "c0_retained": true,
+    "mel_scale": "slaney",
+    "log": "natural"
+  },
+  "spectral_contrast": {
+    "library": "librosa",
+    "library_version": "0.11.0",
+    "fmin_hz": 200,
+    "n_bands": 6,
+    "quantile": 0.02,
+    "linear": false,
+    "input": "STFT magnitude",
+    "log_convention": "librosa power_to_db(peak) - power_to_db(valley)",
+    "aggregation": "mean per band"
+  },
   "outputs": [
-    {"construct_id":"C066","feature_id":"spectral_bandwidth_p2_mean_hz","human_name":"Spectral bandwidth p2 — mean","unit":"Hz","evidence_level":"NOT ESTABLISHED","evidence_study_count":1,"evidence_entry_count":2,"analysis_unit":"Frames"},
-    {"construct_id":"C066","feature_id":"spectral_bandwidth_p2_median_hz","human_name":"Spectral bandwidth p2 — median","unit":"Hz","evidence_level":"NOT ESTABLISHED","evidence_study_count":1,"evidence_entry_count":2,"analysis_unit":"Frames"},
-    {"construct_id":"C068","feature_id":"opensmile_1_4khz_<functional>","human_name":"openSMILE 1–4 kHz magnitude functional","unit":"source-specific","evidence_level":"NOT ESTABLISHED","evidence_study_count":1,"evidence_entry_count":1,"analysis_unit":"Frames","selectable":false,"blocked_reason":"Exact openSMILE frame configuration, scale, and functional are not frozen."},
-    {"construct_id":"C069","feature_id":"zcr_mean_fraction","human_name":"Zero-crossing rate — mean","unit":"fraction","evidence_level":"NOT ESTABLISHED","evidence_study_count":1,"evidence_entry_count":1,"analysis_unit":"Frames"},
-    {"construct_id":"C069","feature_id":"zcr_median_fraction","human_name":"Zero-crossing rate — median","unit":"fraction","evidence_level":"NOT ESTABLISHED","evidence_study_count":1,"evidence_entry_count":1,"analysis_unit":"Frames"},
-    {"construct_id":"C070","feature_id":"spec_m1_hz","human_name":"Spectral moment M1","unit":"Hz","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":4,"analysis_unit":"Frames"},
-    {"construct_id":"C070","feature_id":"spec_m2_hz","human_name":"Spectral moment M2","unit":"Hz","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":4,"analysis_unit":"Frames"},
-    {"construct_id":"C070","feature_id":"spec_m3_skew","human_name":"Spectral moment M3 skewness","unit":"dimensionless","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":4,"analysis_unit":"Frames"},
-    {"construct_id":"C070","feature_id":"spec_m4_kurtosis","human_name":"Spectral moment M4 Pearson kurtosis","unit":"dimensionless","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":4,"analysis_unit":"Frames"},
-    {"construct_id":"C071","feature_id":"spectral_centroid_hz","human_name":"Spectral centroid","unit":"Hz","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":8,"analysis_unit":"Frames"},
-    {"construct_id":"C071","feature_id":"spectral_spread_hz","human_name":"Spectral spread","unit":"Hz","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":8,"analysis_unit":"Frames"},
-    {"construct_id":"C071","feature_id":"spectral_skew","human_name":"Spectral skewness","unit":"dimensionless","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":8,"analysis_unit":"Frames"},
-    {"construct_id":"C071","feature_id":"spectral_kurtosis","human_name":"Spectral Pearson kurtosis","unit":"dimensionless","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":8,"analysis_unit":"Frames"},
-    {"construct_id":"C071","feature_id":"spectral_slope_db_khz","human_name":"Spectral slope","unit":"dB/kHz","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":8,"analysis_unit":"Frames"},
-    {"construct_id":"C071","feature_id":"spectral_flux","human_name":"Spectral flux","unit":"dimensionless","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":8,"analysis_unit":"Frames"},
-    {"construct_id":"C071","feature_id":"spectral_crest","human_name":"Spectral crest","unit":"dimensionless","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":8,"analysis_unit":"Frames"},
-    {"construct_id":"C071","feature_id":"spectral_flatness","human_name":"Spectral flatness","unit":"dimensionless","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":8,"analysis_unit":"Frames"}
-  ]
+    {
+      "task_id": "bamboo_passage",
+      "construct_id": "C066",
+      "feature_id": "bamboo_spectral_bandwidth_p2_mean_hz",
+      "human_name": "spectral bandwidth p2 mean hz — BAMBOO",
+      "unit": "Hz",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "bamboo_passage",
+      "construct_id": "C066",
+      "feature_id": "bamboo_spectral_bandwidth_p2_median_hz",
+      "human_name": "spectral bandwidth p2 median hz — BAMBOO",
+      "unit": "Hz",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "bamboo_passage",
+      "construct_id": "C071",
+      "feature_id": "bamboo_spectral_centroid_hz",
+      "human_name": "spectral centroid hz — BAMBOO",
+      "unit": "Hz",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "bamboo_passage",
+      "construct_id": "C071",
+      "feature_id": "bamboo_spectral_crest",
+      "human_name": "spectral crest — BAMBOO",
+      "unit": "dimensionless",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "bamboo_passage",
+      "construct_id": "C071",
+      "feature_id": "bamboo_spectral_flatness",
+      "human_name": "spectral flatness — BAMBOO",
+      "unit": "dimensionless",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "bamboo_passage",
+      "construct_id": "C071",
+      "feature_id": "bamboo_spectral_flux",
+      "human_name": "spectral flux — BAMBOO",
+      "unit": "dimensionless",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "bamboo_passage",
+      "construct_id": "C071",
+      "feature_id": "bamboo_spectral_kurtosis",
+      "human_name": "spectral kurtosis — BAMBOO",
+      "unit": "dimensionless",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "bamboo_passage",
+      "construct_id": "C071",
+      "feature_id": "bamboo_spectral_skew",
+      "human_name": "spectral skew — BAMBOO",
+      "unit": "dimensionless",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "bamboo_passage",
+      "construct_id": "C071",
+      "feature_id": "bamboo_spectral_slope_db_khz",
+      "human_name": "spectral slope db khz — BAMBOO",
+      "unit": "dB/kHz",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "bamboo_passage",
+      "construct_id": "C071",
+      "feature_id": "bamboo_spectral_spread_hz",
+      "human_name": "spectral spread hz — BAMBOO",
+      "unit": "Hz",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "wstg",
+      "construct_id": "C070",
+      "feature_id": "s1_spec_m1_hz",
+      "human_name": "spec m1 hz — S1",
+      "unit": "Hz",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "wstg",
+      "construct_id": "C070",
+      "feature_id": "s1_spec_m2_hz",
+      "human_name": "spec m2 hz — S1",
+      "unit": "Hz",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "wstg",
+      "construct_id": "C070",
+      "feature_id": "s1_spec_m3_skew",
+      "human_name": "spec m3 skew — S1",
+      "unit": "dimensionless",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "wstg",
+      "construct_id": "C070",
+      "feature_id": "s1_spec_m4_kurtosis",
+      "human_name": "spec m4 kurtosis — S1",
+      "unit": "dimensionless",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "wstg",
+      "construct_id": "C068",
+      "feature_id": "s1_spectral_band_1_4khz_percentile1",
+      "human_name": "spectral band 1 4khz percentile1 — S1",
+      "unit": "source-specific",
+      "selectable": false,
+      "blocked_reason": "research_pending_source_config"
+    },
+    {
+      "task_id": "wstg",
+      "construct_id": "C071",
+      "feature_id": "s1_spectral_crest",
+      "human_name": "spectral crest — S1",
+      "unit": "dimensionless",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "wstg",
+      "construct_id": "C071",
+      "feature_id": "s1_spectral_flatness",
+      "human_name": "spectral flatness — S1",
+      "unit": "dimensionless",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "wstg",
+      "construct_id": "C071",
+      "feature_id": "s1_spectral_flux",
+      "human_name": "spectral flux — S1",
+      "unit": "dimensionless",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "wstg",
+      "construct_id": "C071",
+      "feature_id": "s1_spectral_slope_db_khz",
+      "human_name": "spectral slope db khz — S1",
+      "unit": "dB/kHz",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "wstg",
+      "construct_id": "C069",
+      "feature_id": "s1_zcr_mean_fraction",
+      "human_name": "zcr mean fraction — S1",
+      "unit": "fraction",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "wstg",
+      "construct_id": "C069",
+      "feature_id": "s1_zcr_median_fraction",
+      "human_name": "zcr median fraction — S1",
+      "unit": "fraction",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C065",
+      "feature_id": "s2_mfcc01_mean",
+      "human_name": "mfcc01 mean — S2",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C065",
+      "feature_id": "s2_mfcc01_sd",
+      "human_name": "mfcc01 sd — S2",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C065",
+      "feature_id": "s2_mfcc02_mean",
+      "human_name": "mfcc02 mean — S2",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C065",
+      "feature_id": "s2_mfcc02_sd",
+      "human_name": "mfcc02 sd — S2",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C065",
+      "feature_id": "s2_mfcc03_mean",
+      "human_name": "mfcc03 mean — S2",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C065",
+      "feature_id": "s2_mfcc03_sd",
+      "human_name": "mfcc03 sd — S2",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C065",
+      "feature_id": "s2_mfcc04_mean",
+      "human_name": "mfcc04 mean — S2",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C065",
+      "feature_id": "s2_mfcc04_sd",
+      "human_name": "mfcc04 sd — S2",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C065",
+      "feature_id": "s2_mfcc05_mean",
+      "human_name": "mfcc05 mean — S2",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C065",
+      "feature_id": "s2_mfcc05_sd",
+      "human_name": "mfcc05 sd — S2",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C065",
+      "feature_id": "s2_mfcc06_mean",
+      "human_name": "mfcc06 mean — S2",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C065",
+      "feature_id": "s2_mfcc06_sd",
+      "human_name": "mfcc06 sd — S2",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C065",
+      "feature_id": "s2_mfcc07_mean",
+      "human_name": "mfcc07 mean — S2",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C065",
+      "feature_id": "s2_mfcc07_sd",
+      "human_name": "mfcc07 sd — S2",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C065",
+      "feature_id": "s2_mfcc08_mean",
+      "human_name": "mfcc08 mean — S2",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C065",
+      "feature_id": "s2_mfcc08_sd",
+      "human_name": "mfcc08 sd — S2",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C065",
+      "feature_id": "s2_mfcc09_mean",
+      "human_name": "mfcc09 mean — S2",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C065",
+      "feature_id": "s2_mfcc09_sd",
+      "human_name": "mfcc09 sd — S2",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C065",
+      "feature_id": "s2_mfcc10_mean",
+      "human_name": "mfcc10 mean — S2",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C065",
+      "feature_id": "s2_mfcc10_sd",
+      "human_name": "mfcc10 sd — S2",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C065",
+      "feature_id": "s2_mfcc11_mean",
+      "human_name": "mfcc11 mean — S2",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C065",
+      "feature_id": "s2_mfcc11_sd",
+      "human_name": "mfcc11 sd — S2",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C065",
+      "feature_id": "s2_mfcc12_mean",
+      "human_name": "mfcc12 mean — S2",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C065",
+      "feature_id": "s2_mfcc12_sd",
+      "human_name": "mfcc12 sd — S2",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C065",
+      "feature_id": "s2_mfcc13_mean",
+      "human_name": "mfcc13 mean — S2",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C065",
+      "feature_id": "s2_mfcc13_sd",
+      "human_name": "mfcc13 sd — S2",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C070",
+      "feature_id": "s2_spec_m1_hz",
+      "human_name": "spec m1 hz — S2",
+      "unit": "Hz",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C070",
+      "feature_id": "s2_spec_m2_hz",
+      "human_name": "spec m2 hz — S2",
+      "unit": "Hz",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C070",
+      "feature_id": "s2_spec_m3_skew",
+      "human_name": "spec m3 skew — S2",
+      "unit": "dimensionless",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C070",
+      "feature_id": "s2_spec_m4_kurtosis",
+      "human_name": "spec m4 kurtosis — S2",
+      "unit": "dimensionless",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C071",
+      "feature_id": "s2_spectral_crest",
+      "human_name": "spectral crest — S2",
+      "unit": "dimensionless",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C071",
+      "feature_id": "s2_spectral_flatness",
+      "human_name": "spectral flatness — S2",
+      "unit": "dimensionless",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C071",
+      "feature_id": "s2_spectral_flux",
+      "human_name": "spectral flux — S2",
+      "unit": "dimensionless",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s2",
+      "construct_id": "C071",
+      "feature_id": "s2_spectral_slope_db_khz",
+      "human_name": "spectral slope db khz — S2",
+      "unit": "dB/kHz",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s5",
+      "construct_id": "C067",
+      "feature_id": "s5_spectral_contrast_band0_db",
+      "human_name": "spectral contrast band0 db — S5",
+      "unit": "dB",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s5",
+      "construct_id": "C067",
+      "feature_id": "s5_spectral_contrast_band1_db",
+      "human_name": "spectral contrast band1 db — S5",
+      "unit": "dB",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s5",
+      "construct_id": "C067",
+      "feature_id": "s5_spectral_contrast_band2_db",
+      "human_name": "spectral contrast band2 db — S5",
+      "unit": "dB",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s5",
+      "construct_id": "C067",
+      "feature_id": "s5_spectral_contrast_band3_db",
+      "human_name": "spectral contrast band3 db — S5",
+      "unit": "dB",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s5",
+      "construct_id": "C067",
+      "feature_id": "s5_spectral_contrast_band4_db",
+      "human_name": "spectral contrast band4 db — S5",
+      "unit": "dB",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s5",
+      "construct_id": "C067",
+      "feature_id": "s5_spectral_contrast_band5_db",
+      "human_name": "spectral contrast band5 db — S5",
+      "unit": "dB",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s5",
+      "construct_id": "C067",
+      "feature_id": "s5_spectral_contrast_band6_db",
+      "human_name": "spectral contrast band6 db — S5",
+      "unit": "dB",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s6",
+      "construct_id": "C065",
+      "feature_id": "s6_mfcc01_mean",
+      "human_name": "mfcc01 mean — S6",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s6",
+      "construct_id": "C065",
+      "feature_id": "s6_mfcc01_sd",
+      "human_name": "mfcc01 sd — S6",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s6",
+      "construct_id": "C065",
+      "feature_id": "s6_mfcc02_mean",
+      "human_name": "mfcc02 mean — S6",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s6",
+      "construct_id": "C065",
+      "feature_id": "s6_mfcc02_sd",
+      "human_name": "mfcc02 sd — S6",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s6",
+      "construct_id": "C065",
+      "feature_id": "s6_mfcc03_mean",
+      "human_name": "mfcc03 mean — S6",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s6",
+      "construct_id": "C065",
+      "feature_id": "s6_mfcc03_sd",
+      "human_name": "mfcc03 sd — S6",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s6",
+      "construct_id": "C065",
+      "feature_id": "s6_mfcc04_mean",
+      "human_name": "mfcc04 mean — S6",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s6",
+      "construct_id": "C065",
+      "feature_id": "s6_mfcc04_sd",
+      "human_name": "mfcc04 sd — S6",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s6",
+      "construct_id": "C065",
+      "feature_id": "s6_mfcc05_mean",
+      "human_name": "mfcc05 mean — S6",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s6",
+      "construct_id": "C065",
+      "feature_id": "s6_mfcc05_sd",
+      "human_name": "mfcc05 sd — S6",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s6",
+      "construct_id": "C065",
+      "feature_id": "s6_mfcc06_mean",
+      "human_name": "mfcc06 mean — S6",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s6",
+      "construct_id": "C065",
+      "feature_id": "s6_mfcc06_sd",
+      "human_name": "mfcc06 sd — S6",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s6",
+      "construct_id": "C065",
+      "feature_id": "s6_mfcc07_mean",
+      "human_name": "mfcc07 mean — S6",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s6",
+      "construct_id": "C065",
+      "feature_id": "s6_mfcc07_sd",
+      "human_name": "mfcc07 sd — S6",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s6",
+      "construct_id": "C065",
+      "feature_id": "s6_mfcc08_mean",
+      "human_name": "mfcc08 mean — S6",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s6",
+      "construct_id": "C065",
+      "feature_id": "s6_mfcc08_sd",
+      "human_name": "mfcc08 sd — S6",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s6",
+      "construct_id": "C065",
+      "feature_id": "s6_mfcc09_mean",
+      "human_name": "mfcc09 mean — S6",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s6",
+      "construct_id": "C065",
+      "feature_id": "s6_mfcc09_sd",
+      "human_name": "mfcc09 sd — S6",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s6",
+      "construct_id": "C065",
+      "feature_id": "s6_mfcc10_mean",
+      "human_name": "mfcc10 mean — S6",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s6",
+      "construct_id": "C065",
+      "feature_id": "s6_mfcc10_sd",
+      "human_name": "mfcc10 sd — S6",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s6",
+      "construct_id": "C065",
+      "feature_id": "s6_mfcc11_mean",
+      "human_name": "mfcc11 mean — S6",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s6",
+      "construct_id": "C065",
+      "feature_id": "s6_mfcc11_sd",
+      "human_name": "mfcc11 sd — S6",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s6",
+      "construct_id": "C065",
+      "feature_id": "s6_mfcc12_mean",
+      "human_name": "mfcc12 mean — S6",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s6",
+      "construct_id": "C065",
+      "feature_id": "s6_mfcc12_sd",
+      "human_name": "mfcc12 sd — S6",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s6",
+      "construct_id": "C065",
+      "feature_id": "s6_mfcc13_mean",
+      "human_name": "mfcc13 mean — S6",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s6",
+      "construct_id": "C065",
+      "feature_id": "s6_mfcc13_sd",
+      "human_name": "mfcc13 sd — S6",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s7",
+      "construct_id": "C070",
+      "feature_id": "s7_spec_m1_hz",
+      "human_name": "spec m1 hz — S7",
+      "unit": "Hz",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s7",
+      "construct_id": "C070",
+      "feature_id": "s7_spec_m2_hz",
+      "human_name": "spec m2 hz — S7",
+      "unit": "Hz",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s7",
+      "construct_id": "C070",
+      "feature_id": "s7_spec_m3_skew",
+      "human_name": "spec m3 skew — S7",
+      "unit": "dimensionless",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s7",
+      "construct_id": "C070",
+      "feature_id": "s7_spec_m4_kurtosis",
+      "human_name": "spec m4 kurtosis — S7",
+      "unit": "dimensionless",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s7",
+      "construct_id": "C068",
+      "feature_id": "s7_spectral_band_1_4khz_percentile1",
+      "human_name": "spectral band 1 4khz percentile1 — S7",
+      "unit": "source-specific",
+      "selectable": false,
+      "blocked_reason": "research_pending_source_config"
+    },
+    {
+      "task_id": "sentence_s7",
+      "construct_id": "C071",
+      "feature_id": "s7_spectral_crest",
+      "human_name": "spectral crest — S7",
+      "unit": "dimensionless",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s7",
+      "construct_id": "C071",
+      "feature_id": "s7_spectral_flatness",
+      "human_name": "spectral flatness — S7",
+      "unit": "dimensionless",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s7",
+      "construct_id": "C071",
+      "feature_id": "s7_spectral_flux",
+      "human_name": "spectral flux — S7",
+      "unit": "dimensionless",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s7",
+      "construct_id": "C071",
+      "feature_id": "s7_spectral_slope_db_khz",
+      "human_name": "spectral slope db khz — S7",
+      "unit": "dB/kHz",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s7",
+      "construct_id": "C069",
+      "feature_id": "s7_zcr_mean_fraction",
+      "human_name": "zcr mean fraction — S7",
+      "unit": "fraction",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sentence_s7",
+      "construct_id": "C069",
+      "feature_id": "s7_zcr_median_fraction",
+      "human_name": "zcr median fraction — S7",
+      "unit": "fraction",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C065",
+      "feature_id": "vowel_mfcc01_mean",
+      "human_name": "mfcc01 mean — VOWEL",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C065",
+      "feature_id": "vowel_mfcc01_sd",
+      "human_name": "mfcc01 sd — VOWEL",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C065",
+      "feature_id": "vowel_mfcc02_mean",
+      "human_name": "mfcc02 mean — VOWEL",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C065",
+      "feature_id": "vowel_mfcc02_sd",
+      "human_name": "mfcc02 sd — VOWEL",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C065",
+      "feature_id": "vowel_mfcc03_mean",
+      "human_name": "mfcc03 mean — VOWEL",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C065",
+      "feature_id": "vowel_mfcc03_sd",
+      "human_name": "mfcc03 sd — VOWEL",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C065",
+      "feature_id": "vowel_mfcc04_mean",
+      "human_name": "mfcc04 mean — VOWEL",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C065",
+      "feature_id": "vowel_mfcc04_sd",
+      "human_name": "mfcc04 sd — VOWEL",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C065",
+      "feature_id": "vowel_mfcc05_mean",
+      "human_name": "mfcc05 mean — VOWEL",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C065",
+      "feature_id": "vowel_mfcc05_sd",
+      "human_name": "mfcc05 sd — VOWEL",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C065",
+      "feature_id": "vowel_mfcc06_mean",
+      "human_name": "mfcc06 mean — VOWEL",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C065",
+      "feature_id": "vowel_mfcc06_sd",
+      "human_name": "mfcc06 sd — VOWEL",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C065",
+      "feature_id": "vowel_mfcc07_mean",
+      "human_name": "mfcc07 mean — VOWEL",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C065",
+      "feature_id": "vowel_mfcc07_sd",
+      "human_name": "mfcc07 sd — VOWEL",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C065",
+      "feature_id": "vowel_mfcc08_mean",
+      "human_name": "mfcc08 mean — VOWEL",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C065",
+      "feature_id": "vowel_mfcc08_sd",
+      "human_name": "mfcc08 sd — VOWEL",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C065",
+      "feature_id": "vowel_mfcc09_mean",
+      "human_name": "mfcc09 mean — VOWEL",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C065",
+      "feature_id": "vowel_mfcc09_sd",
+      "human_name": "mfcc09 sd — VOWEL",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C065",
+      "feature_id": "vowel_mfcc10_mean",
+      "human_name": "mfcc10 mean — VOWEL",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C065",
+      "feature_id": "vowel_mfcc10_sd",
+      "human_name": "mfcc10 sd — VOWEL",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C065",
+      "feature_id": "vowel_mfcc11_mean",
+      "human_name": "mfcc11 mean — VOWEL",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C065",
+      "feature_id": "vowel_mfcc11_sd",
+      "human_name": "mfcc11 sd — VOWEL",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C065",
+      "feature_id": "vowel_mfcc12_mean",
+      "human_name": "mfcc12 mean — VOWEL",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C065",
+      "feature_id": "vowel_mfcc12_sd",
+      "human_name": "mfcc12 sd — VOWEL",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C065",
+      "feature_id": "vowel_mfcc13_mean",
+      "human_name": "mfcc13 mean — VOWEL",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C065",
+      "feature_id": "vowel_mfcc13_sd",
+      "human_name": "mfcc13 sd — VOWEL",
+      "unit": "cepstral coefficient",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C067",
+      "feature_id": "vowel_spectral_contrast_band0_db",
+      "human_name": "spectral contrast band0 db — VOWEL",
+      "unit": "dB",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C067",
+      "feature_id": "vowel_spectral_contrast_band1_db",
+      "human_name": "spectral contrast band1 db — VOWEL",
+      "unit": "dB",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C067",
+      "feature_id": "vowel_spectral_contrast_band2_db",
+      "human_name": "spectral contrast band2 db — VOWEL",
+      "unit": "dB",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C067",
+      "feature_id": "vowel_spectral_contrast_band3_db",
+      "human_name": "spectral contrast band3 db — VOWEL",
+      "unit": "dB",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C067",
+      "feature_id": "vowel_spectral_contrast_band4_db",
+      "human_name": "spectral contrast band4 db — VOWEL",
+      "unit": "dB",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C067",
+      "feature_id": "vowel_spectral_contrast_band5_db",
+      "human_name": "spectral contrast band5 db — VOWEL",
+      "unit": "dB",
+      "selectable": true,
+      "blocked_reason": ""
+    },
+    {
+      "task_id": "sustained_a",
+      "construct_id": "C067",
+      "feature_id": "vowel_spectral_contrast_band6_db",
+      "human_name": "spectral contrast band6 db — VOWEL",
+      "unit": "dB",
+      "selectable": true,
+      "blocked_reason": ""
+    }
+  ],
+  "spectral_slope": {
+    "policy_version": "family12_slope_relative_db_v1",
+    "frequency_band_hz": [
+      0,
+      24000
+    ],
+    "exclude_dc": true,
+    "include_nyquist": true,
+    "level": "20*log10(max(STFT magnitude / frame maximum positive-frequency magnitude, 1e-6))",
+    "floor_relative_db": -120,
+    "regression": "unweighted OLS versus frequency in kHz",
+    "unit": "dB/kHz",
+    "status": "VSLP operationalization; source-band parity pending"
+  },
+  "flatness_epsilon": "2.2250738585072014e-308"
 }

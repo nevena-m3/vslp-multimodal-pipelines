@@ -762,51 +762,41 @@ def load_feature_catalog() -> dict[str, Any]:
             "source_document": family11["source_document"],
         })
     attach_family_outputs(matrix, "F11", outputs11)
+    from vslp.acoustic.features.family12_v2 import VERSION as f12_version, specs as f12_specs
+
     family12 = json.loads(_FAMILY12.read_text(encoding="utf-8"))
-    mfcc_specs = []
-    for coefficient in range(1, 14):
-        for statistic in ("mean", "sd"):
-            mfcc_specs.append({
-                "construct_id": "C065", "feature_id": f"mfcc{coefficient:02d}_{statistic}",
-                "human_name": f"MFCC {coefficient:02d} — {statistic.upper()}",
-                "unit": "cepstral coefficient", "evidence_level": "NOT ESTABLISHED",
-                "evidence_study_count": 3, "evidence_entry_count": 3,
-                "analysis_unit": "Frames",
-            })
-    contrast_specs = [{
-        "construct_id": "C067", "feature_id": f"spectral_contrast_band{band}_db",
-        "human_name": f"Spectral contrast — band {band}", "unit": "dB",
-        "evidence_level": "NOT ESTABLISHED", "evidence_study_count": 1,
-        "evidence_entry_count": 1, "analysis_unit": "Frames",
-    } for band in range(7)]
     outputs12 = []
-    for spec in [*mfcc_specs, *family12["outputs"], *contrast_specs]:
+    for spec in f12_specs():
         construct = constructs[spec["construct_id"]]
         is_mfcc = spec["construct_id"] == "C065"
+        task_id = spec["task_id"]
         outputs12.append({
             **spec, "construct_name": construct["construct_name"],
-            "formula": spec.get("formula", "Frozen explicit Family 12 estimator"),
+            "evidence_level": "LIMITED" if spec["construct_id"] in {"C070", "C071"}
+                              else "NOT ESTABLISHED",
+            "evidence_study_count": 1, "evidence_entry_count": 1,
+            "analysis_unit": "Frames",
+            "formula": "Frozen task-specific Family 12 estimator",
             "family_id": "F12", "family_name": construct["family_name"],
             "matrix_status": construct["matrix_status"],
-            "use_status": "Production" if spec.get("selectable", True) else "Research",
-            "recommended_tasks": construct["recommended_tasks"],
-            "conditional_tasks": construct["conditional_tasks"],
-            "qc_range_low": 0 if spec["feature_id"].startswith(("zcr_", "spectral_bandwidth")) else None,
-            "qc_range_high": 1 if spec["feature_id"].startswith("zcr_") else None,
-            "qc_range_text": "0–1" if spec["feature_id"].startswith("zcr_") else "—",
+            "use_status": "Production" if spec["selectable"] else "Research",
+            "recommended_tasks": [task_id] if spec["selectable"] else [],
+            "conditional_tasks": [],
+            "qc_range_low": 0 if spec["construct_id"] in {"C066", "C069"} else None,
+            "qc_range_high": 1 if spec["construct_id"] == "C069" else None,
+            "qc_range_text": "0–1" if spec["construct_id"] == "C069" else "—",
             "signal_scope": construct["signal_scope"],
-            "analysis_region": "final reviewed patient speech/task region",
-            "estimator": "explicit private 48 kHz STFT/log-Mel transform",
-            "algorithm": family12["algorithm_version"],
-            "algorithm_version": family12["algorithm_version"],
+            "analysis_region": ("centered reviewed stable phonation <=2 s"
+                                if task_id == "sustained_a" else
+                                "independent eligible reviewed speech intervals"),
+            "estimator": "private 48 kHz center=False Hann STFT",
+            "algorithm": f12_version, "algorithm_version": f12_version,
             "default_parameter_set_id": (family12["mfcc_parameter_set_id"] if is_mfcc else
                                          family12["spectral_parameter_set_id"]),
-            "parameter_profile": {"name": "Frozen 48 kHz private spectral profile",
+            "parameter_profile": {"name": "Frozen 48 kHz private F12 profile",
                 "read_only": True, "active_parameters": {
-                    "working_sample_rate_hz": family12["working_sample_rate_hz"],
-                    "window_ms": family12["window_ms"], "hop_ms": family12["hop_ms"],
-                    "n_fft": family12["n_fft"], "center": False,
-                    "minimum_frames": family12["minimum_frames"],
+                    "working_sample_rate_hz": 48000, "window_ms": 25, "hop_ms": 10,
+                    "n_fft": 2048, "center": False, "minimum_frames": 10,
                     **(family12["mfcc"] if is_mfcc else {}),
                     **(family12["spectral_contrast"]
                        if spec["construct_id"] == "C067" else {})}},
@@ -815,9 +805,11 @@ def load_feature_catalog() -> dict[str, Any]:
                 "requires_task": True, "requires_unscaled_audio": False,
                 "requires_voiced_region": False, "requires_ddk_events": False,
                 "requires_vowel_tokens": False, "requires_prompt_manifest": False},
-            "family_spec_approved": True, "selectable": spec.get("selectable", True),
-            "blocked_reason": spec.get("blocked_reason", ""),
+            "family_spec_approved": True,
+            "blocked_reason": spec["blocked_reason"],
             "source_document": family12["source_document"],
+            "id_provenance": "PROJECT_DEFINED_ID",
+            "identity_basis": "Frozen task-specific F12 output",
         })
     attach_family_outputs(matrix, "F12", outputs12)
     family13 = json.loads(_FAMILY13.read_text(encoding="utf-8"))

@@ -25,7 +25,7 @@ from vslp.acoustic.features.family08_v2 import FAMILY08_IDS
 from vslp.acoustic.features.family09_v2 import PUBLIC_IDS as FAMILY09_ACTIVE_IDS
 from vslp.acoustic.features.family10_v2 import PUBLIC_IDS as FAMILY10_IDS
 from vslp.acoustic.features.family11_v2 import PUBLIC_IDS as FAMILY11_IDS
-from vslp.acoustic.features.family12 import FAMILY12_IDS
+from vslp.acoustic.features.family12_v2 import PUBLIC_IDS as FAMILY12_IDS
 from vslp.gui.acoustic_app.main_window import AcousticPipelineWindow
 from vslp.gui.acoustic_app.feature_presentation import (
     construct_presentation_status, output_presentation_status,
@@ -37,7 +37,8 @@ FAMILY02_UNAVAILABLE = {"cpps_db", "harmonic_h1_h8_mean", "harmonic_h1_h8_sd",
 FAMILY04_UNAVAILABLE = set()
 FAMILY07_UNAVAILABLE = {"vowel_duration_<phone>_s"}
 FAMILY11_UNAVAILABLE = set()
-FAMILY12_UNAVAILABLE = {"opensmile_1_4khz_<functional>"}
+FAMILY12_UNAVAILABLE = {"s1_spectral_band_1_4khz_percentile1",
+                        "s7_spectral_band_1_4khz_percentile1"}
 FAMILY13_UNAVAILABLE = {
     "ppe_source_replication_only", "dynamics_det_dmfcc_components",
     "dynamics_articulation_rate", "dynamics_factor_if_frozen",
@@ -510,16 +511,16 @@ def test_family11_12_exact_leaves_and_reproducibility_blocks():
     catalog = load_feature_catalog()
     outputs = {item["feature_id"]: item for item in catalog["outputs"]}
     for feature_id in ("vowel_absolute_energy_fs2", "s5_sound_power_digital",
-                       "vowel_wave_amp_skew", "s5_amp_sd_fs", "mfcc01_mean", "mfcc13_sd",
-                       "spectral_bandwidth_p2_mean_hz", "zcr_mean_fraction",
-                       "spec_m4_kurtosis", "spectral_flatness"):
+                       "vowel_wave_amp_skew", "s5_amp_sd_fs", "vowel_mfcc01_mean", "s6_mfcc13_sd",
+                       "bamboo_spectral_bandwidth_p2_mean_hz", "s1_zcr_mean_fraction",
+                       "s7_spec_m4_kurtosis", "bamboo_spectral_flatness"):
         assert feature_id in outputs
         assert feature_availability(outputs[feature_id])[0] == "Implemented"
         assert outputs[feature_id]["evidence_level"] in {"NOT ESTABLISHED", "LIMITED"}
     assert feature_availability(outputs["bamboo_visibility_graph_density_amp"])[0] == "Implemented"
-    assert feature_availability(outputs["opensmile_1_4khz_<functional>"])[0] == "Not implemented"
-    assert feature_availability(outputs["spectral_contrast_band6_db"])[0] == "Implemented"
-    contrast = outputs["spectral_contrast_band6_db"]["parameter_profile"]["active_parameters"]
+    assert feature_availability(outputs["s1_spectral_band_1_4khz_percentile1"])[0] == "Not implemented"
+    assert feature_availability(outputs["vowel_spectral_contrast_band6_db"])[0] == "Implemented"
+    contrast = outputs["vowel_spectral_contrast_band6_db"]["parameter_profile"]["active_parameters"]
     assert contrast["n_bands"] == 6
     assert contrast["library_version"] == "0.11.0"
     assert contrast["input"] == "STFT magnitude"

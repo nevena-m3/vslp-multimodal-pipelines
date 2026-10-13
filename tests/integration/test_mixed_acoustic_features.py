@@ -60,7 +60,8 @@ def _case(tmp_path, monkeypatch, *, aligned=False, normalized=False, ddk=False):
     for module in ("mixed_dispatch", "family01_stage", "family04_stage", "family06_stage",
                    "family06_v2_stage", "family07_v2_stage", "family08", "family08_v2",
                    "family09_v2_stage",
-                   "family10", "family10_v2_stage", "family11_v2_stage", "family11_12_stage"):
+                   "family10", "family10_v2_stage", "family11_v2_stage", "family11_12_stage",
+                   "family12_v2_stage"):
         try:
             monkeypatch.setattr(f"vslp.acoustic.features.{module}.load_final_segmentation",
                                 lambda *_: kept)
