@@ -60,7 +60,7 @@ def _case(tmp_path, monkeypatch, *, aligned=False, normalized=False, ddk=False):
     for module in ("mixed_dispatch", "family01_stage", "family04_stage", "family06_stage",
                    "family06_v2_stage", "family07_v2_stage", "family08", "family08_v2",
                    "family09_v2_stage",
-                   "family10", "family10_v2_stage", "family11_12_stage"):
+                   "family10", "family10_v2_stage", "family11_v2_stage", "family11_12_stage"):
         try:
             monkeypatch.setattr(f"vslp.acoustic.features.{module}.load_final_segmentation",
                                 lambda *_: kept)
@@ -220,13 +220,13 @@ def test_f07_f08_f09_share_reviewed_bamboo_timing_without_alignment(tmp_path, mo
     assert status.input_contract.eq("FINAL_REVIEWED_TIMING").all()
 
 
-def test_normalization_failure_only_affects_absolute_energy(tmp_path, monkeypatch):
+def test_native_f11_is_independent_of_preprocess_normalization(tmp_path, monkeypatch):
     root, decisions, intervals, _ = _case(tmp_path, monkeypatch, normalized=True)
     _, status, values = _run(root, decisions, intervals,
-                             ["absolute_energy_fs2", "mfcc01_mean"])
-    assert status.loc[status.feature_id.eq("absolute_energy_fs2"),
-                      "failure_reason"].iloc[0] == "incompatible_amplitude_normalization"
-    assert np.isfinite(values.mfcc01_mean.iloc[0])
+                             ["bamboo_absolute_energy_fs2", "mfcc01_mean"])
+    assert status.loc[status.feature_id.eq("bamboo_absolute_energy_fs2"),
+                      "failure_reason"].iloc[0] == ""
+    assert np.isfinite(values.bamboo_absolute_energy_fs2.iloc[0])
 
 
 def test_four_families_selected_only_unique_and_audited(tmp_path, monkeypatch):
@@ -312,7 +312,7 @@ def test_ten_implemented_families_dispatch_together_with_local_failures(tmp_path
     root, decisions, intervals, _ = _case(tmp_path, monkeypatch, ddk=True)
     selected = ["f0_mean_hz", "hnr_mean_db", "f1_median_hz",
                 "spectral_m1_t_minus_k_hz", "speech_time_s", "speaking_rate_syll_s",
-                "bamboo_pause_count", "ddk_pa_rate_syll_s", "amp_mean_fs", "mfcc01_mean"]
+                "bamboo_pause_count", "ddk_pa_rate_syll_s", "bamboo_absolute_energy_fs2", "mfcc01_mean"]
     result, status, values = _run(root, decisions, intervals, selected)
     assert result.status == "completed_with_warnings"
     assert set(status.feature_id) == set(selected)
@@ -330,8 +330,8 @@ def test_ten_implemented_families_dispatch_together_with_local_failures(tmp_path
     assert set(manifest["config"]["families_invoked"]) == {
         "F01", "F02", "F04", "F06", "F07", "F08", "F09", "F10", "F11", "F12"}
     assert set(manifest["config"]["executor_groups"]) == {
-        "voice", "formants", "segmental", "timing", "ddk", "spectrum"}
-    assert len(manifest["config"]["executor_groups"]) == 6
+        "voice", "formants", "segmental", "timing", "ddk", "amplitude", "spectrum"}
+    assert len(manifest["config"]["executor_groups"]) == 7
 
 
 def test_duplicate_selection_rejected(tmp_path, monkeypatch):

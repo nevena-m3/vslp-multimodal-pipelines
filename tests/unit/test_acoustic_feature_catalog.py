@@ -24,7 +24,7 @@ from vslp.acoustic.features.family07 import FAMILY07_IDS
 from vslp.acoustic.features.family08_v2 import FAMILY08_IDS
 from vslp.acoustic.features.family09_v2 import PUBLIC_IDS as FAMILY09_ACTIVE_IDS
 from vslp.acoustic.features.family10_v2 import PUBLIC_IDS as FAMILY10_IDS
-from vslp.acoustic.features.family11 import FAMILY11_IDS
+from vslp.acoustic.features.family11_v2 import PUBLIC_IDS as FAMILY11_IDS
 from vslp.acoustic.features.family12 import FAMILY12_IDS
 from vslp.gui.acoustic_app.main_window import AcousticPipelineWindow
 from vslp.gui.acoustic_app.feature_presentation import (
@@ -509,14 +509,14 @@ def test_family07_registry_gui_and_selection_dependent_alignment():
 def test_family11_12_exact_leaves_and_reproducibility_blocks():
     catalog = load_feature_catalog()
     outputs = {item["feature_id"]: item for item in catalog["outputs"]}
-    for feature_id in ("absolute_energy_fs2", "sound_power_digital", "wave_amp_skew",
-                       "amp_sd_fs", "mfcc01_mean", "mfcc13_sd",
+    for feature_id in ("vowel_absolute_energy_fs2", "s5_sound_power_digital",
+                       "vowel_wave_amp_skew", "s5_amp_sd_fs", "mfcc01_mean", "mfcc13_sd",
                        "spectral_bandwidth_p2_mean_hz", "zcr_mean_fraction",
                        "spec_m4_kurtosis", "spectral_flatness"):
         assert feature_id in outputs
         assert feature_availability(outputs[feature_id])[0] == "Implemented"
         assert outputs[feature_id]["evidence_level"] in {"NOT ESTABLISHED", "LIMITED"}
-    assert feature_availability(outputs["visibility_graph_density_amp"])[0] == "Implemented"
+    assert feature_availability(outputs["bamboo_visibility_graph_density_amp"])[0] == "Implemented"
     assert feature_availability(outputs["opensmile_1_4khz_<functional>"])[0] == "Not implemented"
     assert feature_availability(outputs["spectral_contrast_band6_db"])[0] == "Implemented"
     contrast = outputs["spectral_contrast_band6_db"]["parameter_profile"]["active_parameters"]

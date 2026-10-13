@@ -11,7 +11,7 @@ from vslp.acoustic.features.stage import FeatureExtractionConfig, _select_regist
 from vslp.core.provenance import sha256_file
 
 
-def test_family11_12_stage_provenance_normalization_and_mfcc_audit(tmp_path, monkeypatch):
+def test_legacy_combined_stage_retains_f12_mfcc_audit(tmp_path, monkeypatch):
     sr = 16_000
     time = np.arange(sr * 2) / sr
     audio = (.25 * np.sin(2*np.pi*600*time)).astype(np.float32)
@@ -40,12 +40,11 @@ def test_family11_12_stage_provenance_normalization_and_mfcc_audit(tmp_path, mon
     }])
     monkeypatch.setattr("vslp.acoustic.features.family11_12_stage.load_final_segmentation",
                         lambda *_: kept)
-    selected = ["absolute_energy_fs2", "wave_amp_skew", "mfcc01_mean",
+    selected = ["mfcc01_mean",
                 "spectral_centroid_hz", "zcr_mean_fraction", "spectral_contrast_band6_db"]
     cfg = FeatureExtractionConfig(selected_features=selected)
     result = run_family11_12_stage(decisions, tmp_path, cfg, intervals, _select_registry(cfg))
     status = pd.read_csv(result.summary_table.parent / "acoustic_feature_status_long.csv")
-    assert status.loc[status.feature_id.eq("absolute_energy_fs2"), "failure_reason"].iloc[0] == "incompatible_amplitude_normalization"
     assert status.loc[status.feature_id.eq("mfcc01_mean"), "status"].iloc[0] == "computed"
     contrast_status = status.loc[status.feature_id.eq("spectral_contrast_band6_db")].iloc[0]
     assert contrast_status.status == "computed"
