@@ -31,6 +31,8 @@ TASKS = {
     "sustained_a": "Sustained /a/",
     "bamboo_passage": "Bamboo Passage",
     "ddk": "DDK",
+    "ddk_pa": "/pa/", "ddk_ta": "/ta/",
+    "ddk_ka": "/ka/", "ddk_pataka": "/pataka/",
     "wstg": "WSTG",
     "sentence_s5": "S5",
     "sentence_s2": "S2",
@@ -690,11 +692,12 @@ def load_feature_catalog() -> dict[str, Any]:
             "family_id": "F10", "family_name": construct["family_name"],
             "matrix_status": construct["matrix_status"],
             "source_use_status": construct["matrix_status"],
-            "use_status": "Production", "recommended_tasks": ["ddk"],
+            "use_status": "Production",
+            "recommended_tasks": ["ddk", f"ddk_{spec['target']}"],
             "conditional_tasks": [], "qc_range_low": 0, "qc_range_high": None,
             "signal_scope": construct["signal_scope"],
-            "analysis_region": "final reviewed DDK analysis domain",
-            "estimator": "final reviewed DDK events and midpoints",
+            "analysis_region": "first ten accepted reviewed cycles within one trial",
+            "estimator": "reviewed onset/offset rate and center-interval variability",
             "algorithm": family10["algorithm_version"],
             "algorithm_version": family10["algorithm_version"],
             "default_parameter_set_id": family10["parameter_set_id"],
@@ -709,15 +712,17 @@ def load_feature_catalog() -> dict[str, Any]:
                         family10["temporal_variability_definition"],
                 }},
             "prerequisites": {
-                "requires_audio": False, "requires_segmentation": True,
+                "requires_audio": False, "requires_segmentation": False,
                 "requires_final_reviewed_segmentation": True,
                 "requires_alignment": False, "requires_task": True,
                 "requires_unscaled_audio": False, "requires_voiced_region": False,
                 "requires_ddk_events": True, "requires_vowel_tokens": False,
                 "requires_prompt_manifest": False},
             "family_spec_approved": True, "selectable": True,
-            "gui_selectable": False,
+            "gui_selectable": True,
             "source_document": family10["source_document"],
+            "id_provenance": "PROJECT_DEFINED_ID",
+            "identity_basis": "Frozen F10 task-specific reviewed-event output",
         })
     attach_family_outputs(matrix, "F10", outputs10)
     family11 = json.loads(_FAMILY11.read_text(encoding="utf-8"))
@@ -986,7 +991,8 @@ def prerequisite_issues(output: dict[str, Any], *, task_name: str,
                         prompt_available: bool = False,
                         vowel_mapping_available: bool = False,
                         target_manifest_available: bool = False,
-                        acoustic_subevents_available: bool = False) -> list[str]:
+                        acoustic_subevents_available: bool = False,
+                        reviewed_ddk_events_available: bool = False) -> list[str]:
     """Schema reserved for approved exact outputs from future family documents."""
     if not output.get("family_spec_approved", False):
         return ["Exact output algorithm awaits its family specification"]
@@ -997,17 +1003,8 @@ def prerequisite_issues(output: dict[str, Any], *, task_name: str,
     if requires.get("requires_final_reviewed_segmentation") and not (
             final_decisions and final_decisions.is_file() and final_intervals and final_intervals.is_file()):
         issues.append("Final reviewed segmentation is unavailable")
-    if requires.get("requires_ddk_events") and final_decisions and final_decisions.is_file():
-        try:
-            with final_decisions.open(encoding="utf-8-sig", newline="") as stream:
-                has_ddk = any(
-                    row.get("segmentation_method") == "ddk_energy"
-                    and row.get("final_decision") in {"KEEP_AUTO", "KEEP_MANUAL"}
-                    for row in csv.DictReader(stream))
-        except (OSError, csv.Error):
-            has_ddk = False
-        if not has_ddk:
-            issues.append("Frozen reviewed DDK events are unavailable")
+    if requires.get("requires_ddk_events") and not reviewed_ddk_events_available:
+        issues.append("Reviewed DDK events required")
     if requires_alignment_for_task(output, task_name) and not alignment_available:
         issues.append("Required vowel/phone alignment is unavailable")
     if requires.get("requires_vowel_category_mapping") and not vowel_mapping_available:

@@ -253,45 +253,26 @@ def test_nonrecommended_wstg_can_extract_implemented_families_with_real_inputs(t
     assert not status.failure_reason.astype(str).str.contains("task_not_supported").any()
 
 
-def test_family10_consumes_frozen_reviewed_ddk_events_and_exclusion(tmp_path: Path):
+def test_family10_does_not_promote_reviewed_speech_intervals_to_ddk_events(tmp_path: Path):
     wav, automatic_segments, _summary = _run(tmp_path, task_name="DDK", method="ddk_energy")
     original_hashes = sha256_file(wav), sha256_file(automatic_segments)
     manual_events = [(center - .05, center + .05) for center in
                      (.4, .7, 1.0, 1.3, 1.6, 2.6, 2.9)]
     save_segmentation_review_entry(
-        tmp_path, "r", "KEEP_MANUAL", "Reviewer", "Cough interrupted DDK",
+        tmp_path, "r", "KEEP_MANUAL", "Reviewer", "Reviewed DDK speech intervals",
         "\n".join(f"{start},{end}" for start, end in manual_events),
-        analysis_start_sec=.2, analysis_end_sec=3.2,
-        exclusion_intervals=[{"start_sec": 2.0, "end_sec": 2.2,
-                              "exclusion_reason": "Cough / throat clear"}])
+        analysis_start_sec=.2, analysis_end_sec=3.2)
     finalize_segmentation_review(tmp_path)
-    from vslp.acoustic.alignment.task_workflow import save_project_choices
-    save_project_choices(tmp_path, {"schema_version": "1", "recordings": {},
-        "trials": {"r": [{"trial_id": "trial_001", "start_sec": .2, "end_sec": 1.9},
-                          {"trial_id": "trial_002", "start_sec": 2.3,
-                           "end_sec": 3.2}]}})
     final = tmp_path / "acoustic" / "003_segmentation_review" / "final"
     result = run_acoustic_feature_extraction(
         final / "final_segmentation_decisions.csv", tmp_path,
-        config=FeatureExtractionConfig(selected_features=["ddk_rate_syll_s", "ddk_cycle_mad_s"]),
+        config=FeatureExtractionConfig(selected_features=[
+            "ddk_pa_rate_syll_s", "ddk_pa_cycle_temporal_variability_s"]),
         final_segmentation_intervals_csv=final / "final_segmentation_intervals.csv")
     values = pd.read_csv(result.summary_table)
     status = pd.read_csv(result.summary_table.parent / "acoustic_feature_status_long.csv")
-    events = pd.read_csv(result.summary_table.parent.parent / "family_runs" / "ddk" / "tables" / "native_measurements" /
-                         "ddk_feature_events.csv")
-    assert values.n_ddk_events.iloc[0] == 7
-    assert values.n_valid_sequences.iloc[0] == 2
-    assert np.isclose(values.raw_analysis_duration_sec.iloc[0], 3)
-    assert np.isclose(values.excluded_contamination_duration_sec.iloc[0], .2)
-    assert np.isclose(values.ddk_rate_syll_s.iloc[0], 7 / 2.8)
-    assert np.isclose(values.ddk_cycle_mad_s.iloc[0], 0)
-    assert status.status.eq("computed").all()
-    assert status.family_id.eq("F10").all()
-    assert status.segmentation_run_id.eq("seg_test").all()
-    assert events.event_kind.eq("manual_exclusion").sum() == 1
-    assert set(events.loc[events.event_kind.eq("ddk_event"), "trial_id"]) == {
-        "trial_001", "trial_002"}
-    assert events.loc[events.event_time_sec.eq(1.6), "next_event_interval_sec"].isna().all()
+    assert values[["ddk_pa_rate_syll_s", "ddk_pa_cycle_temporal_variability_s"]].isna().all().all()
+    assert status.failure_reason.eq("missing_reviewed_ddk_events").all()
     assert original_hashes == (sha256_file(wav), sha256_file(automatic_segments))
 
 

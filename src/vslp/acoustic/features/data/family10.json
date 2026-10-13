@@ -1,28 +1,22 @@
 {
   "family_id": "F10",
   "source_document": "10_DDK_Performance_Codex_Implementation.docx",
-  "algorithm_version": "family10-reviewed-ddk-1.0.0",
-  "parameter_set_id": "family10_ddk_reviewed_v1",
-  "minimum_valid_events": 5,
-  "event_landmark": "final_reviewed_event_midpoint",
-  "rate_denominator": "analysis_window_minus_manual_contamination",
-  "sequence_break_on_manual_exclusion": true,
+  "algorithm_version": "family10-reviewed-events-2.0.0",
+  "parameter_set_id": "family10_first10_reviewed_v2",
+  "minimum_valid_events": 10,
+  "event_landmark": "final_reviewed_event_center",
+  "rate_denominator": "first_accepted_onset_to_tenth_accepted_offset",
   "temporal_variability_definition": "mean_absolute_difference_between_adjacent_cycle_intervals",
+  "event_contract": "FINAL_DDK_EVENTS_V1",
   "outputs": [
-    {
-      "construct_id": "C058", "feature_id": "ddk_rate_syll_s",
-      "human_name": "DDK rate", "unit": "syllables/s", "qc_range_text": "≥0 syllables/s",
-      "evidence_level": "MODERATE", "evidence_study_count": 2, "evidence_entry_count": 2,
-      "formula": "valid final DDK events / effective analyzed DDK duration",
-      "analysis_unit": "Full DDK trial and events"
-    },
-    {
-      "construct_id": "C059", "feature_id": "ddk_cycle_mad_s",
-      "human_name": "DDK cycle-to-cycle temporal variability", "unit": "s",
-      "qc_range_text": "No universal bound",
-      "evidence_level": "LIMITED", "evidence_study_count": 1, "evidence_entry_count": 1,
-      "formula": "mean(abs(T[i+1] - T[i])) within continuous reviewed sequences",
-      "analysis_unit": "Adjacent cycle intervals"
-    }
-  ]
+    {"construct_id":"C058","feature_id":"ddk_pa_rate_syll_s","human_name":"/pa/ rate — AMR","unit":"syllables/s","target":"pa","mode":"AMR","evidence_level":"MODERATE","evidence_study_count":2,"evidence_entry_count":2,"formula":"10 / (end_of_tenth_cycle - start_of_first_cycle)","analysis_unit":"First 10 valid reviewed /pa/ cycles","qc_range_text":"≥0 syllables/s"},
+    {"construct_id":"C058","feature_id":"ddk_ta_rate_syll_s","human_name":"/ta/ rate — AMR","unit":"syllables/s","target":"ta","mode":"AMR","evidence_level":"MODERATE","evidence_study_count":2,"evidence_entry_count":2,"formula":"10 / (end_of_tenth_cycle - start_of_first_cycle)","analysis_unit":"First 10 valid reviewed /ta/ cycles","qc_range_text":"≥0 syllables/s"},
+    {"construct_id":"C058","feature_id":"ddk_ka_rate_syll_s","human_name":"/ka/ rate — AMR","unit":"syllables/s","target":"ka","mode":"AMR","evidence_level":"MODERATE","evidence_study_count":2,"evidence_entry_count":2,"formula":"10 / (end_of_tenth_cycle - start_of_first_cycle)","analysis_unit":"First 10 valid reviewed /ka/ cycles","qc_range_text":"≥0 syllables/s"},
+    {"construct_id":"C058","feature_id":"ddk_pataka_rate_syll_s","human_name":"/pataka/ rate — SMR","unit":"syllables/s","target":"pataka","mode":"SMR","evidence_level":"MODERATE","evidence_study_count":2,"evidence_entry_count":2,"formula":"30 / (end_of_tenth_complete_sequence - start_of_first_complete_sequence)","analysis_unit":"First 10 complete reviewed pa-ta-ka sequences","qc_range_text":"≥0 syllables/s"},
+    {"construct_id":"C059","feature_id":"ddk_pa_cycle_temporal_variability_s","human_name":"/pa/ temporal variability — AMR","unit":"s","target":"pa","mode":"AMR","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":1,"formula":"mean(abs(diff(diff(10 selected cycle centers))))","analysis_unit":"Nine center intervals and eight adjacent differences","qc_range_text":"≥0 s"},
+    {"construct_id":"C059","feature_id":"ddk_ta_cycle_temporal_variability_s","human_name":"/ta/ temporal variability — AMR","unit":"s","target":"ta","mode":"AMR","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":1,"formula":"mean(abs(diff(diff(10 selected cycle centers))))","analysis_unit":"Nine center intervals and eight adjacent differences","qc_range_text":"≥0 s"},
+    {"construct_id":"C059","feature_id":"ddk_ka_cycle_temporal_variability_s","human_name":"/ka/ temporal variability — AMR","unit":"s","target":"ka","mode":"AMR","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":1,"formula":"mean(abs(diff(diff(10 selected cycle centers))))","analysis_unit":"Nine center intervals and eight adjacent differences","qc_range_text":"≥0 s"},
+    {"construct_id":"C059","feature_id":"ddk_pataka_cycle_temporal_variability_s","human_name":"/pataka/ temporal variability — SMR","unit":"s","target":"pataka","mode":"SMR","evidence_level":"LIMITED","evidence_study_count":1,"evidence_entry_count":1,"formula":"mean(abs(diff(diff(10 selected sequence centers))))","analysis_unit":"Nine complete-sequence center intervals and eight adjacent differences","qc_range_text":"≥0 s"}
+  ],
+  "deprecated_nonselectable_ids": ["ddk_rate_syll_s", "ddk_cycle_mad_s"]
 }

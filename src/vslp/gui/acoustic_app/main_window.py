@@ -1682,7 +1682,10 @@ class AcousticPipelineWindow(QMainWindow):
                                    prompt_available=prompt_available,
                                    vowel_mapping_available=vowel_mapping_available,
                                    target_manifest_available=target_manifest_available,
-                                   acoustic_subevents_available=acoustic_subevents_available)
+                                   acoustic_subevents_available=acoustic_subevents_available,
+                                   reviewed_ddk_events_available=bool(root and (
+                                       root / "acoustic" / "003_segmentation_review" / "final" /
+                                       "final_ddk_events.csv").is_file()))
 
     def _browse_feature_resource(self, field: QLineEdit, title: str, pattern: str) -> None:
         path, _ = QFileDialog.getOpenFileName(self, title, "", pattern)

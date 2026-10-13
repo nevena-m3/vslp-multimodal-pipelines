@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 
 from vslp.acoustic.features.catalog import load_feature_catalog, task_fit, task_indicator
+from vslp.acoustic.features.family10_v2 import PUBLIC_IDS
 from vslp.acoustic.features.family10 import (
     ALGORITHM_VERSION, EVENT_COLUMNS, FAMILY10_IDS, MIN_VALID_EVENTS,
     PARAMETER_SET_ID, calculate_family10, derive_ddk_feature_events,
@@ -37,19 +38,16 @@ def _measure(times, *, window=(0, 1), exclusion=None):
 def test_exact_ids_registry_units_evidence_and_explicit_task():
     leaves = {item["feature_id"]: item for item in load_feature_catalog()["outputs"]
               if item["family_id"] == "F10"}
-    assert set(leaves) == FAMILY10_IDS
+    assert set(leaves) == PUBLIC_IDS
     assert {item["construct_id"] for item in leaves.values()} == {"C058", "C059"}
-    assert leaves["ddk_rate_syll_s"]["unit"] == "syllables/s"
-    assert leaves["ddk_cycle_mad_s"]["unit"] == "s"
-    assert leaves["ddk_rate_syll_s"]["evidence_level"] == "MODERATE"
-    assert leaves["ddk_cycle_mad_s"]["evidence_level"] == "LIMITED"
+    assert all(item["unit"] == "syllables/s" for item in leaves.values()
+               if item["construct_id"] == "C058")
+    assert all(item["unit"] == "s" for item in leaves.values()
+               if item["construct_id"] == "C059")
     assert all(task_fit(item, "DDK") == "Recommended" for item in leaves.values())
-    assert all(task_fit(item, "DDK /ta/") == "Not specified" for item in leaves.values())
-    assert task_indicator(leaves["ddk_rate_syll_s"], "DDK")[0] == "GREEN"
-    assert task_indicator(leaves["ddk_rate_syll_s"], "WSTG")[0] == "GRAY"
-    assert ALGORITHM_VERSION == "family10-reviewed-ddk-1.0.0"
-    assert PARAMETER_SET_ID == "family10_ddk_reviewed_v1"
-    assert MIN_VALID_EVENTS == 5
+    assert all(task_fit(item, "WSTG") == "Not specified" for item in leaves.values())
+    assert task_indicator(leaves["ddk_pa_rate_syll_s"], "DDK")[0] == "GREEN"
+    assert not FAMILY10_IDS & set(leaves)  # legacy direct calculator is no longer selectable
 
 
 def test_regular_five_hz_and_slower_trains_with_window_denominator():

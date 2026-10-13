@@ -33,7 +33,7 @@ def _executors():
         "duration": ({"F07"}, lazy("vslp.acoustic.features.family07_v2_stage", "run_family07_stage")),
         "bamboo_rates": ({"F08"}, lazy("vslp.acoustic.features.family08_v2", "run_family08_stage")),
         "timing": ({"F09"}, lazy("vslp.acoustic.features.family09_v2_stage", "run_family09_stage")),
-        "ddk": ({"F10"}, lazy("vslp.acoustic.features.family10", "run_family10_stage")),
+        "ddk": ({"F10"}, lazy("vslp.acoustic.features.family10_v2_stage", "run_family10_stage")),
         "spectrum": ({"F11", "F12"}, lazy("vslp.acoustic.features.family11_12_stage", "run_family11_12_stage")),
     }
 

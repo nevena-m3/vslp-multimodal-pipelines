@@ -23,7 +23,7 @@ from vslp.acoustic.features.family06 import UNAVAILABLE_IDS as FAMILY06_UNAVAILA
 from vslp.acoustic.features.family07 import FAMILY07_IDS
 from vslp.acoustic.features.family08_v2 import FAMILY08_IDS
 from vslp.acoustic.features.family09_v2 import PUBLIC_IDS as FAMILY09_ACTIVE_IDS
-from vslp.acoustic.features.family10 import FAMILY10_IDS
+from vslp.acoustic.features.family10_v2 import PUBLIC_IDS as FAMILY10_IDS
 from vslp.acoustic.features.family11 import FAMILY11_IDS
 from vslp.acoustic.features.family12 import FAMILY12_IDS
 from vslp.gui.acoustic_app.main_window import AcousticPipelineWindow
@@ -432,23 +432,23 @@ def test_family10_gui_implementation_independent_of_reviewed_run(tmp_path: Path)
         "recording_id\n", encoding="utf-8")
     window._run_root = tmp_path
     window.task_name_edit.setText("DDK")
-    assert window.feature_items["ddk_rate_syll_s"].data(0, Qt.UserRole + 1) == "GREEN"
-    assert window.feature_items["ddk_rate_syll_s"].data(0, Qt.UserRole + 2) == "Implemented"
+    assert window.feature_items["ddk_pa_rate_syll_s"].data(0, Qt.UserRole + 1) == "GREEN"
+    assert window.feature_items["ddk_pa_rate_syll_s"].data(0, Qt.UserRole + 2) == "Implemented"
     decisions.write_text("segmentation_method,final_decision\nsilero_vad,KEEP_AUTO\n",
                          encoding="utf-8")
     window._refresh_feature_count_label()
-    assert window.feature_items["ddk_rate_syll_s"].data(0, Qt.UserRole + 1) == "GREEN"
+    assert window.feature_items["ddk_pa_rate_syll_s"].data(0, Qt.UserRole + 1) == "GREEN"
     decisions.write_text("segmentation_method,final_decision\nddk_energy,KEEP_MANUAL\n",
                          encoding="utf-8")
     window._refresh_feature_count_label()
-    assert window.feature_items["ddk_rate_syll_s"].data(0, Qt.UserRole + 2) == "Implemented"
+    assert window.feature_items["ddk_pa_rate_syll_s"].data(0, Qt.UserRole + 2) == "Implemented"
     window.select_recommended_features()
     assert set(FAMILY10_IDS) <= set(window._selected_feature_names())
-    window.feature_tree.setCurrentItem(window.feature_items["ddk_cycle_mad_s"])
+    window.feature_tree.setCurrentItem(window.feature_items["ddk_pa_cycle_temporal_variability_s"])
     fields = {window.feature_detail_box.topLevelItem(i).text(0):
               window.feature_detail_box.topLevelItem(i).text(1)
               for i in range(window.feature_detail_box.topLevelItemCount())}
-    assert fields["Code name"] == "ddk_cycle_mad_s"
+    assert fields["Code name"] == "ddk_pa_cycle_temporal_variability_s"
     assert fields["Unit"] == "s"
     assert fields["Task recommendation"] == "Recommended for DDK."
     assert fields["Availability"] == "Implemented"

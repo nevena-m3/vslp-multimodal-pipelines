@@ -60,13 +60,23 @@ def _case(tmp_path, monkeypatch, *, aligned=False, normalized=False, ddk=False):
     for module in ("mixed_dispatch", "family01_stage", "family04_stage", "family06_stage",
                    "family06_v2_stage", "family07_v2_stage", "family08", "family08_v2",
                    "family09_v2_stage",
-                   "family10", "family11_12_stage"):
+                   "family10", "family10_v2_stage", "family11_12_stage"):
         try:
             monkeypatch.setattr(f"vslp.acoustic.features.{module}.load_final_segmentation",
                                 lambda *_: kept)
         except ImportError as exc:
             if module != "family11_12_stage" or "librosa" not in str(exc):
                 raise
+    if ddk:
+        pd.DataFrame([{"recording_id": "r1", "trial_id": "trial_1",
+                       "sequence_id": "seq_1", "task": "ddk", "ddk_target": "pa",
+                       "ddk_mode": "AMR", "event_index": i + 1,
+                       "event_id": f"e{i + 1}", "start_sec": i * (1.9 / 9),
+                       "center_sec": i * (1.9 / 9) + .05,
+                       "end_sec": i * (1.9 / 9) + .1,
+                       "valid": True, "review_status": "HUMAN_ACCEPTED",
+                       "rejection_reason": ""} for i in range(10)]).to_csv(
+                           final / "final_ddk_events.csv", index=False)
     if normalized:
         prep = root / "acoustic" / "001_preprocess" / "tables"
         prep.mkdir(parents=True)
@@ -256,29 +266,43 @@ def test_executor_failure_is_isolated(tmp_path, monkeypatch):
 def test_ddk_prerequisite_does_not_block_pause(tmp_path, monkeypatch):
     root, decisions, intervals, _ = _case(tmp_path, monkeypatch)
     result, status, values = _run(root, decisions, intervals,
-                                  ["ddk_rate_syll_s", "bamboo_pause_count"])
+                                  ["ddk_pa_rate_syll_s", "bamboo_pause_count"])
     assert result.status == "completed_with_warnings"
     assert values.bamboo_pause_count.iloc[0] == 1
-    assert status.loc[status.feature_id.eq("ddk_rate_syll_s"),
-                      "failure_reason"].iloc[0] == "missing_final_ddk_segmentation"
+    assert status.loc[status.feature_id.eq("ddk_pa_rate_syll_s"),
+                      "failure_reason"].iloc[0] == "unsupported_ddk_target"
+
+
+def test_reviewed_ddk_first_ten_executes_without_alignment_or_detector(tmp_path, monkeypatch):
+    root, decisions, intervals, _ = _case(tmp_path, monkeypatch, ddk=True)
+    selected = ["ddk_pa_rate_syll_s", "ddk_pa_cycle_temporal_variability_s"]
+    result, status, values = _run(root, decisions, intervals, selected)
+    assert result.status == "completed"
+    assert status.failure_reason.eq("").all()
+    assert status.input_contract.eq("FINAL_DDK_EVENTS").all()
+    assert values.ddk_pa_rate_syll_s.iloc[0] == pytest.approx(5.0)
+    assert values.ddk_pa_cycle_temporal_variability_s.iloc[0] == pytest.approx(0, abs=1e-12)
+    audit = root / "acoustic" / "005_features" / "family_runs" / "ddk" / "tables" / (
+        "native_measurements/family10_selected_events.csv")
+    assert pd.read_csv(audit).selected.sum() == 10
 
 
 def test_reviewed_ddk_and_spectrum_succeed_in_one_selected_only_run(tmp_path, monkeypatch):
     root, decisions, intervals, _ = _case(tmp_path, monkeypatch, ddk=True)
-    selected = {"ddk_rate_syll_s", "ddk_cycle_mad_s", "mfcc01_mean"}
+    selected = {"ddk_pa_rate_syll_s", "ddk_pa_cycle_temporal_variability_s", "mfcc01_mean"}
     result, status, values = _run(root, decisions, intervals, sorted(selected))
     assert result.status == "completed"
     assert set(status.feature_id) == selected
     assert not status.duplicated(["recording_id", "feature_id"]).any()
     assert status.failure_reason.eq("").all()
-    assert values.ddk_rate_syll_s.iloc[0] == pytest.approx(2.5)
-    assert values.ddk_cycle_mad_s.iloc[0] == pytest.approx(0, abs=1e-12)
+    assert values.ddk_pa_rate_syll_s.iloc[0] == pytest.approx(5.0)
+    assert values.ddk_pa_cycle_temporal_variability_s.iloc[0] == pytest.approx(0, abs=1e-12)
     assert np.isfinite(values.mfcc01_mean.iloc[0])
     assert "bamboo_pause_count" not in values.columns
     events = root / "acoustic" / "005_features" / "family_runs" / "ddk" / "tables" / \
-        "native_measurements" / "ddk_feature_events.csv"
+        "native_measurements" / "family10_selected_events.csv"
     assert events.is_file()
-    assert len(pd.read_csv(events)) == 5
+    assert len(pd.read_csv(events)) == 10
     manifest = json.loads(Path(result.manifest_path).read_text(encoding="utf-8"))
     assert set(manifest["config"]["families_invoked"]) == {"F10", "F12"}
     assert set(manifest["config"]["executor_groups"]) == {"ddk", "spectrum"}
@@ -288,7 +312,7 @@ def test_ten_implemented_families_dispatch_together_with_local_failures(tmp_path
     root, decisions, intervals, _ = _case(tmp_path, monkeypatch, ddk=True)
     selected = ["f0_mean_hz", "hnr_mean_db", "f1_median_hz",
                 "spectral_m1_t_minus_k_hz", "speech_time_s", "speaking_rate_syll_s",
-                "bamboo_pause_count", "ddk_rate_syll_s", "amp_mean_fs", "mfcc01_mean"]
+                "bamboo_pause_count", "ddk_pa_rate_syll_s", "amp_mean_fs", "mfcc01_mean"]
     result, status, values = _run(root, decisions, intervals, selected)
     assert result.status == "completed_with_warnings"
     assert set(status.feature_id) == set(selected)
@@ -299,9 +323,9 @@ def test_ten_implemented_families_dispatch_together_with_local_failures(tmp_path
                       "failure_reason"].iloc[0] == "task_not_applicable"
     assert status.loc[status.feature_id.eq("speaking_rate_syll_s"),
                       "failure_reason"].iloc[0]
-    for feature_id in ("speech_time_s", "ddk_rate_syll_s", "mfcc01_mean"):
+    for feature_id in ("speech_time_s", "ddk_pa_rate_syll_s", "mfcc01_mean"):
         assert status.loc[status.feature_id.eq(feature_id), "failure_reason"].iloc[0] == ""
-    assert values.ddk_rate_syll_s.iloc[0] == pytest.approx(2.5)
+    assert values.ddk_pa_rate_syll_s.iloc[0] == pytest.approx(5.0)
     manifest = json.loads(Path(result.manifest_path).read_text(encoding="utf-8"))
     assert set(manifest["config"]["families_invoked"]) == {
         "F01", "F02", "F04", "F06", "F07", "F08", "F09", "F10", "F11", "F12"}

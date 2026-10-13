@@ -388,7 +388,7 @@ def test_multiple_prompt_task_requires_explicit_recording_selection(tmp_path, mo
 @pytest.mark.parametrize(("task_id", "selected", "destination"), [
     ("bamboo_passage", ["f1_token_hz"], "Acoustic Features"),
     ("bamboo_passage", ["bamboo_pause_count"], "Acoustic Features"),
-    ("ddk", ["ddk_rate_syll_s"], "Acoustic Features"),
+    ("ddk", ["ddk_pa_rate_syll_s"], "Acoustic Features"),
     ("sustained_a", ["f0_mean_hz"], "Acoustic Features"),
 ])
 def test_review_continuation_routes_only_required_linguistic_alignment(
