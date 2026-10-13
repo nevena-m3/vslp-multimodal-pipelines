@@ -1670,17 +1670,12 @@ class AcousticPipelineWindow(QMainWindow):
                 except (OSError, ValueError):
                     pass
         if output["family_id"] == "F08":
-            from vslp.acoustic.features.family08 import load_prompt_counts
+            from vslp.acoustic.features.family08_v2 import frozen_bamboo_prompt
 
-            task_id = None
-            if root and (root / "project_manifest.json").is_file():
-                try:
-                    task_id = json.loads((root / "project_manifest.json").read_text(
-                        encoding="utf-8")).get("task_id")
-                except (OSError, ValueError):
-                    pass
-            prompt, _issue = load_prompt_counts(prompt_path, task, task_id)
-            prompt_available = bool(prompt and prompt.get(output["numerator_field"]) is not None)
+            try:
+                prompt_available = bool(frozen_bamboo_prompt())
+            except ValueError:
+                prompt_available = False
         return prerequisite_issues(output, task_name=task,
                                    final_decisions=decisions, final_intervals=intervals,
                                    alignment_available=alignment_available,

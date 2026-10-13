@@ -58,7 +58,7 @@ def _case(tmp_path, monkeypatch, *, aligned=False, normalized=False, ddk=False):
         "analysis_end_sec": 2., "stable_region_start": .2, "stable_region_end": 1.8,
     }])
     for module in ("mixed_dispatch", "family01_stage", "family04_stage", "family06_stage",
-                   "family06_v2_stage", "family08",
+                   "family06_v2_stage", "family08", "family08_v2",
                    "family10", "family11_12_stage"):
         try:
             monkeypatch.setattr(f"vslp.acoustic.features.{module}.load_final_segmentation",
@@ -176,14 +176,19 @@ def test_formants_and_pause_isolate_alignment(tmp_path, monkeypatch, aligned):
         assert audit.is_file()
 
 
-def test_prompt_failure_only_affects_rate_and_spectrum_succeeds(tmp_path, monkeypatch):
+def test_nominal_bamboo_rate_needs_no_alignment_and_mixes_with_pause(tmp_path, monkeypatch):
     root, decisions, intervals, _ = _case(tmp_path, monkeypatch)
     _, status, values = _run(root, decisions, intervals,
-                             ["speaking_rate_syll_s", "mfcc01_mean"])
-    assert status.loc[status.feature_id.eq("speaking_rate_syll_s"),
-                      "failure_reason"].iloc[0]
-    assert status.loc[status.feature_id.eq("mfcc01_mean"), "failure_reason"].iloc[0] == ""
-    assert np.isfinite(values.mfcc01_mean.iloc[0])
+                             ["bamboo_speaking_rate_wpm", "bamboo_articulation_rate_wpm",
+                              "pause_count"])
+    assert status.loc[status.feature_id.eq("bamboo_speaking_rate_wpm"),
+                      "failure_reason"].iloc[0] == ""
+    assert status.loc[status.feature_id.eq("bamboo_articulation_rate_wpm"),
+                      "failure_reason"].iloc[0] == ""
+    assert np.isclose(values.bamboo_speaking_rate_wpm.iloc[0], 60 * 97 / 1.6)
+    assert np.isclose(values.bamboo_articulation_rate_wpm.iloc[0], 60 * 97 / 1.2)
+    assert status.loc[status.feature_id.eq("pause_count"), "failure_reason"].iloc[0] == ""
+    assert np.isfinite(values.pause_count.iloc[0])
 
 
 def test_normalization_failure_only_affects_absolute_energy(tmp_path, monkeypatch):

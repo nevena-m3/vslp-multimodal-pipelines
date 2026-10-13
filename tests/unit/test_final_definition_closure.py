@@ -31,10 +31,10 @@ def test_inventory_counts_identity_and_unavailable_selection():
             encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle))
     assert Counter(r["status"] for r in rows) == {
-        "IMPLEMENTED": 192, "NOT_IMPLEMENTED": 19,
+        "IMPLEMENTED": 191, "NOT_IMPLEMENTED": 19,
         "UNRESOLVED_TEMPLATE": 9, "AUDIT_ONLY": 6}
     assert Counter(r["id_provenance"] for r in rows) == {
-        "SOURCE_DEFINED_ID": 153, "PROJECT_DEFINED_ID": 64, "PROJECT_TEMPLATE": 9}
+        "SOURCE_DEFINED_ID": 150, "PROJECT_DEFINED_ID": 66, "PROJECT_TEMPLATE": 9}
     assert all(r["selectable_in_gui"] == "False" for r in rows
                if r["status"] != "IMPLEMENTED")
     assert all(r["not_implemented_reason_class"] in {

@@ -21,7 +21,7 @@ from vslp.acoustic.features.family04 import FAMILY04_IDS, TOKEN_IDS, VOWEL_IDS
 from vslp.acoustic.features.family06 import F06_PUBLIC_IDS as FAMILY06_IDS
 from vslp.acoustic.features.family06 import UNAVAILABLE_IDS as FAMILY06_UNAVAILABLE
 from vslp.acoustic.features.family07 import FAMILY07_IDS
-from vslp.acoustic.features.family08 import FAMILY08_IDS
+from vslp.acoustic.features.family08_v2 import FAMILY08_IDS
 from vslp.acoustic.features.family09 import FAMILY09_IDS
 from vslp.acoustic.features.family10 import FAMILY10_IDS
 from vslp.acoustic.features.family11 import FAMILY11_IDS
@@ -114,7 +114,7 @@ def test_task_fit_and_availability_are_independent():
     assert task_indicator({**base, "matrix_status": "BLOCKED"}, "Bamboo Passage")[0] == "GREEN"
     assert feature_availability({**base, "matrix_status": "BLOCKED"})[0] == "Not implemented"
     implemented = next(item for item in load_feature_catalog()["outputs"]
-                       if item["feature_id"] == "speaking_rate_syll_s")
+                       if item["feature_id"] == "bamboo_speaking_rate_wpm")
     assert feature_availability(implemented, prerequisite_problems=["prompt manifest missing"])[0] == "Implemented"
     assert task_indicator(base, "Bamboo Passage")[0] == "GREEN"
     assert feature_availability({"construct_id": "C001", "matrix_status": "PROD"})[0] == "Not implemented"
@@ -126,7 +126,7 @@ def test_task_fit_and_availability_are_independent():
                      "explicit_task_type_compatibility": True},
                     "WSTG-like", "Sentence / controlled speech") == "Recommended"
     family08 = next(item for item in load_feature_catalog()["outputs"]
-                    if item["feature_id"] == "articulation_rate_syll_s")
+                    if item["feature_id"] == "bamboo_articulation_rate_wpm")
     assert task_fit(family08, "WSTG", "Sentence / controlled speech") == "Not specified"
 
 
@@ -313,13 +313,13 @@ def test_implemented_leaf_rendering_and_advisory_gray_or_amber_selection():
     assert gray.data(0, Qt.UserRole + 1) == "GRAY"
     gray.setCheckState(0, Qt.Checked)
     assert "pause_count" in window._selected_feature_names()
-    conditional = catalog["speaking_rate_syll_s"]
+    conditional = catalog["bamboo_speaking_rate_wpm"]
     conditional["conditional_tasks"] = ["wstg"]
     window._refresh_feature_count_label()
-    amber = window.feature_items["speaking_rate_syll_s"]
+    amber = window.feature_items["bamboo_speaking_rate_wpm"]
     assert amber.data(0, Qt.UserRole + 1) == "AMBER"
     amber.setCheckState(0, Qt.Checked)
-    assert "speaking_rate_syll_s" in window._selected_feature_names()
+    assert "bamboo_speaking_rate_wpm" in window._selected_feature_names()
     assert amber.text(2) == "" and amber.icon(3).isNull()
     window.close()
 
@@ -342,13 +342,13 @@ def test_wstg_flattening_and_selection_dependent_prerequisites(tmp_path: Path):
                for f in implemented_f09)
     for feature_id in FAMILY08_IDS:
         window.feature_items[feature_id].setCheckState(0, Qt.Checked)
-    assert not window.feature_prompt_row.isHidden()
-    assert "Current-run issues: 3" in window.feature_count_label.text()
+    assert window.feature_prompt_row.isHidden()
+    assert "Current-run issues: 0" in window.feature_count_label.text()
     assert all(window.feature_items[f].flags() & Qt.ItemIsUserCheckable
                for f in FAMILY08_IDS | implemented_f09)
-    assert window.construct_items["C049"] is window.feature_items["articulation_rate_syll_s"]
+    assert window.construct_items["C049"] is window.feature_items["bamboo_articulation_rate_wpm"]
     assert window.construct_items["C053"] is window.feature_items["pause_count"]
-    assert window.construct_items["C048"].childCount() == 2
+    assert window.construct_items["C048"] is window.feature_items["bamboo_speaking_rate_wpm"]
     assert window.construct_items["C051"].childCount() == 2
     assert all(window.feature_items[f].text(1) == f for f in FAMILY08_IDS | implemented_f09)
     window.close()
@@ -360,9 +360,9 @@ def test_specialized_scientific_inputs_appear_only_for_selected_dependencies():
                 window.feature_segmental_target_row, window.feature_subevents_row)
     assert all(control.isHidden() for control in controls)
 
-    prompt = window.feature_items["speaking_rate_words_min"]
+    prompt = window.feature_items["bamboo_speaking_rate_wpm"]
     prompt.setCheckState(0, Qt.Checked)
-    assert not window.feature_prompt_row.isHidden()
+    assert window.feature_prompt_row.isHidden()  # registered scientific count
     assert all(control.isHidden() for control in controls[1:])
     prompt.setCheckState(0, Qt.Unchecked)
 
@@ -400,19 +400,19 @@ def test_recommended_button_chooses_green_only(tmp_path: Path):
     window._run_root = tmp_path
     window.task_name_edit.setText("Bamboo Passage")
     window.feature_prompt_manifest_edit.setText(str(manifest))
-    assert window.feature_items["speaking_rate_syll_s"].data(0, Qt.UserRole + 1) == "GREEN"
-    conditional = window.catalog_outputs["speaking_rate_words_min"]
+    assert window.feature_items["bamboo_speaking_rate_wpm"].data(0, Qt.UserRole + 1) == "GREEN"
+    conditional = window.catalog_outputs["bamboo_articulation_rate_wpm"]
     conditional["recommended_tasks"] = []
     conditional["conditional_tasks"] = ["bamboo_passage"]
     window._refresh_feature_count_label()
-    assert window.feature_items["speaking_rate_words_min"].data(0, Qt.UserRole + 1) == "AMBER"
+    assert window.feature_items["bamboo_articulation_rate_wpm"].data(0, Qt.UserRole + 1) == "AMBER"
     window.select_recommended_features()
     expected = {name for name, item in window.feature_items.items()
                 if item.data(0, Qt.UserRole + 1) == "GREEN"
                 and item.text(3) == "Implemented"}
     assert set(window._selected_feature_names()) == expected
     window.task_name_edit.setText("WSTG")
-    assert window.feature_items["speaking_rate_syll_s"].data(0, Qt.UserRole + 1) == "GRAY"
+    assert window.feature_items["bamboo_speaking_rate_wpm"].data(0, Qt.UserRole + 1) == "GRAY"
     window.select_recommended_features()
     expected = {name for name, item in window.feature_items.items()
                 if item.data(0, Qt.UserRole + 1) == "GREEN"

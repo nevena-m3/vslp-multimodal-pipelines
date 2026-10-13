@@ -37,17 +37,18 @@ def _timeline(*, excluded=False):
 def test_exact_ids_evidence_units_and_family_task_scope():
     catalog = load_feature_catalog()
     outputs = {item["feature_id"]: item for item in catalog["outputs"]}
-    assert FAMILY08_IDS | FAMILY09_IDS | FAMILY10_IDS <= set(outputs)
-    outputs = {key: value for key, value in outputs.items() if key in FAMILY08_IDS}
+    assert FAMILY09_IDS | FAMILY10_IDS <= set(outputs)
+    assert not FAMILY08_IDS & set(outputs)  # historical calculator, no active selectors
+    outputs = {key: value for key, value in outputs.items() if value["family_id"] == "F08"}
+    assert set(outputs) == {"bamboo_speaking_rate_wpm", "bamboo_articulation_rate_wpm"}
     assert all(item["construct_id"] in {"C048", "C049"} for item in outputs.values())
     assert all(item["evidence_level"] == "STRONG" for item in outputs.values())
-    assert outputs["speaking_rate_syll_s"]["evidence_study_count"] == 10
-    assert outputs["articulation_rate_syll_s"]["evidence_study_count"] == 4
-    assert outputs["speaking_rate_words_min"]["unit"] == "words/min"
-    assert outputs["articulation_rate_syll_s"]["unit"] == "syllables/s"
+    assert outputs["bamboo_speaking_rate_wpm"]["evidence_study_count"] == 10
+    assert outputs["bamboo_articulation_rate_wpm"]["evidence_study_count"] == 4
+    assert all(item["unit"] == "words/min" for item in outputs.values())
     assert all(task_fit(item, "Bamboo Passage") == "Recommended" for item in outputs.values())
     assert all(task_fit(item, "WSTG") == "Not specified" for item in outputs.values())
-    assert ALGORITHM_VERSION == "family08-rate-1.0.0"
+    assert ALGORITHM_VERSION == "family08-rate-1.0.0"  # deprecated calculator
     assert PARAMETER_SET_ID == "family08_bamboo_reviewed_v1"
     assert MIN_PAUSE_SEC == 0.3
 
