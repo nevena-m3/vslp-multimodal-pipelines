@@ -22,7 +22,7 @@ from vslp.acoustic.features.family06 import F06_PUBLIC_IDS as FAMILY06_IDS
 from vslp.acoustic.features.family06 import UNAVAILABLE_IDS as FAMILY06_UNAVAILABLE
 from vslp.acoustic.features.family07 import FAMILY07_IDS
 from vslp.acoustic.features.family08_v2 import FAMILY08_IDS
-from vslp.acoustic.features.family09 import FAMILY09_IDS
+from vslp.acoustic.features.family09_v2 import PUBLIC_IDS as FAMILY09_ACTIVE_IDS
 from vslp.acoustic.features.family10 import FAMILY10_IDS
 from vslp.acoustic.features.family11 import FAMILY11_IDS
 from vslp.acoustic.features.family12 import FAMILY12_IDS
@@ -51,6 +51,8 @@ def _window() -> AcousticPipelineWindow:
     QApplication.instance() or QApplication([])
     return AcousticPipelineWindow()
 
+
+FAMILY09_IDS = FAMILY09_ACTIVE_IDS | {"pause_pattern_factor_if_frozen"}
 
 def test_exact_master_constructs_and_no_legacy_leaves():
     catalog = load_feature_catalog()
@@ -243,7 +245,7 @@ def test_constructs_are_visible_but_unselectable_and_buttons_choose_no_fake_outp
     assert window.run_features_btn.isEnabled()
     assert not window.min_pause_feature_spin.isEnabled()
     assert not window.computation_mode_combo.isEnabled()
-    assert not window.feature_items["pause_pattern_components"].isHidden()
+    assert not window.feature_items["pause_pattern_factor_if_frozen"].isHidden()
     assert any(button.text() == "All implemented" for button in window.findChildren(QPushButton))
     assert not any(button.text() == "All production" for button in window.findChildren(QPushButton))
     window.close()
@@ -306,13 +308,13 @@ def test_implemented_leaf_rendering_and_advisory_gray_or_amber_selection():
     for feature_id in {"pause_pattern_factor_if_frozen"}:
         assert window.feature_items[feature_id].text(3) == "Factor not frozen"
         assert not window.feature_items[feature_id].flags() & Qt.ItemIsUserCheckable
-    assert window.construct_items["C050"] is window.feature_items["total_pause_duration_s"]
-    assert window.construct_items["C050"].text(1) == "total_pause_duration_s"
+    assert window.construct_items["C050"] is window.feature_items["bamboo_pause_duration_median_s"]
+    assert window.construct_items["C050"].text(1) == "bamboo_pause_duration_median_s"
     assert window.construct_items["C050"].text(4) == "MODERATE"
-    gray = window.feature_items["pause_count"]
+    gray = window.feature_items["bamboo_pause_count"]
     assert gray.data(0, Qt.UserRole + 1) == "GRAY"
     gray.setCheckState(0, Qt.Checked)
-    assert "pause_count" in window._selected_feature_names()
+    assert "bamboo_pause_count" in window._selected_feature_names()
     conditional = catalog["bamboo_speaking_rate_wpm"]
     conditional["conditional_tasks"] = ["wstg"]
     window._refresh_feature_count_label()
@@ -347,7 +349,7 @@ def test_wstg_flattening_and_selection_dependent_prerequisites(tmp_path: Path):
     assert all(window.feature_items[f].flags() & Qt.ItemIsUserCheckable
                for f in FAMILY08_IDS | implemented_f09)
     assert window.construct_items["C049"] is window.feature_items["bamboo_articulation_rate_wpm"]
-    assert window.construct_items["C053"] is window.feature_items["pause_count"]
+    assert window.construct_items["C053"] is window.feature_items["bamboo_pause_count"]
     assert window.construct_items["C048"] is window.feature_items["bamboo_speaking_rate_wpm"]
     assert window.construct_items["C051"].childCount() == 2
     assert all(window.feature_items[f].text(1) == f for f in FAMILY08_IDS | implemented_f09)

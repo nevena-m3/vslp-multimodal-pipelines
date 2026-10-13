@@ -52,8 +52,8 @@ def test_family13_registry_has_evidence_but_no_executable_or_template_leaf():
     constructs = {c["construct_id"]: c for c in catalog["constructs"]}
     leaves = {o["feature_id"]: o for o in catalog["outputs"] if o["family_id"] == "F13"}
     assert len(catalog["constructs"]) == 82
-    assert len(catalog["outputs"]) == 218
-    assert sum(feature_availability(o)[0] == "Implemented" for o in catalog["outputs"]) == 192
+    assert len(catalog["outputs"]) == 214
+    assert sum(feature_availability(o)[0] == "Implemented" for o in catalog["outputs"]) == 188
     assert set(leaves) == EXPECTED_UNAVAILABLE
     assert all(feature_availability(o)[0] == "Not implemented" and not o["selectable"]
                and o["blocked_reason"] for o in leaves.values())
@@ -75,14 +75,14 @@ def test_family13_cannot_be_dispatched_or_selected_until_source_contract_is_froz
 
     assert all("F13" not in families for families, _ in _executors().values())
     mixed = _select_registry(FeatureExtractionConfig(selected_features=[
-        "f0_mean_hz", "pause_count", "mfcc01_mean"]))
-    assert set(mixed.feature) == {"f0_mean_hz", "pause_count", "mfcc01_mean"}
+        "f0_mean_hz", "bamboo_pause_count", "mfcc01_mean"]))
+    assert set(mixed.feature) == {"f0_mean_hz", "bamboo_pause_count", "mfcc01_mean"}
     with pytest.raises(ValueError, match="exact, approved output IDs"):
         _select_registry(FeatureExtractionConfig(selected_features=[
             "f0_mean_hz", "ppe_source_replication_only"]))
     with pytest.raises(ValueError, match="exact, approved output IDs"):
         _select_registry(FeatureExtractionConfig(selected_features=[
-            "pause_count", "shannon_signal_entropy_<config>"]))
+            "bamboo_pause_count", "shannon_signal_entropy_<config>"]))
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     QApplication.instance() or QApplication([])
     window = AcousticPipelineWindow()
@@ -100,7 +100,7 @@ def test_family13_cannot_be_dispatched_or_selected_until_source_contract_is_froz
         window.select_all_features()
         assert not EXPECTED_UNAVAILABLE.intersection(window._selected_feature_names())
         assert all("<" not in name for name in window._selected_feature_names())
-        assert {"f0_mean_hz", "pause_count", "mfcc01_mean"} <= set(
+        assert {"f0_mean_hz", "bamboo_pause_count", "mfcc01_mean"} <= set(
             window._selected_feature_names())
     finally:
         window.close()

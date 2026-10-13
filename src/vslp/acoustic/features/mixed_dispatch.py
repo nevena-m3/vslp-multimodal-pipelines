@@ -23,7 +23,7 @@ def _executors():
         return execute
 
     # Executor grouping is deliberate: F01/F02 share audio and voicing work;
-    # F07 and F08 use frozen reviewed timing; F09 retains its own pause pathway.
+    # F07, F08, and F09 use separate views over frozen reviewed timing.
     return {
         "voice": ({"F01", "F02"}, lazy("vslp.acoustic.features.family01_stage", "run_family01_stage")),
         "glottal": ({"F03"}, lazy("vslp.acoustic.features.family03_stage", "run_family03_stage")),
@@ -32,7 +32,7 @@ def _executors():
         "segmental": ({"F06"}, lazy("vslp.acoustic.features.family06_v2_stage", "run_family06_stage")),
         "duration": ({"F07"}, lazy("vslp.acoustic.features.family07_v2_stage", "run_family07_stage")),
         "bamboo_rates": ({"F08"}, lazy("vslp.acoustic.features.family08_v2", "run_family08_stage")),
-        "timing": ({"F09"}, lazy("vslp.acoustic.features.family08", "run_reviewed_timing_stage")),
+        "timing": ({"F09"}, lazy("vslp.acoustic.features.family09_v2_stage", "run_family09_stage")),
         "ddk": ({"F10"}, lazy("vslp.acoustic.features.family10", "run_family10_stage")),
         "spectrum": ({"F11", "F12"}, lazy("vslp.acoustic.features.family11_12_stage", "run_family11_12_stage")),
     }

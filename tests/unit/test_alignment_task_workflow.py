@@ -387,7 +387,7 @@ def test_multiple_prompt_task_requires_explicit_recording_selection(tmp_path, mo
 
 @pytest.mark.parametrize(("task_id", "selected", "destination"), [
     ("bamboo_passage", ["f1_token_hz"], "Acoustic Features"),
-    ("bamboo_passage", ["pause_count"], "Acoustic Features"),
+    ("bamboo_passage", ["bamboo_pause_count"], "Acoustic Features"),
     ("ddk", ["ddk_rate_syll_s"], "Acoustic Features"),
     ("sustained_a", ["f0_mean_hz"], "Acoustic Features"),
 ])
@@ -429,12 +429,12 @@ def test_feature_first_run_without_alignment_dispatches_directly(tmp_path, monke
     monkeypatch.setattr(window, "_require_paths", lambda: (root, root))
     monkeypatch.setattr(window, "_require_project_initialized", lambda: True)
     monkeypatch.setattr(window, "_output_root", lambda: root)
-    monkeypatch.setattr(window, "_selected_feature_names", lambda: ["pause_count"])
+    monkeypatch.setattr(window, "_selected_feature_names", lambda: ["bamboo_pause_count"])
     dispatched = []
     monkeypatch.setattr(window, "_run_worker", lambda name, fn, kwargs:
                         dispatched.append((name, kwargs["config"].selected_features)))
     window.run_features()
-    assert dispatched == [("features", ["pause_count"])]
+    assert dispatched == [("features", ["bamboo_pause_count"])]
     window.close()
 
 
@@ -459,7 +459,7 @@ def test_mixed_feature_selection_prompts_for_alignment_only_when_needed(
     monkeypatch.setattr(window, "_output_root", lambda: root)
     monkeypatch.setattr(window, "_require_project_initialized", lambda: True)
     monkeypatch.setattr(window, "_selected_feature_names", lambda:
-                        ["pause_count", "f1_vowel_median_hz"])
+                        ["bamboo_pause_count", "f1_vowel_median_hz"])
     dispatched = []
     monkeypatch.setattr(window, "_run_worker", lambda name, fn, kwargs:
                         dispatched.append(kwargs["config"].selected_features))
@@ -475,7 +475,7 @@ def test_mixed_feature_selection_prompts_for_alignment_only_when_needed(
         assert window.tabs.currentWidget() is window.alignment_widget
         assert window._return_to_features_after_alignment
     else:
-        assert dispatched == [["pause_count"]]
+        assert dispatched == [["bamboo_pause_count"]]
     window.close()
 
 
@@ -488,12 +488,12 @@ def test_return_from_required_alignment_keeps_feature_selection(tmp_path, monkey
     window = AcousticPipelineWindow()
     window._run_root = root
     monkeypatch.setattr(window, "_selected_feature_names", lambda:
-                        ["pause_count", "f1_vowel_median_hz"])
+                        ["bamboo_pause_count", "f1_vowel_median_hz"])
     window._return_to_features_after_alignment = True
     window.alignment_widget._feature_return_pending = True
     window.tabs.setCurrentWidget(window.alignment_widget)
     window.alignment_widget.return_to_features_requested.emit()
     assert window.tabs.tabText(window.tabs.currentIndex()) == "Acoustic Features"
-    assert window._selected_feature_names() == ["pause_count", "f1_vowel_median_hz"]
+    assert window._selected_feature_names() == ["bamboo_pause_count", "f1_vowel_median_hz"]
     assert not window._return_to_features_after_alignment
     window.close()

@@ -56,22 +56,25 @@ def _values(timeline):
 def test_exact_ids_evidence_task_scope_and_frozen_profile():
     catalog = load_feature_catalog()
     leaves = {item["feature_id"]: item for item in catalog["outputs"] if item["family_id"] == "F09"}
-    assert set(leaves) == FAMILY09_IDS
+    from vslp.acoustic.features.family09_v2 import PUBLIC_IDS
+
+    assert set(leaves) == PUBLIC_IDS | {"pause_pattern_factor_if_frozen"}
+    assert not (FAMILY09_IDS - {"pause_pattern_factor_if_frozen"}) & set(leaves)
     assert {item["construct_id"] for item in leaves.values()} == {
         f"C{number:03d}" for number in range(50, 58)}
     # F07 adds two project-defined S3 constructs without renumbering F09.
     assert len(catalog["families"]) == 13 and len(catalog["constructs"]) == 82
-    assert leaves["pause_count"]["unit"] == "count"
-    assert leaves["percent_pause_ge300ms"]["unit"] == "%"
-    assert leaves["cv_pause_duration"]["evidence_level"] == "NOT ESTABLISHED"
-    assert leaves["total_pause_duration_s"]["evidence_study_count"] == 3
+    assert leaves["bamboo_pause_count"]["unit"] == "count"
+    assert leaves["bamboo_percent_pause_pct"]["unit"] == "%"
+    assert leaves["bamboo_pause_duration_cv"]["evidence_level"] == "NOT ESTABLISHED"
+    assert leaves["bamboo_pause_duration_median_s"]["evidence_study_count"] == 3
     assert all(task_fit(item, "Bamboo Passage") == "Recommended" for item in leaves.values())
     assert all(task_fit(item, "WSTG") == "Not specified" for item in leaves.values())
     assert leaves["pause_pattern_factor_if_frozen"]["selectable"] is False
     assert task_indicator(leaves["pause_pattern_factor_if_frozen"], "Bamboo Passage")[0] == "GREEN"
     assert feature_availability(leaves["pause_pattern_factor_if_frozen"])[0] == "Not implemented"
     assert PARAMETER_SET_ID == "family09_bamboo_reviewed_v1"
-    assert leaves["pause_count"]["parameter_profile"]["active_parameters"] == {
+    assert leaves["bamboo_pause_count"]["parameter_profile"]["active_parameters"] == {
         "minimum_internal_pause_ms": 300, "sample_sd_ddof": 1,
         "boundary_source": "frozen reviewed segmentation"}
 

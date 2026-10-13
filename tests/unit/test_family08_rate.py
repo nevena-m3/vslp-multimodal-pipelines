@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 from vslp.acoustic.features.catalog import load_feature_catalog, task_fit
-from vslp.acoustic.features.family09 import FAMILY09_IDS
+from vslp.acoustic.features.family09_v2 import PUBLIC_IDS as FAMILY09_IDS
 from vslp.acoustic.features.family10 import FAMILY10_IDS
 from vslp.acoustic.features.family08 import (
     ALGORITHM_VERSION, FAMILY08_IDS, MIN_PAUSE_SEC, PARAMETER_SET_ID,
