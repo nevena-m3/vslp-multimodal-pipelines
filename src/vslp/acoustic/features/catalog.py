@@ -41,7 +41,7 @@ TASKS = {
     "sentence_s7": "S7",
     "sentence_s9": "S9",
 }
-REGISTERED_EXECUTORS = frozenset({"F01", "F02", "F03", "F04", "F05", "F06", "F07", "F08", "F09",
+REGISTERED_EXECUTORS = frozenset({"F01", "F02", "F03", "F04", "F05", "F06", "F07", "F08", "F09", "F13",
                                   "F10", "F11", "F12"})
 
 
@@ -870,7 +870,54 @@ def load_feature_catalog() -> dict[str, Any]:
                 "blocked_reason": spec["missing_definition"],
                 "source_document": family13["source_document"],
             })
+    outputs13.append({**outputs13[0],
+                      "feature_id": "vowel_sample_entropy_pending_definition",
+                      "human_name": "Sample entropy — source definition pending",
+                      "construct_id": "C073", "construct_name": constructs["C073"]["construct_name"],
+                      "selectable": False, "source_status": "RESEARCH_PENDING_SOURCE_DEFINITION",
+                      "blocked_reason": "research_pending_source_definition",
+                      "id_provenance": "PROJECT_DEFINED_ID",
+                      "identity_basis": "Documented nonselectable candidate"})
     attach_family_outputs(matrix, "F13", outputs13)
+    from vslp.acoustic.features.family13_v1 import VERSION as f13_version, specs as f13_specs
+
+    active13 = []
+    for spec in f13_specs():
+        construct = constructs[spec["construct_id"]]
+        task_id = spec["task_id"]
+        active13.append({
+            **spec, "construct_name": construct["construct_name"],
+            "family_id": "F13", "family_name": construct["family_name"],
+            "matrix_status": construct["matrix_status"], "use_status": "Production",
+            "recommended_tasks": [task_id], "conditional_tasks": [],
+            "evidence_level": construct["evidence_level"],
+            "evidence_study_count": construct["evidence_study_count"],
+            "evidence_entry_count": construct["evidence_entry_count"],
+            "analysis_unit": "sentence" if task_id == "bamboo_passage" else "trial",
+            "analysis_region": "canonical aligned sentence, reviewed speech" if task_id ==
+                               "bamboo_passage" else "centered reviewed stable phonation <=2 s"
+                               if task_id == "sustained_a" else "reviewed trial speech",
+            "scientific_meaning": spec["human_name"],
+            "formula": "Frozen Family 13 operational component",
+            "estimator": f13_version, "algorithm": f13_version,
+            "algorithm_version": f13_version,
+            "default_parameter_set_id": f13_version,
+            "parameter_profile": {"name": f13_version, "read_only": True,
+                                  "active_parameters": {}},
+            "prerequisites": {"requires_audio": True, "requires_segmentation": True,
+                              "requires_final_reviewed_segmentation": True,
+                              "requires_alignment": task_id == "bamboo_passage",
+                              "requires_task": True, "requires_unscaled_audio": False,
+                              "requires_voiced_region": spec["construct_id"] == "C072",
+                              "requires_ddk_events": False, "requires_vowel_tokens": False,
+                              "requires_prompt_manifest": task_id == "bamboo_passage"},
+            "family_spec_approved": True, "source_document": "family13_scientific_review.md",
+            "id_provenance": "PROJECT_DEFINED_ID",
+            "identity_basis": "Frozen F13 operational component",
+            "qc_range_low": 0, "qc_range_high": None,
+            "qc_range_text": "component-specific", "signal_scope": construct["signal_scope"],
+        })
+    attach_family_outputs(matrix, "F13", active13)
     for output in matrix["outputs"]:
         is_template = "<" in output["feature_id"] or ">" in output["feature_id"]
         output["id_provenance"] = output.get(

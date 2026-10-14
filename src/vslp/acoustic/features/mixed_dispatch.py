@@ -36,6 +36,7 @@ def _executors():
         "ddk": ({"F10"}, lazy("vslp.acoustic.features.family10_v2_stage", "run_family10_stage")),
         "amplitude": ({"F11"}, lazy("vslp.acoustic.features.family11_v2_stage", "run_family11_stage")),
         "spectrum": ({"F12"}, lazy("vslp.acoustic.features.family12_v2_stage", "run_family12_stage")),
+        "nonlinear": ({"F13"}, lazy("vslp.acoustic.features.family13_v1_stage", "run_family13_stage")),
     }
 
 

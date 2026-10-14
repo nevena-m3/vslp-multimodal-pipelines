@@ -31,11 +31,11 @@ def test_inventory_counts_identity_and_unavailable_selection():
             encoding="utf-8", newline="") as handle:
         rows = list(csv.DictReader(handle))
     assert Counter(r["status"] for r in rows) == {
-        "IMPLEMENTED": 286, "NOT_IMPLEMENTED": 19,
+        "IMPLEMENTED": 373, "NOT_IMPLEMENTED": 20,
         "UNRESOLVED_TEMPLATE": 8, "AUDIT_ONLY": 6,
         "UNAVAILABLE_SOURCE_CONFIG": 2}
     assert Counter(r["id_provenance"] for r in rows) == {
-        "SOURCE_DEFINED_ID": 80, "PROJECT_DEFINED_ID": 233, "PROJECT_TEMPLATE": 8}
+        "SOURCE_DEFINED_ID": 80, "PROJECT_DEFINED_ID": 321, "PROJECT_TEMPLATE": 8}
     assert all(r["selectable_in_gui"] == "False" for r in rows
                if r["status"] != "IMPLEMENTED")
     assert all(r["not_implemented_reason_class"] in {
@@ -64,9 +64,13 @@ def test_inventory_counts_identity_and_unavailable_selection():
 def test_family13_identity_is_source_defined_not_inferred():
     catalog = load_feature_catalog()
     family13 = [o for o in catalog["outputs"] if o["family_id"] == "F13"]
-    assert len(family13) == 8
-    assert all(o["id_provenance"] == "SOURCE_DEFINED_ID" and not o["selectable"]
-               for o in family13)
+    assert len(family13) == 96
+    assert sum(o["selectable"] for o in family13) == 87
+    assert all(o["id_provenance"] == "PROJECT_DEFINED_ID"
+               for o in family13 if o["selectable"])
+    assert all(o["id_provenance"] == "SOURCE_DEFINED_ID"
+               for o in family13 if not o["selectable"] and
+               o["feature_id"] != "vowel_sample_entropy_pending_definition")
     assert not any(o["feature_id"] in {"shannon_amp_entropy_<binning>",
                                         "sample_entropy_m<...>_r<...>"}
                    for o in catalog["outputs"])
