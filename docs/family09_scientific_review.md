@@ -4,6 +4,8 @@
 
 ## Timing authority and events
 
+The canonical single Bamboo trial uses F07's final reviewed timing domain independently of legacy Alignment proposals. Multiple proposed trials require current-hash human confirmation before separate trial analysis.
+
 F09 consumes final reviewed segmentation in original recording seconds. It calls F07 `reviewed_timing()` for eligible reviewed speech and the effective first-to-last speech duration. Silero only proposes upstream speech segments: its probability threshold, minimum silence, and padding settings are separate from the **0.300 s F09 production pause threshold**. A 0.250 s threshold is reserved for future sensitivity analysis and is not used in production outputs.
 
 Within each Bamboo trial, an internal reviewed nonspeech gap must lie between eligible speech intervals. A gap **≥0.300 s** is a qualifying PAUSE and splits phrases. A shorter gap is not a qualifying pause; the adjacent speech spans form one PHRASE whose duration includes that short gap. Leading and trailing nonspeech never enter the event list. Each output derives from the same per-trial PAUSE/PHRASE table, with original-time boundaries, trial identity, source speech indices, review provenance, and validity fields.

@@ -134,13 +134,17 @@ intervals [1]:
         run_acoustic_alignment(root, AlignmentConfig(source="mfa"))
     speakers = root / "speakers.json"
     speakers.write_text(json.dumps({"recordings": [{"recording_id": "r1", "speaker_id": "speaker_1"}]}))
+    trials = root / "trials.json"
+    trials.write_text(json.dumps({"schema_version": "1", "trials": [{
+        "recording_id": "r1", "trial_id": "trial_001", "start_sec": 1, "end_sec": 9,
+        "trial_status": "READY_FOR_ALIGNMENT", "trial_review_source": "HUMAN",
+    }]}))
     provider = FakeProvider()
-    result = run_acoustic_alignment(root, AlignmentConfig(
-        source="mfa", prompt_manifest_path=str(prompt), provider=provider,
-        speaker_manifest_path=str(speakers)))
-    assert result.status == "completed_with_warnings"
+    with pytest.raises(ValueError, match="TRIAL_CROSSES_EXCLUSION"):
+        run_acoustic_alignment(root, AlignmentConfig(
+            source="mfa", prompt_manifest_path=str(prompt), provider=provider,
+            speaker_manifest_path=str(speakers), trial_manifest_path=str(trials)))
     assert not provider.invoked
-    assert "TRIAL_CROSSES_EXCLUSION" in pd.read_csv(result.summary_table).reason.iloc[0]
     pieces, rate = _working_audio(wave, [(1, 4), (4.5, 9)], 16000,
                                   root / "private_time_map_test.wav")
     assert rate == 48000

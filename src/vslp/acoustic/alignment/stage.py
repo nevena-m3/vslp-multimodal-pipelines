@@ -152,6 +152,8 @@ class AlignmentConfig:
 
 def _trial_units(config: AlignmentConfig, kept: pd.DataFrame) -> dict[str, list[dict]]:
     """Explicit, reviewed trial intervals; no speech-gap or filename inference."""
+    if config.source == "mfa" and not config.trial_manifest_path:
+        raise ValueError("READY_TRIAL_MANIFEST_REQUIRED")
     if not config.trial_manifest_path:
         return {str(row.recording_id): [{"trial_id": "legacy_whole_recording",
                  "start_sec": float(row.analysis_start_sec),
@@ -163,6 +165,9 @@ def _trial_units(config: AlignmentConfig, kept: pd.DataFrame) -> dict[str, list[
     grouped: dict[str, list[dict]] = {str(value): [] for value in kept.recording_id}
     by_record = {str(row.recording_id): row for row in kept.itertuples()}
     for item in raw.get("trials", []):
+        from .trials import normalized_trial_state
+        if config.source == "mfa" and normalized_trial_state(item)["trial_status"] != "READY_FOR_ALIGNMENT":
+            raise ValueError(f"TRIAL_NOT_READY_FOR_MFA:{item.get('trial_id', '')}")
         identity = str(item.get("recording_id", ""))
         trial_id = str(item.get("trial_id", ""))
         if identity not in by_record or not re.fullmatch(r"[A-Za-z0-9_]+", trial_id):
@@ -569,6 +574,7 @@ def run_acoustic_alignment(output_root: str | Path, config: AlignmentConfig,
     working_audio_hashes: dict[str, str] = {}
     grids: dict[str, Path] = {}
     unit_to_trial: dict[str, tuple[str, dict]] = {}
+    corpus_manifest_rows: list[dict] = []
     speakers: dict[str, str] = {}
     profile = MfaProfile.load(config.mfa_profile_path) if config.source == "mfa" and config.mfa_profile_path else None
     if profile is not None:
@@ -613,6 +619,28 @@ def run_acoustic_alignment(output_root: str | Path, config: AlignmentConfig,
                     pieces, native_rate = _working_audio(source, spans, config.working_sample_rate_hz,
                                                          working)
                     (speaker_dir / f"{unit}.lab").write_text(transcripts[identity], encoding="utf-8")
+                    lab = speaker_dir / f"{unit}.lab"
+                    canonical = record_prompts[identity].transcript
+                    corpus_manifest_rows.append({
+                        "recording_id": identity, "trial_id": trial["trial_id"],
+                        "task_id": record_prompts[identity].task_id,
+                        "prompt_id": trial["prompt_id"],
+                        "prompt_version": record_prompts[identity].prompt_version,
+                        "trial_status": "READY_FOR_ALIGNMENT",
+                        "trial_start_sec": trial["start_sec"],
+                        "trial_end_sec": trial["end_sec"],
+                        "source_audio_path": str(source), "working_audio_path": str(working),
+                        "working_audio_sha256": _hash(working),
+                        "working_duration_sec": sf.info(working).duration,
+                        "working_sample_rate_hz": config.working_sample_rate_hz,
+                        "working_channels": sf.info(working).channels,
+                        "lab_path": str(lab), "lab_text": transcripts[identity],
+                        "lab_sha256": _hash(lab), "canonical_transcript": canonical,
+                        "canonical_transcript_sha256": sha256(canonical.encode(
+                            "utf-8")).hexdigest(),
+                        "segmentation_review_sha256": sha256(
+                            decision_path.read_bytes() + interval_path.read_bytes()).hexdigest(),
+                        "mfa_profile_id": profile.profile_id if profile else ""})
                     prepared[unit] = (pieces, native_rate)
                     unit_to_trial[unit] = (identity, trial)
                     working_audio_hashes[unit] = _hash(working)
@@ -626,6 +654,8 @@ def run_acoustic_alignment(output_root: str | Path, config: AlignmentConfig,
                 progress_callback(prep_done, len(kept),
                                   f"Recordings prepared: {prep_done} / {len(kept)} · "
                                   f"Trials prepared: {len(prepared)}")
+        _atomic_csv(pd.DataFrame(corpus_manifest_rows),
+                    run_dir / "configs" / "mfa_corpus_manifest.csv")
         try:
             if prepared:
                 if profile is not None:
@@ -641,13 +671,21 @@ def run_acoustic_alignment(output_root: str | Path, config: AlignmentConfig,
                         _atomic_json({"alignment_run_id": run_id, "status": "PREFLIGHT_FAILED",
                                       "reason": provider_report["status"],
                                       "updated_utc": datetime.now(timezone.utc).isoformat()}, state_path)
-                        raise RuntimeError(provider_report["status"])
-                    if progress_callback:
-                        progress_callback(0, 0, "Running MFA corpus alignment...")
-                    grids = provider.align_corpus(corpus, run_dir / "provider", profile,
-                                                  run_dir / "logs")
-                    provider_report["diagnostic_paths"] = provider.collect_diagnostics(
-                        run_dir / "provider", run_dir / "logs")
+                        for identity in trials_by_record:
+                            preparation_errors[identity] = f"PREFLIGHT_FAILED:{provider_report['status']}"
+                    else:
+                        if progress_callback:
+                            progress_callback(0, 0, "Running MFA corpus alignment...")
+                        try:
+                            grids = provider.align_corpus(corpus, run_dir / "provider", profile,
+                                                          run_dir / "logs")
+                            provider_report["diagnostic_paths"] = provider.collect_diagnostics(
+                                run_dir / "provider", run_dir / "logs")
+                        except RuntimeError as exc:
+                            provider_report["status"] = "ALIGNMENT_FAILED"
+                            provider_report["alignment_error"] = str(exc)[:500]
+                            for identity in trials_by_record:
+                                preparation_errors[identity] = f"ALIGNMENT_FAILED:{exc}"
                 else:
                     # Mock providers exercise the same corpus-level handoff in tests.
                     grids = provider.align_corpus(corpus, run_dir / "provider", None,
@@ -829,6 +867,24 @@ def run_acoustic_alignment(output_root: str | Path, config: AlignmentConfig,
                             "working_sample_rate_hz": working_rate})
         if progress_callback:
             progress_callback(done, len(kept), f"Aligning {done} / {len(kept)} — {record.file_name}")
+    if config.trial_manifest_path:
+        diagnosed = {(str(item["recording_id"]), str(item["trial_id"]))
+                     for item in trial_diagnostics}
+        reasons = {str(item["recording_id"]): str(item.get("reason") or item["status"])
+                   for item in diagnostics}
+        for identity, trials in trials_by_record.items():
+            for trial in trials:
+                if (identity, trial["trial_id"]) in diagnosed:
+                    continue
+                expected_words = record_prompts[identity].expected_words
+                trial_diagnostics.append({"alignment_run_id": run_id,
+                    "recording_id": identity, "trial_id": trial["trial_id"],
+                    "prompt_id": trial["prompt_id"], "start_sec": trial["start_sec"],
+                    "end_sec": trial["end_sec"], "n_words": 0, "n_phones": 0,
+                    "expected_word_count": len(expected_words),
+                    "aligned_expected_word_count": 0, "word_coverage": 0.0,
+                    "missing_words": json.dumps(list(expected_words)), "extra_tokens": 0,
+                    "status": "ALIGNMENT_FAILED", "reason": reasons.get(identity, "NO_TEXTGRID")})
     tables = run_dir / "tables"
     words_path, phones_path = tables / "alignment_words.csv", tables / "alignment_phones.csv"
     diagnostic_path = tables / "alignment_diagnostics.csv"
@@ -871,6 +927,7 @@ def run_acoustic_alignment(output_root: str | Path, config: AlignmentConfig,
                 "provider_mode": getattr(provider, "mode", ""),
                 "provider_environment": provider_report,
                 "mfa_profile_id": profile.profile_id if profile else "",
+                "mfa_profile_source_path": str(config.mfa_profile_path or ""),
                 "mfa_profile_sha256": (_hash(Path(config.mfa_profile_path))
                                        if config.mfa_profile_path else ""),
                 "speaker_manifest_sha256": (_hash(Path(config.speaker_manifest_path))
@@ -883,6 +940,8 @@ def run_acoustic_alignment(output_root: str | Path, config: AlignmentConfig,
                     if config.source == "mfa" else ""),
                 "trial_corpus_unit_map": {key: {"recording_id": value[0],
                     "trial_id": value[1]["trial_id"]} for key, value in unit_to_trial.items()},
+                "mfa_corpus_manifest_sha256": (_hash(run_dir / "configs" /
+                    "mfa_corpus_manifest.csv") if config.source == "mfa" else ""),
                 "trial_manifest_sha256": (_hash(run_dir / "configs" / "alignment_trials.json")
                                           if config.trial_manifest_path else ""),
                 "trial_diagnostics_sha256": (_hash(tables / "alignment_trial_diagnostics.csv")
@@ -969,6 +1028,10 @@ def run_acoustic_alignment(output_root: str | Path, config: AlignmentConfig,
             "recording_id", "trial_id", "token_type", "token_index",
             "start_sec", "end_sec"])
         review_rows = []
+        trial_metadata = {(str(item["recording_id"]), str(item["trial_id"])): item
+                          for item in json.loads(trial_snapshot_source.read_text(
+                              encoding="utf-8"))["trials"]}
+        current_review_hash = sha256(decision_path.read_bytes() + interval_path.read_bytes()).hexdigest()
         for diagnostic in trial_diagnostics:
             identity, trial_id = str(diagnostic["recording_id"]), str(diagnostic["trial_id"])
             if config.rerun_recording_id and identity != config.rerun_recording_id:
@@ -986,11 +1049,20 @@ def run_acoustic_alignment(output_root: str | Path, config: AlignmentConfig,
                 observed_count=len(trials_by_record[identity]),
                 transcript_overridden=transcript_overridden, links=links_for_trial,
                 words=words_frame, phones=phones_frame,
-                working_sample_rate_hz=int(manifest["working_sample_rate_hz"]))
+                working_sample_rate_hz=int(manifest["working_sample_rate_hz"]),
+                trial_metadata=trial_metadata.get((identity, trial_id)),
+                expected_prompt_id=manifest["prompt_id_by_recording"].get(identity, ""),
+                expected_prompt_version=record_prompts[identity].prompt_version,
+                exclusions=intervals.loc[intervals.recording_id.astype(str).eq(identity)
+                                         & intervals.segment_role.eq("manual_exclusion")],
+                oov_words=provider_report.get("oov_words", []),
+                current_review_hash=current_review_hash)
             auto = config.source == "mfa" and config.structural_auto_review and not flags
             review_rows.append({"recording_id": identity, "trial_id": trial_id,
                                 "review_status": ("AUTO_ACCEPTED_STRUCTURAL" if auto else
                                                   "NEEDS_REVIEW" if flags else "UNREVIEWED"),
+                                "alignment_review_status": ("AUTO_ACCEPTED_STRUCTURAL" if auto else
+                                                            "NEEDS_REVIEW"),
                                 "reviewed_utc": datetime.now(timezone.utc).isoformat() if auto else "",
                                 "review_mode": "AUTO" if auto else "",
                                 "queued_for_review": not auto,

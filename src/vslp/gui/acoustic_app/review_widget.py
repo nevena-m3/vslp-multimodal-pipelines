@@ -10,7 +10,8 @@ from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
 from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QSplitter, QVBoxLayout, QWidget)
+    QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea,
+    QSplitter, QVBoxLayout, QWidget)
 
 from vslp.acoustic.segment.review import (EXCLUSION_REASONS, RECORDING_EXCLUSION_REASONS,
     finalize_segmentation_review,
@@ -83,9 +84,11 @@ class SegmentationReviewWidget(QWidget):
         outer.addLayout(top)
         splitter = QSplitter(Qt.Horizontal)
         self.recording_list = QListWidget()
+        self.recording_list.setMinimumWidth(190)
         self.recording_list.currentItemChanged.connect(self._show_selected)
         splitter.addWidget(self.recording_list)
         detail = QWidget()
+        detail.setMinimumWidth(900)
         right = QVBoxLayout(detail)
         self.identity_label, self.status_label, self.flags_label = QLabel("Select a recording"), QLabel(), QLabel()
         for label in (self.identity_label, self.status_label, self.flags_label):
@@ -210,7 +213,11 @@ class SegmentationReviewWidget(QWidget):
         for button in (previous, next_button, self.finalize_button, self.continue_button):
             navigation.addWidget(button)
         right.addLayout(navigation)
-        splitter.addWidget(detail)
+        detail_scroll = QScrollArea()
+        detail_scroll.setWidgetResizable(True)
+        detail_scroll.setWidget(detail)
+        splitter.addWidget(detail_scroll)
+        splitter.setChildrenCollapsible(False)
         splitter.setStretchFactor(1, 4)
         outer.addWidget(splitter, 1)
         space = QShortcut(QKeySequence(Qt.Key_Space), self)

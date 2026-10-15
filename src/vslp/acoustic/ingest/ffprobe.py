@@ -7,6 +7,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from vslp.core.process_windows import hidden_console_kwargs
+
 
 def ffprobe_json(path: str | Path, ffprobe_bin: str = "ffprobe") -> dict[str, Any]:
     """Return raw ffprobe JSON for an input media file."""
@@ -19,7 +21,8 @@ def ffprobe_json(path: str | Path, ffprobe_bin: str = "ffprobe") -> dict[str, An
         "-print_format", "json",
         str(path),
     ]
-    p = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    p = subprocess.run(cmd, capture_output=True, text=True, check=False,
+                       **hidden_console_kwargs())
     if p.returncode != 0:
         raise RuntimeError(f"ffprobe failed for {path}: {p.stderr}")
     return json.loads(p.stdout)

@@ -7,6 +7,7 @@ import time
 import re
 import weakref
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -25,14 +26,16 @@ from PySide6.QtWidgets import (
     QProgressBar, QApplication,
 )
 
-from vslp.acoustic.alignment import AlignmentConfig, list_alignment_runs
+from vslp.acoustic.alignment import AlignmentConfig, list_alignment_runs, load_final_alignment
 from vslp.acoustic.alignment.mfa_provider import MfaProfile, MfaProvider
 from vslp.acoustic.alignment.profiles import default_profile_path
 from vslp.acoustic.alignment.task_workflow import (
     build_task_prompt_manifests, load_project_choices, project_alignment_context,
     resolve_prompt, save_project_choices,
 )
-from vslp.acoustic.alignment.trials import reviewed_trial_candidates
+from vslp.acoustic.alignment.trials import (
+    READY_TRIAL_STATES, reviewed_trial_candidates, trial_proposal_review_queue,
+)
 from vslp.acoustic.alignment.trials import validate_trial_draft
 from vslp.acoustic.alignment.trial_review import set_trial_review, trial_review_table
 from vslp.acoustic.alignment.trial_review import mark_recording_stale
@@ -55,6 +58,7 @@ class AlignmentWidget(QWidget):
     environment_requested = Signal(str)
     run_task_requested = Signal(str, str)
     rerun_recording_requested = Signal(str, str, str, str)
+    technical_details_requested = Signal()
 
     def __init__(self, root_provider: Callable[[], Path]) -> None:
         super().__init__()
@@ -80,10 +84,26 @@ class AlignmentWidget(QWidget):
         self.run_progress.setRange(0, 0)
         self.run_progress.hide()
         layout.addWidget(self.run_progress)
+        self.run_percent = QLabel("Overall progress: Estimating...")
+        self.run_stage = QLabel("Stage: Preparing")
+        self.run_eta = QLabel("Estimating...")
+        self.run_queue = QLabel("")
+        self.run_queue_status = QLabel("")
+        for label in (self.run_percent, self.run_stage, self.run_eta,
+                      self.run_queue, self.run_queue_status):
+            label.hide()
+            layout.addWidget(label)
         self.run_elapsed = QLabel("")
         self.run_elapsed.hide()
         layout.addWidget(self.run_elapsed)
+        self.show_technical_button = QPushButton("Show technical details")
+        self.show_technical_button.clicked.connect(self.technical_details_requested.emit)
+        layout.addWidget(self.show_technical_button)
         self._run_started_at = 0.0
+        self._last_progress_done = 0
+        self._processing_total = 0
+        self._completed_names: dict[int, str] = {}
+        self._first_record_completed_at = 0.0
         self._run_timer = QTimer(self)
         self._run_timer.timeout.connect(self._tick_run)
         self._running = False
@@ -254,6 +274,9 @@ class AlignmentWidget(QWidget):
         navigation.addWidget(self.recordings, 1)
         navigation.addWidget(self.next_recording)
         layout.insertLayout(0, navigation)
+        self.review_header = QLabel("Task: —  ·  Recording: —  ·  Alignment: —  ·  Review: —")
+        self.review_header.setWordWrap(True)
+        layout.insertWidget(1, self.review_header)
         self.record_stimulus = QComboBox()
         self.record_stimulus.currentIndexChanged.connect(self._record_stimulus_changed)
         layout.insertWidget(1, self.record_stimulus)
@@ -292,7 +315,32 @@ class AlignmentWidget(QWidget):
         self.plot.showGrid(x=True, alpha=0.15)
         self.plot.scene().sigMouseClicked.connect(self._token_clicked)
         self.plot.viewport().installEventFilter(self)
-        self.plot.setMinimumHeight(350)
+        self.plot.setMinimumHeight(220)
+        self.word_plot = pg.PlotWidget(background="w")
+        self.phone_plot = pg.PlotWidget(background="w")
+        for track, title, height in ((self.word_plot, "Words", 72),
+                                     (self.phone_plot, "Phones", 72)):
+            track.setLabel("left", title)
+            track.setYRange(0, 1, padding=0)
+            track.setMouseEnabled(x=True, y=False)
+            track.setMinimumHeight(height)
+            track.setMaximumHeight(height + 28)
+            track.setXLink(self.plot)
+            track.getAxis("left").setWidth(72)
+            track.getAxis("right").setWidth(16)
+            track.hideAxis("bottom")
+        self.plot.getAxis("left").setWidth(72)
+        self.plot.getAxis("right").setWidth(16)
+        self.plot.hideAxis("bottom")
+        self.phone_plot.showAxis("bottom")
+        self.phone_plot.setLabel("bottom", "Original recording time", units="s")
+        self.word_plot.scene().sigMouseClicked.connect(
+            lambda event: self._token_clicked(event, "Word"))
+        self.phone_plot.scene().sigMouseClicked.connect(
+            lambda event: self._token_clicked(event, "Phone"))
+        self.plot.getViewBox().sigXRangeChanged.connect(self._update_token_labels)
+        self._track_labels: list[tuple[pg.TextItem, float, float, str]] = []
+        self._recording_duration = 0.0
         self.proposal_strip = QWidget()
         self.proposal_strip_layout = QHBoxLayout(self.proposal_strip)
         self.proposal_strip_layout.setContentsMargins(0, 0, 0, 0)
@@ -301,6 +349,27 @@ class AlignmentWidget(QWidget):
         layout.addWidget(self.trial_count)
         layout.addWidget(self.proposal_strip)
         layout.addWidget(self.plot, 1)
+        layout.addWidget(self.word_plot)
+        layout.addWidget(self.phone_plot)
+        fit_controls = QHBoxLayout()
+        for label, callback in (("Fit full recording", self._fit_full_recording),
+                                ("Fit selected region", self._fit_selected_region),
+                                ("Reset view", self._fit_full_recording)):
+            button = QPushButton(label)
+            button.clicked.connect(callback)
+            fit_controls.addWidget(button)
+        fit_controls.addStretch(1)
+        layout.addLayout(fit_controls)
+        sentence_navigation = QHBoxLayout()
+        self.previous_sentence = QPushButton("◀ Sentence")
+        self.sentence_selector = QComboBox()
+        self.next_sentence = QPushButton("Sentence ▶")
+        self.previous_sentence.clicked.connect(lambda: self._step_sentence(-1))
+        self.next_sentence.clicked.connect(lambda: self._step_sentence(1))
+        self.sentence_selector.currentIndexChanged.connect(self._sentence_selected)
+        for control in (self.previous_sentence, self.sentence_selector, self.next_sentence):
+            sentence_navigation.addWidget(control)
+        layout.addLayout(sentence_navigation)
         self.trial_actions = QWidget()
         trial_actions = QHBoxLayout(self.trial_actions)
         trial_actions.setContentsMargins(0, 0, 0, 0)
@@ -444,15 +513,12 @@ class AlignmentWidget(QWidget):
             return False
         records = context.get("records", [])
         choices = context.get("choices", {}).get("trials", {})
-        return bool(records) and all(choices.get(row["recording_id"]) for row in records)
-
-    def _trial_count_mismatch(self) -> tuple[int, int] | None:
-        expected = self._expected_repetitions()
-        current = (len(self.proposal_regions) if not self.runs.currentData()
-                   else len(self._trial_entries()))
-        if expected is None or not current or expected == current:
-            return None
-        return int(expected), current
+        if context.get("choices", {}).get("trial_edit_pending"):
+            return False
+        return bool(records) and all(
+            choices.get(row["recording_id"]) and all(
+                trial.get("trial_status") in READY_TRIAL_STATES
+                for trial in choices[row["recording_id"]]) for row in records)
 
     def _proposals_differ(self) -> bool:
         existing = sorted((float(item["start_sec"]), float(item["end_sec"]))
@@ -536,6 +602,16 @@ class AlignmentWidget(QWidget):
             self.action_hint.setText("Select or open a project in Setup to begin Alignment.")
             self.primary.setEnabled(False)
             return
+        context = getattr(self, "_resolved_context", None)
+        if context and context.get("issue"):
+            self.steps.setText("ALIGNMENT CONTEXT INVALID")
+            self.action_hint.setText(
+                "Complete and freeze Segmentation Manual Review before Alignment."
+                if context["issue"] == "FINAL_SEGMENTATION_RECORDINGS_NOT_FOUND" else
+                f"Alignment cannot continue: {context['issue']}")
+            self.primary.setEnabled(False)
+            self.trial_count.setText("")
+            return
         total, accepted, issues = self._review_counts()
         review_table = (self._reviews(self.runs.currentData())
                         if self.runs.currentData() else pd.DataFrame())
@@ -549,12 +625,9 @@ class AlignmentWidget(QWidget):
         remaining_issues = issue_total - handled
         has_run = bool(self.runs.currentData())
         confirmed = self._project_trials_confirmed()
-        mismatch = self._trial_count_mismatch() if not has_run else None
-        acknowledged = load_project_choices(self.root_provider()).get(
-            "trial_count_ack", {}).get(self.recordings.currentData(), 0)
         if self._running:
             step = "running"
-        elif self._editing_trials or mismatch and acknowledged != mismatch[1]:
+        elif self._editing_trials:
             step = "trials"
         elif has_run and total and accepted == total:
             step = "freeze"
@@ -572,12 +645,13 @@ class AlignmentWidget(QWidget):
             self.trial_count.setText(f"Current trials: {current}  ·  No protocol count specified")
         elif expected == current:
             self.trial_count.setText(
-                f"✓ Expected repetitions: {expected}  ·  Current trials: {current}")
+                f"Current trials: {current} · Expected {expected} · observed {current}. "
+                "Candidate structure is ready to try with Alignment.")
         else:
             self.trial_count.setText(
-                f"⚠ Expected repetitions: {expected}  ·  Current trials: {current}. "
-                "Review, merge, delete, or adjust the shaded trials before Alignment.")
-        self.trial_count.setVisible(step == "trials")
+                f"Expected {expected} · observed {current}. "
+                "Protocol mismatch — Alignment may still be attempted.")
+        self.trial_count.setVisible(step in {"trials", "run"})
         self.steps.setText({
             "trials": "● 1 Confirm trials   →   ○ 2 Run alignment   →   ○ 3 Review   →   ○ 4 Freeze",
             "run": "✓ 1 Confirm trials   →   ● 2 Run alignment   →   ○ 3 Review   →   ○ 4 Freeze",
@@ -586,7 +660,10 @@ class AlignmentWidget(QWidget):
             "freeze": "✓ 1 Confirm trials   →   ✓ 2 Run alignment   →   ✓ 3 Review   →   ● 4 Freeze",
         }[step])
         self.run_progress.setVisible(step == "running")
-        self.run_elapsed.setVisible(step == "running")
+        for label in (self.run_percent, self.run_stage, self.run_eta,
+                      self.run_queue, self.run_queue_status):
+            label.setVisible(step == "running")
+        self.run_elapsed.hide()
         self.primary.setEnabled(step != "running" and (
             step != "run" or self._preflight_ready) and (step != "trials" or
             bool(self.recordings.currentData())))
@@ -594,22 +671,28 @@ class AlignmentWidget(QWidget):
             candidates = reviewed_trial_candidates(self.root_provider(),
                                                     self.recordings.currentData() or "")
             existing = self._trial_entries()
-            if mismatch and existing and not self._editing_trials and acknowledged != mismatch[1]:
-                self.action_hint.setText(
-                    f"⚠ Trial count differs from protocol: expected {mismatch[0]}, "
-                    f"confirmed {mismatch[1]}. Select adjacent fragments to merge, "
-                    "or edit the shaded trials on the waveform.")
-                self.primary.setText("CONFIRM TRIALS")
-            elif existing and not self._editing_trials:
+            if existing and not self._editing_trials and all(
+                    item.get("trial_status") in READY_TRIAL_STATES
+                    for item in existing):
+                auto = all(item.get("trial_review_source") == "AUTO"
+                           for item in existing)
                 self.action_hint.setText(
                     f"Recording {self.recordings.currentIndex() + 1} of {self.recordings.count()} · "
-                    f"{len(existing)} repetitions confirmed. Continue to the next recording.")
-                self.primary.setText("NEXT RECORDING TO CONFIRM")
+                    f"{len(existing)} candidate trials "
+                    + ("ready for Alignment. " if auto else "confirmed and ready for Alignment. ")
+                    + "Continue to the next recording needing review.")
+                self.primary.setText("NEXT REVIEW ISSUE")
             else:
+                flags = sorted({flag for item in existing
+                                for flag in item.get("proposal_flags", [])
+                                if flag != "ATTEMPT_BOUNDARIES_UNCONFIRMED"})
                 self.action_hint.setText(
                     f"Recording {self.recordings.currentIndex() + 1} of {self.recordings.count()} · "
-                    f"{len(self.proposal_regions) or len(candidates)} shaded trials. "
-                    "Select a trial, drag its edge, or use the correction buttons below the waveform.")
+                    f"{len(self.proposal_regions) or len(candidates)} candidate trials · TRIAL REVIEW REQUIRED. "
+                    + ("Reason: " + ", ".join(flag.replace("_", " ").lower()
+                                             for flag in flags) + ". " if flags else "")
+                    + "Select a trial, drag its edge, or use the correction buttons below the waveform; "
+                    "then confirm the actual attempts.")
                 self.primary.setText("CONFIRM TRIALS")
         elif step == "run":
             self.action_hint.setText("Trials confirmed. " + (
@@ -697,21 +780,20 @@ class AlignmentWidget(QWidget):
         self.reset_trial_button.setVisible(reviewing and self._editing_alignment)
 
     def _expected_repetitions(self) -> int | None:
-        try:
-            context = project_alignment_context(self.root_provider())
-        except RuntimeError:
-            return None
+        context = getattr(self, "_resolved_context", None)
+        if context is None:
+            try:
+                context = project_alignment_context(self.root_provider())
+            except RuntimeError:
+                return None
         prompt_id = self.record_stimulus.currentData() if hasattr(self, "record_stimulus") else ""
         prompt = next((item for item in (context.get("task") or {}).get("prompts", [])
                        if item["prompt_id"] == prompt_id), None)
-        return prompt.get("expected_repetitions") if prompt else None
+        return (prompt.get("expected_repetitions") if prompt else
+                context.get("expected_repetitions"))
 
     def _primary_action(self) -> None:
         if self._view_step == "trials":
-            if (self._trial_count_mismatch() and self._trial_entries()
-                    and not self._editing_trials and not self._proposals_differ()):
-                self._acknowledge_trial_count()
-                return
             self._confirm_proposals()
         elif self._view_step == "run":
             if self._repair_ready:
@@ -732,11 +814,21 @@ class AlignmentWidget(QWidget):
                 self.freeze_requested.emit(self.runs.currentData() or "")
 
     def _tick_run(self) -> None:
-        elapsed = int(time.monotonic() - self._run_started_at)
-        self.run_elapsed.setText(f"Elapsed {elapsed // 60:02d}:{elapsed % 60:02d}")
+        if (self._first_record_completed_at and self._last_progress_done >= 2
+                and self._processing_total > self._last_progress_done):
+            elapsed = time.monotonic() - self._first_record_completed_at
+            remaining = elapsed / (self._last_progress_done - 1) * (
+                self._processing_total - self._last_progress_done)
+            self.run_eta.setText(f"About {max(1, round(remaining / 60))} min remaining")
+        else:
+            self.run_eta.setText("Estimating...")
 
     def alignment_started(self) -> None:
         self._running = True
+        self._last_progress_done = 0
+        self._processing_total = 0
+        self._completed_names.clear()
+        self._first_record_completed_at = 0.0
         self._run_started_at = time.monotonic()
         self._run_timer.start(1000)
         self.action_hint.setText("ALIGNMENT RUNNING — Preparing corpus…")
@@ -746,10 +838,38 @@ class AlignmentWidget(QWidget):
         if self._running:
             self.action_hint.setText("ALIGNMENT RUNNING — " + message)
             if total > 0:
+                self._processing_total = total
+            completed_record = message.startswith("Aligning ") or message.startswith("Reused reviewed run")
+            if total > 0 and completed_record:
                 self.run_progress.setRange(0, total)
                 self.run_progress.setValue(done)
+                self._last_progress_done = max(self._last_progress_done, done)
+                if done == 1 and not self._first_record_completed_at:
+                    self._first_record_completed_at = time.monotonic()
+                self.run_percent.setText(f"Overall: {round(100 * done / total)}%  ·  {done} of {total} recordings")
+                self._completed_names[done] = message.split(" — ", 1)[-1]
             else:
                 self.run_progress.setRange(0, 0)
+                self.run_percent.setText("Overall: 0%  ·  processing stage in progress"
+                                         if self._last_progress_done == 0 else
+                                         f"Overall: {round(100 * self._last_progress_done / self._processing_total)}%")
+            if self._processing_total:
+                current = min(self._last_progress_done + 1, self._processing_total)
+                self.run_queue.setText(
+                    f"Processing queue: Recording {current} of {self._processing_total}")
+                self.run_queue_status.setText("\n".join(
+                    f"{'✓' if index <= self._last_progress_done else '●' if index == current else '○'} "
+                    f"Recording {index} — "
+                    f"{self._completed_names.get(index, 'Complete' if index <= self._last_progress_done else 'Processing' if index == current else 'Waiting')}"
+                    for index in range(1, self._processing_total + 1)))
+            else:
+                self.run_queue.setText("Processing queue: preparing recording list")
+                self.run_queue_status.clear()
+            stage = ("Preparing" if "prepar" in message.lower() else
+                     "Parsing alignment" if "pars" in message.lower() else
+                     "Building canonical alignment" if "canonical" in message.lower() else
+                     "Aligning" if "align" in message.lower() else message)
+            self.run_stage.setText(f"Stage: {stage}  ·  {message}")
 
     def alignment_finished(self, error: str = "") -> None:
         self._running = False
@@ -804,12 +924,20 @@ class AlignmentWidget(QWidget):
         record_id = self.recordings.currentData()
         if not record_id or self.runs.currentData():
             return
-        if self._trial_entries() and not self._editing_trials and not self._proposals_differ():
+        if (self._trial_entries() and all(item.get("trial_status")
+                in READY_TRIAL_STATES for item in self._trial_entries())
+                and not self._editing_trials and not self._proposals_differ()):
             choices = load_project_choices(self.root_provider())
-            for index in range(self.recordings.count()):
-                if not choices.get("trials", {}).get(self.recordings.itemData(index)):
+            context = project_alignment_context(self.root_provider())
+            context["choices"] = choices
+            pending = trial_proposal_review_queue(context)
+            if pending:
+                index = self.recordings.findData(pending[0]["recording_id"])
+                if index >= 0:
                     self.recordings.setCurrentIndex(index)
-                    return
+                return
+            self._show_step()
+            return
         bounds = [tuple(region.getRegion()) for region in self.proposal_regions]
         if not bounds:
             self.action_hint.setText("No repetition was proposed. Review the speech bounds in Advanced / Diagnostics.")
@@ -817,6 +945,9 @@ class AlignmentWidget(QWidget):
         choices = load_project_choices(self.root_provider())
         prompt_id = self.record_stimulus.currentData() or ""
         expected = self._expected_repetitions()
+        context = project_alignment_context(self.root_provider())
+        prompt = next((item for item in (context.get("task") or {}).get("prompts", [])
+                       if item["prompt_id"] == prompt_id), None)
         if expected is not None and expected != len(bounds):
             answer = QMessageBox.question(
                 self, "Confirm trial count",
@@ -825,16 +956,41 @@ class AlignmentWidget(QWidget):
                 QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if answer != QMessageBox.Yes:
                 return
+        previous = self._trial_entries()
+        entries = [{"trial_id": (previous[number - 1]["trial_id"]
+                                if number <= len(previous) else f"trial_{number:03d}"),
+                    "start_sec": left, "end_sec": right, "prompt_id": prompt_id,
+                    "task_id": context["task_id"],
+                    "prompt_version": prompt["prompt_version"] if prompt else "",
+                    "trial_status": "READY_FOR_ALIGNMENT",
+                    "trial_review_source": "HUMAN",
+                    "trial_review_reason": ["EXPLICIT_TRIAL_CONFIRMATION"],
+                    "trial_review_timestamp": datetime.now(timezone.utc).isoformat(),
+                    "segmentation_review_hash": context.get("segmentation_review_hash", ""),
+                    "proposal_source": "HUMAN_CONFIRMED",
+                    "initial_proposal_source": (previous[number - 1].get("proposal_source", "")
+                                                if number <= len(previous) else ""),
+                    "proposal_flags": (previous[number - 1].get("proposal_flags", [])
+                                       if number <= len(previous) else []),
+                    "protocol_expected_repetitions": expected,
+                    "observed_candidate_count": len(bounds),
+                    "protocol_count_match": expected is not None and len(bounds) == expected,
+                    "flags": (["REPETITION_COUNT_MISMATCH"]
+                              if expected is not None and len(bounds) != expected else []),
+                    "trial_policy_version": "task_specific_structural_review_v3",
+                    "review_policy_version": "task_specific_structural_review_v3"}
+                   for number, (left, right) in enumerate(sorted(bounds), 1)]
         from vslp.acoustic.alignment.reviewed_trials import confirmed_trial_rows
-        context = project_alignment_context(self.root_provider())
         try:
-            entries = confirmed_trial_rows(
+            confirmed = confirmed_trial_rows(
                 self.root_provider(), recording_id=record_id,
                 task_id=context["task_id"], prompt_id=prompt_id,
-                bounds=sorted(bounds))
+                bounds=sorted(bounds), trial_ids=[item["trial_id"] for item in entries])
         except ValueError as exc:
             self.action_hint.setText("Trial confirmation unavailable: " + str(exc))
             return
+        for entry, provenance in zip(entries, confirmed, strict=True):
+            entry.update(provenance)
         choices.setdefault("trials", {})[record_id] = entries
         context = project_alignment_context(self.root_provider())
         context["choices"] = choices
@@ -847,8 +1003,7 @@ class AlignmentWidget(QWidget):
             self.action_hint.setText("Trial bounds need correction: " + str(exc))
             return
         save_project_choices(self.root_provider(), choices)
-        if expected is not None and expected != len(entries):
-            choices.setdefault("trial_count_ack", {})[record_id] = len(entries)
+        if choices.get("trial_edit_pending", {}).pop(record_id, None):
             save_project_choices(self.root_provider(), choices)
         if self._editing_trials and self._repair_source_run_id:
             frozen = (self.root_provider() / "acoustic" / "004_alignment" / "final" /
@@ -863,30 +1018,20 @@ class AlignmentWidget(QWidget):
                 mark_recording_stale(self.root_provider(), self._repair_source_run_id, record_id)
             self._repair_ready = True
             self._editing_trials = False
+        elif self._editing_trials:
+            self._editing_trials = False
         self._recording_changed()
         self._request_preflight()
         if self._project_trials_confirmed():
             self._show_step()
         else:
-            for index in range(self.recordings.count()):
-                if not choices["trials"].get(self.recordings.itemData(index)):
+            context = project_alignment_context(self.root_provider())
+            context["choices"] = choices
+            pending = trial_proposal_review_queue(context)
+            if pending:
+                index = self.recordings.findData(pending[0]["recording_id"])
+                if index >= 0:
                     self.recordings.setCurrentIndex(index)
-                    break
-
-    def _acknowledge_trial_count(self) -> None:
-        mismatch = self._trial_count_mismatch()
-        if not mismatch:
-            return
-        answer = QMessageBox.question(
-            self, "Review repetitions",
-            f"Protocol expects {mismatch[0]} repetitions; {mismatch[1]} are confirmed. "
-            "Have you reviewed this difference on the waveform?",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-        if answer == QMessageBox.Yes:
-            choices = load_project_choices(self.root_provider())
-            choices.setdefault("trial_count_ack", {})[self.recordings.currentData()] = mismatch[1]
-            save_project_choices(self.root_provider(), choices)
-            self._show_step()
 
     def _check_environment(self) -> None:
         self.environment.setText("Checking MFA environment...")
@@ -915,9 +1060,9 @@ class AlignmentWidget(QWidget):
                 if gaps else "Ready to run Alignment")
         else:
             issue = result.get("issue", "ACTION_REQUIRED")
-            if issue.startswith("TRIAL_BOUNDARIES_REQUIRED"):
+            if issue.startswith(("TRIAL_BOUNDARIES_REQUIRED", "TRIAL_CONFIRMATION_REQUIRED")):
                 self.readiness.setText(
-                    "Confirm each sentence repetition using reviewed speech bounds below")
+                    "Confirm the actual task attempts using the shaded candidate regions below")
             elif issue.startswith("INVALID_TRIAL_BOUNDARIES") or issue.startswith("TRIAL_CROSSES_EXCLUSION"):
                 self.readiness.setText("Trial bounds need correction before Alignment")
             else:
@@ -1137,6 +1282,27 @@ class AlignmentWidget(QWidget):
         else:
             self.frozen_status.setText("No frozen Alignment")
         context = project_alignment_context(self.root_provider())
+        self._resolved_context = context
+        if context.get("issue"):
+            self._preflight_timer.stop()
+            self._preflight_ready = False
+            self.task_label.setText("Alignment unavailable")
+            self.task_brief.setText(f"ALIGNMENT CONTEXT INVALID · {context['issue']}")
+            self.prompt_display.setText("")
+            self.recording_count.setText("Recordings: 0 eligible")
+            self.preflight.setText("Complete and freeze Segmentation Manual Review first.")
+            self.run_button.setEnabled(False)
+            self.runs.blockSignals(True)
+            self.runs.clear()
+            self.runs.blockSignals(False)
+            self.recordings.blockSignals(True)
+            self.recordings.clear()
+            self.recordings.blockSignals(False)
+            self.trials.clear()
+            self.record_stimulus.clear()
+            self.plot.clear()
+            self._show_step()
+            return
         if context.get("reviewed") and (context.get("task") or {}).get("alignment_applicable"):
             from vslp.acoustic.alignment.trials import structurally_proposed_trials
             before = json.dumps(context["choices"], sort_keys=True)
@@ -1408,8 +1574,14 @@ class AlignmentWidget(QWidget):
         self._selected_token_key = None
         self._edit_handle = None
         self.plot.clear()
+        self.word_plot.clear()
+        self.phone_plot.clear()
+        self._track_labels.clear()
         self.plot.addItem(self.play_cursor)
         self._tokens = []
+        self.sentence_selector.blockSignals(True)
+        self.sentence_selector.clear()
+        self.sentence_selector.blockSignals(False)
         record_id = self.recordings.currentData()
         run_id = self.runs.currentData()
         if not record_id:
@@ -1458,6 +1630,7 @@ class AlignmentWidget(QWidget):
             return
         self._ensure_player().setSource(QUrl.fromLocalFile(str(path.resolve())))
         duration = sf.info(path).duration
+        self._recording_duration = duration
         self.plot.setLimits(xMin=0, xMax=duration)
         self.plot.setXRange(0, duration, padding=.02)
         self.plot.setYRange(-1.8, 1.2, padding=0)
@@ -1567,17 +1740,77 @@ class AlignmentWidget(QWidget):
                     & corrected.token_index.astype(int).eq(index)].empty
                 self._tokens.append((float(row.start_sec), float(row.end_sec), kind, label,
                                      "Manually corrected" if manual else "MFA", index, owner))
+                track = self.word_plot if kind == "Word" else self.phone_plot
                 region = pg.LinearRegionItem([float(row.start_sec), float(row.end_sec)],
-                                             brush=pg.mkBrush(color + "35"),
-                                             movable=False)
-                self.plot.addItem(region)
+                                             brush=pg.mkBrush(color + "35"), movable=False)
+                region.setAcceptedMouseButtons(Qt.NoButton)
+                track.addItem(region)
                 tag = pg.TextItem(label, color=color, anchor=(0.5, 0.5))
-                tag.setPos((float(row.start_sec) + float(row.end_sec)) / 2,
-                           -1.14 if kind == "Word" else -1.48)
-                self.plot.addItem(tag)
+                tag.setPos((float(row.start_sec) + float(row.end_sec)) / 2, .5)
+                track.addItem(tag)
+                self._track_labels.append((tag, float(row.start_sec), float(row.end_sec), kind))
         self.token_detail.setText("Yellow: words  ·  Green: phones  ·  Times on original recording")
+        self._update_token_labels()
+        self._load_sentence_navigation(record_id)
         self._trial_changed()
         self._show_step()
+
+    def _load_sentence_navigation(self, recording_id: str) -> None:
+        self.sentence_selector.blockSignals(True)
+        self.sentence_selector.clear()
+        alignment, _reason = load_final_alignment(self.root_provider())
+        if alignment is not None and getattr(alignment, "canonical_words", None) is not None:
+            from vslp.acoustic.features.family13_v1_stage import _sentence_spans
+
+            trials = alignment.trials
+            matching = trials.loc[trials.recording_id.astype(str).eq(str(recording_id))
+                                    & trials.task_id.astype(str).eq("bamboo_passage")]
+            for trial in matching.itertuples():
+                try:
+                    spans = _sentence_spans(alignment, str(recording_id), str(trial.trial_id))
+                except ValueError:
+                    continue
+                for span in spans:
+                    self.sentence_selector.addItem(
+                        f"Trial {trial.trial_id} · Sentence {span['sentence_index']}",
+                        (span["start_sec"], span["end_sec"]))
+        self.sentence_selector.blockSignals(False)
+        available = self.sentence_selector.count() > 0
+        for control in (self.previous_sentence, self.sentence_selector, self.next_sentence):
+            control.setVisible(available)
+
+    def _sentence_selected(self) -> None:
+        bounds = self.sentence_selector.currentData()
+        if bounds:
+            self.plot.setXRange(float(bounds[0]), float(bounds[1]), padding=.04)
+
+    def _step_sentence(self, direction: int) -> None:
+        index = self.sentence_selector.currentIndex() + direction
+        if 0 <= index < self.sentence_selector.count():
+            self.sentence_selector.setCurrentIndex(index)
+
+    def _update_token_labels(self, *_args) -> None:
+        if not self._track_labels:
+            return
+        left, right = self.plot.viewRange()[0]
+        pixels_per_second = self.plot.getViewBox().width() / max(right - left, 1e-9)
+        for label, start, end, kind in self._track_labels:
+            visible = end >= left and start <= right
+            width_px = (min(end, right) - max(start, left)) * pixels_per_second
+            required_px = max(28, len(label.textItem.toPlainText()) * 7 + 10)
+            label.setVisible(visible and width_px >= required_px and
+                             (kind == "Word" or right - left <= 25))
+
+    def _fit_full_recording(self) -> None:
+        if self._recording_duration > 0:
+            self.plot.setXRange(0, self._recording_duration, padding=0)
+
+    def _fit_selected_region(self) -> None:
+        if self._selected_token is not None:
+            self.plot.setXRange(*self._selected_token, padding=.08)
+        elif self.trials.currentData():
+            trial = self.trials.currentData()
+            self.plot.setXRange(float(trial["start_sec"]), float(trial["end_sec"]), padding=.04)
 
     def _apply_waveform(self, payload: tuple) -> None:
         request, waveform, error = payload
@@ -1614,11 +1847,14 @@ class AlignmentWidget(QWidget):
         save_project_choices(self.root_provider(), choices)
         self._request_preflight()
 
-    def _token_clicked(self, event) -> None:
-        if not self.plot.sceneBoundingRect().contains(event.scenePos()):
+    def _token_clicked(self, event, tier: str | None = None) -> None:
+        plot = self.word_plot if tier == "Word" else self.phone_plot if tier == "Phone" else self.plot
+        if not plot.sceneBoundingRect().contains(event.scenePos()):
             return
-        time = self.plot.plotItem.vb.mapSceneToView(event.scenePos()).x()
-        if self._view_step == "trials":
+        time = plot.plotItem.vb.mapSceneToView(event.scenePos()).x()
+        if self._view_step in {"trials", "run"} and not self.runs.currentData():
+            if self._view_step == "run":
+                self._editing_trials = True
             self._proposal_cursor = time
             for index, region in enumerate(self.proposal_regions):
                 left, right = region.getRegion()
@@ -1626,11 +1862,10 @@ class AlignmentWidget(QWidget):
                     self._select_proposal(index, bool(event.modifiers() & Qt.ControlModifier))
                     break
             self._show_step()
-        y = self.plot.plotItem.vb.mapSceneToView(event.scenePos()).y()
-        wanted = "Phone" if y < -1.3 else "Word"
+        wanted = tier or "Word"
         candidates = [item for item in self._tokens
                       if item[0] <= time <= item[1] and item[2] == wanted]
-        if not candidates:
+        if not candidates and tier is None:
             candidates = [item for item in self._tokens if item[0] <= time <= item[1]]
         if candidates:
             start, end, kind, label, source, index, owner = min(
@@ -1721,6 +1956,7 @@ class AlignmentWidget(QWidget):
         entry = self.trials.currentData()
         if not entry:
             self.normal_summary.setText("Confirm trial bounds from reviewed speech, then run Alignment")
+            self._update_review_header("Not run")
             return
         start, end = float(entry["start_sec"]), float(entry["end_sec"])
         run_id = self.runs.currentData()
@@ -1733,7 +1969,13 @@ class AlignmentWidget(QWidget):
             matched = table.loc[table.recording_id.astype(str).eq(self.recordings.currentData())
                                 & table.trial_id.astype(str).eq(str(entry["trial_id"]))]
             if not matched.empty:
-                status = str(matched.iloc[0].review_status)
+                status = {"AUTO_ACCEPTED_STRUCTURAL":
+                          "Structurally auto-accepted · boundary accuracy not checked",
+                          "NEEDS_REVIEW": "Needs review",
+                          "HUMAN_ACCEPTED": "Human accepted",
+                          "STALE": "Stale",
+                          "NOT_RUN": "Not run"}.get(
+                              str(matched.iloc[0].alignment_review_status), "Needs review")
                 exists = True
             else:
                 status = ("LEGACY — trial review unavailable" if entry["trial_id"] ==
@@ -1741,6 +1983,7 @@ class AlignmentWidget(QWidget):
         self.normal_summary.setText(
             f"{self.task_label.text()}  ·  {self.prompt_display.text()}  ·  "
             f"Trial {self.trials.currentIndex() + 1}/{self.trials.count()}  ·  {status}")
+        self._update_review_header(status)
         if run_id and exists and str(matched.iloc[0].get("flags_triggered", "")):
             try:
                 flags = json.loads(str(matched.iloc[0].flags_triggered))
@@ -1761,17 +2004,32 @@ class AlignmentWidget(QWidget):
         self.needs_review_button.setEnabled(bool(run_id and exists))
         self._show_step()
 
+    def _update_review_header(self, review_status: str) -> None:
+        position = self.recordings.currentIndex() + 1
+        count = self.recordings.count()
+        name = self.recordings.currentText().split("  ·  ")[0] if count else "—"
+        self.review_header.setText(
+            f"Task: {self.task_label.text() or '—'}  ·  Recording: {position} of {count} — {name}  ·  "
+            f"Alignment: {'Complete' if self.runs.currentData() else 'Not run'}  ·  "
+            f"Review: {review_status}")
+
     def _add_trial(self) -> None:
         record_id = self.recordings.currentData()
         if not record_id:
             return
         choices = load_project_choices(self.root_provider())
         entries = choices.setdefault("trials", {}).setdefault(record_id, [])
+        for item in entries:
+            item.update(trial_status="STALE", trial_review_source="HUMAN",
+                        trial_review_reason=["TRIAL_GEOMETRY_CHANGED"])
+        choices.setdefault("trial_edit_pending", {})[record_id] = True
         suffixes = [str(item.get("trial_id", "")).split("_")[-1] for item in entries]
         number = 1 + max((int(value) for value in suffixes if value.isdigit()), default=0)
         entries.append({"trial_id": f"trial_{number:03d}",
                         "start_sec": self.trial_start.value(),
                         "end_sec": self.trial_end.value(),
+                        "trial_status": "NEEDS_TRIAL_REVIEW", "trial_review_source": "HUMAN",
+                        "trial_review_reason": ["NEW_TRIAL_REQUIRES_CONFIRMATION"],
                         "prompt_id": next((item["prompt_id"] for item in
                             project_alignment_context(self.root_provider())["records"]
                             if item["recording_id"] == record_id), "")})
@@ -1796,8 +2054,13 @@ class AlignmentWidget(QWidget):
         if not record_id or not entry or self.runs.currentData():
             return
         choices = load_project_choices(self.root_provider())
-        choices.setdefault("trials", {})[record_id] = [item for item in self._trial_entries()
-            if item["trial_id"] != entry["trial_id"]]
+        remaining = [item for item in self._trial_entries()
+                     if item["trial_id"] != entry["trial_id"]]
+        for item in remaining:
+            item.update(trial_status="STALE", trial_review_source="HUMAN",
+                        trial_review_reason=["TRIAL_GEOMETRY_CHANGED"])
+        choices.setdefault("trials", {})[record_id] = remaining
+        choices.setdefault("trial_edit_pending", {})[record_id] = True
         save_project_choices(self.root_provider(), choices)
         self._recording_changed()
         self._request_preflight()
@@ -1817,6 +2080,8 @@ class AlignmentWidget(QWidget):
         mask = table.recording_id.astype(str).eq(str(self.recordings.currentData())) & \
             table.trial_id.astype(str).eq(str(entry["trial_id"]))
         table.loc[mask, "review_status"] = status
+        table.loc[mask, "alignment_review_status"] = (
+            "HUMAN_ACCEPTED" if status == "ACCEPTED" else "NEEDS_REVIEW")
         if "review_mode" in table:
             table.loc[mask, "review_mode"] = "HUMAN"
         self._trial_changed()
@@ -1925,6 +2190,7 @@ class AlignmentWidget(QWidget):
         old = self._current_proposal_bounds()
         if bounds == old:
             return True
+        self._mark_trial_proposals_stale()
         self._proposal_history.append(old)
         self._rebuild_proposals(bounds, selected)
         return True
@@ -1942,10 +2208,26 @@ class AlignmentWidget(QWidget):
             region.setRegion(before[index])
             self._rebuilding_proposals = False
             return
+        self._mark_trial_proposals_stale()
         self._proposal_history.append(before)
         self._proposal_last_bounds = current
         self._render_proposal_strip()
         self._select_proposal(index)
+
+    def _mark_trial_proposals_stale(self) -> None:
+        """A visual edit invalidates prior structural acceptance immediately."""
+        identity = self.recordings.currentData()
+        if not identity:
+            return
+        choices = load_project_choices(self.root_provider())
+        choices.setdefault("trial_edit_pending", {})[identity] = True
+        for entry in choices.get("trials", {}).get(identity, []):
+            entry["trial_status"] = "STALE"
+            entry["trial_review_source"] = "HUMAN"
+            entry["trial_review_reason"] = ["TRIAL_GEOMETRY_CHANGED"]
+        save_project_choices(self.root_provider(), choices)
+        self._preflight_ready = False
+        self.run_button.setEnabled(False)
 
     def _merge_proposals(self) -> None:
         selected = sorted(self._selected_proposals)

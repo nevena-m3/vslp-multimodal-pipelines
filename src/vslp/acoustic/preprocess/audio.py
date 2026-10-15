@@ -16,6 +16,8 @@ import tempfile
 import numpy as np
 import soundfile as sf
 
+from vslp.core.process_windows import hidden_console_kwargs
+
 
 @dataclass(frozen=True)
 class ChannelResolution:
@@ -96,6 +98,7 @@ def decode_audio_ffmpeg(
             stderr=subprocess.PIPE,
             text=True,
             check=False,
+            **hidden_console_kwargs(),
         )
         if proc.returncode != 0:
             message = proc.stderr.strip() or "unknown ffmpeg error"

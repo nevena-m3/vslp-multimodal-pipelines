@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from hashlib import sha256
 import json
 from pathlib import Path
 import re
@@ -32,6 +33,9 @@ def _manifest_task(manifest: dict) -> dict | None:
     registered = task_entry(str(manifest.get("task_id", "")))
     if registered:
         return registered
+    # An older Setup version stored the explicit Bamboo label as its task ID.
+    if str(manifest.get("task_id", "")).strip().casefold() == "bamboo":
+        return task_entry("bamboo_passage")
     names = [str(manifest.get(field, "")).strip().casefold()
              for field in ("task_display_name", "task_name")]
     matches = [task for task in task_registry()["tasks"]
@@ -45,8 +49,12 @@ def project_choices_path(root: Path) -> Path:
 
 def load_project_choices(root: Path) -> dict:
     path = project_choices_path(root)
-    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {
+    choices = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {
         "schema_version": "1", "recordings": {}}
+    from .trials import normalized_trial_state
+    choices["trials"] = {identity: [normalized_trial_state(entry) for entry in entries]
+                         for identity, entries in choices.get("trials", {}).items()}
+    return choices
 
 
 def save_project_choices(root: Path, choices: dict) -> None:
@@ -102,7 +110,8 @@ def project_alignment_context(root: str | Path) -> dict:
     root = Path(root)
     manifest_path = root / "project_manifest.json"
     if not manifest_path.is_file():
-        return {"issue": "PROJECT_NOT_SELECTED", "records": []}
+        return {"issue": "PROJECT_NOT_SELECTED", "records": [],
+                "eligible_recording_count": 0}
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     task = _manifest_task(manifest)
     task_id = task["task_id"] if task else str(manifest.get("task_id", ""))
@@ -130,9 +139,35 @@ def project_alignment_context(root: str | Path) -> dict:
                            "transcript_reason": stored.get("transcript_reason", "")})
     if changed:
         save_project_choices(root, choices)
-    return {"task_id": task_id, "task_name": manifest.get("task_display_name") or
-            manifest.get("task_name") or task_id, "task_type": manifest.get("task_type"),
-            "task": task, "records": selections,
+    prompts = task.get("prompts", []) if task else []
+    prompt = prompts[0] if len(prompts) == 1 else None
+    final = root / "acoustic" / "003_segmentation_review" / "final"
+    decisions_path = final / "final_segmentation_decisions.csv"
+    intervals_path = final / "final_segmentation_intervals.csv"
+    review_hash = (sha256(decisions_path.read_bytes() + intervals_path.read_bytes()).hexdigest()
+                   if decisions_path.is_file() and intervals_path.is_file() else "")
+    issue = ("TASK_NOT_REGISTERED" if not task else
+             "FINAL_SEGMENTATION_RECORDINGS_NOT_FOUND" if not review_hash else
+             "NO_ELIGIBLE_REVIEWED_RECORDINGS" if not selections else "")
+    current_id = selections[0]["recording_id"] if selections else ""
+    return {"task_id": task_id, "task_name": task["display_name"] if task else
+            manifest.get("task_display_name") or manifest.get("task_name") or task_id,
+            "task_display_name": task["display_name"] if task else "",
+            "task_type": manifest.get("task_type"), "task": task,
+            "prompt_id": prompt["prompt_id"] if prompt else "",
+            "prompt_version": prompt["prompt_version"] if prompt else "",
+            "canonical_text": prompt["exact_expected_text"] if prompt else "",
+            "alignment_applicable": bool(task and task["alignment_applicable"]),
+            "expected_repetitions": prompt.get("expected_repetitions") if prompt else None,
+            "eligible_recording_count": len(selections),
+            "current_recording_id": current_id,
+            "current_trials": choices.get("trials", {}).get(current_id, []),
+            "trial_state": ("STALE" if choices.get("trial_edit_pending", {}).get(current_id) else
+                            choices.get("trials", {}).get(current_id, [{}])[0].get(
+                                "trial_status", "PROPOSED")
+                            if choices.get("trials", {}).get(current_id) else "PROPOSED"),
+            "segmentation_review_hash": review_hash,
+            "issue": issue, "records": selections,
             "reviewed": bool(records.shape[0]), "choices": choices}
 
 

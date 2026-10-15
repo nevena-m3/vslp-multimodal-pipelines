@@ -11,7 +11,7 @@ import soundfile as sf
 
 from vslp.acoustic.alignment.reviewed_trials import load_confirmed_trials
 from vslp.acoustic.features.catalog import task_key
-from vslp.acoustic.features.family07_v2 import _eligible_speech
+from vslp.acoustic.features.family07_v2 import _eligible_speech, bamboo_reviewed_trial_domains
 from vslp.acoustic.features.family11_v2 import PUBLIC_IDS, TASKS, VERSION, measure_trial
 from vslp.acoustic.segment.review import load_final_segmentation
 from vslp.core.feature_contract import build_feature_delivery, write_feature_handoff
@@ -26,6 +26,8 @@ def _bounds(frame: pd.DataFrame, role: str) -> list[tuple[float, float]]:
 
 def _trials(root: Path, recording_id: str, task_id: str, frame: pd.DataFrame,
             decision) -> tuple[list[dict], str]:
+    if task_id == "bamboo_passage":
+        return bamboo_reviewed_trial_domains(root, recording_id, frame)
     if task_id != "sustained_a" and (root / "configs" / "alignment_choices.json").is_file():
         return load_confirmed_trials(root, recording_id, task_id)
     speech = _bounds(frame, "speech")

@@ -6,8 +6,9 @@ import numpy as np
 import pandas as pd
 
 from vslp.acoustic.alignment.reviewed_trials import confirmed_trial_rows
-from vslp.acoustic.features.catalog import load_feature_catalog, task_fit
+from vslp.acoustic.features.catalog import load_feature_catalog, prerequisite_issues, task_fit
 from vslp.acoustic.features.family07_v2 import reviewed_timing
+from vslp.acoustic.features.family07_v2 import bamboo_reviewed_trial_domains
 from vslp.acoustic.features.family08_v2 import (
     FAMILY08_IDS, _trial_timeline, bamboo_trial_rates, frozen_bamboo_prompt, nominal_rates,
 )
@@ -31,6 +32,30 @@ def test_frozen_prompt_and_registry():
     assert all(task_fit(item, "WSTG") != "Recommended" for item in outputs.values())
     assert not {"speaking_rate_syll_s", "speaking_rate_words_min",
                 "articulation_rate_syll_s"} & set(outputs)
+    assert all(not item["prerequisites"]["requires_alignment"] for item in outputs.values())
+    assert all(not item["prerequisites"]["requires_prompt_manifest"] for item in outputs.values())
+
+
+def test_bamboo_rates_need_reviewed_timing_but_no_alignment_or_count_file(tmp_path):
+    outputs = {item["feature_id"]: item for item in load_feature_catalog()["outputs"]
+               if item["family_id"] == "F08"}
+    decisions = tmp_path / "final_segmentation_decisions.csv"
+    intervals = tmp_path / "final_segmentation_intervals.csv"
+    for item in outputs.values():
+        missing = prerequisite_issues(item, task_name="Bamboo Passage",
+                                      final_decisions=decisions, final_intervals=intervals,
+                                      alignment_available=False, prompt_available=False)
+        assert missing == ["Final reviewed segmentation is unavailable"]
+    decisions.touch()
+    intervals.touch()
+    for item in outputs.values():
+        assert prerequisite_issues(item, task_name="Bamboo Passage",
+                                   final_decisions=decisions, final_intervals=intervals,
+                                   alignment_available=False, prompt_available=False) == []
+    assert nominal_rates(_timing()) == {
+        "bamboo_speaking_rate_wpm": (97.0, ""),
+        "bamboo_articulation_rate_wpm": (60 * 97 / 45, ""),
+    }
 
 
 def test_exact_formulas_pause_effect_and_no_pause_limit():
@@ -107,3 +132,20 @@ def test_two_confirmed_bamboo_trials_are_independent(tmp_path):
     assert [row["bamboo_speech_duration_s"] for row in rows] == [50, 55]
     assert np.isclose(np.median([row["bamboo_speaking_rate_wpm"] for row in rows]),
                       np.median([60 * 97 / 60, 60 * 97 / 75]))
+
+
+def test_multiple_legacy_bamboo_proposals_are_not_pooled_as_one_trial(tmp_path):
+    final = tmp_path / "acoustic" / "003_segmentation_review" / "final"
+    final.mkdir(parents=True)
+    (final / "final_segmentation_decisions.csv").write_text("recording_id,final_decision\nr1,KEEP\n")
+    (final / "final_segmentation_intervals.csv").write_text("recording_id,segment_role\nr1,speech\n")
+    config = tmp_path / "configs"
+    config.mkdir()
+    (config / "alignment_choices.json").write_text(json.dumps({"trials": {"r1": [
+        {"trial_id": "trial_001", "trial_review_source": "AUTO"},
+        {"trial_id": "trial_002", "trial_review_source": "AUTO"},
+    ]}}), encoding="utf-8")
+    intervals = pd.DataFrame([{"segment_role": "speech", "start_sec": 0., "end_sec": 10.}])
+    trials, issue = bamboo_reviewed_trial_domains(tmp_path, "r1", intervals)
+    assert trials == []
+    assert issue == "legacy_unverified_trial_confirmation"

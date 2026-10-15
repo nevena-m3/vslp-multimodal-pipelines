@@ -103,6 +103,9 @@ class WaveformEditor(QWidget):
         self.support.setLabel("left", "RMS")
         self.support.setLabel("bottom", "Time", "s")
         self.support.setXLink(self.waveform)
+        for track in (self.waveform, self.support):
+            track.getAxis("left").setWidth(72)
+            track.getAxis("right").setWidth(16)
         self.support.setMaximumHeight(145)
         self.support.setMinimumHeight(105)
         layout.addWidget(self.waveform, 4)

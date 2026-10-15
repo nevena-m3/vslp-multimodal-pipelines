@@ -910,7 +910,7 @@ def load_feature_catalog() -> dict[str, Any]:
                               "requires_task": True, "requires_unscaled_audio": False,
                               "requires_voiced_region": spec["construct_id"] == "C072",
                               "requires_ddk_events": False, "requires_vowel_tokens": False,
-                              "requires_prompt_manifest": task_id == "bamboo_passage"},
+                              "requires_prompt_manifest": False},
             "family_spec_approved": True, "source_document": "family13_scientific_review.md",
             "id_provenance": "PROJECT_DEFINED_ID",
             "identity_basis": "Frozen F13 operational component",

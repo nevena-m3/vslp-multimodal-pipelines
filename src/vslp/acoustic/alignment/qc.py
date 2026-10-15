@@ -18,6 +18,10 @@ import soundfile as sf
 
 INDEX_COLUMNS = (
     "alignment_run_id", "recording_id", "trial_id", "stimulus_id",
+    "task_id", "prompt_id", "trial_status", "alignment_review_status",
+    "expected_scientific_word_count", "mfa_expected_token_count",
+    "aligned_word_count", "aligned_phone_count", "oov_count",
+    "mfa_model", "mfa_dictionary", "mfa_version", "run_id",
     "expected_repetitions", "observed_repetitions", "alignment_status",
     "review_mode", "review_status", "flags", "word_count_expected",
     "word_count_aligned", "phone_count", "alignment_source", "plot_path",
@@ -26,7 +30,12 @@ INDEX_COLUMNS = (
 
 
 def _table(path: Path) -> pd.DataFrame:
-    return pd.read_csv(path, keep_default_na=False) if path.is_file() else pd.DataFrame()
+    if not path.is_file() or path.stat().st_size == 0:
+        return pd.DataFrame()
+    try:
+        return pd.read_csv(path, keep_default_na=False)
+    except pd.errors.EmptyDataError:
+        return pd.DataFrame()
 
 
 def _groups(frame: pd.DataFrame, *columns: str) -> dict[tuple[str, ...], pd.DataFrame]:
@@ -201,6 +210,21 @@ def create_alignment_qc(root: str | Path, run_dir: str | Path, manifest: dict,
         index_rows.append({
             "alignment_run_id": manifest["alignment_run_id"], "recording_id": identity,
             "trial_id": trial_id, "stimulus_id": trial.get("prompt_id", ""),
+            "task_id": manifest.get("task_id", ""),
+            "prompt_id": trial.get("prompt_id", ""),
+            "trial_status": trial.get("trial_status", ""),
+            "alignment_review_status": (str(review_row.get("alignment_review_status", ""))
+                                        if review_row is not None else "NEEDS_REVIEW"),
+            "expected_scientific_word_count": (97 if trial.get("prompt_id") ==
+                                               "bamboo_passage_v1" else ""),
+            "mfa_expected_token_count": int(row.expected_word_count) if row is not None else 0,
+            "aligned_word_count": len(selected_words),
+            "aligned_phone_count": len(selected_phones),
+            "oov_count": len(manifest.get("provider_environment", {}).get("oov_words", [])),
+            "mfa_model": manifest.get("acoustic_model", ""),
+            "mfa_dictionary": manifest.get("dictionary", ""),
+            "mfa_version": manifest.get("provider_version", ""),
+            "run_id": manifest["alignment_run_id"],
             "expected_repetitions": manifest.get("expected_trials_by_recording", {}).get(identity, ""),
             "observed_repetitions": manifest.get("observed_trials_by_recording", {}).get(identity, ""),
             "alignment_status": status, "review_mode": review_mode,

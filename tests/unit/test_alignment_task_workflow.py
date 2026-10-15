@@ -44,7 +44,9 @@ def _project(tmp_path, task="wstg", metadata_speaker="speaker_A"):
                    "start_sec": .1, "end_sec": .9}]).to_csv(
                        review / "final_segmentation_intervals.csv", index=False)
     save_project_choices(root, {"schema_version": "1", "recordings": {},
-        "trials": {"r1": [{"trial_id": "trial_001", "start_sec": .1, "end_sec": .9}]}})
+        "trials": {"r1": [{"trial_id": "trial_001", "start_sec": .1, "end_sec": .9,
+                           "trial_status": "READY_FOR_ALIGNMENT",
+                           "trial_review_source": "HUMAN"}]}})
     if metadata_speaker:
         index = root / "acoustic" / "000_metadata" / "tables"
         index.mkdir(parents=True)
@@ -97,7 +99,7 @@ def test_existing_project_resolves_registered_setup_task_when_legacy_id_is_unkno
     assert widget.prompt_display.text() == prompt["exact_expected_text"]
     assert "TASK_NOT_REGISTERED" not in widget.task_brief.text()
     if expected_repetitions is not None:
-        assert f"Expected repetitions: {expected_repetitions}" in widget.trial_count.text()
+            assert str(expected_repetitions) in widget.trial_count.text()
     widget.close()
 
 
@@ -170,16 +172,20 @@ def test_preflight_requires_confirmed_trials_not_manual_speaker_ids(tmp_path, mo
             for i in range(48)]
     pd.DataFrame(rows).to_csv(review / "final_segmentation_decisions.csv", index=False)
     pd.DataFrame([{"recording_id": f"r{i}", "segment_role": "speech",
-                   "start_sec": .1, "end_sec": .9} for i in range(48)]).to_csv(
+                   "start_sec": .1, "end_sec": .9} for i in range(47)]).to_csv(
                        review / "final_segmentation_intervals.csv", index=False)
     (root / "audio.wav").write_bytes(b"synthetic fixture placeholder")
     monkeypatch.setattr(task_workflow.MfaProvider, "inspect_environment",
                         lambda *_args: pytest.fail("MFA should not be checked before trial review"))
     result = check_task_preflight(root)
-    assert result["issue"].startswith("TRIAL_BOUNDARIES_REQUIRED")
+    assert result["issue"] == "TRIAL_BOUNDARIES_REQUIRED:r47"
     choices = load_project_choices(root)
+    pd.DataFrame([{"recording_id": f"r{i}", "segment_role": "speech",
+                   "start_sec": .1, "end_sec": .9} for i in range(48)]).to_csv(
+                       review / "final_segmentation_intervals.csv", index=False)
     choices["trials"] = {f"r{i}": [{"trial_id": "trial_001", "start_sec": .1,
-                                    "end_sec": .9}] for i in range(48)}
+                                    "end_sec": .9, "trial_status": "READY_FOR_ALIGNMENT",
+                                    "trial_review_source": "HUMAN"}] for i in range(48)}
     save_project_choices(root, choices)
     def available(provider, _profile):
         provider.resolved_dictionary = str(root / "dictionary.dict")
@@ -278,6 +284,108 @@ def test_bamboo_canonical_prompt_resolves_and_survives_project_reopen(tmp_path):
     widget.close()
 
 
+def test_finalized_bamboo_review_has_one_consistent_recording_and_protocol(tmp_path):
+    root = _project(tmp_path, task="bamboo_passage")
+    import numpy as np
+    import soundfile as sf
+    audio = root / "synthetic_bamboo.wav"
+    sf.write(audio, np.zeros(16000, dtype=np.float32), 16000)
+    decisions_path = (root / "acoustic" / "003_segmentation_review" / "final" /
+                      "final_segmentation_decisions.csv")
+    decisions = pd.read_csv(decisions_path)
+    decisions["analysis_wav_path"] = str(audio)
+    decisions.to_csv(decisions_path, index=False)
+    from vslp.gui.acoustic_app.alignment_widget import AlignmentWidget
+    _keep_qt_app()
+    for _ in range(2):
+        context = project_alignment_context(root)
+        assert context["issue"] == ""
+        assert context["eligible_recording_count"] == 1
+        assert context["current_recording_id"] == "r1"
+        assert context["expected_repetitions"] == 1
+        assert context["prompt_id"] == "bamboo_passage_v1"
+        assert context["segmentation_review_hash"]
+        widget = AlignmentWidget(lambda: root)
+        widget.refresh()
+        assert widget.recordings.count() == 1
+        assert widget.recordings.currentData() == "r1"
+        assert widget.player.source().toLocalFile() == audio.as_posix()
+        assert "Protocol: 1 repetitions expected" in widget.task_brief.text()
+        assert "Expected 1" in widget.trial_count.text()
+        assert "No protocol count specified" not in widget.trial_count.text()
+        widget.close()
+
+
+def test_unfrozen_bamboo_review_is_one_explicit_error_state(tmp_path):
+    root = _project(tmp_path, task="bamboo_passage")
+    final = root / "acoustic" / "003_segmentation_review" / "final"
+    (final / "final_segmentation_decisions.csv").unlink()
+    (final / "final_segmentation_intervals.csv").unlink()
+    context = project_alignment_context(root)
+    assert context["issue"] == "FINAL_SEGMENTATION_RECORDINGS_NOT_FOUND"
+    assert context["eligible_recording_count"] == 0
+    from vslp.gui.acoustic_app.alignment_widget import AlignmentWidget
+    _keep_qt_app()
+    widget = AlignmentWidget(lambda: root)
+    widget.refresh()
+    assert widget.recordings.count() == 0
+    assert widget.trials.count() == 0
+    assert widget.steps.text() == "ALIGNMENT CONTEXT INVALID"
+    assert "Segmentation Manual Review" in widget.action_hint.text()
+    assert widget.prompt_display.text() == ""
+    assert widget.trial_count.text() == ""
+    assert not widget.primary.isEnabled()
+    widget.close()
+
+
+def test_legacy_bamboo_setup_identity_resolves_without_filename_inference(tmp_path):
+    root = _project(tmp_path, task="bamboo_passage")
+    path = root / "project_manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest.update(task_id="Bamboo", task_name="Bamboo", task_display_name="Bamboo")
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    context = project_alignment_context(root)
+    assert context["task_id"] == "bamboo_passage"
+    assert context["task_name"] == "Bamboo Passage"
+    assert context["eligible_recording_count"] == 1
+
+
+def test_bamboo_recording_identity_survives_ingest_review_and_reopen(tmp_path):
+    root = _project(tmp_path, task="bamboo_passage")
+    ingest = root / "acoustic" / "000_ingest" / "tables"
+    ingest.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([{"recording_id": "r1", "file_name": "opaque.wav"}]).to_csv(
+        ingest / "audio_ingest_summary.csv", index=False)
+    segmentation = root / "acoustic" / "002_segmentation" / "tables"
+    segmentation.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([{"recording_id": "r1", "file_name": "opaque.wav"}]).to_csv(
+        segmentation / "acoustic_segmentation_summary.csv", index=False)
+    final = root / "acoustic" / "003_segmentation_review" / "final"
+    ids = [set(pd.read_csv(path).recording_id.astype(str)) for path in (
+        ingest / "audio_ingest_summary.csv",
+        segmentation / "acoustic_segmentation_summary.csv",
+        final / "final_segmentation_decisions.csv",
+        final / "final_segmentation_intervals.csv")]
+    assert ids == [{"r1"}] * 4
+    first = project_alignment_context(root)
+    reopened = project_alignment_context(root)
+    assert first["records"] == reopened["records"]
+    assert first["segmentation_review_hash"] == reopened["segmentation_review_hash"]
+    assert first["current_trials"] == reopened["current_trials"]
+
+
+def test_bamboo_final_review_with_no_kept_recordings_has_clear_issue(tmp_path):
+    root = _project(tmp_path, task="bamboo_passage")
+    decisions = (root / "acoustic" / "003_segmentation_review" / "final" /
+                 "final_segmentation_decisions.csv")
+    table = pd.read_csv(decisions)
+    table.loc[:, "final_decision"] = "EXCLUDE"
+    table.to_csv(decisions, index=False)
+    context = project_alignment_context(root)
+    assert context["issue"] == "NO_ELIGIBLE_REVIEWED_RECORDINGS"
+    assert context["eligible_recording_count"] == 0
+
+
 def test_nonlinguistic_tasks_are_exempt():
     assert task_entry("sustained_a")["alignment_applicable"] is False
     assert task_entry("ddk")["alignment_applicable"] is False
@@ -354,8 +462,12 @@ def test_multiple_prompt_task_requires_explicit_recording_selection(tmp_path, mo
     second["recording_id"] = "r2"
     second["file_name"] = "another_opaque.wav"
     pd.concat([decisions, pd.DataFrame([second])], ignore_index=True).to_csv(review, index=False)
+    intervals_path = review.with_name("final_segmentation_intervals.csv")
+    intervals = pd.read_csv(intervals_path)
+    intervals = pd.concat([intervals, intervals.assign(recording_id="r2")], ignore_index=True)
+    intervals.to_csv(intervals_path, index=False)
     registry = task_workflow.task_registry()
-    registry["tasks"][0]["prompts"].append({"prompt_id": "explicit_second",
+    next(item for item in registry["tasks"] if item["task_id"] == "wstg")["prompts"].append({"prompt_id": "explicit_second",
         "prompt_version": "v2", "exact_expected_text": "A second supplied sentence.",
         "language": "en"})
     registry_path = tmp_path / "registry.json"
@@ -369,7 +481,9 @@ def test_multiple_prompt_task_requires_explicit_recording_selection(tmp_path, mo
                                 "r2": {"prompt_id": "explicit_second",
                                        "speaker_id": "speaker_A"}}
     choices["trials"]["r2"] = [{"trial_id": "trial_001", "start_sec": .1,
-                                  "end_sec": .9, "prompt_id": "explicit_second"}]
+                                      "end_sec": .9, "prompt_id": "explicit_second",
+                                      "trial_status": "READY_FOR_ALIGNMENT",
+                                      "trial_review_source": "HUMAN"}]
     save_project_choices(root, choices)
     config = build_task_alignment_config(root)
     assert PromptManifest.load(config.recording_prompt_manifest_paths["r1"]).prompt_version == "v1"

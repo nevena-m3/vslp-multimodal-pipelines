@@ -203,6 +203,57 @@ def test_nominal_bamboo_rate_needs_no_alignment_and_mixes_with_pause(tmp_path, m
     assert np.isfinite(values.bamboo_pause_count.iloc[0])
 
 
+def test_legacy_auto_bamboo_trial_does_not_gate_reviewed_timing_families(
+        tmp_path, monkeypatch):
+    from vslp.acoustic.alignment.reviewed_trials import (
+        load_confirmed_trials, segmentation_review_hash,
+    )
+
+    root, decisions, intervals, _ = _case(tmp_path, monkeypatch)
+    reviewed = []
+    for role, start, end in (
+            ("speech", .1, .45), ("internal_nonspeech", .45, .8),
+            ("speech", .8, 1.2), ("internal_nonspeech", 1.2, 1.55),
+            ("speech", 1.55, 1.95)):
+        reviewed.append({"recording_id": "r1", "view": "authoritative",
+                         "segment_role": role, "start_sec": start, "end_sec": end,
+                         "boundary_source": "AUTO", "analysis_start_sec": 0,
+                         "analysis_end_sec": 2})
+    pd.DataFrame(reviewed).to_csv(intervals, index=False)
+    config_dir = root / "configs"
+    config_dir.mkdir()
+    (config_dir / "alignment_choices.json").write_text(json.dumps({"trials": {"r1": [{
+        "trial_id": "trial_001", "task_id": "bamboo_passage",
+        "prompt_id": "bamboo_passage_v1", "start_sec": .1, "end_sec": 1.95,
+        "trial_status": "READY_FOR_ALIGNMENT", "trial_review_source": "AUTO",
+        "segmentation_review_hash": segmentation_review_hash(root),
+    }]}}), encoding="utf-8")
+    assert load_confirmed_trials(root, "r1", "bamboo_passage")[1] == (
+        "legacy_unverified_trial_confirmation")
+    monkeypatch.setattr("vslp.acoustic.alignment.load_final_alignment",
+                        lambda *_: (None, "alignment_source_audio_changed"))
+    selected = ["bamboo_speaking_rate_wpm", "bamboo_articulation_rate_wpm",
+                "bamboo_pause_duration_median_s", "bamboo_pause_duration_cv",
+                "bamboo_phrase_duration_cv", "bamboo_pause_count",
+                "bamboo_percent_pause_pct", "bamboo_mean_pause_duration_s",
+                "bamboo_mean_phrase_duration_s", "bamboo_absolute_energy_fs2",
+                "bamboo_sound_power_digital", "bamboo_visibility_graph_density_amp",
+                "bamboo_spectral_bandwidth_p2_mean_hz",
+                "bamboo_spectral_bandwidth_p2_median_hz", "bamboo_spectral_centroid_hz",
+                "bamboo_spectral_crest", "bamboo_spectral_flatness", "bamboo_spectral_flux",
+                "bamboo_spectral_kurtosis", "bamboo_spectral_skew",
+                "bamboo_spectral_slope_db_khz", "bamboo_spectral_spread_hz",
+                "delta_v_s"]
+    _, status, values = _run(root, decisions, intervals, selected)
+    by_id = status.set_index("feature_id")
+    for feature in selected[:-1]:
+        assert by_id.loc[feature, "failure_reason"] == "", feature
+        assert np.isfinite(values.loc[0, feature]), feature
+    assert values.loc[0, "bamboo_speaking_rate_wpm"] == pytest.approx(60 * 97 / 1.85)
+    assert values.loc[0, "bamboo_articulation_rate_wpm"] == pytest.approx(60 * 97 / 1.15)
+    assert by_id.loc["delta_v_s", "failure_reason"] == "stale_final_alignment"
+
+
 def test_f07_f08_f09_share_reviewed_bamboo_timing_without_alignment(tmp_path, monkeypatch):
     root, decisions, intervals, _ = _case(tmp_path, monkeypatch)
     ids = ["bamboo_total_duration_s", "bamboo_speech_duration_s",
@@ -434,3 +485,34 @@ def test_segmental_approved_pair_produces_auditable_contrast(tmp_path, monkeypat
     assert set(audit.role) == {"t", "k"}
     assert set(audit.measurement_boundary_source) == {"validated_external_annotation"}
     assert set(audit.alignment_run_id) == {"align1"}
+
+
+def test_bamboo_spectrum_and_pause_use_reviewed_domain_without_confirmed_trial(
+        tmp_path, monkeypatch):
+    root, decisions, intervals, _ = _case(tmp_path, monkeypatch)
+    selected = ["bamboo_spectral_centroid_hz", "bamboo_pause_count"]
+    _, status, values = _run(root, decisions, intervals, selected)
+    by_id = status.set_index("feature_id")
+    assert by_id.loc["bamboo_pause_count", "failure_reason"] == ""
+    assert values.bamboo_pause_count.iloc[0] == 1
+    assert by_id.loc["bamboo_spectral_centroid_hz", "failure_reason"] == ""
+    assert np.isfinite(values.bamboo_spectral_centroid_hz.iloc[0])
+
+
+def test_f12_and_pause_run_together_from_reviewed_timing_without_alignment(
+        tmp_path, monkeypatch):
+    from vslp.acoustic.alignment.reviewed_trials import confirmed_trial_rows
+
+    root, decisions, intervals, _ = _case(tmp_path, monkeypatch)
+    rows = confirmed_trial_rows(
+        root, recording_id="r1", task_id="bamboo_passage",
+        prompt_id="bamboo_passage_v1", bounds=[(.2, 1.8)])
+    config = root/"configs"
+    config.mkdir()
+    (config/"alignment_choices.json").write_text(
+        json.dumps({"trials": {"r1": rows}}), encoding="utf-8")
+    selected = ["bamboo_spectral_centroid_hz", "bamboo_pause_count"]
+    _, status, values = _run(root, decisions, intervals, selected)
+    assert status.failure_reason.eq("").all()
+    assert np.isfinite(values.bamboo_spectral_centroid_hz.iloc[0])
+    assert values.bamboo_pause_count.iloc[0] == 1

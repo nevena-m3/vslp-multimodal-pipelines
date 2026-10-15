@@ -9,9 +9,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from vslp.acoustic.alignment.reviewed_trials import load_confirmed_trials
 from vslp.acoustic.alignment.task_workflow import task_entry
-from vslp.acoustic.features.family07_v2 import reviewed_timing
+from vslp.acoustic.features.family07_v2 import bamboo_reviewed_trial_domains, reviewed_timing
 from vslp.acoustic.segment.review import load_final_segmentation
 from vslp.core.feature_contract import build_feature_delivery, write_feature_handoff
 from vslp.core.provenance import sha256_file
@@ -86,21 +85,9 @@ def _trial_timeline(intervals: pd.DataFrame, start: float, end: float) -> pd.Dat
 def bamboo_trial_rates(root: Path, recording_id: str, intervals: pd.DataFrame,
                        word_count: int | None = None) -> list[dict]:
     """Use independently reviewed trials where present; otherwise one passage domain."""
-    choices = root / "configs" / "alignment_choices.json"
-    if choices.is_file():
-        trials, issue = load_confirmed_trials(root, recording_id, "bamboo_passage")
-        if issue:
-            return [{"trial_id": "", "sequence_id": "", "failure_reason": issue}]
-    else:
-        speech = intervals.loc[intervals.segment_role.astype(str).eq("speech")]
-        if speech.empty:
-            return [{"trial_id": "", "sequence_id": "", "failure_reason":
-                     "missing_bamboo_speech_duration"}]
-        trials = [{"trial_id": f"{recording_id}:passage_001",
-                   "sequence_id": f"{recording_id}:passage_001",
-                   "start_sec": float(speech.start_sec.min()),
-                   "end_sec": float(speech.end_sec.max()),
-                   "trial_review_source": "FINAL_REVIEWED_SEGMENTATION"}]
+    trials, issue = bamboo_reviewed_trial_domains(root, recording_id, intervals)
+    if issue:
+        return [{"trial_id": "", "sequence_id": "", "failure_reason": issue}]
     rows = []
     for trial in trials:
         start, end = float(trial["start_sec"]), float(trial["end_sec"])

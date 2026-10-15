@@ -8,8 +8,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from vslp.acoustic.alignment.reviewed_trials import load_confirmed_trials
 from vslp.acoustic.features.catalog import task_key
+from vslp.acoustic.features.family07_v2 import bamboo_reviewed_trial_domains
 from vslp.acoustic.features.family09_v2 import (
     EVENT_COLUMNS, PUBLIC_IDS, VERSION, reviewed_pause_events,
 )
@@ -20,16 +20,7 @@ from vslp.core.schemas import ArtifactRef, StageManifest, StageResult
 
 
 def _trial_domains(root: Path, recording_id: str, own: pd.DataFrame) -> tuple[list[dict], str]:
-    choices = root / "configs" / "alignment_choices.json"
-    if choices.is_file():
-        return load_confirmed_trials(root, recording_id, "bamboo_passage")
-    speech = own.loc[own.segment_role.astype(str).eq("speech")]
-    if speech.empty:
-        return [], "no_valid_speech_intervals"
-    return [{"trial_id": f"{recording_id}:passage_001",
-             "sequence_id": f"{recording_id}:passage_001",
-             "start_sec": float(speech.start_sec.min()),
-             "end_sec": float(speech.end_sec.max())}], ""
+    return bamboo_reviewed_trial_domains(root, recording_id, own)
 
 
 def _clip(own: pd.DataFrame, start: float, end: float) -> pd.DataFrame:

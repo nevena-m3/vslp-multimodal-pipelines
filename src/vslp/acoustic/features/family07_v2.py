@@ -6,6 +6,7 @@ original-recording seconds. A result is a value and an explicit reason.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -112,6 +113,42 @@ def reviewed_timing(intervals: pd.DataFrame, task_id: str) -> tuple[dict[str, tu
     reason = "speech_duration_exceeds_total" if speech_duration > total + 1e-8 else ""
     return {"bamboo_speech_duration_s": _result(speech_duration if not reason else np.nan, reason),
             "bamboo_total_duration_s": _result(total if not reason else np.nan, reason)}, audit
+
+
+def bamboo_reviewed_trial_domains(root: Path, recording_id: str,
+                                  intervals: pd.DataFrame) -> tuple[list[dict], str]:
+    """Use F07's reviewed Bamboo domain; preserve separately confirmed repetitions.
+
+    The frozen Bamboo prompt has one expected production. A single legacy AUTO
+    alignment proposal is not a feature prerequisite or a confirmed trial.
+    Multiple proposed productions need human confirmation before they can be
+    treated as independent observations.
+    """
+    timing, audit = reviewed_timing(intervals, "bamboo_passage")
+    total, issue = timing.get("bamboo_total_duration_s",
+                              (np.nan, "missing_reviewed_segmentation"))
+    if issue or not np.isfinite(total):
+        return [], issue or "missing_reviewed_segmentation"
+    speech = audit.loc[audit.segment_role.astype(str).eq("eligible_speech")]
+    if speech.empty:
+        return [], "no_valid_speech_intervals"
+    choices_path = root / "configs" / "alignment_choices.json"
+    if choices_path.is_file():
+        try:
+            choices = json.loads(choices_path.read_text(encoding="utf-8"))
+            proposed = choices.get("trials", {}).get(recording_id, [])
+        except (OSError, ValueError, AttributeError):
+            proposed = []
+        if len(proposed) > 1:
+            confirmed, confirmation_issue = load_confirmed_trials(
+                root, recording_id, "bamboo_passage")
+            return (confirmed, "") if not confirmation_issue else (
+                [], confirmation_issue)
+    trial_id = f"{recording_id}:passage_001"
+    return [{"trial_id": trial_id, "sequence_id": trial_id,
+             "start_sec": float(speech.start_sec.min()),
+             "end_sec": float(speech.end_sec.max()),
+             "trial_review_source": "FINAL_REVIEWED_SEGMENTATION"}], ""
 
 
 def confirmed_trials(root: Path, recording_id: str, task_id: str,

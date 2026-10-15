@@ -89,7 +89,7 @@ def generate_windows_speech(destination: Path, text: str = TEST_TEXT) -> None:
     raise RuntimeError("TTS_UNAVAILABLE")
 
 
-def _fixture(root: Path, wav: Path) -> tuple[Path, Path]:
+def _fixture(root: Path, wav: Path) -> tuple[Path, Path, Path]:
     """Create the same upstream input contract used by an ordinary run."""
     (root / "project_manifest.json").write_text(json.dumps({
         "task_id": "mfa_self_test", "task_name": "Nonclinical MFA self-test",
@@ -116,7 +116,13 @@ def _fixture(root: Path, wav: Path) -> tuple[Path, Path]:
         "recording_id": "recording_test_01", "view": "authoritative",
         "segment_role": "speech", "start_sec": 0.0, "end_sec": duration,
     }]).to_csv(final / "final_segmentation_intervals.csv", index=False)
-    return prompt, speakers
+    trials = root / "trials.json"
+    trials.write_text(json.dumps({"schema_version": "1", "trials": [{
+        "recording_id": "recording_test_01", "trial_id": "legacy_whole_recording",
+        "start_sec": 0.0, "end_sec": duration,
+        "trial_status": "READY_FOR_ALIGNMENT", "trial_review_source": "HUMAN",
+    }]}), encoding="utf-8")
+    return prompt, speakers, trials
 
 
 def _retain_failure_logs(root: Path) -> str:
@@ -164,17 +170,21 @@ def run_mfa_self_test(profile_path: str | Path, fallback_wav_path: str | Path | 
             fixture_generator(wav, TEST_TEXT)
             outcome.fixture_source = "windows_offline_system_speech"
         outcome.fixture_sample_rate = sf.info(wav).samplerate
-        prompt, speakers = _fixture(root, wav)
+        prompt, speakers, trials = _fixture(root, wav)
 
         outcome.failure_step = "MFA validation"
         result = run_acoustic_alignment(root, AlignmentConfig(
             source="mfa", prompt_manifest_path=str(prompt),
             speaker_manifest_path=str(speakers), mfa_profile_path=str(profile_path),
+            trial_manifest_path=str(trials),
+            structural_auto_review=True,
             provider=provider))
         run_id = list_alignment_runs(root)[-1]["alignment_run_id"]
         run_dir = root / "acoustic" / "004_alignment" / "runs" / run_id
         preflight = json.loads((run_dir / "logs" / "mfa_preflight.json").read_text(encoding="utf-8"))
         outcome.oov_count = len(preflight.get("oov_words", []))
+        if preflight.get("status") != "AVAILABLE":
+            raise RuntimeError(str(preflight.get("status") or "PREFLIGHT_FAILED"))
         outcome.mfa_validate_status = "PASS"
         outcome.mfa_align_status = "PASS" if any("align" in command for command in provider.commands) else "FAIL"
         if result.status != "completed":

@@ -10,7 +10,7 @@ import soundfile as sf
 
 from vslp.acoustic.alignment.reviewed_trials import load_confirmed_trials
 from vslp.acoustic.features.catalog import task_key
-from vslp.acoustic.features.family07_v2 import _eligible_speech
+from vslp.acoustic.features.family07_v2 import _eligible_speech, bamboo_reviewed_trial_domains
 from vslp.acoustic.features.family11_v2_stage import _bounds
 from vslp.acoustic.features.family12_v2 import PUBLIC_IDS, PREFIX, VERSION, measure_trial
 from vslp.acoustic.features.stable_phonation import centered_stable_spans
@@ -82,6 +82,8 @@ def run_family12_stage(decisions_csv: str | Path, root: str | Path, config,
                                "sequence_id": f"{recording_id}:reviewed_001",
                                "start_sec": min(a for a, _ in speech),
                                "end_sec": max(b for _, b in speech)}]
+            elif task_id == "bamboo_passage":
+                trials, issue = bamboo_reviewed_trial_domains(root, recording_id, frame)
             else:
                 trials, issue = load_confirmed_trials(root, recording_id, task_id)
             if trials:

@@ -33,7 +33,9 @@ def _fixture(tmp_path, n_trials=3):
                           "start_sec": start, "end_sec": start + 1})
         trials.append({"recording_id": "r1", "trial_id": f"trial_{number:03d}",
                        "prompt_id": "wstg_we_see_three_geese",
-                       "start_sec": start, "end_sec": start + 1})
+                       "start_sec": start, "end_sec": start + 1,
+                       "trial_status": "READY_FOR_ALIGNMENT",
+                       "trial_review_source": "HUMAN"})
     wav = root / "synthetic.wav"
     sf.write(wav, audio, 16000)
     (root / "project_manifest.json").write_text(json.dumps({"task_id": "wstg"}))
@@ -85,6 +87,75 @@ class FakeCorpusProvider:
         return result
 
 
+def test_missing_textgrid_keeps_every_trial_in_review_queue(tmp_path):
+    class MissingGridProvider(FakeCorpusProvider):
+        def align_corpus(self, corpus, output, profile, logs):
+            grids = super().align_corpus(corpus, output, profile, logs)
+            return {key: value for key, value in grids.items() if key != "trial_000002"}
+
+    root, prompt, speakers, trials = _fixture(tmp_path, 3)
+    run_acoustic_alignment(root, AlignmentConfig(source="mfa",
+        prompt_manifest_path=str(prompt), speaker_manifest_path=str(speakers),
+        trial_manifest_path=str(trials), provider=MissingGridProvider(),
+        structural_auto_review=True))
+    run_id = list_alignment_runs(root)[0]["alignment_run_id"]
+    run = root / "acoustic" / "004_alignment" / "runs" / run_id
+    review = pd.read_csv(run / "tables" / "alignment_trial_review.csv")
+    assert len(review) == 3
+    assert review.alignment_review_status.eq("NEEDS_REVIEW").all()
+    assert review.flags_triggered.str.contains("MFA_EXECUTION_FAILED").any()
+    qc = pd.read_csv(run / "tables" / "alignment_qc_index.csv")
+    assert len(qc) == 3
+    assert all((run / path).is_file() for path in qc.plot_path)
+
+
+def test_preflight_oov_creates_review_cases_without_invoking_alignment(tmp_path):
+    from vslp.acoustic.alignment.profiles import default_profile_path
+
+    class OovProvider(FakeCorpusProvider):
+        def preflight(self, corpus, profile, transcripts, logs):
+            return {"status": "OOV", "oov_words": ["GEESE"]}
+
+        def align_corpus(self, corpus, output, profile, logs):
+            raise AssertionError("OOV corpus must never reach MFA align")
+
+    root, prompt, speakers, trials = _fixture(tmp_path, 3)
+    result = run_acoustic_alignment(root, AlignmentConfig(source="mfa",
+        prompt_manifest_path=str(prompt), speaker_manifest_path=str(speakers),
+        trial_manifest_path=str(trials), provider=OovProvider(),
+        mfa_profile_path=default_profile_path(), structural_auto_review=True))
+    assert result.status == "completed_with_warnings"
+    run_id = list_alignment_runs(root)[0]["alignment_run_id"]
+    run = root / "acoustic" / "004_alignment" / "runs" / run_id
+    review = pd.read_csv(run / "tables" / "alignment_trial_review.csv")
+    assert len(review) == 3
+    assert review.alignment_review_status.eq("NEEDS_REVIEW").all()
+    assert review.flags_triggered.str.contains("UNRESOLVED_OOV").all()
+
+
+def test_mfa_execution_failure_creates_review_cases(tmp_path):
+    from vslp.acoustic.alignment.profiles import default_profile_path
+
+    class FailedProvider(FakeCorpusProvider):
+        def preflight(self, corpus, profile, transcripts, logs):
+            return {"status": "AVAILABLE", "oov_words": []}
+
+        def align_corpus(self, corpus, output, profile, logs):
+            raise RuntimeError("ALIGNMENT_FAILED")
+
+    root, prompt, speakers, trials = _fixture(tmp_path, 3)
+    result = run_acoustic_alignment(root, AlignmentConfig(source="mfa",
+        prompt_manifest_path=str(prompt), speaker_manifest_path=str(speakers),
+        trial_manifest_path=str(trials), provider=FailedProvider(),
+        mfa_profile_path=default_profile_path(), structural_auto_review=True))
+    assert result.status == "completed_with_warnings"
+    run_id = list_alignment_runs(root)[0]["alignment_run_id"]
+    review = trial_review_table(root, run_id)
+    assert len(review) == 3
+    assert review.alignment_review_status.eq("NEEDS_REVIEW").all()
+    assert review.flags_triggered.str.contains("MFA_EXECUTION_FAILED").all()
+
+
 @pytest.mark.parametrize("n_trials", [2, 3])
 def test_repeated_sentence_trials_align_independently_and_freeze_after_review(tmp_path, n_trials):
     root, prompt, speakers, trials = _fixture(tmp_path, n_trials)
@@ -95,6 +166,11 @@ def test_repeated_sentence_trials_align_independently_and_freeze_after_review(tm
     assert result.status == "completed"
     run_id = list_alignment_runs(root)[0]["alignment_run_id"]
     base = root / "acoustic" / "004_alignment" / "runs" / run_id / "tables"
+    corpus_manifest = pd.read_csv(base.parent / "configs" / "mfa_corpus_manifest.csv")
+    assert len(corpus_manifest) == n_trials
+    assert corpus_manifest.trial_status.eq("READY_FOR_ALIGNMENT").all()
+    assert corpus_manifest.lab_text.eq("WE SEE THREE GEESE").all()
+    assert corpus_manifest.working_sample_rate_hz.eq(16000).all()
     words = pd.read_csv(base / "alignment_words.csv")
     phones = pd.read_csv(base / "alignment_phones.csv")
     trials_table = pd.read_csv(base / "alignment_trial_diagnostics.csv")
@@ -109,9 +185,20 @@ def test_repeated_sentence_trials_align_independently_and_freeze_after_review(tm
         freeze_alignment(root, run_id)
     for number in range(1, n_trials + 1):
         set_trial_review(root, run_id, "r1", f"trial_{number:03d}", "ACCEPTED")
+    assert trial_review_table(root, run_id).alignment_review_status.eq("HUMAN_ACCEPTED").all()
     freeze_alignment(root, run_id)
+    for grid in (root / "acoustic" / "004_alignment" / "runs" / run_id /
+                 "provider").rglob("*.TextGrid"):
+        grid.unlink()
     store, issue = load_final_alignment(root)
     assert issue == "" and store is not None
+    assert store.manifest["final_alignment_contract_version"] == "FINAL_ALIGNMENT_CONTRACT_V1"
+    assert store.canonical_words.trial_id.nunique() == n_trials
+    assert store.canonical_phones.trial_id.nunique() == n_trials
+    final = root / "acoustic" / "004_alignment" / "final"
+    evidence = pd.read_csv(final / "final_alignment_evidence_index.csv")
+    assert len(evidence) == n_trials
+    assert all((final / path).is_file() for path in evidence.overview_plot_path)
     assert all(len(store.get_trial_tokens("r1", f"trial_{number:03d}")) == 4
                for number in range(1, n_trials + 1))
     assert store.manifest["trial_contract_version"] == "reviewed_trials_v1"
@@ -127,6 +214,48 @@ def test_needs_review_trial_cannot_freeze(tmp_path):
     set_trial_review(root, run_id, "r1", "trial_002", "NEEDS_REVIEW")
     with pytest.raises(ValueError, match="all_alignment_trials_must_be_accepted"):
         freeze_alignment(root, run_id)
+
+
+def test_final_contract_rejects_tampered_feature_tokens_and_evidence(tmp_path):
+    root, prompt, speakers, trials = _fixture(tmp_path, 1)
+    run_acoustic_alignment(root, AlignmentConfig(
+        source="mfa", prompt_manifest_path=str(prompt),
+        speaker_manifest_path=str(speakers), trial_manifest_path=str(trials),
+        provider=FakeCorpusProvider(), structural_auto_review=True))
+    run_id = list_alignment_runs(root)[0]["alignment_run_id"]
+    freeze_alignment(root, run_id)
+    final = root / "acoustic" / "004_alignment" / "final"
+    store, issue = load_final_alignment(root)
+    assert issue == "" and store is not None
+    words = final / "final_alignment_canonical_words.csv"
+    original = words.read_bytes()
+    words.write_bytes(original + b"\n")
+    assert load_final_alignment(root)[1] == "alignment_contract_hash_mismatch"
+    words.write_bytes(original)
+    evidence = pd.read_csv(final / "final_alignment_evidence_index.csv")
+    plot = final / evidence.iloc[0].overview_plot_path
+    original_plot = plot.read_bytes()
+    plot.write_bytes(original_plot + b"X")
+    assert load_final_alignment(root)[1] == "alignment_evidence_hash_mismatch"
+
+
+def test_final_contract_rejects_changed_registered_prompt(tmp_path, monkeypatch):
+    from vslp.acoustic.alignment import task_workflow
+
+    root, prompt, speakers, trials = _fixture(tmp_path, 1)
+    run_acoustic_alignment(root, AlignmentConfig(
+        source="mfa", prompt_manifest_path=str(prompt),
+        speaker_manifest_path=str(speakers), trial_manifest_path=str(trials),
+        provider=FakeCorpusProvider(), structural_auto_review=True))
+    run_id = list_alignment_runs(root)[0]["alignment_run_id"]
+    freeze_alignment(root, run_id)
+    registry = task_workflow.task_registry()
+    for task in registry["tasks"]:
+        for entry in task.get("prompts", []):
+            if entry["prompt_id"] == "wstg_we_see_three_geese":
+                entry["exact_expected_text"] = "CHANGED"
+    monkeypatch.setattr(task_workflow, "task_registry", lambda: registry)
+    assert load_final_alignment(root)[1] == "stale_alignment_prompt"
 
 
 @pytest.mark.parametrize("excluded_role", ["cough", "other_speaker"])
@@ -164,10 +293,16 @@ def test_structural_review_policy_auto_passes_only_matching_complete_trials(
     assert len(reviews) == n_trials
     if expected_auto:
         assert reviews.review_status.eq("AUTO_ACCEPTED_STRUCTURAL").all()
+        assert reviews.alignment_review_status.eq("AUTO_ACCEPTED_STRUCTURAL").all()
         assert reviews.review_mode.eq("AUTO").all()
         run = root / "acoustic" / "004_alignment" / "runs" / run_id
         qc = pd.read_csv(run / "tables" / "alignment_qc_index.csv")
         assert qc.review_status.eq("AUTO_ACCEPTED_STRUCTURAL").all()
+        assert qc.trial_status.eq("READY_FOR_ALIGNMENT").all()
+        assert qc.alignment_review_status.eq("AUTO_ACCEPTED_STRUCTURAL").all()
+        assert qc.mfa_expected_token_count.eq(4).all()
+        assert qc.aligned_word_count.eq(4).all()
+        assert qc.aligned_phone_count.eq(4).all()
         assert qc.plot_path.isna().all() or qc.plot_path.eq("").all()
         assert (run / "diagnostics" / "alignment_qc_summary.png").is_file()
         assert not list((run / "diagnostics" / "flagged_trials").glob("*.png"))
@@ -181,6 +316,7 @@ def test_structural_review_policy_auto_passes_only_matching_complete_trials(
         assert (final_root / "diagnostics" / "alignment_qc_summary.png").is_file()
     else:
         assert reviews.review_status.eq("NEEDS_REVIEW").all()
+        assert reviews.alignment_review_status.eq("NEEDS_REVIEW").all()
         assert reviews.flags_triggered.str.contains("PROTOCOL_TRIAL_COUNT_MISMATCH").all()
         run = root / "acoustic" / "004_alignment" / "runs" / run_id
         qc = pd.read_csv(run / "tables" / "alignment_qc_index.csv")
@@ -199,19 +335,20 @@ def test_structural_review_policy_auto_passes_only_matching_complete_trials(
 
 
 @pytest.mark.parametrize("n_trials", [2, 3])
-def test_reviewed_speech_proposes_only_exact_protocol_count(tmp_path, n_trials):
+def test_reviewed_speech_proposes_observed_candidates_pending_confirmation(tmp_path, n_trials):
     from vslp.acoustic.alignment.task_workflow import project_alignment_context
     from vslp.acoustic.alignment.trials import structurally_proposed_trials
 
     root, _prompt, _speakers, _trials = _fixture(tmp_path, n_trials)
     context = project_alignment_context(root)
     proposed = structurally_proposed_trials(root, context).get("trials", {}).get("r1", [])
-    assert len(proposed) == (3 if n_trials == 3 else 0)
-    if proposed:
-        assert all(item["proposal_source"] == "AUTO_STRUCTURAL_CANDIDATE"
-                   for item in proposed)
-        assert [(item["start_sec"], item["end_sec"]) for item in proposed] == [
-            (.5, 1.5), (3., 4.), (5.5, 6.5)]
+    assert len(proposed) == n_trials
+    expected_state = "READY_FOR_ALIGNMENT"
+    assert all(item["proposal_source"] == "AUTO_STRUCTURAL_CANDIDATE"
+               and item["trial_status"] == expected_state for item in proposed)
+    assert ("REPETITION_COUNT_MISMATCH" in proposed[0]["proposal_flags"]) == (n_trials != 3)
+    assert [(item["start_sec"], item["end_sec"]) for item in proposed] == [
+        (.5, 1.5), (3., 4.), (5.5, 6.5)][:n_trials]
 
 
 def test_manual_correction_removes_structural_auto_acceptance(tmp_path):
@@ -287,7 +424,7 @@ def test_repeated_trial_viewer_navigation_playback_and_review_persist(tmp_path, 
     widget.refresh()
     assert widget.trials.count() == 3
     assert widget.recordings.count() == 1
-    assert "UNREVIEWED" in widget.normal_summary.text()
+    assert "Needs review" in widget.normal_summary.text()
     widget._step_trial(1)
     assert widget.trials.currentData()["trial_id"] == "trial_002"
     widget._play_pause()
@@ -300,7 +437,7 @@ def test_repeated_trial_viewer_navigation_playback_and_review_persist(tmp_path, 
     reopened = AlignmentWidget(lambda: root)
     reopened.refresh()
     reopened.trials.setCurrentIndex(1)
-    assert "ACCEPTED" in reopened.normal_summary.text()
+    assert "Human accepted" in reopened.normal_summary.text()
     assert not reopened.freeze_button.isEnabled()
     reopened.close()
 
@@ -398,8 +535,8 @@ def test_five_fragments_merge_to_three_visual_trials_then_align_and_freeze(
     widget.show()
     QApplication.processEvents()
     assert len(widget.proposal_regions) == 5
-    assert "Expected repetitions: 3" in widget.trial_count.text()
-    assert "Current trials: 5" in widget.trial_count.text()
+    assert "Expected 3" in widget.trial_count.text()
+    assert "observed 5" in widget.trial_count.text()
     for when, modifiers in ((5.65, Qt.NoModifier), (5.95, Qt.ControlModifier)):
         scene = widget.plot.plotItem.vb.mapViewToScene(pg.Point(when, 0))
         QTest.mouseClick(widget.plot.viewport(), Qt.LeftButton, modifiers,
@@ -546,8 +683,12 @@ def test_trial_boundary_handle_drag_is_undoable(tmp_path, monkeypatch):
     assert len(widget.proposal_regions[2].lines) == 2
     start = widget.plot.mapFromScene(
         widget.plot.plotItem.vb.mapViewToScene(pg.Point(5.5, 0)))
+    # Move far enough in viewport pixels to start Qt's drag gesture.
     end = widget.plot.mapFromScene(
-        widget.plot.plotItem.vb.mapViewToScene(pg.Point(5.45, 0)))
+        widget.plot.plotItem.vb.mapViewToScene(pg.Point(5.30, 0)))
+    assert widget.plot.viewport().rect().contains(start)
+    assert widget.plot.viewport().rect().contains(end)
+    assert (end - start).manhattanLength() >= QApplication.startDragDistance()
     QTest.mousePress(widget.plot.viewport(), Qt.LeftButton, Qt.NoModifier, start)
     QTest.mouseMove(widget.plot.viewport(), end)
     QTest.mouseRelease(widget.plot.viewport(), Qt.LeftButton, Qt.NoModifier, end)
@@ -618,6 +759,15 @@ def test_manual_word_and_phone_corrections_keep_mfa_immutable_and_freeze(tmp_pat
     assert store.phones.iloc[0].start_sec == pytest.approx(float(phone.start_sec) + .01)
     assert store.words.iloc[0].start_sample == round(store.words.iloc[0].start_sec * 16000)
     assert store.words.iloc[0].alignment_source == "reviewed_manual_correction"
+    assert store.canonical_words.iloc[0].start_sec == pytest.approx(
+        float(word.start_sec) - .01)
+    assert store.canonical_phones.iloc[0].start_sec == pytest.approx(
+        float(phone.start_sec) + .01)
+    assert store.canonical_words.iloc[0].boundary_source == "REVIEWED_MANUAL_CORRECTION"
+    assert store.canonical_phones.iloc[0].boundary_source == "REVIEWED_MANUAL_CORRECTION"
+    final = root / "acoustic" / "004_alignment" / "final"
+    assert pd.read_csv(final / "alignment_provider_words.csv").equals(original_words)
+    assert pd.read_csv(final / "alignment_provider_phones.csv").equals(original_phones)
     assert pd.read_csv(base / "alignment_words.csv").equals(original_words)
     assert pd.read_csv(base / "alignment_phones.csv").equals(original_phones)
     final_reviews = pd.read_csv(store.manifest["final_trial_review_path"])
@@ -669,7 +819,8 @@ def test_targeted_recording_rerun_preserves_unrelated_review(tmp_path):
     trial_data["trials"] = [item for item in trial_data["trials"]
                             if item["recording_id"] != "r1" or item["trial_id"] != "trial_003"]
     trial_data["trials"].append({"recording_id": "r1", "trial_id": "trial_003",
-        "prompt_id": "wstg_we_see_three_geese", "start_sec": 5.4, "end_sec": 6.5})
+        "prompt_id": "wstg_we_see_three_geese", "start_sec": 5.4, "end_sec": 6.5,
+        "trial_status": "READY_FOR_ALIGNMENT", "trial_review_source": "HUMAN"})
     trials_path.write_text(json.dumps(trial_data), encoding="utf-8")
     mark_recording_stale(root, first, "r1")
     from dataclasses import replace
@@ -768,11 +919,10 @@ def test_trial_count_mismatch_visible_before_run(tmp_path, monkeypatch):
     save_project_choices(root, choices)
     widget = AlignmentWidget(lambda: root)
     widget.refresh()
-    assert "expected 3, confirmed 5" in widget.action_hint.text()
-    assert widget.primary.text() == "CONFIRM TRIALS"
-    monkeypatch.setattr(QMessageBox, "question", lambda *_args, **_kwargs: QMessageBox.Yes)
-    widget._primary_action()
-    assert load_project_choices(root)["trial_count_ack"]["r1"] == 5
+    assert "Expected 3" in widget.trial_count.text()
+    assert "observed 5" in widget.trial_count.text()
+    assert "Alignment may still be attempted" in widget.trial_count.text()
+    assert widget.primary.text() == "RUN ALIGNMENT"
     widget.close()
 
 
