@@ -275,7 +275,7 @@ def test_f07_f08_f09_share_reviewed_bamboo_timing_without_alignment(tmp_path, mo
 def test_native_f11_is_independent_of_preprocess_normalization(tmp_path, monkeypatch):
     root, decisions, intervals, _ = _case(tmp_path, monkeypatch, normalized=True)
     _, status, values = _run(root, decisions, intervals,
-                             ["bamboo_absolute_energy_fs2", "mfcc01_mean"])
+                             ["bamboo_absolute_energy_fs2", "bamboo_spectral_centroid_hz"])
     assert status.loc[status.feature_id.eq("bamboo_absolute_energy_fs2"),
                       "failure_reason"].iloc[0] == ""
     assert np.isfinite(values.bamboo_absolute_energy_fs2.iloc[0])
@@ -283,11 +283,13 @@ def test_native_f11_is_independent_of_preprocess_normalization(tmp_path, monkeyp
 
 def test_four_families_selected_only_unique_and_audited(tmp_path, monkeypatch):
     root, decisions, intervals, mapping = _case(tmp_path, monkeypatch, aligned=True)
-    ids = ["f0_mean_hz", "f1_median_hz", "bamboo_pause_count", "mfcc01_mean"]
+    ids = ["f0_mean_hz", "f1_median_hz", "bamboo_pause_count",
+           "bamboo_spectral_centroid_hz"]
     result, status, values = _run(root, decisions, intervals, ids, mapping)
     assert set(status.feature_id) == set(ids)
     assert not status.duplicated(["recording_id", "feature_id"]).any()
-    assert set(values.columns) >= {"f0_mean_hz", "bamboo_pause_count", "mfcc01_mean"}
+    assert set(values.columns) >= {"f0_mean_hz", "bamboo_pause_count",
+                                   "bamboo_spectral_centroid_hz"}
     assert "f1_median_hz" in values
     manifest = json.loads(Path(result.manifest_path).read_text(encoding="utf-8"))
     assert set(manifest["config"]["families_invoked"]) == {"F01", "F04", "F09", "F12"}
@@ -295,7 +297,7 @@ def test_four_families_selected_only_unique_and_audited(tmp_path, monkeypatch):
     assert (root / "acoustic" / "005_features" / "family_runs" / "voice" /
             "tables" / "native_measurements" / "f0_tracks.csv").is_file()
     assert (root / "acoustic" / "005_features" / "family_runs" / "spectrum" /
-            "tables" / "native_measurements" / "mfcc_matrices").is_dir()
+            "tables" / "acoustic_feature_status_long.csv").is_file()
 
 
 def test_executor_failure_is_isolated(tmp_path, monkeypatch):
@@ -322,7 +324,7 @@ def test_ddk_prerequisite_does_not_block_pause(tmp_path, monkeypatch):
     assert result.status == "completed_with_warnings"
     assert values.bamboo_pause_count.iloc[0] == 1
     assert status.loc[status.feature_id.eq("ddk_pa_rate_syll_s"),
-                      "failure_reason"].iloc[0] == "unsupported_ddk_target"
+                      "failure_reason"].iloc[0] == "unsupported_for_current_task"
 
 
 def test_reviewed_ddk_first_ten_executes_without_alignment_or_detector(tmp_path, monkeypatch):
@@ -339,17 +341,20 @@ def test_reviewed_ddk_first_ten_executes_without_alignment_or_detector(tmp_path,
     assert pd.read_csv(audit).selected.sum() == 10
 
 
-def test_reviewed_ddk_and_spectrum_succeed_in_one_selected_only_run(tmp_path, monkeypatch):
+def test_reviewed_ddk_and_unsupported_spectrum_remain_independent(tmp_path, monkeypatch):
     root, decisions, intervals, _ = _case(tmp_path, monkeypatch, ddk=True)
-    selected = {"ddk_pa_rate_syll_s", "ddk_pa_cycle_temporal_variability_s", "mfcc01_mean"}
+    selected = {"ddk_pa_rate_syll_s", "ddk_pa_cycle_temporal_variability_s",
+                "bamboo_spectral_centroid_hz"}
     result, status, values = _run(root, decisions, intervals, sorted(selected))
-    assert result.status == "completed"
+    assert result.status == "completed_with_warnings"
     assert set(status.feature_id) == selected
     assert not status.duplicated(["recording_id", "feature_id"]).any()
-    assert status.failure_reason.eq("").all()
+    by_id = status.set_index("feature_id")
+    assert by_id.loc["bamboo_spectral_centroid_hz", "failure_reason"] == (
+        "unsupported_for_current_task")
+    assert np.isnan(values.bamboo_spectral_centroid_hz.iloc[0])
     assert values.ddk_pa_rate_syll_s.iloc[0] == pytest.approx(5.0)
     assert values.ddk_pa_cycle_temporal_variability_s.iloc[0] == pytest.approx(0, abs=1e-12)
-    assert np.isfinite(values.mfcc01_mean.iloc[0])
     assert "bamboo_pause_count" not in values.columns
     events = root / "acoustic" / "005_features" / "family_runs" / "ddk" / "tables" / \
         "native_measurements" / "family10_selected_events.csv"
@@ -357,33 +362,31 @@ def test_reviewed_ddk_and_spectrum_succeed_in_one_selected_only_run(tmp_path, mo
     assert len(pd.read_csv(events)) == 10
     manifest = json.loads(Path(result.manifest_path).read_text(encoding="utf-8"))
     assert set(manifest["config"]["families_invoked"]) == {"F10", "F12"}
-    assert set(manifest["config"]["executor_groups"]) == {"ddk", "spectrum"}
+    assert set(manifest["config"]["executor_groups"]) == {"ddk"}
 
 
-def test_ten_implemented_families_dispatch_together_with_local_failures(tmp_path, monkeypatch):
+def test_cross_task_selection_isolated_across_ten_families(tmp_path, monkeypatch):
     root, decisions, intervals, _ = _case(tmp_path, monkeypatch, ddk=True)
-    selected = ["f0_mean_hz", "hnr_mean_db", "f1_median_hz",
-                "spectral_m1_t_minus_k_hz", "speech_time_s", "speaking_rate_syll_s",
-                "bamboo_pause_count", "ddk_pa_rate_syll_s", "bamboo_absolute_energy_fs2", "mfcc01_mean"]
+    selected = ["f0_mean_hz", "hnr_mean_db", "glottal_mfdr",
+                "f1_transition_slope_buy_ay_hz_s", "spectral_m1_t_minus_k_hz",
+                "bamboo_speech_duration_s", "bamboo_speaking_rate_wpm",
+                "bamboo_pause_count", "ddk_pa_rate_syll_s", "bamboo_absolute_energy_fs2"]
     result, status, values = _run(root, decisions, intervals, selected)
     assert result.status == "completed_with_warnings"
     assert set(status.feature_id) == set(selected)
     assert not status.duplicated(["recording_id", "feature_id"]).any()
-    assert status.loc[status.feature_id.eq("f1_median_hz"),
-                      "failure_reason"].iloc[0] == "missing_alignment"
-    assert status.loc[status.feature_id.eq("spectral_m1_t_minus_k_hz"),
-                      "failure_reason"].iloc[0] == "task_not_applicable"
-    assert status.loc[status.feature_id.eq("speaking_rate_syll_s"),
-                      "failure_reason"].iloc[0]
-    for feature_id in ("speech_time_s", "ddk_pa_rate_syll_s", "mfcc01_mean"):
-        assert status.loc[status.feature_id.eq(feature_id), "failure_reason"].iloc[0] == ""
+    unsupported = set(selected) - {"f0_mean_hz", "hnr_mean_db", "ddk_pa_rate_syll_s"}
+    for feature_id in unsupported:
+        assert status.loc[status.feature_id.eq(feature_id),
+                          "failure_reason"].iloc[0] == "unsupported_for_current_task"
+        assert np.isnan(values[feature_id].iloc[0])
+    assert status.loc[status.feature_id.eq("ddk_pa_rate_syll_s"),
+                      "failure_reason"].iloc[0] == ""
     assert values.ddk_pa_rate_syll_s.iloc[0] == pytest.approx(5.0)
     manifest = json.loads(Path(result.manifest_path).read_text(encoding="utf-8"))
     assert set(manifest["config"]["families_invoked"]) == {
-        "F01", "F02", "F04", "F06", "F07", "F08", "F09", "F10", "F11", "F12"}
-    assert set(manifest["config"]["executor_groups"]) == {
-        "voice", "formants", "segmental", "timing", "ddk", "amplitude", "spectrum"}
-    assert len(manifest["config"]["executor_groups"]) == 7
+        "F01", "F02", "F03", "F05", "F06", "F07", "F08", "F09", "F10", "F11"}
+    assert set(manifest["config"]["executor_groups"]) == {"voice", "ddk"}
 
 
 def test_duplicate_selection_rejected(tmp_path, monkeypatch):
@@ -393,20 +396,19 @@ def test_duplicate_selection_rejected(tmp_path, monkeypatch):
         run_acoustic_feature_extraction(decisions, root, cfg, intervals)
 
 
-def test_segmental_missing_target_does_not_block_three_other_families(tmp_path, monkeypatch):
+def test_unsupported_segmental_does_not_block_three_other_families(tmp_path, monkeypatch):
     root, decisions, intervals, _ = _case(tmp_path, monkeypatch)
     result, status, values = _run(
         root, decisions, intervals,
-        ["spectral_m1_t_minus_k_hz", "bamboo_pause_count", "mfcc01_mean", "f0_mean_hz"])
+        ["spectral_m1_t_minus_k_hz", "bamboo_pause_count",
+         "bamboo_spectral_centroid_hz", "f0_mean_hz"])
     segmental = status.loc[status.feature_id.eq("spectral_m1_t_minus_k_hz")].iloc[0]
-    assert segmental.failure_reason == "task_not_applicable"
+    assert segmental.failure_reason == "unsupported_for_current_task"
     assert np.isnan(values.spectral_m1_t_minus_k_hz.iloc[0])
-    for feature_id in ("bamboo_pause_count", "mfcc01_mean", "f0_mean_hz"):
+    for feature_id in ("bamboo_pause_count", "bamboo_spectral_centroid_hz", "f0_mean_hz"):
         assert status.loc[status.feature_id.eq(feature_id), "failure_reason"].iloc[0] == ""
     assert result.status == "completed_with_warnings"
-    audit = (root / "acoustic" / "005_features" / "family_runs" / "segmental" /
-             "tables" / "native_measurements" / "family06_tokens.csv")
-    assert audit.is_file()
+    assert not (root / "acoustic" / "005_features" / "family_runs" / "segmental").exists()
 
 
 def test_segmental_task_mismatch_does_not_block_reviewed_pause_without_librosa(
@@ -415,7 +417,8 @@ def test_segmental_task_mismatch_does_not_block_reviewed_pause_without_librosa(
     result, status, values = _run(
         root, decisions, intervals, ["spectral_m1_t_minus_k_hz", "bamboo_pause_count"])
     by_id = status.set_index("feature_id")
-    assert by_id.loc["spectral_m1_t_minus_k_hz", "failure_reason"] == "task_not_applicable"
+    assert by_id.loc["spectral_m1_t_minus_k_hz", "failure_reason"] == (
+        "unsupported_for_current_task")
     assert by_id.loc["bamboo_pause_count", "failure_reason"] == ""
     assert np.isnan(values.spectral_m1_t_minus_k_hz.iloc[0])
     assert values.bamboo_pause_count.iloc[0] >= 0
@@ -516,3 +519,24 @@ def test_f12_and_pause_run_together_from_reviewed_timing_without_alignment(
     assert status.failure_reason.eq("").all()
     assert np.isfinite(values.bamboo_spectral_centroid_hz.iloc[0])
     assert values.bamboo_pause_count.iloc[0] == 1
+
+
+def test_selected_unsupported_bamboo_leaf_does_not_block_supported_leaf(
+        tmp_path, monkeypatch):
+    root, decisions, intervals, _ = _case(tmp_path, monkeypatch)
+    _, status, values = _run(root, decisions, intervals,
+                             ["ddk_pa_rate_syll_s", "bamboo_pause_count"])
+    by_id = status.set_index("feature_id")
+    assert by_id.loc["ddk_pa_rate_syll_s", "failure_reason"] == (
+        "unsupported_for_current_task")
+    assert np.isnan(values.ddk_pa_rate_syll_s.iloc[0])
+    assert by_id.loc["bamboo_pause_count", "failure_reason"] == ""
+    assert values.bamboo_pause_count.iloc[0] == 1
+
+
+def test_only_unsupported_selected_leaf_returns_unavailable(tmp_path, monkeypatch):
+    root, decisions, intervals, _ = _case(tmp_path, monkeypatch)
+    _, status, values = _run(root, decisions, intervals, ["ddk_pa_rate_syll_s"])
+    assert status.failure_reason.iloc[0] == "unsupported_for_current_task"
+    assert np.isnan(values.ddk_pa_rate_syll_s.iloc[0])
+    assert not (root / "acoustic" / "005_features" / "family_runs" / "ddk").exists()

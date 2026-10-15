@@ -46,7 +46,7 @@ from PySide6.QtWidgets import (
 
 from vslp.acoustic.features.catalog import (
     feature_availability, load_feature_catalog, prerequisite_issues, task_indicator,
-    requires_alignment_for_task, task_key,
+    requires_alignment_for_task, supports_task,
 )
 from vslp.acoustic.alignment import freeze_alignment, load_final_alignment, run_acoustic_alignment
 from vslp.acoustic.alignment.self_test import run_mfa_self_test
@@ -1031,7 +1031,7 @@ class AcousticPipelineWindow(QMainWindow):
         quick = QHBoxLayout()
         for label, callback in [
             ("Recommended for task", self.select_recommended_features),
-            ("Select all task-applicable features", self.select_all_features),
+            ("Select all selectable features", self.select_all_features),
             ("Clear all", self.clear_feature_selection),
         ]:
             btn = QPushButton(label)
@@ -1574,31 +1574,15 @@ class AcousticPipelineWindow(QMainWindow):
 
     def _feature_eligible(self, feature_id: str) -> bool:
         output = self.catalog_outputs[feature_id]
-        if feature_availability(output)[0] != "Implemented":
-            return False
-        task = self._feature_task_name()
-        key = task_key(task)
-        if key is None:
-            return False
-        executable = output.get("executable_for_task")
-        if isinstance(executable, dict):
-            task_type = self.task_type_combo.currentData()
-            task_group = ("sustained_vowel" if key == "sustained_a" else
-                          "bamboo_passage" if key == "bamboo_passage" else
-                          "ddk" if key.startswith("ddk_") else
-                          f"sentence:{key.rsplit('_', 1)[-1].upper()}")
-            if not (executable.get(key, executable.get(task_group,
-                    executable.get(task_type, executable.get("sentence:other", False))))):
-                return False
-        elif executable is False:
-            return False
-        elif executable is None and key not in (*output["recommended_tasks"],
-                                                 *output["conditional_tasks"]):
-            return False
-        return True
+        return bool(output.get("selectable") and output.get("family_spec_approved")
+                    and feature_availability(output)[0] == "Implemented")
+
+    def _feature_supported(self, feature_id: str) -> bool:
+        return supports_task(self.catalog_outputs[feature_id], self._feature_task_name(),
+                             self.task_type_combo.currentData())
 
     def _feature_ready(self, feature_id: str) -> bool:
-        return (self._feature_eligible(feature_id) and
+        return (self._feature_eligible(feature_id) and self._feature_supported(feature_id) and
                 not self._feature_prerequisite_issues(feature_id))
 
     def _feature_task_recommendation(self, output: dict, task: str,
@@ -1903,7 +1887,7 @@ class AcousticPipelineWindow(QMainWindow):
                 ready = sum(self._feature_ready(child.data(0, Qt.UserRole)[1])
                             for child in applicable)
                 if applicable:
-                    item.setText(2, f"{len(applicable)} task-applicable · {ready} ready now")
+                    item.setText(2, f"{len(applicable)} selectable · {ready} ready now")
                 item.setToolTip(2, explanation)
             for feature_id, item in self.feature_items.items():
                 output = self.catalog_outputs[feature_id]
@@ -1929,8 +1913,12 @@ class AcousticPipelineWindow(QMainWindow):
                 state, tooltip = self._feature_task_recommendation(output, task, task_type)
                 status = output_presentation_status(output)
                 available = LABELS[status]
-                issues = self._feature_prerequisite_issues(feature_id) if status == "IMPLEMENTED" else []
-                if issues:
+                supported = self._feature_supported(feature_id)
+                issues = (self._feature_prerequisite_issues(feature_id)
+                          if status == "IMPLEMENTED" and supported else [])
+                if status == "IMPLEMENTED" and not supported:
+                    available = "UNSUPPORTED FOR THIS TASK"
+                elif issues:
                     available = "Alignment required" if needs_alignment and any(
                         "alignment" in issue.lower() for issue in issues) else "Prerequisite required"
                 explanation = ("Runnable exact output." if status == "IMPLEMENTED" else
@@ -1969,9 +1957,9 @@ class AcousticPipelineWindow(QMainWindow):
                                 (parent.flags() & ~Qt.ItemIsUserCheckable))
                 ready = sum(self._feature_ready(child.data(0, Qt.UserRole)[1])
                             for child in applicable)
-                parent.setText(2, f"{len(applicable)} task-applicable · {ready} ready now" if applicable else
-                               "No features available for this task")
-                parent.setToolTip(2, "Family-level selection includes task-applicable leaves even when prerequisites are missing.")
+                parent.setText(2, f"{len(applicable)} selectable · {ready} ready now" if applicable else
+                               "No selectable features")
+                parent.setToolTip(2, "Family selection includes every registered selectable leaf.")
                 self._recount_feature_branch(parent)
         finally:
             self._updating_feature_tree = False
@@ -2795,7 +2783,7 @@ class AcousticPipelineWindow(QMainWindow):
             QMessageBox.warning(self, "No features selected", "Select at least one feature in the feature tree.")
             return
         alignment_features = [feature_id for feature_id in selected_features
-                              if requires_alignment_for_task(
+                              if self._feature_supported(feature_id) and requires_alignment_for_task(
                                   self.catalog_outputs[feature_id], self.task_name_edit.text())]
         if alignment_features:
             final_alignment, _issue = load_final_alignment(output_root)

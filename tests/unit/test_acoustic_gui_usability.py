@@ -135,9 +135,10 @@ def test_bamboo_f7_construct_tristate_includes_alignment_blocked_leaves():
     applicable = {leaf.data(0, Qt.UserRole)[1] for leaf in
                   window._feature_descendants(family) if window._feature_eligible(
                       leaf.data(0, Qt.UserRole)[1])}
-    assert applicable == {"bamboo_speech_duration_s", "bamboo_total_duration_s", *expected}
+    assert len(applicable) == 11
+    assert {"bamboo_speech_duration_s", "bamboo_total_duration_s", *expected} <= applicable
     assert applicable <= set(window._selected_feature_names())
-    assert "5 task-applicable" in family.text(2)
+    assert "11 selectable" in family.text(2)
     window.clear_feature_selection()
     variability.setCheckState(0, Qt.Checked)
     assert all(leaf.checkState(0) == Qt.Checked for leaf in leaves)
@@ -173,6 +174,9 @@ def test_three_recommendations_and_separate_availability_and_metadata():
     assert "RECOMMENDED" in recommended.text(1)
     assert recommended.text(2) == "Alignment required"
     assert "SUPPORTED / OPTIONAL" in optional.text(1)
+    assert optional.flags() & Qt.ItemIsUserCheckable
+    optional.setCheckState(0, Qt.Checked)
+    assert optional.checkState(0) == Qt.Checked
     assert "NOT RECOMMENDED" in not_recommended.text(1)
     assert len({recommended.background(1).color().name(),
                 optional.background(1).color().name(),
@@ -227,7 +231,8 @@ def test_task_switch_preserves_applicable_selection_despite_prerequisite_change(
     assert target.checkState(0) == Qt.Checked
     assert target.text(2) == "Implemented"
     window.task_name_edit.setText("S5")
-    assert target.checkState(0) == Qt.Unchecked
+    assert target.checkState(0) == Qt.Checked
+    assert target.text(2) == "UNSUPPORTED FOR THIS TASK"
     window.close()
 
 

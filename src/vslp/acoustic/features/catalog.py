@@ -964,6 +964,50 @@ def task_key(task_name: str) -> str | None:
     return next((key for key, label in TASKS.items() if label.casefold() == normalized), None)
 
 
+def supports_task(output: dict[str, Any], task_name: str,
+                  task_type: str | None = None) -> bool:
+    """Check execution routing, independently of recommendation and selection."""
+    key = task_name if task_name in TASKS else task_key(task_name)
+    if key is None:
+        return False
+    executable = output.get("executable_for_task")
+    if isinstance(executable, dict):
+        group = ("sustained_vowel" if key == "sustained_a" else
+                 "bamboo_passage" if key == "bamboo_passage" else
+                 "ddk" if key == "ddk" or key.startswith("ddk_") else
+                 f"sentence:{key.rsplit('_', 1)[-1].upper()}")
+        return bool(executable.get(key, executable.get(group,
+                    executable.get(task_type, executable.get("sentence:other", False)))))
+    if executable is not None:
+        return bool(executable)
+    if output.get("task_id"):
+        return key == output["task_id"]
+    family, feature_id = output.get("family_id"), str(output.get("feature_id", ""))
+    if family == "F04":
+        if feature_id == "f2_median_hz":
+            return key in {"sustained_a", "sentence_s5", "bamboo_passage"}
+        if feature_id == "f1_median_hz":
+            return key in {"sentence_s5", "bamboo_passage"}
+        if feature_id == "f3_median_hz":
+            return key == "wstg"
+        if feature_id.startswith("vowel_") or feature_id == "f2_distance_i_a_hz":
+            return key == "sentence_s3" if feature_id.startswith((
+                "vowel_distance_", "vowel_envelope_")) or feature_id == (
+                "f2_distance_i_a_hz") else key == "bamboo_passage"
+        return key == "bamboo_passage"
+    if family == "F07":
+        return key == ("sentence_s3" if feature_id.startswith("s3_") else
+                       "bamboo_passage")
+    if family in {"F08", "F09"}:
+        return key == "bamboo_passage"
+    if family == "F10":
+        target = feature_id.split("_", 2)[1]
+        return key in {"ddk", f"ddk_{target}"}
+    # Older implementations without an explicit route decide applicability in
+    # their own stage. Recommendation metadata is never an execution gate.
+    return True
+
+
 def requires_alignment_for_task(output: dict[str, Any], task_name: str) -> bool:
     """A sustained midpoint can use reviewed segmentation without word/phone tiers."""
     requirement = output.get("prerequisites", {})
