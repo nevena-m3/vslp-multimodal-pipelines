@@ -59,7 +59,9 @@ def run_mixed_feature_stage(decisions_csv: str | Path, root: str | Path, config,
     decisions, intervals = Path(decisions_csv), Path(intervals_csv)
     kept = load_final_segmentation(intervals, decisions)
     project = json.loads((root / "project_manifest.json").read_text(encoding="utf-8"))
-    from vslp.acoustic.features.catalog import TASKS, load_feature_catalog, supports_task, task_key
+    from vslp.acoustic.features.catalog import (
+        TASKS, load_feature_catalog, requires_alignment_for_task, supports_task, task_key,
+    )
 
     task_id = str(project.get("task_id") or task_key(str(project.get("task_name", ""))) or "")
     task_type = str(project.get("task_type", ""))
@@ -82,9 +84,15 @@ def run_mixed_feature_stage(decisions_csv: str | Path, root: str | Path, config,
             family_to_group[family] = group
     groups: dict[str, list[str]] = {}
     unsupported: list[str] = []
+    package_required: list[str] = []
+    imported = (root / "alignment_imports" / "active.json").is_file()
     for feature_id in selected:
         if not supports_task(approved[feature_id], task_name, task_type):
             unsupported.append(feature_id)
+            continue
+        if (config.require_imported_alignment and not imported and
+                requires_alignment_for_task(approved[feature_id], task_name)):
+            package_required.append(feature_id)
             continue
         family = str(lookup.loc[feature_id, "family_id"])
         if family not in family_to_group:
@@ -96,12 +104,14 @@ def run_mixed_feature_stage(decisions_csv: str | Path, root: str | Path, config,
         progress_callback(0, total_units, "Acoustic Features")
     rows: list[dict] = []
     for record in kept.itertuples():
-        for feature_id in unsupported:
+        for feature_id in unsupported + package_required:
             rows.append({**_record_context(record, task_id, task_type),
                          "feature_id": feature_id,
                          "family_id": str(lookup.loc[feature_id, "family_id"]),
                          "value": np.nan, "unit": str(lookup.loc[feature_id, "unit"]),
-                         "status": "unavailable", "failure_reason": "unsupported_for_current_task",
+                         "status": "unavailable", "failure_reason": (
+                             "alignment_package_required" if feature_id in package_required
+                             else "unsupported_for_current_task"),
                          "algorithm": str(lookup.loc[feature_id, "algorithm_version"]),
                          "algorithm_version": str(lookup.loc[feature_id, "algorithm_version"]),
                          "parameter_set_id": str(lookup.loc[feature_id, "parameter_set_id"]),

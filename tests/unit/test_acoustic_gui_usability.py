@@ -60,8 +60,8 @@ def test_missing_alignment_is_selectable_but_unavailable():
     window = AcousticPipelineWindow()
     window.task_name_edit.setText("S2")
     target = window.feature_items["f1_transition_slope_buy_ay_hz_s"]
-    assert "Requires alignment" in target.text(0)
-    assert target.text(2) == "Alignment required"
+    assert "Requires Alignment Package" in target.text(0)
+    assert target.text(2) == "ALIGNMENT PACKAGE REQUIRED"
     assert target.flags() & Qt.ItemIsUserCheckable
     assert window._feature_eligible("f1_transition_slope_buy_ay_hz_s")
     assert not window._feature_ready("f1_transition_slope_buy_ay_hz_s")
@@ -130,7 +130,7 @@ def test_bamboo_f7_construct_tristate_includes_alignment_blocked_leaves():
     expected = {"delta_v_s", "varco_v_pct", "npvi_v_pct"}
     leaves = [window.feature_items[feature_id] for feature_id in expected]
     assert variability.flags() & Qt.ItemIsUserCheckable
-    assert all(leaf.text(2) == "Alignment required" for leaf in leaves)
+    assert all(leaf.text(2) == "ALIGNMENT PACKAGE REQUIRED" for leaf in leaves)
     family.setCheckState(0, Qt.Checked)
     applicable = {leaf.data(0, Qt.UserRole)[1] for leaf in
                   window._feature_descendants(family) if window._feature_eligible(
@@ -172,7 +172,7 @@ def test_three_recommendations_and_separate_availability_and_metadata():
     optional = window.feature_items["f1_median_hz"]
     not_recommended = window.feature_items["ddk_pa_rate_syll_s"]
     assert "RECOMMENDED" in recommended.text(1)
-    assert recommended.text(2) == "Alignment required"
+    assert recommended.text(2) == "ALIGNMENT PACKAGE REQUIRED"
     assert "SUPPORTED / OPTIONAL" in optional.text(1)
     assert optional.flags() & Qt.ItemIsUserCheckable
     optional.setCheckState(0, Qt.Checked)
@@ -225,7 +225,7 @@ def test_task_switch_preserves_applicable_selection_despite_prerequisite_change(
     window.task_name_edit.setText("S2")
     target = window.feature_items["f1_transition_slope_buy_ay_hz_s"]
     target.setCheckState(0, Qt.Checked)
-    assert target.text(2) == "Alignment required"
+    assert target.text(2) == "ALIGNMENT PACKAGE REQUIRED"
     window._feature_prerequisite_issues = lambda _feature_id: []
     window._refresh_feature_count_label()
     assert target.checkState(0) == Qt.Checked
@@ -305,12 +305,12 @@ def test_alignment_progress_uses_completed_recordings_not_preparation(tmp_path):
 
 def test_alignment_technical_log_defaults_collapsed():
     _app()
-    window = AcousticPipelineWindow()
-    index = next(i for i in range(window.tabs.count()) if window.tabs.tabText(i) == "Alignment")
-    window.tabs.setCurrentIndex(index)
-    assert not window.log_group.isChecked()
-    window.alignment_widget.show_technical_button.click()
-    assert window.log_group.isChecked()
+    from vslp.gui.alignment_app.main_window import AlignmentWindow
+
+    window = AlignmentWindow()
+    assert not window.technical.isChecked()
+    window.review.show_technical_button.click()
+    assert window.technical.isChecked()
     window.close()
 
 

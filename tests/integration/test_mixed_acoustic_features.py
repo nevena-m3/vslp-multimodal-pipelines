@@ -157,6 +157,18 @@ def test_voice_and_pause_succeed_in_one_run(tmp_path, monkeypatch):
     assert values.bamboo_pause_count.iloc[0] == 1
 
 
+def test_gui_package_only_alignment_does_not_block_reviewed_timing(tmp_path, monkeypatch):
+    root, decisions, intervals, mapping = _case(tmp_path, monkeypatch, aligned=True)
+    cfg = FeatureExtractionConfig(
+        selected_features=["bamboo_pause_count", "f1_median_hz"],
+        vowel_category_manifest_path=str(mapping), require_imported_alignment=True)
+    result = run_acoustic_feature_extraction(decisions, root, cfg, intervals)
+    statuses = pd.read_csv(result.summary_table.parent / "acoustic_feature_status_long.csv",
+                           keep_default_na=False).set_index("feature_id")
+    assert statuses.loc["bamboo_pause_count", "status"] == "computed"
+    assert statuses.loc["f1_median_hz", "failure_reason"] == "alignment_package_required"
+
+
 def test_missing_alignment_does_not_block_mixed_non_alignment_subset(tmp_path, monkeypatch):
     root, decisions, intervals, mapping = _case(tmp_path, monkeypatch)
     _, status, values = _run(root, decisions, intervals,

@@ -1407,7 +1407,9 @@ class AlignmentWidget(QWidget):
         run_id = self.runs.currentData()
         self._review_cache = None
         self._review_cache_run = ""
+        self.recordings.blockSignals(True)
         self.recordings.clear()
+        self.recordings.blockSignals(False)
         if run_id and run_id != self._repair_source_run_id:
             self._repair_ready = False
             self._editing_trials = False
@@ -1636,11 +1638,11 @@ class AlignmentWidget(QWidget):
         self.plot.setYRange(-1.8, 1.2, padding=0)
         request = self._waveform_request
         if path.stat().st_size > 2_000_000:
-            owner = weakref.ref(self)
+            waveform_owner = weakref.ref(self)
             future = _DISPLAY_EXECUTOR.submit(self._display_cache.get, path)
 
             def delivered(done):
-                widget = owner()
+                widget = waveform_owner()
                 if widget is None:
                     return
                 try:

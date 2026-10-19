@@ -175,7 +175,7 @@ def export_alignment_package(project_root: str | Path, destination: str | Path) 
     manifest = {
         "package_contract_version": PACKAGE_VERSION, "package_id": uuid4().hex,
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "producer_application": "VSLP Acoustic GUI embedded Alignment",
+        "producer_application": "VSLP Alignment",
         "producer_version": _producer_version(),
         "alignment_engine": "VSLP Alignment", "alignment_engine_version": source_manifest.get(
             "algorithm_version", ""),
@@ -189,6 +189,31 @@ def export_alignment_package(project_root: str | Path, destination: str | Path) 
         "package_file_hashes": files,
         "final_alignment_contract_version": FINAL_ALIGNMENT_CONTRACT_VERSION,
     }
+    # The copied canonical trial table remains authoritative. Repeat its job
+    # identity here so a receiving application can inspect the package quickly.
+    task_rows = trials[["task_id", "prompt_id", "prompt_version", "prompt_sha256",
+                        "protocol_expected_repetitions"]].drop_duplicates()
+    if len(task_rows) != 1:
+        raise ValueError("mixed_alignment_package_task_specification")
+    task_row = task_rows.iloc[0]
+    from .task_workflow import task_entry
+
+    registered_task = task_entry(str(task_row.task_id))
+    registered_prompt = next((item for item in registered_task.get("prompts", [])
+                              if item["prompt_id"] == str(task_row.prompt_id)), None) if registered_task else None
+    count_text = str(task_row.protocol_expected_repetitions).strip()
+    count = int(count_text) if count_text else (
+        registered_prompt.get("expected_repetitions") if registered_prompt else None)
+    manifest["task_specification"] = {
+        "task_id": str(task_row.task_id), "prompt_id": str(task_row.prompt_id),
+        "prompt_version": str(task_row.prompt_version),
+        "transcript_hash": str(task_row.prompt_sha256),
+        "expected_repetitions": count,
+    }
+    job_path = root / "configs" / "alignment_job.json"
+    if job_path.is_file():
+        manifest["task_specification"].update(
+            json.loads(job_path.read_text(encoding="utf-8")))
     (target / "package_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     return target
 

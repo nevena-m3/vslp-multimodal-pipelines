@@ -114,6 +114,20 @@ def project_alignment_context(root: str | Path) -> dict:
                 "eligible_recording_count": 0}
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     task = _manifest_task(manifest)
+    job_path = root / "configs" / "alignment_job.json"
+    if task and job_path.is_file():
+        job = json.loads(job_path.read_text(encoding="utf-8"))
+        if job.get("task_id") != task["task_id"]:
+            raise ValueError("alignment_job_task_mismatch")
+        if job.get("prompt_id") != task["prompts"][0]["prompt_id"]:
+            raise ValueError("alignment_job_prompt_mismatch")
+        count = job.get("expected_repetitions")
+        if not isinstance(count, int) or isinstance(count, bool) or count < 1:
+            raise ValueError("invalid_alignment_job_repetitions")
+        if task["task_id"] == "bamboo_passage" and count != 1:
+            raise ValueError("bamboo_repetition_contract_mismatch")
+        task = {**task, "prompts": [{**task["prompts"][0],
+                                     "expected_repetitions": count}]}
     task_id = task["task_id"] if task else str(manifest.get("task_id", ""))
     records = _reviewed_records(root)
     choices = load_project_choices(root)

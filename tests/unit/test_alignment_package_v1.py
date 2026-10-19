@@ -87,7 +87,7 @@ def test_export_import_retains_canonical_tables_and_loader_precedence(prepared):
     assert "package_file_hash_mismatch" in issue
 
 
-def test_acoustic_gui_imports_explicit_package_without_removing_embedded_controls(
+def test_acoustic_gui_imports_explicit_package_without_embedded_alignment_controls(
         prepared, monkeypatch):
     from PySide6.QtWidgets import QApplication, QFileDialog
 
@@ -100,7 +100,8 @@ def test_acoustic_gui_imports_explicit_package_without_removing_embedded_control
     monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *_args: str(package))
     window._select_alignment_package()
     assert "Matched 1/1" in window.feature_package_status.text()
-    assert window.alignment_widget is not None
+    assert window.alignment_widget is None
+    assert "Alignment" not in [window.tabs.tabText(i) for i in range(window.tabs.count())]
     assert load_final_alignment(root)[0] is not None
     window.close()
     assert app is not None

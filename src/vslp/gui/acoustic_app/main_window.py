@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import inspect
 from pathlib import Path
 import json
 from typing import Callable
-import traceback
 
 import pandas as pd
-from PySide6.QtCore import QObject, QThread, QTimer, Qt, Signal
+from PySide6.QtCore import QThread, QTimer, Qt
 from PySide6.QtGui import QBrush, QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -84,6 +82,7 @@ from vslp.acoustic.quality.stage import (
 from vslp.core.project import prune_empty_acoustic_directories, task_run_folder_name
 from vslp.core.schemas import ArtifactRef, StageManifest, StageResult
 from vslp.gui.common.utils import open_in_browser, open_path
+from vslp.gui.common.worker import Worker
 
 
 FEATURE_FAMILY_LABELS = (
@@ -112,45 +111,10 @@ class StageRecord:
     errors_path: str | None = None
 
 
-class Worker(QObject):
-    started = Signal(str)
-    finished = Signal(str, object)
-    failed = Signal(str, str)
-    message = Signal(str)
-    progress = Signal(int, int, str)
-
-    def __init__(self, name: str, func: Callable, kwargs: dict):
-        super().__init__()
-        self.name = name
-        self.func = func
-        self.kwargs = kwargs
-        self.output_root = kwargs.get("output_root")
-
-    def run(self) -> None:
-        label = "Acoustic Features" if self.name == "features" else self.name
-        self.started.emit(self.name)
-        self.message.emit(f"Starting {label}...")
-        try:
-            kwargs = dict(self.kwargs)
-            if "progress_callback" in inspect.signature(self.func).parameters:
-                kwargs["progress_callback"] = self.progress.emit
-            result = self.func(**kwargs)
-        except Exception as exc:  # noqa: BLE001
-            tb = traceback.format_exc()
-            if self.output_root is not None:
-                prune_empty_acoustic_directories(self.output_root)
-            self.failed.emit(self.name, f"{exc}\n\n{tb}")
-            return
-        if self.output_root is not None:
-            prune_empty_acoustic_directories(self.output_root)
-        self.message.emit(f"Finished {label}: {getattr(result, 'status', 'ok')}")
-        self.finished.emit(self.name, result)
-
-
 class AcousticPipelineWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("VSLP - Acoustic Pipeline")
+        self.setWindowTitle("VSLP Acoustic Features")
         self.resize(1480, 900)
         self.setMinimumSize(1180, 760)
         self._run_root: Path | None = None
@@ -214,7 +178,7 @@ class AcousticPipelineWindow(QMainWindow):
             ("preprocess", "Preprocess"),
             ("segment", "Data Segmentation"),
             ("review", "Segmentation manual review"),
-            ("alignment", "Alignment"),
+            ("alignment", "Alignment Package"),
             ("quality", "Quality Control"),
             ("features", "Acoustic Features"),
             ("reports", "Reports"),
@@ -269,19 +233,8 @@ class AcousticPipelineWindow(QMainWindow):
         self.review_widget.finalized.connect(lambda result: self._on_worker_finished("review", result))
         self.review_widget.continue_requested.connect(self.run_after_review)
         tabs.addTab(self.review_widget, "Segmentation manual review")
-        self.alignment_widget = AlignmentWidget(self._output_root)
-        self.alignment_widget.run_requested.connect(self.run_alignment)
-        self.alignment_widget.freeze_requested.connect(self.freeze_alignment)
-        self.alignment_widget.self_test_requested.connect(self.run_mfa_self_test)
-        self.alignment_widget.preflight_requested.connect(self.check_alignment_preflight)
-        self.alignment_widget.environment_requested.connect(self.check_alignment_environment)
-        self.alignment_widget.run_task_requested.connect(self.run_task_alignment)
-        self.alignment_widget.rerun_recording_requested.connect(
-            self.rerun_recording_alignment)
-        self.alignment_widget.return_to_features_requested.connect(
-            self._return_to_acoustic_features)
-        self.alignment_widget.plot_requested.connect(self.generate_alignment_trial_plot)
-        tabs.addTab(self.alignment_widget, "Alignment")
+        # Alignment production and review belong to the standalone Alignment app.
+        self.alignment_widget = None
         tabs.addTab(self._build_quality_tab(), "Quality Control")
         qc_index = tabs.count() - 1
         tabs.setTabEnabled(qc_index, False)
@@ -313,10 +266,6 @@ class AcousticPipelineWindow(QMainWindow):
             self.log_box.setVisible(opened)
             log_group.setMaximumHeight(16777215 if opened else 30)
         log_group.toggled.connect(show_log)
-        self.alignment_widget.technical_details_requested.connect(
-            lambda: log_group.setChecked(True))
-        tabs.currentChanged.connect(
-            lambda index: log_group.setChecked(tabs.tabText(index) != "Alignment"))
         run_splitter = QSplitter(Qt.Vertical)
         run_splitter.addWidget(tabs)
         run_splitter.addWidget(log_group)
@@ -1122,17 +1071,17 @@ class AcousticPipelineWindow(QMainWindow):
         alignment_row = QHBoxLayout(self.feature_alignment_row)
         alignment_row.setContentsMargins(0, 0, 0, 0)
         self.feature_alignment_edit = QLineEdit()
-        self.feature_alignment_edit.setPlaceholderText("Frozen Alignment output")
+        self.feature_alignment_edit.setPlaceholderText("Imported Alignment Package")
         self.feature_alignment_edit.setReadOnly(True)
         alignment_row.addWidget(self.feature_alignment_edit)
         right_layout.addWidget(self.feature_alignment_row)
         self.feature_alignment_row.hide()
-        package_group = QGroupBox("Alignment package")
+        package_group = QGroupBox("ALIGNMENT PACKAGE")
         package_layout = QVBoxLayout(package_group)
-        package_button = QPushButton("Select package folder")
+        package_button = QPushButton("Import Alignment Package")
         package_button.clicked.connect(self._select_alignment_package)
         package_layout.addWidget(package_button)
-        self.feature_package_status = QLabel("No imported package selected")
+        self.feature_package_status = QLabel("No Alignment Package loaded")
         self.feature_package_status.setWordWrap(True)
         package_layout.addWidget(self.feature_package_status)
         right_layout.addWidget(package_group)
@@ -1701,7 +1650,8 @@ class AcousticPipelineWindow(QMainWindow):
         output = self.catalog_outputs[feature_id]
         alignment_available = False
         if requires_alignment_for_task(output, task):
-            alignment, _alignment_issue = load_final_alignment(root) if root else (None, "missing_alignment")
+            alignment, _alignment_issue = load_final_alignment(root) if root and (
+                root / "alignment_imports" / "active.json").is_file() else (None, "alignment_package_required")
             alignment_available = alignment is not None
         prompt_available = False
         vowel_mapping_available = False
@@ -1808,10 +1758,35 @@ class AcousticPipelineWindow(QMainWindow):
             return
         try:
             import_alignment_package(folder, root)
+            self._refresh_alignment_package_status()
             self._refresh_feature_count_label()
         except (OSError, ValueError, KeyError) as exc:
             self.feature_package_status.setText(f"Invalid package: {exc}")
             QMessageBox.warning(self, "Alignment package", str(exc))
+
+    def _refresh_alignment_package_status(self) -> None:
+        if self._run_root is None:
+            return
+        active = self._run_root / "alignment_imports" / "active.json"
+        if not active.is_file():
+            self.feature_package_status.setText("No Alignment Package loaded")
+            return
+        try:
+            package_id = str(json.loads(active.read_text(encoding="utf-8"))["package_id"])
+            if not package_id.isalnum():
+                raise ValueError("invalid_package_id")
+            preview = inspect_alignment_package(
+                self._run_root / "alignment_imports" / package_id, self._run_root)
+            manifest = preview["manifest"]
+            self.feature_package_status.setText(
+                f"{manifest.get('package_contract_version', 'Unknown package')} · "
+                f"Matched {preview['matched']}/{manifest.get('recording_count', 0)} · "
+                f"Finalized {preview['finalized']} · Missing {preview['missing']} · "
+                f"Stale/mismatched {preview['stale']} · Invalid {preview['invalid']}")
+            if preview["error"]:
+                self.feature_package_status.setText(f"Invalid package: {preview['error']}")
+        except (OSError, ValueError, KeyError) as exc:
+            self.feature_package_status.setText(f"Invalid package: {exc}")
 
     def _refresh_feature_count_label(self) -> None:
         if not hasattr(self, "feature_count_label"):
@@ -1845,9 +1820,11 @@ class AcousticPipelineWindow(QMainWindow):
         self.feature_subevents_row.setVisible(any(
             self.catalog_outputs[f]["family_id"] == "F06" for f in selected))
         if self._run_root is not None:
-            alignment, _alignment_issue = load_final_alignment(self._run_root)
+            alignment, _alignment_issue = load_final_alignment(self._run_root) if (
+                self._run_root / "alignment_imports" / "active.json").is_file() else (
+                    None, "alignment_package_required")
             self.feature_alignment_edit.setText(
-                alignment.manifest["alignment_run_id"] if alignment else "No frozen alignment")
+                alignment.manifest["alignment_run_id"] if alignment else "Alignment Package required")
         problems = sum(bool(self._feature_prerequisite_issues(f)) for f in selected)
         task = self.task_name_edit.text() if hasattr(self, "task_name_edit") else "Not set"
         task_type = self.task_type_combo.currentData() if hasattr(self, "task_type_combo") else None
@@ -1935,7 +1912,7 @@ class AcousticPipelineWindow(QMainWindow):
                 prerequisites = output.get("prerequisites", {})
                 badges = []
                 if needs_alignment:
-                    badges.append("Requires alignment")
+                    badges.append("Requires Alignment Package")
                 if prerequisites.get("requires_final_reviewed_segmentation"):
                     badges.append("Requires reviewed speech")
                 if prerequisites.get("requires_voiced_region"):
@@ -1956,7 +1933,7 @@ class AcousticPipelineWindow(QMainWindow):
                 if status == "IMPLEMENTED" and not supported:
                     available = "UNSUPPORTED FOR THIS TASK"
                 elif issues:
-                    available = "Alignment required" if needs_alignment and any(
+                    available = "ALIGNMENT PACKAGE REQUIRED" if needs_alignment and any(
                         "alignment" in issue.lower() for issue in issues) else "Prerequisite required"
                 explanation = ("Runnable exact output." if status == "IMPLEMENTED" else
                                output.get("blocked_reason") or "A concrete definition is required.")
@@ -2249,7 +2226,7 @@ class AcousticPipelineWindow(QMainWindow):
             "preprocess": (self._stage_path("preprocess", "summary"), self._stage_path("preprocess", "report")),
             "segment": (self._stage_path("segment", "summary"), self._stage_path("segment", "report")),
             "review": (self._stage_path("review", "summary"), None),
-            "alignment": (self._stage_path("alignment", "summary"), None),
+            "alignment": (self._run_root / "alignment_imports" / "active.json", None),
             "quality": (self._stage_path("quality", "summary"), self._stage_path("quality", "report")),
             "features": (self._stage_path("features", "summary"), self._stage_path("features", "report")),
             "reports": (self._stage_path("reports", "summary"), self._stage_path("reports", "report")),
@@ -2264,8 +2241,8 @@ class AcousticPipelineWindow(QMainWindow):
             self.stage_records[stage] = rec
         if self._stage_path("segment", "summary").exists():
             self.review_widget.refresh()
-        self.alignment_widget.refresh()
         self._refresh_stage_cards()
+        self._refresh_alignment_package_status()
         self._refresh_project_gate()
         self._update_ingest_feedback()
         self.append_log("Refreshed latest output paths from disk.")
@@ -2447,9 +2424,6 @@ class AcousticPipelineWindow(QMainWindow):
         self._thread = None; self._worker = None; self._set_busy(False)
         if self._run_root is not None and self._stage_path("review", "summary").exists():
             self.review_widget.refresh()
-        if self._run_root is not None:
-            self.alignment_widget.refresh()
-
     def _on_worker_started(self, name: str) -> None:
         self._set_busy(True)
         if name == "alignment":
@@ -2819,37 +2793,9 @@ class AcousticPipelineWindow(QMainWindow):
         if not selected_features:
             QMessageBox.warning(self, "No features selected", "Select at least one feature in the feature tree.")
             return
-        alignment_features = [feature_id for feature_id in selected_features
-                              if self._feature_supported(feature_id) and requires_alignment_for_task(
-                                  self.catalog_outputs[feature_id], self.task_name_edit.text())]
-        if alignment_features:
-            final_alignment, _issue = load_final_alignment(output_root)
-            if final_alignment is None:
-                other_features = [feature_id for feature_id in selected_features
-                                  if feature_id not in alignment_features]
-                dialog = QMessageBox(self)
-                dialog.setWindowTitle("Alignment needed for selected features")
-                dialog.setText(
-                    f"{len(selected_features)} selected outputs include "
-                    f"{len(alignment_features)} features that require linguistic Alignment.\n"
-                    f"The remaining {len(other_features)} can run without it.")
-                align_button = dialog.addButton("RUN REQUIRED ALIGNMENT", QMessageBox.AcceptRole)
-                other_button = dialog.addButton("RUN NON-ALIGNMENT FEATURES ONLY",
-                                                QMessageBox.ActionRole)
-                dialog.addButton("CANCEL", QMessageBox.RejectRole)
-                other_button.setEnabled(bool(other_features))
-                dialog.exec()
-                if dialog.clickedButton() is align_button:
-                    self._return_to_features_after_alignment = True
-                    self.alignment_widget._feature_return_pending = True
-                    self.tabs.setCurrentWidget(self.alignment_widget)
-                    self.alignment_widget.refresh()
-                    return
-                if dialog.clickedButton() is not other_button:
-                    return
-                selected_features = other_features
         cfg = FeatureExtractionConfig(
             selected_features=selected_features,
+            require_imported_alignment=True,
             prompt_manifest_path=self.feature_prompt_manifest_edit.text().strip() or None,
             vowel_category_manifest_path=self.feature_vowel_mapping_edit.text().strip() or None,
             segmental_target_manifest_path=self.feature_segmental_target_edit.text().strip() or None,
@@ -3016,7 +2962,7 @@ table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{border-bottom:
                                        if self.tabs.tabText(i) == "Acoustic Features"))
         self._refresh_feature_count_label()
         self.append_log("Final reviewed segmentation ready. Select Acoustic Features; "
-                        "Alignment will be requested only if selected outputs need it.")
+                        "import an Alignment Package for alignment-dependent outputs.")
 
     def run_alignment(self, config: object) -> None:
         if not self._require_project_initialized():

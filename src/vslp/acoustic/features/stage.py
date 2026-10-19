@@ -56,6 +56,9 @@ class FeatureExtractionConfig:
 
     selected_subsystems: list[str] = field(default_factory=list)
     selected_features: list[str] = field(default_factory=list)
+    # GUI extraction consumes only an imported package for linguistic alignment.
+    # CLI callers retain the embedded Final Alignment compatibility path.
+    require_imported_alignment: bool = False
     prompt_manifest_path: str | None = None
     vowel_category_manifest_path: str | None = None
     segmental_target_manifest_path: str | None = None

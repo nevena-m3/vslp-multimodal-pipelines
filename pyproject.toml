@@ -60,6 +60,7 @@ all = [
 [project.scripts]
 vslp = "vslp.cli.main:app"
 vslp-acoustic-gui = "vslp.gui.acoustic_app.app:launch_acoustic_gui"
+vslp-alignment-gui = "vslp.gui.alignment_app.app:launch_alignment_gui"
 vslp-kinematics-gui = "vslp.gui.kinematics.app:launch_kinematics_gui"
 vslp-features-gui = "vslp.gui.features.app:main"
 
