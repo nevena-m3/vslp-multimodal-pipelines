@@ -49,6 +49,9 @@ from vslp.acoustic.features.catalog import (
     requires_alignment_for_task, supports_task,
 )
 from vslp.acoustic.alignment import freeze_alignment, load_final_alignment, run_acoustic_alignment
+from vslp.acoustic.alignment.package_v1 import (
+    import_alignment_package, inspect_alignment_package,
+)
 from vslp.acoustic.alignment.self_test import run_mfa_self_test
 from vslp.acoustic.alignment.task_workflow import (
     check_mfa_environment, check_task_preflight, load_project_choices,
@@ -1124,6 +1127,15 @@ class AcousticPipelineWindow(QMainWindow):
         alignment_row.addWidget(self.feature_alignment_edit)
         right_layout.addWidget(self.feature_alignment_row)
         self.feature_alignment_row.hide()
+        package_group = QGroupBox("Alignment package")
+        package_layout = QVBoxLayout(package_group)
+        package_button = QPushButton("Select package folder")
+        package_button.clicked.connect(self._select_alignment_package)
+        package_layout.addWidget(package_button)
+        self.feature_package_status = QLabel("No imported package selected")
+        self.feature_package_status.setWordWrap(True)
+        package_layout.addWidget(self.feature_package_status)
+        right_layout.addWidget(package_group)
         self.feature_vowel_mapping_row = QWidget()
         mapping_row = QHBoxLayout(self.feature_vowel_mapping_row)
         mapping_row.setContentsMargins(0, 0, 0, 0)
@@ -1775,6 +1787,31 @@ class AcousticPipelineWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, "Select prompt-count manifest", "", "JSON files (*.json)")
         if path:
             self.feature_prompt_manifest_edit.setText(path)
+
+    def _select_alignment_package(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Select VSLP Alignment Package V1")
+        if not folder:
+            return
+        root = self._run_root
+        if root is None:
+            QMessageBox.warning(self, "Alignment package", "Select a project first.")
+            return
+        preview = inspect_alignment_package(folder, root)
+        manifest = preview["manifest"]
+        self.feature_package_status.setText(
+            f"{manifest.get('package_contract_version', 'Unknown package')} · "
+            f"Matched {preview['matched']}/{manifest.get('recording_count', 0)} · "
+            f"Finalized {preview['finalized']} · Missing {preview['missing']} · "
+            f"Stale/mismatched {preview['stale']} · Invalid {preview['invalid']}")
+        if preview["error"]:
+            QMessageBox.warning(self, "Alignment package", preview["error"])
+            return
+        try:
+            import_alignment_package(folder, root)
+            self._refresh_feature_count_label()
+        except (OSError, ValueError, KeyError) as exc:
+            self.feature_package_status.setText(f"Invalid package: {exc}")
+            QMessageBox.warning(self, "Alignment package", str(exc))
 
     def _refresh_feature_count_label(self) -> None:
         if not hasattr(self, "feature_count_label"):

@@ -26,6 +26,7 @@ from scipy.signal import resample_poly
 import soundfile as sf
 
 from vslp.core.schemas import StageResult
+from .audio_identity import audio_content_sha256, legacy_peak_timestamp_only_match
 from .mfa_provider import MfaProfile, MfaProvider as MFAProvider, parse_textgrid as _parse_textgrid
 
 
@@ -571,6 +572,7 @@ def run_acoustic_alignment(output_root: str | Path, config: AlignmentConfig,
     prepared: dict[str, tuple[list[TimePiece], int]] = {}
     preparation_errors: dict[str, str] = {}
     source_audio_hashes: dict[str, str] = {}
+    source_audio_content_hashes: dict[str, str] = {}
     working_audio_hashes: dict[str, str] = {}
     grids: dict[str, Path] = {}
     unit_to_trial: dict[str, tuple[str, dict]] = {}
@@ -648,6 +650,7 @@ def run_acoustic_alignment(output_root: str | Path, config: AlignmentConfig,
                         time_rows.append({"alignment_run_id": run_id, "recording_id": identity,
                                           "trial_id": trial["trial_id"], **piece.__dict__})
                 source_audio_hashes[identity] = _hash(source)
+                source_audio_content_hashes[identity] = audio_content_sha256(source)
             except (OSError, ValueError) as exc:
                 preparation_errors[identity] = str(exc)
             if progress_callback:
@@ -710,6 +713,9 @@ def run_acoustic_alignment(output_root: str | Path, config: AlignmentConfig,
             if identity in prior_manifest.get("source_audio_sha256_by_recording", {}):
                 source_audio_hashes[identity] = prior_manifest[
                     "source_audio_sha256_by_recording"][identity]
+            if identity in prior_manifest.get("source_audio_content_sha256_by_recording", {}):
+                source_audio_content_hashes[identity] = prior_manifest[
+                    "source_audio_content_sha256_by_recording"][identity]
             if progress_callback:
                 progress_callback(done, len(kept), f"Reused reviewed run for {record.file_name}")
             continue
@@ -973,6 +979,9 @@ def run_acoustic_alignment(output_root: str | Path, config: AlignmentConfig,
                 "normalization_profile_id": "vslp_prompt_nfkc_v1" if config.source == "mfa" else "",
                 "provider_commands": getattr(provider, "commands", []),
                 "source_audio_sha256_by_recording": source_audio_hashes,
+                **({"source_audio_content_sha256_by_recording": source_audio_content_hashes}
+                   if source_audio_content_hashes and
+                   set(source_audio_content_hashes) == set(source_audio_hashes) else {}),
                 "working_audio_sha256_by_recording": working_audio_hashes,
                 "provider_diagnostic_sha256": {str(path): _hash(Path(path)) for path in
                                                provider_report.get("diagnostic_paths", [])},
@@ -1108,8 +1117,8 @@ def freeze_alignment(output_root: str | Path, alignment_run_id: str,
     if replacing and not supersede:
         raise FileExistsError("frozen_alignment_is_immutable")
     if replacing:
-        old_store, issue = load_final_alignment(root, require_current_trials=False,
-                                                require_feature_contract=False)
+        old_store, issue = _load_embedded_final_alignment(
+            root, require_current_trials=False, require_feature_contract=False)
         if old_store is None:
             raise ValueError(f"existing_frozen_alignment_invalid:{issue}")
     if not manifest_path.is_file():
@@ -1483,9 +1492,9 @@ class AlignmentStore:
         return combined
 
 
-def load_final_alignment(output_root: str | Path, *,
-                         require_current_trials: bool = True,
-                         require_feature_contract: bool = True) -> tuple[AlignmentStore | None, str]:
+def _load_embedded_final_alignment(output_root: str | Path, *,
+                                   require_current_trials: bool = True,
+                                   require_feature_contract: bool = True) -> tuple[AlignmentStore | None, str]:
     root = Path(output_root)
     _, final = _paths(root)
     manifest_path = final / "final_alignment_manifest.json"
@@ -1513,13 +1522,34 @@ def load_final_alignment(output_root: str | Path, *,
                 or manifest["source_final_intervals_sha256"] != _hash(review / "final_segmentation_intervals.csv")):
             return None, "alignment_review_source_mismatch"
         source_hashes = manifest.get("source_audio_sha256_by_recording", {})
-        if source_hashes:
+        content_hashes = manifest.get("source_audio_content_sha256_by_recording")
+        if source_hashes or content_hashes:
             decisions = pd.read_csv(review / "final_segmentation_decisions.csv",
                                     keep_default_na=False).set_index("recording_id")
-            for identity, expected_hash in source_hashes.items():
-                if (identity not in decisions.index or
-                        _hash(Path(str(decisions.loc[identity].analysis_wav_path))) != expected_hash):
+            if content_hashes is not None and source_hashes and set(content_hashes) != set(source_hashes):
+                return None, "alignment_source_audio_changed"
+            identities = content_hashes if content_hashes is not None else source_hashes
+            for identity in identities:
+                if identity not in decisions.index:
                     return None, "alignment_source_audio_changed"
+                audio = Path(str(decisions.loc[identity].analysis_wav_path))
+                if content_hashes is not None:
+                    expected_content = content_hashes.get(identity)
+                    if (not expected_content or
+                            audio_content_sha256(audio) != expected_content):
+                        return None, "alignment_source_audio_changed"
+                elif _hash(audio) != source_hashes[identity]:
+                    project_manifest = json.loads((root / "project_manifest.json").read_text(
+                        encoding="utf-8")) if (root / "project_manifest.json").is_file() else {}
+                    run_manifest_path = (root / "acoustic" / "004_alignment" / "runs" /
+                                         manifest["alignment_run_id"] / "logs" /
+                                         "stage_manifest.json")
+                    run_manifest = json.loads(run_manifest_path.read_text(
+                        encoding="utf-8")) if run_manifest_path.is_file() else {}
+                    if not legacy_peak_timestamp_only_match(
+                            audio, source_hashes[identity], project_manifest.get("created_at_utc", ""),
+                            run_manifest.get("created_utc", "")):
+                        return None, "alignment_source_audio_changed"
         choices_path = root / "configs" / "alignment_choices.json"
         if (require_current_trials and manifest.get("trial_contract_version") == "reviewed_trials_v1"
                 and choices_path.is_file()):
@@ -1621,3 +1651,14 @@ def load_final_alignment(output_root: str | Path, *,
         return AlignmentStore(words, phones, diagnostics, manifest), ""
     except (OSError, ValueError, KeyError, pd.errors.ParserError):
         return None, "invalid_final_alignment"
+
+
+def load_final_alignment(output_root: str | Path, *,
+                         require_current_trials: bool = True,
+                         require_feature_contract: bool = True) -> tuple[AlignmentStore | None, str]:
+    """Return the explicit imported provider, or the original embedded provider."""
+    from .providers import selected_alignment_provider
+
+    provider = selected_alignment_provider(Path(output_root))
+    return provider.load(Path(output_root), require_current_trials=require_current_trials,
+                         require_feature_contract=require_feature_contract)
