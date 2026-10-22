@@ -27,7 +27,7 @@ def test_bamboo_selection_covers_all_registered_leaves_and_preserves_task_switch
     assert unsupported.flags() & Qt.ItemIsUserCheckable
     assert unsupported.text(2) == "UNSUPPORTED FOR THIS TASK"
     alignment = window.feature_items["delta_v_s"]
-    assert alignment.text(2) == "Alignment required"
+    assert alignment.text(2) == "ALIGNMENT PACKAGE REQUIRED"
     for family_id in ("F01", "F04", "F07", "F09", "F12", "F13"):
         family = window.subsystem_items[family_id]
         family.setCheckState(0, Qt.Checked)

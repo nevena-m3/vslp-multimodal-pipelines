@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import csv
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -149,22 +151,26 @@ def build_feature_delivery(
     )
 
     main_source_paths = {path.resolve() for path in source_map.values() if path.exists()}
-    rows: list[dict[str, object]] = []
-    for path in sorted(modality_root.rglob("*")):
-        if not path.is_file() or delivery in path.parents:
-            continue
-        rel = path.relative_to(root)
-        rows.append({
-            "importance": "main_source" if path.resolve() in main_source_paths else "supplementary",
-            "artifact": path.name,
-            "type": path.suffix.lower().lstrip(".") or "file",
-            "relative_path": str(rel),
-            "size_bytes": path.stat().st_size,
-            "purpose": "canonical downstream input" if path.resolve() in main_source_paths else "stage-specific audit, diagnostic, report, plot, log, or intermediate",
-        })
-    catalog = pd.DataFrame(rows, columns=("importance", "artifact", "type", "relative_path", "size_bytes", "purpose"))
     catalog_csv = supplementary_dir / "artifact_catalog.csv"
-    catalog.to_csv(catalog_csv, index=False)
+    with catalog_csv.open("w", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=("importance", "artifact", "type",
+                                                    "relative_path", "size_bytes", "purpose"))
+        writer.writeheader()
+        for folder, directory_names, file_names in os.walk(modality_root):
+            directory_names[:] = sorted(name for name in directory_names
+                                        if Path(folder, name) != delivery)
+            for name in sorted(file_names):
+                path = Path(folder, name)
+                main = path.resolve() in main_source_paths
+                writer.writerow({
+                    "importance": "main_source" if main else "supplementary",
+                    "artifact": path.name,
+                    "type": path.suffix.lower().lstrip(".") or "file",
+                    "relative_path": str(path.relative_to(root)),
+                    "size_bytes": path.stat().st_size,
+                    "purpose": "canonical downstream input" if main else
+                    "stage-specific audit, diagnostic, report, plot, log, or intermediate",
+                })
     supplementary_readme = supplementary_dir / "README.md"
     supplementary_readme.write_text(
         "# Supplementary outputs\n\n"

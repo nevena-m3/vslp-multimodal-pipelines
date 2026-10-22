@@ -1720,26 +1720,35 @@ class AlignmentWidget(QWidget):
         base = root / "acoustic" / "004_alignment" / "runs" / str(run_id) / "tables"
         if not run_id:
             return
-        word_view, phone_view = reviewed_tables(root, str(run_id))
+        cached = getattr(self, "_standalone_review_payload", None)
+        cache_current = bool(cached and cached.get("run_id") == str(run_id))
+        word_view, phone_view = (cached["tables"] if cache_current and "tables" in cached
+                                 else reviewed_tables(root, str(run_id)))
         links_path = base / "alignment_trial_tokens.csv"
-        links = pd.read_csv(links_path, keep_default_na=False) if links_path.is_file() else pd.DataFrame()
+        links = (cached["links"] if cache_current and "links" in cached else
+                 pd.read_csv(links_path, keep_default_na=False) if links_path.is_file() else pd.DataFrame())
         trial_id = str((self.trials.currentData() or {}).get("trial_id", ""))
-        corrected = load_corrections(root, str(run_id))
+        corrected = (cached["corrections"] if cache_current and "corrections" in cached
+                     else load_corrections(root, str(run_id)))
+        # Resolve token provenance once per recording. Repeated pandas scans
+        # for every phone made the review window stall during navigation.
+        owners = {}
+        if not links.empty:
+            for row in links.loc[links.recording_id.astype(str).eq(record_id)].itertuples():
+                key = (str(row.token_type), int(row.token_index))
+                owners[key] = str(row.trial_id) if key not in owners else ""
+        manually_corrected = {
+            (str(row.tier), int(row.token_index))
+            for row in corrected.loc[corrected.recording_id.astype(str).eq(record_id)].itertuples()
+        }
         for kind, table, color in (("Word", word_view, "#F1C66D"),
                                    ("Phone", phone_view, "#94CCAD")):
             tier = kind.lower()
             for row in table.loc[table.recording_id.astype(str).eq(record_id)].itertuples():
                 label = str(getattr(row, "word", getattr(row, "phone", "")))
                 index = int(getattr(row, f"{tier}_index"))
-                link = (links.loc[links.recording_id.astype(str).eq(record_id)
-                                  & links.token_type.eq(tier)
-                                  & links.token_index.astype(int).eq(index)]
-                        if not links.empty else pd.DataFrame())
-                owner = str(link.iloc[0].trial_id) if len(link) == 1 else ""
-                manual = not corrected.loc[
-                    corrected.recording_id.astype(str).eq(record_id)
-                    & corrected.tier.eq(tier)
-                    & corrected.token_index.astype(int).eq(index)].empty
+                owner = owners.get((tier, index), "")
+                manual = (tier, index) in manually_corrected
                 self._tokens.append((float(row.start_sec), float(row.end_sec), kind, label,
                                      "Manually corrected" if manual else "MFA", index, owner))
                 track = self.word_plot if kind == "Word" else self.phone_plot
@@ -1760,7 +1769,9 @@ class AlignmentWidget(QWidget):
     def _load_sentence_navigation(self, recording_id: str) -> None:
         self.sentence_selector.blockSignals(True)
         self.sentence_selector.clear()
-        alignment, _reason = load_final_alignment(self.root_provider())
+        cached = getattr(self, "_standalone_review_payload", None)
+        alignment, _reason = (cached["final_alignment"] if cached and "final_alignment" in cached
+                              else load_final_alignment(self.root_provider()))
         if alignment is not None and getattr(alignment, "canonical_words", None) is not None:
             from vslp.acoustic.features.family13_v1_stage import _sentence_spans
 

@@ -128,3 +128,52 @@ def test_trial_hnr_uses_all_frames_not_mean_of_island_means(monkeypatch):
     monkeypatch.setattr(stage, "calculate_voice_quality", measured)
     values, _, _, _ = _f02_trial_values(tracks, audio, sr, {"hnr_mean_db"}, True)
     assert values["hnr_mean_db"] == (25., "")
+
+
+def test_cpp_process_pool_preserves_serial_trial_result(monkeypatch):
+    from multiprocessing import active_children
+
+    sr = 16000
+    time = np.arange(sr * 2) / sr
+    audio = (0.2 * np.sin(2 * np.pi * 180 * time)).astype(np.float32)
+    tracks = [F0Track(np.array([0.1]), np.array([180.]), np.array([True]),
+                      sr, 0., 0.7, "synthetic"),
+              F0Track(np.array([1.1]), np.array([180.]), np.array([True]),
+                      sr, 1., 1.7, "synthetic")]
+    monkeypatch.setenv("VSLP_CPP_WORKERS", "1")
+    serial = _f02_trial_values(tracks, audio, sr, {"cpp_db"}, True)
+    monkeypatch.setenv("VSLP_CPP_WORKERS", "2")
+    parallel = _f02_trial_values(tracks, audio, sr, {"cpp_db"}, True)
+    assert parallel[0] == serial[0]
+    assert parallel[1]["cpp_valid_frames"] == serial[1]["cpp_valid_frames"]
+    assert parallel[3] == serial[3]
+    assert not active_children()
+
+
+def test_cpp_accepts_run_scoped_pool_without_creating_another(monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    import vslp.acoustic.features.family01_stage as stage
+
+    sr = 16000
+    audio = np.r_[np.ones(sr // 5), np.zeros(sr // 5), np.ones(sr // 5) * 2]
+    tracks = [F0Track(np.array([.01]), np.array([180.]), np.array([True]),
+                      sr, 0., .2, "synthetic"),
+              F0Track(np.array([.41]), np.array([180.]), np.array([True]),
+                      sr, .4, .6, "synthetic")]
+
+    def measured(work):
+        values = np.array([10.]) if work[0][0] == 1 else np.array([30., 30.])
+        return {"cpp_db": (float(np.mean(values)), "")}, {
+            "cpp_valid_frames": len(values), "cpp_frame_values": values}
+
+    def no_second_pool(*_args, **_kwargs):
+        raise AssertionError("CPP created a second process pool")
+
+    monkeypatch.setenv("VSLP_CPP_WORKERS", "2")
+    monkeypatch.setattr(stage, "_voice_quality_island", measured)
+    monkeypatch.setattr(stage, "ProcessPoolExecutor", no_second_pool)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        result, audit, _, _ = _f02_trial_values(
+            tracks, audio, sr, {"cpp_db"}, True, cpp_pool=pool)
+    assert result["cpp_db"] == (float(np.mean([10., 30., 30.])), "")
+    assert audit["cpp_valid_frames"] == 3

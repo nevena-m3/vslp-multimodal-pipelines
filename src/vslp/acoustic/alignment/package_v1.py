@@ -270,6 +270,8 @@ def validate_alignment_package(package: str | Path, project_root: str | Path) ->
         raise ValueError("alignment_not_finalized")
     if set(status.record_key.astype(str)) != set(trials.recording_id.astype(str)):
         raise ValueError("package_record_set_mismatch")
+    if manifest.get("producer_mode") == "standalone_audio_identity_v1":
+        return _validate_standalone_identity(manifest, status, trials, root)
     review = root / "acoustic" / "003_segmentation_review" / "final"
     decisions_path, intervals_path = (review / "final_segmentation_decisions.csv",
                                       review / "final_segmentation_intervals.csv")
@@ -329,6 +331,123 @@ def validate_alignment_package(package: str | Path, project_root: str | Path) ->
             "stale": 0, "invalid": 0}
 
 
+def _validate_standalone_identity(manifest: dict, status: pd.DataFrame,
+                                  trials: pd.DataFrame, root: Path) -> dict:
+    """Bind selected audio to raw lineage or an identical derived analysis WAV."""
+    review = root / "acoustic" / "003_segmentation_review" / "final"
+    decisions_path = review / "final_segmentation_decisions.csv"
+    if not decisions_path.is_file():
+        raise ValueError("project_record_index_missing")
+    decisions = pd.read_csv(decisions_path, keep_default_na=False)
+    if decisions.duplicated("recording_id").any():
+        raise ValueError("duplicate_project_record_key")
+    from .task_workflow import _manifest_task, task_entry
+
+    project_manifest = root / "project_manifest.json"
+    registered = (_manifest_task(json.loads(project_manifest.read_text(encoding="utf-8")))
+                  if project_manifest.is_file() else None)
+    task_spec = manifest.get("task_specification", {})
+    task = task_entry(str(task_spec.get("task_id", "")))
+    prompt = next((item for item in task.get("prompts", [])
+                   if item["prompt_id"] == task_spec.get("prompt_id")), None) if task else None
+    if (registered is None or task is None or prompt is None or
+            registered["task_id"] != task["task_id"] or
+            sha256(str(prompt["exact_expected_text"]).encode("utf-8")).hexdigest()
+            != task_spec.get("transcript_hash") or
+            str(prompt["prompt_version"]) != str(task_spec.get("prompt_version"))):
+        raise ValueError("standalone_task_prompt_mismatch")
+    preprocess_path = (root / "acoustic" / "001_preprocess" / "tables" /
+                       "acoustic_preprocess_summary.csv")
+    preprocess = (pd.read_csv(preprocess_path, keep_default_na=False).set_index("recording_id")
+                  if preprocess_path.is_file() else pd.DataFrame())
+    identity: dict[str, dict] = {}
+    for row in decisions.itertuples():
+        key = str(row.recording_id)
+        source = Path(str(getattr(row, "source_file_path", "")))
+        analysis = Path(str(getattr(row, "analysis_wav_path", "")))
+        if not source.is_file() or not analysis.is_file():
+            raise ValueError(f"standalone_project_audio_missing:{key}")
+        source_file_hash = _hash(source)
+        if str(getattr(row, "source_sha256", "")) not in {"", source_file_hash}:
+            raise ValueError(f"standalone_project_source_changed:{key}")
+        source_info, analysis_info = sf.info(source), sf.info(analysis)
+        source_audio_hash = audio_content_sha256(source)
+        analysis_audio_hash = audio_content_sha256(analysis)
+        same_time_axis = (source_info.samplerate == analysis_info.samplerate and
+                          source_info.frames == analysis_info.frames)
+        if source_audio_hash != analysis_audio_hash:
+            if not same_time_axis:
+                raise ValueError(f"standalone_time_axis_mismatch:{key}")
+            if key not in preprocess.index:
+                raise ValueError(f"standalone_preprocessing_lineage_missing:{key}")
+            lineage = preprocess.loc[key]
+            if (isinstance(lineage, pd.DataFrame) or str(lineage.get("status")) != "ok" or
+                    str(lineage.get("source_sha256")) != source_file_hash or
+                    int(lineage.get("decoded_sample_rate_hz")) != source_info.samplerate or
+                    int(lineage.get("analysis_sample_rate_hz")) != analysis_info.samplerate or
+                    int(lineage.get("decoded_n_samples")) != source_info.frames or
+                    int(lineage.get("analysis_n_samples")) != analysis_info.frames):
+                raise ValueError(f"standalone_preprocessing_lineage_mismatch:{key}")
+        identity[key] = {"raw_audio": source_audio_hash, "analysis_audio": analysis_audio_hash,
+                         "raw_info": source_info, "analysis_info": analysis_info}
+    mapping = {}
+    result_rows = []
+    for row in status.itertuples():
+        trial_subset = trials.loc[trials.recording_id.astype(str).eq(str(row.record_key))]
+        if (trial_subset.empty or str(row.task_id) != task["task_id"] or
+                str(row.prompt_id) != str(prompt["prompt_id"]) or
+                str(row.transcript_hash) != str(task_spec["transcript_hash"]) or
+                not trial_subset.task_id.astype(str).eq(task["task_id"]).all() or
+                not trial_subset.prompt_sha256.astype(str).eq(
+                    str(task_spec["transcript_hash"])).all()):
+            raise ValueError(f"standalone_task_prompt_mismatch:{row.record_key}")
+        selected_audio = str(row.source_audio_content_sha256)
+        declared_raw = str(getattr(row, "raw_source_audio_content_sha256", ""))
+        if declared_raw and declared_raw != selected_audio:
+            raise ValueError(f"standalone_package_identity_conflict:{row.record_key}")
+        boundary_basis = str(getattr(row, "boundary_time_basis", ""))
+        if boundary_basis and boundary_basis != "selected_source_original_time":
+            raise ValueError(f"standalone_time_basis_unsupported:{row.record_key}")
+        raw_matches = [key for key, item in identity.items()
+                       if item["raw_audio"] == selected_audio]
+        derived_matches = [key for key, item in identity.items()
+                           if item["analysis_audio"] == selected_audio]
+        matches = raw_matches if raw_matches else derived_matches
+        if len(matches) != 1 or matches[0] in mapping.values():
+            raise ValueError(f"standalone_audio_identity_mismatch:{row.record_key}")
+        key = matches[0]
+        basis = "raw_source" if raw_matches else "exact_analysis_audio"
+        info = identity[key]["raw_info" if raw_matches else "analysis_info"]
+        if (int(row.sample_rate) != info.samplerate or int(row.sample_count) != info.frames or
+                int(row.channels) != info.channels):
+            raise ValueError(f"standalone_time_axis_mismatch:{row.record_key}")
+        working_hash = str(getattr(row, "alignment_working_audio_content_sha256", ""))
+        transform = str(getattr(row, "alignment_working_transform", "full_recording_byte_copy"))
+        if transform == "full_recording_byte_copy":
+            if working_hash and working_hash != selected_audio:
+                raise ValueError(f"standalone_working_audio_identity_mismatch:{row.record_key}")
+        elif transform == "sample_exact_utterance_crop_v1":
+            start = float(getattr(row, "alignment_scope_start_sec", -1))
+            end = float(getattr(row, "alignment_scope_end_sec", -1))
+            if not working_hash or not 0 <= start < end <= info.duration + 1e-7:
+                raise ValueError(f"standalone_working_audio_scope_invalid:{row.record_key}")
+            if (trial_subset.start_sec.astype(float).lt(start - 1e-7).any() or
+                    trial_subset.end_sec.astype(float).gt(end + 1e-7).any()):
+                raise ValueError(f"standalone_trial_outside_scope:{row.record_key}")
+        else:
+            raise ValueError(f"standalone_working_transform_unsupported:{row.record_key}")
+        mapping[str(row.record_key)] = key
+        result_rows.append({"record_key": key, "status": "MATCHED + FINALIZED",
+                            "identity_basis": basis})
+    for key in identity:
+        if key not in mapping.values():
+            result_rows.append({"record_key": key, "status": "MISSING"})
+    return {"manifest": manifest, "recording_status": result_rows,
+            "record_key_map": mapping, "matched": len(mapping),
+            "finalized": len(mapping), "missing": len(identity) - len(mapping),
+            "stale": 0, "invalid": 0}
+
+
 def inspect_alignment_package(package: str | Path, project_root: str | Path) -> dict:
     """Give the GUI a per-record preview; only validate() authorizes import."""
     folder, root = Path(package), Path(project_root)
@@ -351,6 +470,13 @@ def inspect_alignment_package(package: str | Path, project_root: str | Path) -> 
                 "stale": sum(item["status"] in {"IDENTITY MISMATCH", "TASK/PROMPT MISMATCH"}
                              for item in rows),
                 "invalid": sum(item["status"] == "INVALID PACKAGE ROW" for item in rows),
+                "error": error}
+    if error.startswith("standalone_"):
+        # A rejected standalone package has no authorized match table. Do not
+        # guess from record_key or a derived analysis WAV and display misleading
+        # matched/missing counts in the GUI.
+        return {"manifest": manifest, "recording_status": [], "matched": 0,
+                "finalized": 0, "missing": 0, "stale": 0, "invalid": 1,
                 "error": error}
     status_path = folder / "recording_status.csv"
     decisions_path = (root / "acoustic" / "003_segmentation_review" / "final" /
@@ -430,12 +556,24 @@ def load_imported_alignment(project_root: str | Path) -> tuple[AlignmentStore | 
         folder = root / "alignment_imports" / package_id
         if _hash(folder / "package_manifest.json") != selection["package_manifest_sha256"]:
             raise ValueError("package_manifest_hash_mismatch")
-        validate_alignment_package(folder, root)
+        validation = validate_alignment_package(folder, root)
         manifest, trials, words, phones = _tables(folder)
+        provider_words = pd.read_csv(folder / "final_alignment_words.csv", keep_default_na=False)
+        provider_phones = pd.read_csv(folder / "final_alignment_phones.csv", keep_default_na=False)
+        diagnostics = pd.read_csv(folder / "final_alignment_diagnostics.csv", keep_default_na=False)
+        mapping = validation.get("record_key_map", {})
+        if mapping:
+            for table in (trials, words, phones, provider_words, provider_phones, diagnostics):
+                if "recording_id" in table:
+                    table["recording_id"] = table.recording_id.astype(str).replace(mapping)
+                for column in ("sequence_id", "word_id", "phone_id", "parent_word_id"):
+                    if column in table:
+                        table[column] = table[column].astype(str).map(lambda value:
+                            next((f"{project_id}{value[len(source_id):]}"
+                                  for source_id, project_id in mapping.items()
+                                  if value.startswith(f"{source_id}:")), value))
         store = AlignmentStore(
-            pd.read_csv(folder / "final_alignment_words.csv", keep_default_na=False),
-            pd.read_csv(folder / "final_alignment_phones.csv", keep_default_na=False),
-            pd.read_csv(folder / "final_alignment_diagnostics.csv", keep_default_na=False),
+            provider_words, provider_phones, diagnostics,
             manifest, trials, words, phones)
         return store, ""
     except (OSError, ValueError, KeyError, pd.errors.ParserError) as exc:

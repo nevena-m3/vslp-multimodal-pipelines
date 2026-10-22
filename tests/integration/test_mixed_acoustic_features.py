@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
+from threading import Event
 
 import numpy as np
 import pandas as pd
@@ -155,6 +157,256 @@ def test_voice_and_pause_succeed_in_one_run(tmp_path, monkeypatch):
     assert status.failure_reason.eq("").all()
     assert values.f0_mean_hz.iloc[0] > 0
     assert values.bamboo_pause_count.iloc[0] == 1
+
+
+def test_checkpointed_bamboo_rerun_skips_completed_family(tmp_path, monkeypatch):
+    root, decisions, intervals, _ = _case(tmp_path, monkeypatch)
+    cfg = FeatureExtractionConfig(
+        selected_features=["bamboo_pause_count", "bamboo_speaking_rate_wpm"],
+        resume_existing_run=True)
+    first = run_acoustic_feature_extraction(decisions, root, cfg, intervals)
+    first_status = pd.read_csv(first.summary_table.parent / "acoustic_feature_status_long.csv")
+    checkpoints = list((root / "acoustic" / "005_features" / "checkpoints_v1").glob("*/*.json"))
+    assert len(checkpoints) == 2
+    first_values = first_status.set_index("feature_id").value.to_dict()
+    assert first_values["bamboo_pause_count"] == 1
+    assert np.isfinite(first_values["bamboo_speaking_rate_wpm"])
+    second = run_acoustic_feature_extraction(decisions, root, cfg, intervals)
+    second_status = pd.read_csv(second.summary_table.parent / "acoustic_feature_status_long.csv")
+    pd.testing.assert_frame_equal(first_status, second_status)
+    manifest = json.loads(second.manifest_path.read_text(encoding="utf-8"))
+    assert manifest["config"]["checkpoint_counts"]["completed_previously"] == 2
+    assert manifest["config"]["checkpoint_counts"]["to_compute"] == 0
+
+
+def test_checkpointed_interruption_resume_matches_fresh_run(tmp_path, monkeypatch):
+    root, decisions, intervals, _ = _case(tmp_path, monkeypatch)
+    original = pd.read_csv(intervals, keep_default_na=False)
+    own = pd.concat([original.assign(recording_id=f"r{i:02d}")
+                     for i in range(20)], ignore_index=True)
+    own.to_csv(intervals, index=False)
+    wav = root / "canonical.wav"
+    kept = pd.DataFrame([{
+        "recording_id": f"r{i:02d}", "file_name": f"Bamboo_{i:02d}.wav",
+        "analysis_wav_path": str(wav), "source_file_path": str(wav),
+        "segmentation_run_id": "seg1", "review_run_id": "rev1",
+        "boundary_source": "AUTO", "final_decision": "KEEP_AUTO",
+        "stable_region_start": .2, "stable_region_end": 1.8,
+    } for i in range(20)])
+    monkeypatch.setattr("vslp.acoustic.features.mixed_dispatch.load_final_segmentation",
+                        lambda *_: kept)
+    cfg = FeatureExtractionConfig(selected_features=["bamboo_pause_count"],
+                                  resume_existing_run=True)
+    cancellation = Event()
+
+    def interrupt(done, _total, _message):
+        if done == 10:
+            cancellation.set()
+
+    with pytest.raises(RuntimeError, match="feature_extraction_cancelled"):
+        run_acoustic_feature_extraction(decisions, root, cfg, intervals,
+                                        progress_callback=interrupt,
+                                        cancel_event=cancellation)
+    checkpoints = root / "acoustic" / "005_features" / "checkpoints_v1"
+    assert len(list(checkpoints.glob("timing/*.json"))) == 10
+    resumed = run_acoustic_feature_extraction(decisions, root, cfg, intervals)
+    resumed_status = pd.read_csv(resumed.summary_table.parent / "acoustic_feature_status_long.csv",
+                                 keep_default_na=False)
+    resumed_values = pd.read_csv(resumed.summary_table, keep_default_na=False)
+    resume_manifest = json.loads(resumed.manifest_path.read_text(encoding="utf-8"))
+    assert resume_manifest["config"]["checkpoint_counts"]["completed_previously"] == 10
+    assert resume_manifest["config"]["checkpoint_counts"]["to_compute"] == 10
+    assert len(resumed_status) == 20
+    assert len(resumed_values) == 20
+    # Only this test's disposable checkpoint directory is removed.
+    assert checkpoints.resolve().is_relative_to(tmp_path.resolve())
+    shutil.rmtree(checkpoints)
+    fresh = run_acoustic_feature_extraction(decisions, root, cfg, intervals)
+    fresh_status = pd.read_csv(fresh.summary_table.parent / "acoustic_feature_status_long.csv",
+                               keep_default_na=False)
+    fresh_values = pd.read_csv(fresh.summary_table, keep_default_na=False)
+    pd.testing.assert_frame_equal(resumed_status, fresh_status)
+    pd.testing.assert_frame_equal(resumed_values, fresh_values)
+
+
+def test_checkpoint_corruption_and_family_version_invalidation(tmp_path, monkeypatch):
+    from vslp.acoustic.features import checkpoint_v1
+
+    root, decisions, intervals, _ = _case(tmp_path, monkeypatch)
+    cfg = FeatureExtractionConfig(
+        selected_features=["bamboo_pause_count", "bamboo_speaking_rate_wpm"],
+        resume_existing_run=True)
+    run_acoustic_feature_extraction(decisions, root, cfg, intervals)
+    base = root / "acoustic" / "005_features" / "checkpoints_v1"
+    timing = next((base / "timing").glob("*.json"))
+    timing.write_text("{corrupted", encoding="utf-8")
+    repaired = run_acoustic_feature_extraction(decisions, root, cfg, intervals)
+    counts = json.loads(repaired.manifest_path.read_text(encoding="utf-8"))["config"]["checkpoint_counts"]
+    assert counts["corrupt"] == 1
+    assert counts["completed_previously"] == 1
+    assert counts["to_compute"] == 1
+    original = checkpoint_v1._implementation_identity
+
+    def changed(group):
+        result = original(group)
+        return {**result, "test_version": "v2"} if group == "timing" else result
+
+    monkeypatch.setattr(checkpoint_v1, "_implementation_identity", changed)
+    versioned = run_acoustic_feature_extraction(decisions, root, cfg, intervals)
+    counts = json.loads(versioned.manifest_path.read_text(encoding="utf-8"))["config"]["checkpoint_counts"]
+    assert counts["stale"] == 1
+    assert counts["completed_previously"] == 1
+    assert counts["to_compute"] == 1
+
+
+def test_checkpoint_review_change_invalidates_only_affected_record(tmp_path, monkeypatch):
+    root, decisions, intervals, _ = _case(tmp_path, monkeypatch)
+    wav = root / "canonical.wav"
+    kept = pd.DataFrame([{
+        "recording_id": name, "file_name": f"{name}.wav", "analysis_wav_path": str(wav),
+        "source_file_path": str(wav), "segmentation_run_id": "seg1", "review_run_id": "rev1",
+        "boundary_source": "AUTO", "final_decision": "KEEP_AUTO",
+    } for name in ("r1", "r2")])
+    monkeypatch.setattr("vslp.acoustic.features.mixed_dispatch.load_final_segmentation",
+                        lambda *_: kept)
+    first_intervals = pd.read_csv(intervals, keep_default_na=False)
+    both = pd.concat([first_intervals, first_intervals.assign(recording_id="r2")],
+                     ignore_index=True)
+    both.to_csv(intervals, index=False)
+    cfg = FeatureExtractionConfig(selected_features=["bamboo_pause_count"],
+                                  resume_existing_run=True)
+    run_acoustic_feature_extraction(decisions, root, cfg, intervals)
+    both.loc[(both.recording_id == "r2") & (both.segment_role == "internal_nonspeech"),
+             "end_sec"] = 1.21
+    both.to_csv(intervals, index=False)
+    changed = run_acoustic_feature_extraction(decisions, root, cfg, intervals)
+    counts = json.loads(changed.manifest_path.read_text(encoding="utf-8"))["config"]["checkpoint_counts"]
+    assert counts["stale"] == 1
+    assert counts["completed_previously"] == 1
+    assert counts["to_compute"] == 1
+    resumed_rows = pd.read_csv(changed.summary_table.parent / "acoustic_feature_status_long.csv",
+                               keep_default_na=False)
+    checkpoint_root = root / "acoustic" / "005_features" / "checkpoints_v1"
+    assert checkpoint_root.resolve().is_relative_to(tmp_path.resolve())
+    shutil.rmtree(checkpoint_root)
+    fresh = run_acoustic_feature_extraction(decisions, root, cfg, intervals)
+    fresh_rows = pd.read_csv(fresh.summary_table.parent / "acoustic_feature_status_long.csv",
+                             keep_default_na=False)
+    pd.testing.assert_frame_equal(resumed_rows, fresh_rows)
+
+
+def test_checkpointed_bamboo_matches_legacy_numeric_and_qc(tmp_path, monkeypatch):
+    root, decisions, intervals, _ = _case(tmp_path, monkeypatch)
+    ids = ["bamboo_pause_count", "bamboo_percent_pause_pct",
+           "bamboo_speaking_rate_wpm", "bamboo_articulation_rate_wpm"]
+    legacy = run_acoustic_feature_extraction(
+        decisions, root, FeatureExtractionConfig(selected_features=ids), intervals)
+    expected = pd.read_csv(legacy.summary_table.parent / "acoustic_feature_status_long.csv")
+    actual_result = run_acoustic_feature_extraction(
+        decisions, root, FeatureExtractionConfig(selected_features=ids,
+                                                resume_existing_run=True), intervals)
+    actual = pd.read_csv(actual_result.summary_table.parent / "acoustic_feature_status_long.csv")
+    columns = ["recording_id", "feature_id", "value", "status", "failure_reason", "unit"]
+    pd.testing.assert_frame_equal(expected[columns], actual[columns])
+
+
+def test_checkpointed_family_failure_isolated_and_retried(tmp_path, monkeypatch):
+    from vslp.acoustic.features import family09_v2_stage
+
+    root, decisions, intervals, _ = _case(tmp_path, monkeypatch)
+    wav = root / "canonical.wav"
+    kept = pd.DataFrame([{
+        "recording_id": name, "file_name": f"{name}.wav", "analysis_wav_path": str(wav),
+        "source_file_path": str(wav), "segmentation_run_id": "seg1", "review_run_id": "rev1",
+        "boundary_source": "AUTO", "final_decision": "KEEP_AUTO",
+    } for name in ("r1", "r2")])
+    monkeypatch.setattr("vslp.acoustic.features.mixed_dispatch.load_final_segmentation",
+                        lambda *_: kept)
+    own = pd.read_csv(intervals, keep_default_na=False)
+    pd.concat([own, own.assign(recording_id="r2")], ignore_index=True).to_csv(
+        intervals, index=False)
+    original = family09_v2_stage.run_family09_stage
+
+    def fails_second(*args, recording_scope=None, **kwargs):
+        if recording_scope.kept.iloc[0].recording_id == "r2":
+            raise RuntimeError("synthetic_unit_failure")
+        return original(*args, recording_scope=recording_scope, **kwargs)
+
+    monkeypatch.setattr(family09_v2_stage, "run_family09_stage", fails_second)
+    cfg = FeatureExtractionConfig(selected_features=["bamboo_pause_count"],
+                                  resume_existing_run=True)
+    partial = run_acoustic_feature_extraction(decisions, root, cfg, intervals)
+    status = pd.read_csv(partial.summary_table.parent / "acoustic_feature_status_long.csv",
+                         keep_default_na=False).set_index("recording_id")
+    assert status.loc["r1", "status"] == "computed"
+    assert status.loc["r2", "status"] == "error"
+    assert "synthetic_unit_failure" in status.loc["r2", "failure_reason"]
+    monkeypatch.setattr(family09_v2_stage, "run_family09_stage", original)
+    recovered = run_acoustic_feature_extraction(decisions, root, cfg, intervals)
+    counts = json.loads(recovered.manifest_path.read_text(encoding="utf-8"))["config"]["checkpoint_counts"]
+    assert counts["completed_previously"] == 1
+    assert counts["failed_retry"] == 1
+    status = pd.read_csv(recovered.summary_table.parent / "acoustic_feature_status_long.csv",
+                         keep_default_na=False).set_index("recording_id")
+    assert status.loc["r1", "status"] == "computed"
+    assert status.loc["r2", "status"] == "computed"
+
+
+def test_checkpointed_timing_amplitude_spectrum_match_legacy(tmp_path, monkeypatch):
+    root, decisions, intervals, _ = _case(tmp_path, monkeypatch)
+    ids = ["bamboo_total_duration_s", "bamboo_speaking_rate_wpm",
+           "bamboo_pause_count", "bamboo_absolute_energy_fs2",
+           "bamboo_spectral_bandwidth_p2_mean_hz"]
+    legacy = run_acoustic_feature_extraction(
+        decisions, root, FeatureExtractionConfig(selected_features=ids), intervals)
+    expected = pd.read_csv(legacy.summary_table.parent / "acoustic_feature_status_long.csv")
+    checkpointed = run_acoustic_feature_extraction(
+        decisions, root, FeatureExtractionConfig(selected_features=ids,
+                                                resume_existing_run=True), intervals)
+    actual = pd.read_csv(checkpointed.summary_table.parent / "acoustic_feature_status_long.csv")
+    columns = ["recording_id", "feature_id", "value", "status", "failure_reason", "unit"]
+    pd.testing.assert_frame_equal(expected[columns], actual[columns])
+    assert actual.loc[actual.feature_id.eq("bamboo_absolute_energy_fs2"), "status"].iloc[0] == "computed"
+    assert actual.loc[actual.feature_id.eq("bamboo_spectral_bandwidth_p2_mean_hz"), "status"].iloc[0] == "computed"
+
+
+def test_checkpointed_voice_group_completes_without_child_leak(tmp_path, monkeypatch):
+    import psutil
+
+    root, decisions, intervals, _ = _case(tmp_path, monkeypatch)
+    before = {child.pid for child in psutil.Process().children(recursive=True)}
+    config = FeatureExtractionConfig(selected_features=["f0_mean_hz", "cpp_db"],
+                                     resume_existing_run=True)
+    result = run_acoustic_feature_extraction(decisions, root, config, intervals)
+    status = pd.read_csv(result.summary_table.parent / "acoustic_feature_status_long.csv")
+    assert set(status.feature_id) == {"f0_mean_hz", "cpp_db"}
+    assert set(status.status) == {"computed"}
+    assert {child.pid for child in psutil.Process().children(recursive=True)} == before
+
+
+def test_checkpointed_bad_audio_identity_does_not_stop_other_record(tmp_path, monkeypatch):
+    root, decisions, intervals, _ = _case(tmp_path, monkeypatch)
+    wav = root / "canonical.wav"
+    kept = pd.DataFrame([{
+        "recording_id": name, "file_name": f"{name}.wav",
+        "analysis_wav_path": str(wav if name == "r1" else root / "missing.wav"),
+        "source_file_path": str(wav if name == "r1" else root / "missing.wav"),
+        "segmentation_run_id": "seg1", "review_run_id": "rev1",
+        "boundary_source": "AUTO", "final_decision": "KEEP_AUTO",
+    } for name in ("r1", "r2")])
+    monkeypatch.setattr("vslp.acoustic.features.mixed_dispatch.load_final_segmentation",
+                        lambda *_: kept)
+    own = pd.read_csv(intervals, keep_default_na=False)
+    pd.concat([own, own.assign(recording_id="r2")], ignore_index=True).to_csv(
+        intervals, index=False)
+    cfg = FeatureExtractionConfig(selected_features=["bamboo_pause_count"],
+                                  resume_existing_run=True)
+    result = run_acoustic_feature_extraction(decisions, root, cfg, intervals)
+    status = pd.read_csv(result.summary_table.parent / "acoustic_feature_status_long.csv",
+                         keep_default_na=False).set_index("recording_id")
+    assert status.loc["r1", "status"] == "computed"
+    assert status.loc["r2", "status"] == "error"
+    assert "input_audio_identity_failed" in status.loc["r2", "failure_reason"]
 
 
 def test_gui_package_only_alignment_does_not_block_reviewed_timing(tmp_path, monkeypatch):
@@ -552,3 +804,15 @@ def test_only_unsupported_selected_leaf_returns_unavailable(tmp_path, monkeypatc
     assert status.failure_reason.iloc[0] == "unsupported_for_current_task"
     assert np.isnan(values.ddk_pa_rate_syll_s.iloc[0])
     assert not (root / "acoustic" / "005_features" / "family_runs" / "ddk").exists()
+
+
+def test_cancel_before_family_does_not_publish_partial_results(tmp_path, monkeypatch):
+    root, decisions, intervals, _ = _case(tmp_path, monkeypatch)
+    cancelled = Event()
+    cancelled.set()
+    config = FeatureExtractionConfig(selected_features=["bamboo_pause_count"])
+    with pytest.raises(RuntimeError, match="feature_extraction_cancelled"):
+        run_acoustic_feature_extraction(decisions, root, config, intervals,
+                                        cancel_event=cancelled)
+    assert not (root / "acoustic" / "005_features" / "tables" /
+                "acoustic_feature_status_long.csv").exists()

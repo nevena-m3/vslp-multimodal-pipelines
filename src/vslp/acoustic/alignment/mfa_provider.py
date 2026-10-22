@@ -249,6 +249,23 @@ class MfaProvider:
                 "dictionary_sha256": dictionary_hash, "profile_id": profile.profile_id,
                 "commands": commands, "resources": resources}
 
+    def configure_from_preflight(self, profile: MfaProfile, report: dict) -> None:
+        """Reuse a persisted successful preflight for the following batch run."""
+        if (report.get("status") != "AVAILABLE" or
+                report.get("profile_id") != profile.profile_id or
+                report.get("mode") != profile.mode or
+                report.get("version") not in SUPPORTED):
+            raise ValueError("mfa_preflight_not_reusable")
+        issue = self._configure(profile)
+        if issue:
+            raise RuntimeError(issue["status"])
+        self.version = str(report["version"])
+        self.mode = profile.mode
+        self.resolved_dictionary = str(report.get("resources", {}).get(
+            "dictionary", {}).get("path", ""))
+        if not self.resolved_dictionary:
+            raise ValueError("mfa_preflight_dictionary_missing")
+
     def validation_command(self, corpus: Path, profile: MfaProfile) -> list[str]:
         # HF bundles have no validated corpus-validation CLI contract in the pinned
         # versions. Fail closed instead of pretending the legacy validator covers them.

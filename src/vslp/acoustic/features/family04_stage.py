@@ -39,7 +39,7 @@ def load_final_alignment(root: Path):
 def run_family04_stage(decisions_csv: str | Path, root: str | Path, config,
                        intervals_csv: str | Path | None, registry: pd.DataFrame,
                        progress_callback=None, execution_stage_dir: Path | None = None,
-                       formant_service=None) -> StageResult:
+                       formant_service=None, recording_scope=None) -> StageResult:
     """Consume only frozen reviewed segmentation and frozen Alignment tokens."""
     root = Path(root)
     review = root / "acoustic" / "003_segmentation_review" / "final"
@@ -48,11 +48,15 @@ def run_family04_stage(decisions_csv: str | Path, root: str | Path, config,
     if (Path(decisions_csv).resolve() != decisions.resolve() or intervals_csv is None
             or Path(intervals_csv).resolve() != intervals.resolve()):
         raise ValueError("Family 04 requires authoritative frozen reviewed segmentation")
-    kept = load_final_segmentation(intervals, decisions)
-    all_intervals = pd.read_csv(intervals, keep_default_na=False)
+    kept = (recording_scope.kept if recording_scope is not None else
+            load_final_segmentation(intervals, decisions))
+    all_intervals = (recording_scope.intervals if recording_scope is not None else
+                     pd.read_csv(intervals, keep_default_na=False))
     selected = set(config.selected_features) & FAMILY04_IDS
     run = json.loads((root / "project_manifest.json").read_text(encoding="utf-8"))
-    task_id = str(run.get("task_id", ""))
+    from vslp.acoustic.features.catalog import project_task_key
+
+    task_id = project_task_key(run)
     task = task_context(run)
     profile = profile_by_id(getattr(config, "formant_profile_id", None)
                             or "family04_burg_native_5500_v1")

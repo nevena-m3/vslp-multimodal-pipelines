@@ -221,18 +221,19 @@ def rqa_determinism(values: np.ndarray) -> tuple[float, str]:
     return line_points / total, ""
 
 
-def rqa_components(chunks_48k: list[np.ndarray], *, delta: bool = False) -> tuple[np.ndarray, list[str], dict]:
+def rqa_components(chunks_48k: list[np.ndarray], *, delta: bool = False,
+                   trajectories: list[np.ndarray] | None = None) -> tuple[np.ndarray, list[str], dict]:
     by_coefficient: list[list[float]] = [[] for _ in range(13)]
-    for chunk in chunks_48k:
-        segment_samples = FS
-        for start in range(0, len(chunk) - segment_samples + 1, segment_samples):
-            trajectory = mfcc_trajectory(chunk[start:start + segment_samples])
-            if delta:
-                trajectory = delta_mfcc(trajectory)
-            for i in range(13):
-                value, reason = rqa_determinism(trajectory[:, i])
-                if not reason:
-                    by_coefficient[i].append(value)
+    if trajectories is None:
+        trajectories = [mfcc_trajectory(chunk[start:start + FS])
+                        for chunk in chunks_48k
+                        for start in range(0, len(chunk) - FS + 1, FS)]
+    for ordinary in trajectories:
+        trajectory = delta_mfcc(ordinary) if delta else ordinary
+        for i in range(13):
+            value, reason = rqa_determinism(trajectory[:, i])
+            if not reason:
+                by_coefficient[i].append(value)
     values = np.array([np.median(items) if items else np.nan for items in by_coefficient])
     reasons = ["" if items else "no_valid_rqa_segment" for items in by_coefficient]
     return values, reasons, {"n_valid_segments_by_coefficient": [len(x) for x in by_coefficient],

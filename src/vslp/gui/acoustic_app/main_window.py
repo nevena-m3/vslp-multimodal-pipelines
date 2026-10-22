@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import json
+from time import monotonic
 from typing import Callable
 
 import pandas as pd
@@ -15,6 +16,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QDialog,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -46,6 +48,7 @@ from vslp.acoustic.features.catalog import (
     feature_availability, load_feature_catalog, prerequisite_issues, task_indicator,
     requires_alignment_for_task, supports_task,
 )
+from vslp.gui.acoustic_app.feature_results import result_summary
 from vslp.acoustic.alignment import freeze_alignment, load_final_alignment, run_acoustic_alignment
 from vslp.acoustic.alignment.package_v1 import (
     import_alignment_package, inspect_alignment_package,
@@ -60,6 +63,8 @@ from vslp.acoustic.features.stage import (
     FeatureExtractionConfig,
     run_acoustic_feature_extraction,
 )
+
+
 from vslp.acoustic.ingest.stage import run_acoustic_ingest
 from vslp.acoustic.run_setup import initialize_acoustic_run
 from vslp.acoustic.preprocess.stage import PreprocessConfig, run_acoustic_preprocess
@@ -83,6 +88,15 @@ from vslp.core.project import prune_empty_acoustic_directories, task_run_folder_
 from vslp.core.schemas import ArtifactRef, StageManifest, StageResult
 from vslp.gui.common.utils import open_in_browser, open_path
 from vslp.gui.common.worker import Worker
+
+
+def _import_package_for_gui(package_folder: str, project_root: Path) -> dict:
+    """Validate and copy on a worker; decoded-audio hashing never blocks Qt."""
+    preview = inspect_alignment_package(package_folder, project_root)
+    if preview["error"]:
+        return {"preview": preview, "imported": False}
+    destination = import_alignment_package(package_folder, project_root)
+    return {"preview": preview, "imported": True, "destination": str(destination)}
 
 
 FEATURE_FAMILY_LABELS = (
@@ -137,6 +151,11 @@ class AcousticPipelineWindow(QMainWindow):
         }
         self._thread: QThread | None = None
         self._worker: Worker | None = None
+        self._operation_started_at = 0.0
+        self._feature_progress = (0, 0, "Preparing extraction...")
+        self._feature_progress_timer = QTimer(self)
+        self._feature_progress_timer.setInterval(1000)
+        self._feature_progress_timer.timeout.connect(self._refresh_feature_progress)
 
         self._build_ui()
         self._refresh_stage_cards()
@@ -254,11 +273,15 @@ class AcousticPipelineWindow(QMainWindow):
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
         self.progress_label = QLabel("Ready")
+        self.cancel_features_btn = QPushButton("Cancel extraction")
+        self.cancel_features_btn.setEnabled(False)
+        self.cancel_features_btn.clicked.connect(self._cancel_feature_extraction)
         self.log_box = QPlainTextEdit()
         self.log_box.setReadOnly(True)
         self.log_box.setMinimumHeight(90)
         log_layout.addWidget(self.progress)
         log_layout.addWidget(self.progress_label)
+        log_layout.addWidget(self.cancel_features_btn)
         log_layout.addWidget(self.log_box)
         def show_log(opened: bool) -> None:
             self.progress.setVisible(opened)
@@ -1084,6 +1107,14 @@ class AcousticPipelineWindow(QMainWindow):
         self.feature_package_status = QLabel("No Alignment Package loaded")
         self.feature_package_status.setWordWrap(True)
         package_layout.addWidget(self.feature_package_status)
+        self.feature_package_path = QLabel("")
+        self.feature_package_path.setWordWrap(True)
+        self.feature_package_path.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        package_layout.addWidget(self.feature_package_path)
+        self.feature_package_details = QPushButton("View package details")
+        self.feature_package_details.clicked.connect(self._show_alignment_package_details)
+        self.feature_package_details.hide()
+        package_layout.addWidget(self.feature_package_details)
         right_layout.addWidget(package_group)
         self.feature_vowel_mapping_row = QWidget()
         mapping_row = QHBoxLayout(self.feature_vowel_mapping_row)
@@ -1149,11 +1180,23 @@ class AcousticPipelineWindow(QMainWindow):
         self.computation_mode_combo.setEnabled(False)
         self.region_policy_combo.setEnabled(False)
 
+        self.resume_features_check = QCheckBox("Resume existing run")
+        self.resume_features_check.setChecked(True)
+        self._set_tooltip(self.resume_features_check,
+                          "Reuse verified recording and family results; retry incomplete, failed, or stale work.")
+        right_layout.addWidget(self.resume_features_check)
         run_btn = QPushButton("Run Acoustic Features")
         run_btn.setObjectName("RunButton")
         run_btn.clicked.connect(self.run_features)
         self.run_features_btn = run_btn
         right_layout.addWidget(run_btn)
+        self.feature_result_summary = QLabel("Results will appear here after extraction.")
+        self.feature_result_summary.setWordWrap(True)
+        right_layout.addWidget(self.feature_result_summary)
+        self.feature_results_button = QPushButton("View results and unavailable features")
+        self.feature_results_button.clicked.connect(self._show_feature_results)
+        self.feature_results_button.setEnabled(False)
+        right_layout.addWidget(self.feature_results_button)
         right_layout.addStretch(1)
         splitter.addWidget(left); splitter.addWidget(right); splitter.setSizes([720, 430]); splitter.setMinimumHeight(540)
         layout.addWidget(splitter)
@@ -1746,41 +1789,75 @@ class AcousticPipelineWindow(QMainWindow):
         if root is None:
             QMessageBox.warning(self, "Alignment package", "Select a project first.")
             return
-        preview = inspect_alignment_package(folder, root)
+        self.feature_package_status.setText("Validating Alignment Package...")
+        self._run_worker("package_import", _import_package_for_gui,
+                         {"package_folder": folder, "project_root": root})
+
+    def _show_package_import_result(self, result: dict) -> None:
+        preview = result["preview"]
+        if result.get("destination"):
+            self.feature_package_path.setText(f"Imported package: {result['destination']}")
+        self._last_package_preview = preview
+        self.feature_package_details.show()
         manifest = preview["manifest"]
+        project_count = preview["matched"] + preview["missing"] + preview["stale"]
         self.feature_package_status.setText(
             f"{manifest.get('package_contract_version', 'Unknown package')} · "
-            f"Matched {preview['matched']}/{manifest.get('recording_count', 0)} · "
+            f"Matched {preview['matched']}/{project_count} · "
             f"Finalized {preview['finalized']} · Missing {preview['missing']} · "
             f"Stale/mismatched {preview['stale']} · Invalid {preview['invalid']}")
         if preview["error"]:
-            QMessageBox.warning(self, "Alignment package", preview["error"])
+            active = bool(self._run_root and (self._run_root / "alignment_imports" / "active.json").is_file())
+            self.feature_package_status.setText(
+                "New package not activated. Previous package remains active."
+                if active else
+                "Package not activated. Alignment-independent features remain available.")
+            QMessageBox.warning(self, "Alignment package", self._package_failure_message(preview["error"]))
             return
-        try:
-            import_alignment_package(folder, root)
-            self._refresh_alignment_package_status()
-            self._refresh_feature_count_label()
-        except (OSError, ValueError, KeyError) as exc:
-            self.feature_package_status.setText(f"Invalid package: {exc}")
-            QMessageBox.warning(self, "Alignment package", str(exc))
+        self._refresh_feature_count_label()
+
+    @staticmethod
+    def _package_failure_message(reason: str) -> str:
+        if "time_axis" in reason:
+            return "Source recording matches, but preprocessing changed the time axis. View details for the internal code."
+        if "task_prompt" in reason or "transcript" in reason:
+            return "The package task or transcript does not match this project. View details for the internal code."
+        if "audio_identity" in reason or "source_changed" in reason:
+            return "The package could not be matched to this source recording. View details for the internal code."
+        return "The Alignment Package could not be activated. View details for the reason."
+
+    def _show_alignment_package_details(self) -> None:
+        preview = getattr(self, "_last_package_preview", {})
+        rows = preview.get("recording_status", [])
+        detail = "\n".join(f"{row.get('record_key')}: {row.get('status')}"
+                           for row in rows)
+        QMessageBox.information(self, "Alignment Package details",
+                                f"{preview.get('error') or 'Package accepted'}\n\n{detail}")
 
     def _refresh_alignment_package_status(self) -> None:
         if self._run_root is None:
             return
         active = self._run_root / "alignment_imports" / "active.json"
         if not active.is_file():
-            self.feature_package_status.setText("No Alignment Package loaded")
+            self.feature_package_status.setText(
+                "Alignment Package: not loaded. Alignment-independent features can still run.")
+            self.feature_package_path.setText("")
             return
         try:
             package_id = str(json.loads(active.read_text(encoding="utf-8"))["package_id"])
             if not package_id.isalnum():
                 raise ValueError("invalid_package_id")
+            self.feature_package_path.setText(
+                f"Imported package: {self._run_root / 'alignment_imports' / package_id}")
             preview = inspect_alignment_package(
                 self._run_root / "alignment_imports" / package_id, self._run_root)
+            self._last_package_preview = preview
+            self.feature_package_details.show()
             manifest = preview["manifest"]
+            project_count = preview["matched"] + preview["missing"] + preview["stale"]
             self.feature_package_status.setText(
                 f"{manifest.get('package_contract_version', 'Unknown package')} · "
-                f"Matched {preview['matched']}/{manifest.get('recording_count', 0)} · "
+                f"Matched {preview['matched']}/{project_count} · "
                 f"Finalized {preview['finalized']} · Missing {preview['missing']} · "
                 f"Stale/mismatched {preview['stale']} · Invalid {preview['invalid']}")
             if preview["error"]:
@@ -1825,11 +1902,11 @@ class AcousticPipelineWindow(QMainWindow):
                     None, "alignment_package_required")
             self.feature_alignment_edit.setText(
                 alignment.manifest["alignment_run_id"] if alignment else "Alignment Package required")
-        problems = sum(bool(self._feature_prerequisite_issues(f)) for f in selected)
+        ready = sum(self._feature_ready(f) for f in selected)
         task = self.task_name_edit.text() if hasattr(self, "task_name_edit") else "Not set"
         task_type = self.task_type_combo.currentData() if hasattr(self, "task_type_combo") else None
         self.feature_count_label.setText(
-            f"Selected outputs: {len(selected)} | Current-run issues: {problems}\n"
+            f"Selected: {len(selected)} | Ready now: {ready} | Expected unavailable: {len(selected) - ready}\n"
             f"Task: {task or 'Not set'} | Type: {task_type or 'Not specified'}")
         if hasattr(self, "run_features_btn"):
             self.run_features_btn.setEnabled(bool(selected))
@@ -2384,6 +2461,8 @@ class AcousticPipelineWindow(QMainWindow):
     def _set_busy(self, busy: bool) -> None:
         for btn in self.findChildren(QPushButton):
             btn.setEnabled(not busy)
+        self.cancel_features_btn.setEnabled(
+            busy and self._worker is not None and self._worker.name == "features")
         if busy:
             self.progress.setRange(0, 0)
             self.progress_label.setText("Discovering inputs…")
@@ -2419,13 +2498,18 @@ class AcousticPipelineWindow(QMainWindow):
                           "recording_id": recording_id, "trial_id": trial_id})
 
     def _cleanup_thread(self, *_args) -> None:
+        self._feature_progress_timer.stop()
         if self._thread is not None:
             self._thread.quit(); self._thread.wait()
         self._thread = None; self._worker = None; self._set_busy(False)
         if self._run_root is not None and self._stage_path("review", "summary").exists():
             self.review_widget.refresh()
     def _on_worker_started(self, name: str) -> None:
+        self._operation_started_at = monotonic()
         self._set_busy(True)
+        if name == "features":
+            self._feature_progress = (0, 0, "Preparing extraction...")
+            self._feature_progress_timer.start()
         if name == "alignment":
             self.alignment_widget.alignment_started()
         if name in {"alignment_preflight", "alignment_environment",
@@ -2435,6 +2519,12 @@ class AcousticPipelineWindow(QMainWindow):
             self.stage_records[name].status = "running"
             self._refresh_stage_cards()
         self.append_log(f"=== {'Acoustic Features' if name == 'features' else name} ===")
+
+    def _cancel_feature_extraction(self) -> None:
+        if self._worker is not None and self._worker.name == "features":
+            self._worker.cancel_event.set()
+            self.cancel_features_btn.setEnabled(False)
+            self.progress_label.setText("Cancelling after the current recording...")
 
     def _on_worker_progress(self, done: int, total: int, message: str) -> None:
         if self._worker is not None and self._worker.name == "alignment":
@@ -2447,8 +2537,43 @@ class AcousticPipelineWindow(QMainWindow):
         else:
             self.progress.setRange(0, 0)
             self.progress_label.setText(message)
+        if self._worker is not None and self._worker.name == "features":
+            self._feature_progress = (done, total, message)
+            self._refresh_feature_progress()
+
+    def _refresh_feature_progress(self) -> None:
+        if self._worker is None or self._worker.name != "features":
+            return
+        done, total, message = self._feature_progress
+        elapsed = max(0, round(monotonic() - self._operation_started_at))
+        elapsed_text = f"{elapsed // 60:02d}:{elapsed % 60:02d}"
+        count = f"{done} / {total} work units · " if total else ""
+        # A measurement can be a subsecond duration or a long CPP calculation.
+        # A count-based ETA would imply equal costs and is misleading here.
+        eta_text = " · ETA estimating..." if total and done < total else ""
+        self.progress_label.setText(f"{count}{message} · elapsed {elapsed_text}{eta_text}")
 
     def _on_worker_failed(self, name: str, err: str) -> None:
+        elapsed = monotonic() - self._operation_started_at
+        self.append_log(f"{name} stopped after {elapsed:.1f} s")
+        if name == "features" and err.startswith("feature_extraction_cancelled"):
+            self.stage_records[name].status = "cancelled"
+            self._refresh_stage_cards()
+            self.progress_label.setText("Acoustic extraction cancelled")
+            return
+        if name == "package_import":
+            reason = err.splitlines()[-1] if err.splitlines() else err
+            self._last_package_preview = {"error": reason, "recording_status": []}
+            self.feature_package_details.show()
+            active = bool(self._run_root and (self._run_root / "alignment_imports" / "active.json").is_file())
+            self.feature_package_status.setText(
+                "New package not activated. Previous package remains active."
+                if active else
+                "Package not activated. Alignment-independent features remain available.")
+            self.append_log(f"Alignment Package import failed: {reason}")
+            QMessageBox.warning(self, "Alignment package",
+                                self._package_failure_message(reason))
+            return
         if name == "alignment":
             self.alignment_widget.alignment_finished(err)
         if name == "alignment_preflight":
@@ -2795,6 +2920,7 @@ class AcousticPipelineWindow(QMainWindow):
             return
         cfg = FeatureExtractionConfig(
             selected_features=selected_features,
+            resume_existing_run=self.resume_features_check.isChecked(),
             require_imported_alignment=True,
             prompt_manifest_path=self.feature_prompt_manifest_edit.text().strip() or None,
             vowel_category_manifest_path=self.feature_vowel_mapping_edit.text().strip() or None,
@@ -2806,6 +2932,45 @@ class AcousticPipelineWindow(QMainWindow):
             computation_mode=self.computation_mode_combo.currentText(),
         )
         self._run_worker("features", run_acoustic_feature_extraction, {"segmentation_summary_csv": segmentation_summary, "final_segmentation_intervals_csv": final_intervals, "output_root": output_root, "config": cfg})
+
+    def _show_feature_results(self) -> None:
+        path = self._stage_path("features", "status")
+        if not path.is_file():
+            QMessageBox.information(self, "Feature results", "No feature results are available yet.")
+            return
+        summary, rows = result_summary(path)
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Acoustic Feature Results")
+        dialog.resize(1050, 600)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel(
+            f"{summary['recordings']} recordings · {summary['selected_features']} selected leaves · "
+            f"{summary['computed']} computed · {summary['unavailable']} unavailable · "
+            f"{summary['warning']} warning · {summary['error']} error"))
+        selector = QComboBox()
+        selector.addItems(["All", "Computed", "Unavailable", "Warning", "Error"])
+        layout.addWidget(selector)
+        table = QTableWidget()
+        columns = ("recording_id", "feature_id", "value", "severity", "failure_reason")
+        table.setColumnCount(len(columns))
+        table.setHorizontalHeaderLabels(["Recording", "Feature", "Value", "Status", "Reason"])
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        table.setSortingEnabled(False)
+        layout.addWidget(table)
+
+        def populate() -> None:
+            current = rows if selector.currentText() == "All" else rows.loc[
+                rows.severity.eq(selector.currentText().upper())]
+            table.setRowCount(len(current))
+            for row_index, item in enumerate(current.itertuples(index=False)):
+                for column_index, key in enumerate(columns):
+                    table.setItem(row_index, column_index,
+                                  QTableWidgetItem(str(getattr(item, key))))
+            table.resizeColumnsToContents()
+
+        selector.currentIndexChanged.connect(populate)
+        populate()
+        dialog.exec()
 
 
     def run_generate_report_summary(self) -> None:
@@ -3022,6 +3187,11 @@ table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{border-bottom:
                           "reuse_run_id": previous_run_id})
 
     def _on_worker_finished(self, name: str, result: object) -> None:  # type: ignore[override]
+        elapsed = monotonic() - self._operation_started_at
+        self.append_log(f"{name} finished in {elapsed:.1f} s")
+        if name == "package_import" and isinstance(result, dict):
+            self._show_package_import_result(result)
+            return
         if name == "alignment_preflight":
             self.alignment_widget.show_preflight_result(result)
             return
@@ -3060,12 +3230,27 @@ table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{border-bottom:
         self.append_log(f"{'Acoustic Features' if name == 'features' else name} completed with status: {status}")
         if name == "features" and manifest and Path(manifest).is_file():
             try:
-                counts = json.loads(Path(manifest).read_text(encoding="utf-8")).get("config", {})
+                summary, _rows = result_summary(self._stage_path("features", "status"),
+                                                include_rows=False)
+                self.feature_result_summary.setText(
+                    f"Feature extraction complete · {summary['recordings']} recordings · "
+                    f"{summary['computed']} computed · {summary['unavailable']} unavailable · "
+                    f"{summary['warning']} warning · {summary['error']} error")
+                checkpoint_counts = json.loads(Path(manifest).read_text(encoding="utf-8")).get(
+                    "config", {}).get("checkpoint_counts")
+                if checkpoint_counts:
+                    self.feature_result_summary.setText(
+                        self.feature_result_summary.text() +
+                        f"\nCompleted previously: {checkpoint_counts['completed_previously']} · "
+                        f"Computed now: {checkpoint_counts['to_compute']} · "
+                        f"Stale: {checkpoint_counts['stale']} · "
+                        f"Failed/retry: {checkpoint_counts['failed_retry']}")
+                self.feature_results_button.setEnabled(True)
                 self.append_log(
-                    f"Selected outputs: {len(counts.get('selected_feature_ids', []))} | "
-                    f"Succeeded: {counts.get('successful_outputs', 0)} | "
-                    f"Issues: {counts.get('failed_outputs', 0)}")
-            except (OSError, ValueError):
+                    f"Feature results: {summary['computed']} computed, "
+                    f"{summary['unavailable']} expected unavailable, "
+                    f"{summary['warning']} warnings, {summary['error']} errors")
+            except (OSError, ValueError, KeyError):
                 pass
         if report: self.append_log(f"Report: {report}")
         if summary: self.append_log(f"Summary: {summary}")

@@ -59,6 +59,8 @@ class FeatureExtractionConfig:
     # GUI extraction consumes only an imported package for linguistic alignment.
     # CLI callers retain the embedded Final Alignment compatibility path.
     require_imported_alignment: bool = False
+    # Durable per-recording/family results. The GUI enables this for batch runs.
+    resume_existing_run: bool = False
     prompt_manifest_path: str | None = None
     vowel_category_manifest_path: str | None = None
     segmental_target_manifest_path: str | None = None
@@ -323,6 +325,7 @@ def run_acoustic_feature_extraction(
     config: FeatureExtractionConfig | None = None,
     final_segmentation_intervals_csv: str | Path | None = None,
     progress_callback=None,
+    cancel_event=None,
 ) -> StageResult:
     """Extract acoustic features from segmentation outputs."""
     authoritative = Path(output_root) / "acoustic" / "003_segmentation_review" / "final" / "final_segmentation_decisions.csv"
@@ -342,7 +345,8 @@ def run_acoustic_feature_extraction(
         raise ValueError("Acoustic Features requires frozen authoritative final segmentation intervals")
     return run_mixed_feature_stage(segmentation_summary_csv, output_root, cfg,
                                    final_segmentation_intervals_csv, registry,
-                                   progress_callback=progress_callback)
+                                   progress_callback=progress_callback,
+                                   cancel_event=cancel_event)
 def _write_native_segment_events(seg_summary: pd.DataFrame, output_path: Path) -> None:
     """Persist segment-level native measurements used by timing features.
 

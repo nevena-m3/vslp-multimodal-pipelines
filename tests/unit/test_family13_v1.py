@@ -93,6 +93,33 @@ def test_rqa_delta_and_sentence_contract():
     assert not random_reason and value > random_value
 
 
+def test_ordinary_and_delta_rqa_share_mfcc_without_changing_values(monkeypatch):
+    import vslp.acoustic.features.family13_v1_stage as stage
+
+    time = np.arange(48000) / 48000
+    chunk = (np.sin(2 * np.pi * 180 * time) +
+             0.05 * np.sin(2 * np.pi * 1200 * time))
+    calls = []
+    original = stage.mfcc_trajectory
+
+    def measured(audio):
+        calls.append(len(audio))
+        return original(audio)
+
+    monkeypatch.setattr(stage, "mfcc_trajectory", measured)
+    selected = {"bamboo_mfcc01_rqa_det", "bamboo_dmfcc01_rqa_det"}
+    shared, _ = stage._sentence_values([chunk], selected)
+    assert calls == [48000]
+    ordinary, ordinary_reasons, _ = rqa_components([chunk], delta=False)
+    delta, delta_reasons, _ = rqa_components([chunk], delta=True)
+    for feature_id, value, reason in (
+            ("bamboo_mfcc01_rqa_det", ordinary[0], ordinary_reasons[0]),
+            ("bamboo_dmfcc01_rqa_det", delta[0], delta_reasons[0])):
+        actual, actual_reason = shared[feature_id]
+        assert actual_reason == reason
+        assert actual == value or np.isnan(actual) and np.isnan(value)
+
+
 def test_modulation_and_visibility_components():
     t = np.arange(500) / 100
     theta, reason = modulation_depth(1 + 0.5 * np.sin(2 * np.pi * 5 * t))

@@ -20,7 +20,8 @@ from vslp.core.schemas import ArtifactRef, StageManifest, StageResult
 
 def run_family10_stage(decisions_csv: str | Path, root: str | Path, config,
                        intervals_csv: str | Path | None, registry: pd.DataFrame,
-                       progress_callback=None, execution_stage_dir: Path | None = None) -> StageResult:
+                       progress_callback=None, execution_stage_dir: Path | None = None,
+                       recording_scope=None) -> StageResult:
     root = Path(root)
     final = root / "acoustic" / "003_segmentation_review" / "final"
     decisions = final / "final_segmentation_decisions.csv"
@@ -28,7 +29,8 @@ def run_family10_stage(decisions_csv: str | Path, root: str | Path, config,
     if (Path(decisions_csv).resolve() != decisions.resolve() or intervals_csv is None
             or Path(intervals_csv).resolve() != intervals.resolve()):
         raise ValueError("Family 10 requires frozen reviewed DDK context")
-    kept = load_final_segmentation(intervals, decisions)
+    kept = (recording_scope.kept if recording_scope is not None else
+            load_final_segmentation(intervals, decisions))
     event_path = final / "final_ddk_events.csv"
     project = json.loads((root / "project_manifest.json").read_text(encoding="utf-8"))
     all_events, event_issue = load_reviewed_ddk_events(event_path)

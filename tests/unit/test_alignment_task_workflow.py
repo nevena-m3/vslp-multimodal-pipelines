@@ -234,20 +234,16 @@ def test_48_recording_technical_speakers_persist_without_entry(tmp_path):
     assert app is not None
 
 
-def test_run_log_clears_old_prompt_error_for_new_alignment_operation(tmp_path):
+def test_acoustic_gui_has_package_import_instead_of_embedded_alignment():
     from PySide6.QtWidgets import QApplication
     from vslp.gui.acoustic_app.main_window import AcousticPipelineWindow
 
     QApplication.instance() or QApplication([])
     window = AcousticPipelineWindow()
-    window.append_log("ERROR in alignment: MISSING_PROMPT")
-    window._on_worker_started("alignment_preflight")
-    assert "MISSING_PROMPT" not in window.log_box.toPlainText()
-    assert "alignment_preflight" in window.log_box.toPlainText()
-    alignment_tab = next(index for index in range(window.tabs.count())
-                         if window.tabs.tabText(index) == "Alignment")
-    window.tabs.setCurrentIndex(alignment_tab)
-    assert window.log_box.isHidden()
+    assert all(window.tabs.tabText(index) != "Alignment"
+               for index in range(window.tabs.count()))
+    assert window.feature_package_status.text() == "No Alignment Package loaded"
+    assert window.alignment_widget is None
     window.close()
 
 
@@ -552,13 +548,9 @@ def test_feature_first_run_without_alignment_dispatches_directly(tmp_path, monke
     window.close()
 
 
-@pytest.mark.parametrize("choice,expected", [
-    ("RUN REQUIRED ALIGNMENT", "alignment"),
-    ("RUN NON-ALIGNMENT FEATURES ONLY", "non_alignment"),
-])
-def test_mixed_feature_selection_prompts_for_alignment_only_when_needed(
-        tmp_path, monkeypatch, choice, expected):
-    from PySide6.QtWidgets import QApplication, QMessageBox
+def test_mixed_feature_selection_dispatches_without_embedded_alignment(
+        tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QApplication
     from vslp.gui.acoustic_app.main_window import AcousticPipelineWindow
 
     QApplication.instance() or QApplication([])
@@ -578,22 +570,13 @@ def test_mixed_feature_selection_prompts_for_alignment_only_when_needed(
     monkeypatch.setattr(window, "_run_worker", lambda name, fn, kwargs:
                         dispatched.append(kwargs["config"].selected_features))
 
-    def choose(dialog):
-        next(button for button in dialog.buttons() if button.text() == choice).click()
-        return 0
-
-    monkeypatch.setattr(QMessageBox, "exec", choose)
     window.run_features()
-    if expected == "alignment":
-        assert dispatched == []
-        assert window.tabs.currentWidget() is window.alignment_widget
-        assert window._return_to_features_after_alignment
-    else:
-        assert dispatched == [["bamboo_pause_count"]]
+    assert dispatched == [["bamboo_pause_count", "f1_vowel_median_hz"]]
+    assert window.alignment_widget is None
     window.close()
 
 
-def test_return_from_required_alignment_keeps_feature_selection(tmp_path, monkeypatch):
+def test_package_panel_navigation_keeps_feature_selection(tmp_path, monkeypatch):
     from PySide6.QtWidgets import QApplication
     from vslp.gui.acoustic_app.main_window import AcousticPipelineWindow
 
@@ -603,11 +586,9 @@ def test_return_from_required_alignment_keeps_feature_selection(tmp_path, monkey
     window._run_root = root
     monkeypatch.setattr(window, "_selected_feature_names", lambda:
                         ["bamboo_pause_count", "f1_vowel_median_hz"])
-    window._return_to_features_after_alignment = True
-    window.alignment_widget._feature_return_pending = True
-    window.tabs.setCurrentWidget(window.alignment_widget)
-    window.alignment_widget.return_to_features_requested.emit()
-    assert window.tabs.tabText(window.tabs.currentIndex()) == "Acoustic Features"
+    window.tabs.setCurrentIndex(0)
+    features = next(index for index in range(window.tabs.count())
+                    if window.tabs.tabText(index) == "Acoustic Features")
+    window.tabs.setCurrentIndex(features)
     assert window._selected_feature_names() == ["bamboo_pause_count", "f1_vowel_median_hz"]
-    assert not window._return_to_features_after_alignment
     window.close()

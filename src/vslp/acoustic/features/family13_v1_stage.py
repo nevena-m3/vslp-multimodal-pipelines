@@ -13,12 +13,12 @@ from scipy import __version__ as SCIPY_VERSION
 from vslp.acoustic.alignment import load_final_alignment
 from vslp.acoustic.alignment.final_contract import canonical_units
 from vslp.acoustic.alignment.reviewed_trials import load_confirmed_trials
-from vslp.acoustic.features.catalog import task_key
+from vslp.acoustic.features.catalog import project_task_key
 from vslp.acoustic.features.family07_v2 import _eligible_speech
 from vslp.acoustic.features.family11_v2_stage import _bounds
 from vslp.acoustic.features.family13_v1 import (
     FS, MIN_SENTENCES, PUBLIC_IDS, VERSION, analysis_copy, ppe_from_audio,
-    rhythm_components, rqa_components, specs, tsfel_entropy, visibility_10ms,
+    mfcc_trajectory, rhythm_components, rqa_components, specs, tsfel_entropy, visibility_10ms,
     wpd_components,
 )
 from vslp.acoustic.features.stable_phonation import centered_stable_spans
@@ -106,10 +106,17 @@ def _sentence_values(chunks: list[np.ndarray], selected: set[str]) -> tuple[dict
         if wpd:
             audit["wpd_raw_energy"] = wpd["raw_energy"].tolist()
             audit["wpd_entropy_bits"] = wpd["entropy_bits"].tolist()
+    ordinary_needed = any(name.startswith("bamboo_mfcc") for name in selected)
+    delta_needed = any(name.startswith("bamboo_dmfcc") for name in selected)
+    shared_trajectories = (
+        [mfcc_trajectory(chunk[start:start + FS]) for chunk in chunks
+         for start in range(0, len(chunk) - FS + 1, FS)]
+        if ordinary_needed and delta_needed else None)
     for delta, stem in ((False, "bamboo_mfcc"), (True, "bamboo_dmfcc")):
         if not any(name.startswith(stem) for name in selected):
             continue
-        det, reasons, info = rqa_components(chunks, delta=delta)
+        det, reasons, info = rqa_components(chunks, delta=delta,
+                                            trajectories=shared_trajectories)
         audit[stem] = info
         for i in range(13):
             name = f"{stem}{i + 1:02d}_rqa_det"
@@ -159,7 +166,8 @@ def _vowel_values(audio: np.ndarray, sr: int, selected: set[str]) -> tuple[dict,
 
 def run_family13_stage(decisions_csv: str | Path, root: str | Path, config,
                        intervals_csv: str | Path | None, registry: pd.DataFrame,
-                       progress_callback=None, execution_stage_dir: Path | None = None) -> StageResult:
+                       progress_callback=None, execution_stage_dir: Path | None = None,
+                       recording_scope=None) -> StageResult:
     root = Path(root)
     final = root / "acoustic" / "003_segmentation_review" / "final"
     decisions, intervals = final / "final_segmentation_decisions.csv", (
@@ -167,10 +175,12 @@ def run_family13_stage(decisions_csv: str | Path, root: str | Path, config,
     if (intervals_csv is None or Path(intervals_csv).resolve() != intervals.resolve()
             or Path(decisions_csv).resolve() != decisions.resolve()):
         raise ValueError("Family 13 requires frozen reviewed segmentation")
-    kept = load_final_segmentation(intervals, decisions)
-    timeline = pd.read_csv(intervals, keep_default_na=False)
+    kept = (recording_scope.kept if recording_scope is not None else
+            load_final_segmentation(intervals, decisions))
+    timeline = (recording_scope.intervals if recording_scope is not None else
+                pd.read_csv(intervals, keep_default_na=False))
     project = json.loads((root / "project_manifest.json").read_text(encoding="utf-8"))
-    task_id = str(project.get("task_id") or task_key(str(project.get("task_name", ""))) or "")
+    task_id = project_task_key(project)
     selected = set(config.selected_features) & PUBLIC_IDS
     lookup = registry.set_index("feature")
     stage = execution_stage_dir or root / "acoustic" / "005_features"

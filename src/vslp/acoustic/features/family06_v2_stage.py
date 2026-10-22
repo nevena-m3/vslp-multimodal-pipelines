@@ -189,7 +189,8 @@ def _feature_value(feature: str, values: dict[str, float]) -> float:
 
 def run_family06_stage(decisions_csv: str | Path, root: str | Path, config,
                        intervals_csv: str | Path | None, registry: pd.DataFrame,
-                       progress_callback=None, execution_stage_dir: Path | None = None) -> StageResult:
+                       progress_callback=None, execution_stage_dir: Path | None = None,
+                       recording_scope=None) -> StageResult:
     root = Path(root)
     review = root / "acoustic" / "003_segmentation_review" / "final"
     decisions = review / "final_segmentation_decisions.csv"
@@ -197,8 +198,10 @@ def run_family06_stage(decisions_csv: str | Path, root: str | Path, config,
     if (Path(decisions_csv).resolve() != decisions.resolve() or intervals_csv is None
             or Path(intervals_csv).resolve() != intervals.resolve()):
         raise ValueError("Family 06 requires frozen authoritative reviewed segmentation")
-    kept = load_final_segmentation(intervals, decisions)
-    timeline = pd.read_csv(intervals, keep_default_na=False)
+    kept = (recording_scope.kept if recording_scope is not None else
+            load_final_segmentation(intervals, decisions))
+    timeline = (recording_scope.intervals if recording_scope is not None else
+                pd.read_csv(intervals, keep_default_na=False))
     project = json.loads((root / "project_manifest.json").read_text(encoding="utf-8"))
     task_id = str(project.get("task_id", ""))
     selected = set(config.selected_features) & F06_PUBLIC_IDS

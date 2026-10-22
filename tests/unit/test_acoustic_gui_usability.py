@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from threading import Event
 from types import SimpleNamespace
 
 import pyqtgraph as pg
@@ -20,6 +21,14 @@ from vslp.core.process_windows import hidden_console_kwargs
 def _app() -> QApplication:
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     return QApplication.instance() or QApplication([])
+
+
+def test_feature_batch_resume_control_defaults_on():
+    _app()
+    window = AcousticPipelineWindow()
+    assert window.resume_features_check.text() == "Resume existing run"
+    assert window.resume_features_check.isChecked()
+    window.close()
 
 
 def test_exact_family_order_and_task_aware_tristate(tmp_path):
@@ -303,14 +312,18 @@ def test_alignment_progress_uses_completed_recordings_not_preparation(tmp_path):
     widget.close()
 
 
-def test_alignment_technical_log_defaults_collapsed():
+def test_alignment_technical_log_is_persistent():
     _app()
     from vslp.gui.alignment_app.main_window import AlignmentWindow
 
     window = AlignmentWindow()
-    assert not window.technical.isChecked()
+    assert window.technical.widget() is not None
+    assert window._log_expanded
+    window.log_toggle.click()
+    assert not window._log_expanded
+    assert window.technical.widget() is not None
     window.review.show_technical_button.click()
-    assert window.technical.isChecked()
+    assert window._log_expanded
     window.close()
 
 
@@ -337,3 +350,37 @@ def test_bamboo_sentence_selector_zooms_shared_timeline(tmp_path, monkeypatch):
     assert left < 3. and right > 4.
     assert widget.word_plot.getViewBox().viewRange()[0] == widget.plot.viewRange()[0]
     widget.close()
+
+
+def test_feature_progress_counts_attempted_measurements_and_cancel():
+    _app()
+    window = AcousticPipelineWindow()
+    cancelled = Event()
+    window._worker = SimpleNamespace(name="features", cancel_event=cancelled)
+    window._on_worker_started("features")
+    assert window.cancel_features_btn.isEnabled()
+    window._on_worker_progress(8, 10, "F12 · recording 2/4")
+    assert "8 / 10 work units" in window.progress_label.text()
+    assert "F12" in window.progress_label.text()
+    assert "elapsed" in window.progress_label.text()
+    assert "ETA estimating..." in window.progress_label.text()
+    window._on_worker_progress(8, 10, "F1/F2 · Preparing CPP track — recording 2/4")
+    assert "Preparing CPP track" in window.progress_label.text()
+    assert "recording 2/4" in window.progress_label.text()
+    assert "elapsed" in window.progress_label.text()
+    window.cancel_features_btn.click()
+    assert cancelled.is_set()
+    assert not window.cancel_features_btn.isEnabled()
+    window._feature_progress_timer.stop()
+    window._worker = None
+    window.close()
+
+
+def test_feature_ready_count_excludes_selected_unsupported_task(monkeypatch):
+    _app()
+    window = AcousticPipelineWindow()
+    window.task_name_edit.setText("Bamboo")
+    monkeypatch.setattr(window, "_feature_prerequisite_issues", lambda _feature_id: [])
+    window._set_feature_selection(lambda feature_id: feature_id == "ddk_pa_rate_syll_s")
+    assert "Selected: 1 | Ready now: 0" in window.feature_count_label.text()
+    window.close()

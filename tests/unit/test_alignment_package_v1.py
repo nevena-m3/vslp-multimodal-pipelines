@@ -89,6 +89,7 @@ def test_export_import_retains_canonical_tables_and_loader_precedence(prepared):
 
 def test_acoustic_gui_imports_explicit_package_without_embedded_alignment_controls(
         prepared, monkeypatch):
+    from PySide6.QtCore import QEventLoop, QTimer
     from PySide6.QtWidgets import QApplication, QFileDialog
 
     from vslp.gui.acoustic_app.main_window import AcousticPipelineWindow
@@ -99,6 +100,13 @@ def test_acoustic_gui_imports_explicit_package_without_embedded_alignment_contro
     window._run_root = root
     monkeypatch.setattr(QFileDialog, "getExistingDirectory", lambda *_args: str(package))
     window._select_alignment_package()
+    assert window.feature_package_status.text() == "Validating Alignment Package..."
+    loop = QEventLoop()
+    window._worker.finished.connect(loop.quit)
+    window._worker.failed.connect(loop.quit)
+    QTimer.singleShot(10000, loop.quit)
+    loop.exec()
+    app.processEvents()
     assert "Matched 1/1" in window.feature_package_status.text()
     assert window.alignment_widget is None
     assert "Alignment" not in [window.tabs.tabText(i) for i in range(window.tabs.count())]

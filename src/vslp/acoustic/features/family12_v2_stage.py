@@ -9,7 +9,7 @@ import pandas as pd
 import soundfile as sf
 
 from vslp.acoustic.alignment.reviewed_trials import load_confirmed_trials
-from vslp.acoustic.features.catalog import task_key
+from vslp.acoustic.features.catalog import project_task_key
 from vslp.acoustic.features.family07_v2 import _eligible_speech, bamboo_reviewed_trial_domains
 from vslp.acoustic.features.family11_v2_stage import _bounds
 from vslp.acoustic.features.family12_v2 import PUBLIC_IDS, PREFIX, VERSION, measure_trial
@@ -40,7 +40,8 @@ def _trial_regions(audio, sr, frame, trial, task_id, decision):
 
 def run_family12_stage(decisions_csv: str | Path, root: str | Path, config,
                        intervals_csv: str | Path | None, registry: pd.DataFrame,
-                       progress_callback=None, execution_stage_dir: Path | None = None) -> StageResult:
+                       progress_callback=None, execution_stage_dir: Path | None = None,
+                       recording_scope=None) -> StageResult:
     root = Path(root)
     final = root / "acoustic" / "003_segmentation_review" / "final"
     decisions = final / "final_segmentation_decisions.csv"
@@ -48,10 +49,12 @@ def run_family12_stage(decisions_csv: str | Path, root: str | Path, config,
     if (intervals_csv is None or Path(intervals_csv).resolve() != intervals.resolve()
             or Path(decisions_csv).resolve() != decisions.resolve()):
         raise ValueError("Family 12 requires frozen reviewed segmentation")
-    kept = load_final_segmentation(intervals, decisions)
-    timeline = pd.read_csv(intervals, keep_default_na=False)
+    kept = (recording_scope.kept if recording_scope is not None else
+            load_final_segmentation(intervals, decisions))
+    timeline = (recording_scope.intervals if recording_scope is not None else
+                pd.read_csv(intervals, keep_default_na=False))
     project = json.loads((root/"project_manifest.json").read_text(encoding="utf-8"))
-    task_id = str(project.get("task_id") or task_key(str(project.get("task_name", ""))) or "")
+    task_id = project_task_key(project)
     selected = set(config.selected_features) & PUBLIC_IDS
     specs = registry.set_index("feature")
     stage = execution_stage_dir or root/"acoustic"/"005_features"

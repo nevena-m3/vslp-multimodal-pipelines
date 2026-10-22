@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import os
+from concurrent.futures import ProcessPoolExecutor
+from contextlib import ExitStack
 from dataclasses import replace
 from importlib import import_module
 from pathlib import Path
+from time import perf_counter
 
 import numpy as np
 import pandas as pd
@@ -49,10 +53,11 @@ def _record_context(row, task_id: str, task_type: str) -> dict:
 
 def run_mixed_feature_stage(decisions_csv: str | Path, root: str | Path, config,
                             intervals_csv: str | Path, registry: pd.DataFrame,
-                            progress_callback=None) -> StageResult:
+                            progress_callback=None, cancel_event=None) -> StageResult:
     """Resolve each approved ID once, run each executor once, merge selected results."""
     import json
 
+    stage_started = perf_counter()
     root = Path(root)
     stage = root / "acoustic" / "005_features"
     tables = stage / "tables"
@@ -60,14 +65,16 @@ def run_mixed_feature_stage(decisions_csv: str | Path, root: str | Path, config,
     kept = load_final_segmentation(intervals, decisions)
     project = json.loads((root / "project_manifest.json").read_text(encoding="utf-8"))
     from vslp.acoustic.features.catalog import (
-        TASKS, load_feature_catalog, requires_alignment_for_task, supports_task, task_key,
+        TASKS, load_feature_catalog, requires_alignment_for_task, supports_task,
     )
 
-    task_id = str(project.get("task_id") or task_key(str(project.get("task_name", ""))) or "")
+    from vslp.acoustic.features.catalog import project_task_key
+
+    task_id = project_task_key(project)
     task_type = str(project.get("task_type", ""))
     selected = list(config.selected_features)
     approved = {item["feature_id"]: item for item in load_feature_catalog()["outputs"]}
-    task_name = str(project.get("task_name") or TASKS.get(task_id, ""))
+    task_name = TASKS.get(task_id, str(project.get("task_name") or ""))
     if len(selected) != len(set(selected)):
         raise ValueError("Duplicate selected feature ID")
     lookup = registry.set_index("feature")
@@ -99,7 +106,20 @@ def run_mixed_feature_stage(decisions_csv: str | Path, root: str | Path, config,
             raise ValueError(f"No executor for {feature_id} ({family})")
         groups.setdefault(family_to_group[family], []).append(feature_id)
 
-    total_units = len(kept) * len(groups)
+    if getattr(config, "resume_existing_run", False):
+        from vslp.acoustic.features.checkpoint_v1 import run_checkpointed_stage
+
+        return run_checkpointed_stage(
+            decisions, intervals, root, stage, tables, config, registry, kept,
+            project, task_id, task_type, task_name, selected, approved, lookup,
+            executors, groups, unsupported, package_required, imported,
+            progress_callback, cancel_event,
+        )
+
+    planning_seconds = perf_counter() - stage_started
+    # Unavailable task/package combinations are already resolved above. Count
+    # only measurements that the family executors will actually attempt.
+    total_units = len(kept) * sum(len(ids) for ids in groups.values())
     if progress_callback:
         progress_callback(0, total_units, "Acoustic Features")
     rows: list[dict] = []
@@ -121,22 +141,48 @@ def run_mixed_feature_stage(decisions_csv: str | Path, root: str | Path, config,
     formant_service = FormantService()
     family_manifests: dict[str, str] = {}
     family_audits: list[ArtifactRef] = []
+    family_timing: dict[str, dict] = {}
     completed_units = 0
     for group, ids in groups.items():
+        if cancel_event is not None and cancel_event.is_set():
+            raise RuntimeError("feature_extraction_cancelled")
         group_registry = registry.loc[registry.feature.isin(ids)].copy()
+        family_label = "/".join(sorted({str(lookup.loc[feature_id, "family_id"])
+                                        for feature_id in ids}))
         group_config = replace(config, selected_features=ids)
         group_dir = stage / "family_runs" / group
         families, executor = executors[group]
+        group_started = perf_counter()
+        record_started = group_started
+        record_seconds: list[float] = []
 
         def report(done: int, total: int, message: str) -> None:
+            nonlocal record_started
+            now = perf_counter()
+            if 0 < done <= len(kept) and len(record_seconds) < done:
+                record_seconds.append(now - record_started)
+                record_started = now
+            if cancel_event is not None and cancel_event.is_set():
+                raise RuntimeError("feature_extraction_cancelled")
             if progress_callback:
-                progress_callback(completed_units + min(done, len(kept)), total_units, message)
+                measured = completed_units + min(done, len(kept)) * len(ids)
+                detail = (message if message.startswith("Preparing CPP track") else
+                          f"recording {min(done, len(kept))}/{len(kept)} · {message}")
+                progress_callback(measured, total_units,
+                                  f"{family_label} · {detail}")
 
         try:
             extra = {"formant_service": formant_service} if group == "formants" else {}
-            result = executor(decisions, root, group_config, intervals, group_registry,
-                              progress_callback=report, execution_stage_dir=group_dir,
-                              **extra)
+            with ExitStack() as resources:
+                if group == "voice" and "cpp_db" in ids:
+                    worker_limit = max(1, int(os.getenv(
+                        "VSLP_CPP_WORKERS", str(min(8, os.cpu_count() or 1)))))
+                    if worker_limit > 1:
+                        extra["cpp_pool"] = resources.enter_context(
+                            ProcessPoolExecutor(max_workers=worker_limit))
+                result = executor(decisions, root, group_config, intervals, group_registry,
+                                  progress_callback=report, execution_stage_dir=group_dir,
+                                  **extra)
             family_manifests[group] = str(result.manifest_path)
             family_manifest = json.loads(Path(result.manifest_path).read_text(encoding="utf-8"))
             for artifact in family_manifest.get("output_artifacts", []):
@@ -168,6 +214,8 @@ def run_mixed_feature_stage(decisions_csv: str | Path, root: str | Path, config,
                     if native_name else "")
                 rows.append(item)
         except Exception as exc:  # an executor failure must not erase unrelated families
+            if str(exc) == "feature_extraction_cancelled":
+                raise
             reason = f"family_executor_failed:{type(exc).__name__}:{str(exc).splitlines()[0]}"
             family_manifests[group] = reason
             for record in kept.itertuples():
@@ -175,32 +223,61 @@ def run_mixed_feature_stage(decisions_csv: str | Path, root: str | Path, config,
                     rows.append({**_record_context(record, task_id, task_type),
                                  "feature_id": feature_id, "family_id": str(lookup.loc[feature_id, "family_id"]),
                                  "value": np.nan, "unit": str(lookup.loc[feature_id, "unit"]),
-                                 "status": "unavailable", "failure_reason": reason,
+                                 "status": "error", "failure_reason": reason,
                                  "algorithm": str(lookup.loc[feature_id, "algorithm_version"]),
                                  "algorithm_version": str(lookup.loc[feature_id, "algorithm_version"]),
                                  "parameter_set_id": str(lookup.loc[feature_id, "parameter_set_id"]),
                                  "provenance_ref": ""})
-        completed_units += len(kept)
+        family_timing[group] = {
+            "seconds": round(perf_counter() - group_started, 6),
+            "recording_seconds": [round(value, 6) for value in record_seconds],
+            "selected_leaves": len(ids),
+            "recordings": len(kept),
+        }
+        completed_units += len(kept) * len(ids)
         if progress_callback:
-            progress_callback(completed_units, total_units, f"Acoustic Features — {group}")
+            progress_callback(completed_units, total_units,
+                              f"Acoustic Features — {family_label}")
 
+    if imported and config.require_imported_alignment:
+        from vslp.acoustic.alignment.package_v1 import load_imported_alignment
+
+        imported_store, import_issue = load_imported_alignment(root)
+        aligned_records = (set(imported_store.trials.recording_id.astype(str))
+                           if imported_store is not None and imported_store.trials is not None
+                           else set())
+        for item in rows:
+            feature_id = str(item["feature_id"])
+            if (feature_id in unsupported or not requires_alignment_for_task(
+                    approved[feature_id], task_name)):
+                continue
+            reason = ("alignment_package_invalid" if import_issue else
+                      "alignment_missing_for_recording"
+                      if str(item["recording_id"]) not in aligned_records else "")
+            if reason:
+                item.update(value=np.nan, status="unavailable", failure_reason=reason)
+
+    assembly_started = perf_counter()
     long = pd.DataFrame(rows)
     if not long.empty and long.duplicated(["recording_id", "feature_id"]).any():
         raise ValueError("Duplicate recording/feature result from family executors")
     expected = {(str(record.recording_id), feature_id)
                 for record in kept.itertuples() for feature_id in selected}
     produced = set(zip(long.recording_id.astype(str), long.feature_id.astype(str))) if not long.empty else set()
+    missing_rows = []
     for record in kept.itertuples():
         for feature_id in selected:
             if (str(record.recording_id), feature_id) not in produced:
-                long = pd.concat([long, pd.DataFrame([{**_record_context(record, task_id, task_type),
+                missing_rows.append({**_record_context(record, task_id, task_type),
                     "feature_id": feature_id, "family_id": str(lookup.loc[feature_id, "family_id"]),
                     "value": np.nan, "unit": str(lookup.loc[feature_id, "unit"]),
-                    "status": "unavailable", "failure_reason": "executor_missing_result",
+                    "status": "error", "failure_reason": "executor_missing_result",
                     "algorithm": str(lookup.loc[feature_id, "algorithm_version"]),
                     "algorithm_version": str(lookup.loc[feature_id, "algorithm_version"]),
                     "parameter_set_id": str(lookup.loc[feature_id, "parameter_set_id"]),
-                    "provenance_ref": ""}])], ignore_index=True)
+                    "provenance_ref": ""})
+    if missing_rows:
+        long = pd.concat([long, pd.DataFrame(missing_rows)], ignore_index=True)
     assert len(long) == len(expected)
     long["value"] = pd.to_numeric(long["value"], errors="coerce")
     long = long.sort_values(["recording_id", "feature_id"]).reset_index(drop=True)
@@ -291,7 +368,12 @@ def run_mixed_feature_stage(decisions_csv: str | Path, root: str | Path, config,
                     "final_alignment_contract_artifact_sha256", {}).get(
                         "final_alignment_canonical_phones.csv", ""),
                 "source_segmentation_decisions_sha256": sha256_file(decisions),
-                "source_segmentation_intervals_sha256": sha256_file(intervals)})
+                "source_segmentation_intervals_sha256": sha256_file(intervals),
+                "performance_timing_seconds": {
+                    "planning": round(planning_seconds, 6),
+                    "families": family_timing,
+                    "assembly_and_writing": round(perf_counter() - assembly_started, 6),
+                }})
     manifest_path = stage / "logs" / "stage_manifest.json"
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest.write_json(manifest_path)

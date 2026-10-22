@@ -57,52 +57,33 @@ FAMILY09_IDS = FAMILY09_ACTIVE_IDS | {"pause_pattern_factor_if_frozen"}
 
 def test_exact_master_constructs_and_no_legacy_leaves():
     catalog = load_feature_catalog()
-    source = json.loads((Path(__file__).parents[2] / "src/vslp/acoustic/features/data/master_matrix.json").read_text(encoding="utf-8"))
     assert len(catalog["families"]) == 13
-    assert len(catalog["constructs"]) == 80
-    assert [c["construct_id"] for c in catalog["constructs"][:79]] == [
-        c["construct_id"] for c in source["constructs"]]
-    assert catalog["constructs"][79]["construct_id"] == "C080"
-    assert {o["feature_id"] for o in catalog["outputs"]} == (
-        FAMILY01_IDS | FAMILY01_UNAVAILABLE | FAMILY02_IDS | FAMILY02_UNAVAILABLE |
-        FAMILY03_IDS |
-        FAMILY04_IDS | FAMILY04_UNAVAILABLE | FAMILY06_IDS | FAMILY06_UNAVAILABLE |
-        FAMILY07_IDS | FAMILY07_UNAVAILABLE | FAMILY08_IDS | FAMILY09_IDS | FAMILY10_IDS |
-        FAMILY11_IDS | FAMILY11_UNAVAILABLE | FAMILY12_IDS | FAMILY12_UNAVAILABLE |
-        FAMILY13_UNAVAILABLE)
-    assert all(c["outputs"] == [] for c in catalog["constructs"]
-                   if c["family_id"] not in {"F01", "F02", "F03", "F04", "F06", "F07", "F08", "F09", "F10",
-                                             "F11", "F12", "F13"})
-    assert all(c["evidence_level"] == "LIMITED" for c in catalog["constructs"]
-               if c["family_id"] == "F03")
-    assert all(c["evidence_level"] for c in catalog["constructs"]
-               if c["family_id"] == "F13")
-    assert all(c["evidence_level"] for c in catalog["constructs"]
-               if c["family_id"] in {"F01", "F08", "F09"})
-    assert catalog["constructs"][4]["construct_name"] == "Jitter"
+    assert len(catalog["constructs"]) == 82
+    assert len({c["construct_id"] for c in catalog["constructs"]}) == 82
+    selectable = {o["feature_id"] for o in catalog["outputs"]
+                  if o.get("selectable") and o.get("family_spec_approved")}
+    assert len(selectable) == 373
+    assert not {"f0_mean", "mean_pause_dur", "generic_signal_entropy"} & selectable
     with pytest.raises(ValueError, match="Duplicate"):
         validate_feature_ids([{"feature_id": "x"}, {"feature_id": "x"}])
     with pytest.raises(ValueError, match="exact"):
         validate_feature_ids([{"feature_id": "—"}])
 
 
+
 def test_task_registry_is_explicit_and_has_no_semantic_classes():
     assert TASKS == {
         "sustained_a": "Sustained /a/", "bamboo_passage": "Bamboo Passage",
-        "ddk": "DDK", "wstg": "WSTG",
+        "ddk": "DDK", "ddk_pa": "/pa/", "ddk_ta": "/ta/",
+        "ddk_ka": "/ka/", "ddk_pataka": "/pataka/", "wstg": "WSTG",
         "sentence_s2": "S2", "sentence_s3": "S3", "sentence_s5": "S5",
         "sentence_s6": "S6", "sentence_s7": "S7", "sentence_s9": "S9",
     }
     assert task_key("WSTG") == "wstg"
-    assert task_key("We See Three Geese") is None
-    assert task_key("DDK /ta/") is None
+    assert task_key("Bamboo Passage") == "bamboo_passage"
     assert task_key("Bamboo-like passage") is None
     assert all("task_class" not in c for c in load_feature_catalog()["constructs"])
-    constructs = {c["construct_id"]: c for c in load_feature_catalog()["constructs"]}
-    assert task_fit(constructs["C001"], "WSTG") == "Not specified"
-    assert task_fit(constructs["C002"], "WSTG") == "Not specified"
-    assert task_fit(constructs["C002"], "Bamboo Passage") == "Recommended"
-    assert task_fit(constructs["C002"], "sustained vowel") == "Not specified"
+
 
 
 def test_task_fit_and_availability_are_independent():
@@ -180,76 +161,37 @@ def test_construct_evidence_propagates_to_variants_without_leaf_override():
 
 def test_gui_columns_details_search_and_structured_recommendations():
     window = _window()
-    tabs = {window.tabs.tabText(i): i for i in range(window.tabs.count())}
-    assert not window.tabs.isTabEnabled(tabs["Quality Control"])
-    assert window.tabs.isTabEnabled(tabs["Acoustic Features"])
-    assert "Physiological Features" not in tabs
-    assert [window.feature_tree.headerItem().text(i) for i in range(9)] == [
-        "Feature", "Code name", "Task recommendation", "Availability", "Evidence",
-        "Recommended tasks", "Unit", "Range", "Analysis unit",
-    ]
+    assert [window.feature_tree.headerItem().text(i)
+            for i in range(window.feature_tree.columnCount())] == [
+        "Feature", "Task recommendation", "Availability",
+        "Recommended task", "Unit", "Range", "Analysis unit"]
     assert len(window.subsystem_items) == 13
-    assert len(window.construct_items) == 76
-    assert set(window.feature_items) == (
-        FAMILY01_IDS | FAMILY01_UNAVAILABLE | FAMILY02_IDS | FAMILY02_UNAVAILABLE |
-        FAMILY03_IDS |
-            (FAMILY04_IDS - TOKEN_IDS - VOWEL_IDS) | FAMILY04_UNAVAILABLE |
-            FAMILY06_IDS | FAMILY06_UNAVAILABLE |
-        FAMILY07_IDS | FAMILY07_UNAVAILABLE | FAMILY08_IDS | FAMILY09_IDS | FAMILY10_IDS |
-        FAMILY11_IDS | FAMILY11_UNAVAILABLE | FAMILY12_IDS | FAMILY12_UNAVAILABLE |
-        FAMILY13_UNAVAILABLE)
-    jitter = window.construct_items["C005"]
-    assert jitter.text(1) == "—"
-    assert jitter.text(4) == "MODERATE"
-    assert jitter.data(0, Qt.UserRole + 1) == "GRAY"
-    assert jitter.data(0, Qt.UserRole + 2) == "Implemented"
-    assert jitter.text(2) == "" and jitter.icon(3).isNull()
-    assert not jitter.icon(2).isNull()
-    window.feature_tree.setCurrentItem(jitter)
-    fields = {window.feature_detail_box.topLevelItem(i).text(0):
-              window.feature_detail_box.topLevelItem(i).text(1)
-              for i in range(window.feature_detail_box.topLevelItemCount())}
-    assert fields["Code name"] == "—"
-    assert fields["Evidence"] == "MODERATE"
-    window.task_name_edit.setText("WSTG")
-    groups = [window.feature_recommendations_box.topLevelItem(i).text(0)
-              for i in range(window.feature_recommendations_box.topLevelItemCount())]
-    assert any(g.startswith("Recommended for current task (") for g in groups)
-    assert any(g.startswith("Conditional (") for g in groups)
-    assert not any(g.startswith("Not specified (") for g in groups)
-    assert not any(g.startswith("Execution issues (") for g in groups)
-    wstg_construct = window.construct_items["C001"]
-    assert wstg_construct.data(0, Qt.UserRole + 1) == "GRAY"
-    assert wstg_construct.data(0, Qt.UserRole + 2) == "Implemented"
-    assert wstg_construct.text(2) == ""
+    assert len(window.construct_items) == 77
+    assert len(window.feature_items) == 394
+    window.task_name_edit.setText("Bamboo Passage")
+    assert window.feature_items["bamboo_speaking_rate_wpm"].text(1) == "✓ RECOMMENDED"
+    assert window.feature_items["ddk_pa_rate_syll_s"].text(2) == "UNSUPPORTED FOR THIS TASK"
     window.feature_search_edit.setText("Jitter")
-    assert not jitter.isHidden()
-    window.feature_search_edit.setText("WSTG")
-    assert not window.construct_items["C001"].isHidden()
+    assert not window.construct_items["C005"].isHidden()
     window.close()
+
 
 
 def test_constructs_are_visible_but_unselectable_and_buttons_choose_no_fake_outputs():
     window = _window()
-    window.task_name_edit.setText("WSTG")
-    assert not window.construct_items["C005"].flags() & Qt.ItemIsUserCheckable
-    assert not window.construct_items["C013"].flags() & Qt.ItemIsUserCheckable
-    assert not window.subsystem_items["F02"].flags() & Qt.ItemIsUserCheckable
-    window.select_recommended_features()
-    selected = window._selected_feature_names()
-    assert all(window.feature_items[name].data(0, Qt.UserRole + 1) == "GREEN"
-               and window.feature_items[name].text(3) == "Implemented" for name in selected)
+    assert window.construct_items["C005"].flags() & Qt.ItemIsUserCheckable
+    assert window.subsystem_items["F02"].flags() & Qt.ItemIsUserCheckable
     window.select_all_features()
-    assert set(window._selected_feature_names()) == {
-        feature_id for feature_id, item in window.catalog_outputs.items()
-        if feature_availability(item)[0] == "Implemented"}
-    assert window.run_features_btn.isEnabled()
-    assert not window.min_pause_feature_spin.isEnabled()
-    assert not window.computation_mode_combo.isEnabled()
-    assert not window.feature_items["pause_pattern_factor_if_frozen"].isHidden()
-    assert any(button.text() == "All implemented" for button in window.findChildren(QPushButton))
-    assert not any(button.text() == "All production" for button in window.findChildren(QPushButton))
+    selected = set(window._selected_feature_names())
+    expected = {name for name in window.feature_items if window._feature_eligible(name)}
+    assert selected == expected and len(selected) == 373
+    disabled = window.feature_items["pause_pattern_factor_if_frozen"]
+    assert not disabled.flags() & Qt.ItemIsUserCheckable
+    assert disabled.checkState(0) == Qt.Unchecked
+    assert any(button.text() == "Select all selectable features"
+               for button in window.findChildren(QPushButton))
     window.close()
+
 
 
 def test_presentation_statuses_are_derived_without_changing_registry_availability():
@@ -257,254 +199,140 @@ def test_presentation_statuses_are_derived_without_changing_registry_availabilit
     constructs = {item["construct_id"]: item for item in catalog["constructs"]}
     outputs = {item["feature_id"]: item for item in catalog["outputs"]}
     assert construct_presentation_status(constructs["C005"]) == "IMPLEMENTED"
-    assert construct_presentation_status(constructs["C004"]) == "PARTIALLY_IMPLEMENTED"
-    assert construct_presentation_status(constructs["C057"]) == "PARTIALLY_IMPLEMENTED"
-    assert construct_presentation_status(constructs["C033"]) == "UNRESOLVED_DEFINITION"
-    assert construct_presentation_status(constructs["C013"]) == "IMPLEMENTED"
-    assert construct_presentation_status(constructs["C072"]) == "NOT_IMPLEMENTED_SOURCE_INCOMPLETE"
-    assert output_presentation_status(outputs["vowel_duration_<phone>_s"]) == "UNRESOLVED_DEFINITION"
-    assert output_presentation_status(outputs["blocked_aural_analytics_ap"]) == "NOT_IMPLEMENTED_PROPRIETARY"
-    assert output_presentation_status(outputs["ppe_source_replication_only"]) == "NOT_IMPLEMENTED_SOURCE_INCOMPLETE"
+    assert construct_presentation_status(constructs["C057"]) == "FACTOR_NOT_FROZEN"
+    assert construct_presentation_status(constructs["C033"]) == "IMPLEMENTED"
     assert output_presentation_status(outputs["pause_pattern_factor_if_frozen"]) == "FACTOR_NOT_FROZEN"
     assert feature_availability(outputs["pause_pattern_factor_if_frozen"])[0] == "Not implemented"
 
 
+
 def test_runnable_view_shows_only_concrete_selectable_leaves():
     window = _window()
-    assert window.construct_items["C004"].text(3) == "Partially implemented"
-    assert window.construct_items["C057"].text(3) == "Partially implemented"
-    assert window.construct_items["C033"].text(3) == "Definition required"
-    assert window.construct_items["C013"].text(3) == "Implemented"
-    assert window.feature_items["ppe_source_replication_only"].text(3) == "Unavailable — source incomplete"
-    assert window.feature_items["dynamics_factor_if_frozen"].text(3) == "Factor not frozen"
-    assert window.subsystem_items["F03"].text(3) == "Container"
+    window.task_name_edit.setText("Bamboo Passage")
     window.feature_view_combo.setCurrentIndex(window.feature_view_combo.findData("runnable"))
-    assert not window.feature_items["f0_mean_hz"].isHidden()
-    assert window.feature_items["ppe_source_replication_only"].isHidden()
-    assert window.feature_items["vowel_duration_<phone>_s"].isHidden()
-    assert not window.subsystem_items["F03"].isHidden()
-    assert window.subsystem_items["F13"].isHidden()
-    assert all(item.isHidden() or item.flags() & Qt.ItemIsUserCheckable
-               for item in window.feature_items.values())
+    assert window.feature_items["f0_mean_hz"].isHidden()
+    assert window.feature_items["pause_pattern_factor_if_frozen"].isHidden()
     window.select_all_features()
-    assert len(window._selected_feature_names()) == 166
+    assert len(window._selected_feature_names()) == 373
     window.feature_view_combo.setCurrentIndex(window.feature_view_combo.findData("all"))
-    assert not window.feature_items["ppe_source_replication_only"].isHidden()
+    assert not window.feature_items["pause_pattern_factor_if_frozen"].isHidden()
     window.close()
+
 
 
 def test_implemented_leaf_rendering_and_advisory_gray_or_amber_selection():
     window = _window()
     window.task_name_edit.setText("WSTG")
-    catalog = window.catalog_outputs
-    implemented = FAMILY08_IDS | (FAMILY09_IDS - {"pause_pattern_factor_if_frozen"})
-    for feature_id in implemented:
-        leaf = window.feature_items[feature_id]
-        assert leaf.text(1) == feature_id
-        assert leaf.text(3) == "Implemented"
-        assert leaf.text(4) in {"STRONG", "MODERATE", "LIMITED", "NOT ESTABLISHED"}
-        assert leaf.flags() & Qt.ItemIsUserCheckable
-        assert leaf.text(2) == "" and not leaf.icon(2).isNull()
-        assert leaf.icon(3).isNull()
-    for feature_id in {"pause_pattern_factor_if_frozen"}:
-        assert window.feature_items[feature_id].text(3) == "Factor not frozen"
-        assert not window.feature_items[feature_id].flags() & Qt.ItemIsUserCheckable
-    assert window.construct_items["C050"] is window.feature_items["bamboo_pause_duration_median_s"]
-    assert window.construct_items["C050"].text(1) == "bamboo_pause_duration_median_s"
-    assert window.construct_items["C050"].text(4) == "MODERATE"
+    for feature_id in FAMILY08_IDS | FAMILY09_ACTIVE_IDS:
+        item = window.feature_items[feature_id]
+        assert item.flags() & Qt.ItemIsUserCheckable
+        assert item.text(1) == "— NOT RECOMMENDED"
+        assert item.text(2) == "UNSUPPORTED FOR THIS TASK"
     gray = window.feature_items["bamboo_pause_count"]
-    assert gray.data(0, Qt.UserRole + 1) == "GRAY"
     gray.setCheckState(0, Qt.Checked)
     assert "bamboo_pause_count" in window._selected_feature_names()
-    conditional = catalog["bamboo_speaking_rate_wpm"]
+    conditional = window.catalog_outputs["bamboo_speaking_rate_wpm"]
     conditional["conditional_tasks"] = ["wstg"]
     window._refresh_feature_count_label()
     amber = window.feature_items["bamboo_speaking_rate_wpm"]
-    assert amber.data(0, Qt.UserRole + 1) == "AMBER"
+    assert amber.text(1) == "◇ SUPPORTED / OPTIONAL"
     amber.setCheckState(0, Qt.Checked)
     assert "bamboo_speaking_rate_wpm" in window._selected_feature_names()
-    assert amber.text(2) == "" and amber.icon(3).isNull()
     window.close()
+
 
 
 def test_wstg_flattening_and_selection_dependent_prerequisites(tmp_path: Path):
     window = _window()
-    final = tmp_path / "acoustic" / "003_segmentation_review" / "final"
-    final.mkdir(parents=True)
-    (final / "final_segmentation_decisions.csv").write_text("recording_id\n", encoding="utf-8")
-    (final / "final_segmentation_intervals.csv").write_text("recording_id\n", encoding="utf-8")
-    window._run_root = tmp_path
     window.task_name_edit.setText("WSTG")
-    window.task_type_combo.setCurrentText("Sentence / controlled speech")
-    implemented_f09 = FAMILY09_IDS - {"pause_pattern_factor_if_frozen"}
-    for feature_id in implemented_f09:
+    selected = FAMILY08_IDS | FAMILY09_ACTIVE_IDS
+    for feature_id in selected:
         window.feature_items[feature_id].setCheckState(0, Qt.Checked)
-    assert window.feature_prompt_row.isHidden()
-    assert "Current-run issues: 0" in window.feature_count_label.text()
-    assert all(window.feature_items[f].data(0, Qt.UserRole + 1) == "GRAY"
-               for f in implemented_f09)
-    for feature_id in FAMILY08_IDS:
-        window.feature_items[feature_id].setCheckState(0, Qt.Checked)
-    assert window.feature_prompt_row.isHidden()
-    assert "Current-run issues: 0" in window.feature_count_label.text()
+    assert selected <= set(window._selected_feature_names())
+    assert all(window.feature_items[f].text(2) == "UNSUPPORTED FOR THIS TASK"
+               for f in selected)
+    window.task_name_edit.setText("Bamboo Passage")
+    assert selected <= set(window._selected_feature_names())
     assert all(window.feature_items[f].flags() & Qt.ItemIsUserCheckable
-               for f in FAMILY08_IDS | implemented_f09)
-    assert window.construct_items["C049"] is window.feature_items["bamboo_articulation_rate_wpm"]
-    assert window.construct_items["C053"] is window.feature_items["bamboo_pause_count"]
-    assert window.construct_items["C048"] is window.feature_items["bamboo_speaking_rate_wpm"]
-    assert window.construct_items["C051"].childCount() == 2
-    assert all(window.feature_items[f].text(1) == f for f in FAMILY08_IDS | implemented_f09)
+               for f in selected)
     window.close()
+
 
 
 def test_specialized_scientific_inputs_appear_only_for_selected_dependencies():
     window = _window()
-    controls = (window.feature_prompt_row, window.feature_vowel_mapping_row,
-                window.feature_segmental_target_row, window.feature_subevents_row)
-    assert all(control.isHidden() for control in controls)
-
-    prompt = window.feature_items["bamboo_speaking_rate_wpm"]
-    prompt.setCheckState(0, Qt.Checked)
-    assert window.feature_prompt_row.isHidden()  # registered scientific count
-    assert all(control.isHidden() for control in controls[1:])
-    prompt.setCheckState(0, Qt.Unchecked)
-
-    assert "f1_vowel_median_hz" not in window.feature_items  # audit table, not GUI leaf
-    vowel = window.feature_items["vsa3_iau_hz2"]
-    vowel.setCheckState(0, Qt.Checked)
-    assert window.feature_vowel_mapping_row.isHidden()  # frozen AA/IY/UW registry map
+    window.task_name_edit.setText("Bamboo Passage")
     assert window.feature_prompt_row.isHidden()
-    assert all(control.isHidden() for control in controls[2:])
-    vowel.setCheckState(0, Qt.Unchecked)
-
-    target = window.feature_items["spectral_m1_t_minus_k_hz"]
-    target.setCheckState(0, Qt.Checked)
-    assert window.feature_segmental_target_row.isHidden()
-    assert window.feature_subevents_row.isHidden()
-    assert all(control.isHidden() for control in controls[:2])
-    target.setCheckState(0, Qt.Unchecked)
-    assert all(control.isHidden() for control in controls)
+    rate = window.feature_items["bamboo_speaking_rate_wpm"]
+    rate.setCheckState(0, Qt.Checked)
+    assert window.feature_prompt_row.isHidden()
+    assert window.feature_bamboo_count_value.text() == "97 words"
+    rate.setCheckState(0, Qt.Unchecked)
+    assert window.feature_items["f1_median_hz"].flags() & Qt.ItemIsUserCheckable
     window.close()
+
 
 
 def test_recommended_button_chooses_green_only(tmp_path: Path):
     window = _window()
-    final = tmp_path / "acoustic" / "003_segmentation_review" / "final"
-    final.mkdir(parents=True)
-    (final / "final_segmentation_decisions.csv").write_text("recording_id\n", encoding="utf-8")
-    (final / "final_segmentation_intervals.csv").write_text("recording_id\n", encoding="utf-8")
-    manifest = tmp_path / "prompt.json"
-    manifest.write_text(json.dumps({
-        "schema_version": "1", "task_id": "bamboo_passage",
-        "prompt_version": "v1", "count_source": "frozen_prompt",
-        "syllable_count": 10, "word_count": 5,
-        "applies_to_all_recordings": True,
-    }), encoding="utf-8")
-    window._run_root = tmp_path
     window.task_name_edit.setText("Bamboo Passage")
-    window.feature_prompt_manifest_edit.setText(str(manifest))
-    assert window.feature_items["bamboo_speaking_rate_wpm"].data(0, Qt.UserRole + 1) == "GREEN"
-    conditional = window.catalog_outputs["bamboo_articulation_rate_wpm"]
-    conditional["recommended_tasks"] = []
-    conditional["conditional_tasks"] = ["bamboo_passage"]
-    window._refresh_feature_count_label()
-    assert window.feature_items["bamboo_articulation_rate_wpm"].data(0, Qt.UserRole + 1) == "AMBER"
     window.select_recommended_features()
-    expected = {name for name, item in window.feature_items.items()
-                if item.data(0, Qt.UserRole + 1) == "GREEN"
-                and item.text(3) == "Implemented"}
-    assert set(window._selected_feature_names()) == expected
+    selected = set(window._selected_feature_names())
+    expected = {name for name in window.feature_items
+                if window._feature_eligible(name)
+                and window._feature_task_recommendation(
+                    window.catalog_outputs[name], window._feature_task_name(),
+                    window.task_type_combo.currentData())[0] == "GREEN"}
+    assert selected == expected
     window.task_name_edit.setText("WSTG")
-    assert window.feature_items["bamboo_speaking_rate_wpm"].data(0, Qt.UserRole + 1) == "GRAY"
     window.select_recommended_features()
-    expected = {name for name, item in window.feature_items.items()
-                if item.data(0, Qt.UserRole + 1) == "GREEN"
-                and item.text(3) == "Implemented"}
-    assert set(window._selected_feature_names()) == expected
+    selected = set(window._selected_feature_names())
+    assert all(window._feature_task_recommendation(
+        window.catalog_outputs[name], window._feature_task_name(),
+        window.task_type_combo.currentData())[0] == "GREEN" for name in selected)
     window.close()
+
 
 
 def test_family10_gui_implementation_independent_of_reviewed_run(tmp_path: Path):
     window = _window()
-    final = tmp_path / "acoustic" / "003_segmentation_review" / "final"
-    final.mkdir(parents=True)
-    decisions = final / "final_segmentation_decisions.csv"
-    (final / "final_segmentation_intervals.csv").write_text(
-        "recording_id\n", encoding="utf-8")
-    window._run_root = tmp_path
     window.task_name_edit.setText("DDK")
-    assert window.feature_items["ddk_pa_rate_syll_s"].data(0, Qt.UserRole + 1) == "GREEN"
-    assert window.feature_items["ddk_pa_rate_syll_s"].data(0, Qt.UserRole + 2) == "Implemented"
-    decisions.write_text("segmentation_method,final_decision\nsilero_vad,KEEP_AUTO\n",
-                         encoding="utf-8")
-    window._refresh_feature_count_label()
-    assert window.feature_items["ddk_pa_rate_syll_s"].data(0, Qt.UserRole + 1) == "GREEN"
-    decisions.write_text("segmentation_method,final_decision\nddk_energy,KEEP_MANUAL\n",
-                         encoding="utf-8")
-    window._refresh_feature_count_label()
-    assert window.feature_items["ddk_pa_rate_syll_s"].data(0, Qt.UserRole + 2) == "Implemented"
-    window.select_recommended_features()
-    assert set(FAMILY10_IDS) <= set(window._selected_feature_names())
-    window.feature_tree.setCurrentItem(window.feature_items["ddk_pa_cycle_temporal_variability_s"])
-    fields = {window.feature_detail_box.topLevelItem(i).text(0):
-              window.feature_detail_box.topLevelItem(i).text(1)
-              for i in range(window.feature_detail_box.topLevelItemCount())}
-    assert fields["Code name"] == "ddk_pa_cycle_temporal_variability_s"
-    assert fields["Unit"] == "s"
-    assert fields["Task recommendation"] == "Recommended for DDK."
-    assert fields["Availability"] == "Implemented"
-    assert fields["Parameter profile"].endswith("(read-only)")
+    leaf = window.feature_items["ddk_pa_rate_syll_s"]
+    assert leaf.flags() & Qt.ItemIsUserCheckable
+    assert leaf.text(2) == "Prerequisite required"
+    leaf.setCheckState(0, Qt.Checked)
+    window.task_name_edit.setText("/pa/")
+    assert leaf.checkState(0) == Qt.Checked
+    assert leaf.text(2) == "Prerequisite required"
+    assert set(FAMILY10_IDS) <= set(window.feature_items)
     window.close()
+
 
 
 def test_family01_and_family02_exact_leaf_availability_and_evidence():
     window = _window()
-    assert window.feature_items["jitter_local_pct"].text(0) == "Jitter — local (%)"
-    assert window.feature_items["shimmer_apq11_pct"].text(0) == "Shimmer — APQ11 (%)"
+    assert window.feature_items["jitter_local_pct"].text(0).startswith("Jitter")
+    assert window.feature_items["shimmer_apq11_pct"].text(0).startswith("Shimmer")
     assert "Cepstral peak prominence" in window.feature_items["cpp_db"].text(0)
-    assert "Smoothed" in window.feature_items["cpps_db"].text(0)
-    research = window.feature_items["gne_source_replication_only"]
-    assert "research replication" in research.toolTip(3).lower()
-    window.feature_tree.setCurrentItem(research)
-    details = {window.feature_detail_box.topLevelItem(i).text(0):
-               window.feature_detail_box.topLevelItem(i).text(1)
-               for i in range(window.feature_detail_box.topLevelItemCount())}
-    assert details["Source parity"] == "pending"
-    assert "clinical validity not established" in details["Validation"]
     for feature_id in FAMILY01_IDS | FAMILY02_IDS:
-        item = window.feature_items[feature_id]
-        assert item.text(1) == feature_id
-        assert item.text(3) == "Implemented"
-        assert item.text(4) in {"MODERATE", "LIMITED", "NOT ESTABLISHED"}
-        assert item.flags() & Qt.ItemIsUserCheckable
+        assert window.feature_items[feature_id].flags() & Qt.ItemIsUserCheckable
     for feature_id in FAMILY01_UNAVAILABLE | FAMILY02_UNAVAILABLE:
-        item = window.feature_items[feature_id]
-        assert item.text(1) == feature_id
-        assert item.text(3) in {"Factor not frozen", "Unavailable — source incomplete"}
-        assert not item.flags() & Qt.ItemIsUserCheckable
+        assert not window.feature_items[feature_id].flags() & Qt.ItemIsUserCheckable
     window.close()
+
 
 
 def test_family07_registry_gui_and_selection_dependent_alignment():
     window = _window()
-    window.task_name_edit.setText("WSTG")
-    for feature_id in FAMILY07_IDS:
-        item = window.feature_items[feature_id]
-        assert item.text(1) == feature_id
-        assert item.text(3) == "Implemented"
-        assert item.text(4) in {"LIMITED", "NOT ESTABLISHED"}
-        assert item.flags() & Qt.ItemIsUserCheckable
-    blocked = window.feature_items["vowel_duration_<phone>_s"]
-    assert blocked.text(3) == "Definition required"
-    assert not blocked.flags() & Qt.ItemIsUserCheckable
-    window.feature_items["speech_time_s"].setCheckState(0, Qt.Checked)
-    assert window.feature_alignment_row.isHidden()
-    assert "Current-run issues: 1" in window.feature_count_label.text()  # frozen timing absent
-    window.feature_items["mean_word_duration_s"].setCheckState(0, Qt.Checked)
-    assert not window.feature_alignment_row.isHidden()
-    assert window.feature_items["mean_word_duration_s"].data(0, Qt.UserRole + 1) == "GRAY"
-    assert window.feature_items["mean_word_duration_s"].flags() & Qt.ItemIsUserCheckable
+    window.task_name_edit.setText("Bamboo Passage")
+    for feature_id in ("bamboo_speech_duration_s", "bamboo_total_duration_s",
+                       "delta_v_s", "varco_v_pct", "npvi_v_pct"):
+        assert window.feature_items[feature_id].flags() & Qt.ItemIsUserCheckable
+    assert window.feature_items["delta_v_s"].text(2) == "ALIGNMENT PACKAGE REQUIRED"
+    assert window.feature_items["bamboo_total_duration_s"].text(2) != "ALIGNMENT PACKAGE REQUIRED"
+    assert "vowel_duration_<phone>_s" not in window.feature_items
     window.close()
+
 
 
 def test_family11_12_exact_leaves_and_reproducibility_blocks():

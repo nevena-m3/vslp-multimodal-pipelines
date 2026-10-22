@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+from threading import Event
 import traceback
 from typing import Callable
 
@@ -24,6 +25,7 @@ class Worker(QObject):
         self.func = func
         self.kwargs = kwargs
         self.output_root = kwargs.get("output_root")
+        self.cancel_event = Event()
 
     def run(self) -> None:
         label = "Acoustic Features" if self.name == "features" else self.name
@@ -31,8 +33,11 @@ class Worker(QObject):
         self.message.emit(f"Starting {label}...")
         try:
             kwargs = dict(self.kwargs)
-            if "progress_callback" in inspect.signature(self.func).parameters:
+            parameters = inspect.signature(self.func).parameters
+            if "progress_callback" in parameters:
                 kwargs["progress_callback"] = self.progress.emit
+            if "cancel_event" in parameters:
+                kwargs["cancel_event"] = self.cancel_event
             result = self.func(**kwargs)
         except Exception as exc:  # noqa: BLE001
             tb = traceback.format_exc()

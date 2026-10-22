@@ -25,7 +25,8 @@ def main() -> None:
                                              tolerances=tuple(args.tolerance))
     else:
         report = compare_boundaries(first, second, token_type=args.mode,
-                                    tolerances_sec=tuple(args.tolerance))
+                                    tolerances_sec=tuple(args.tolerance) if args.tolerance
+                                    else (.01, .02, .05, .1))
     args.output_csv.parent.mkdir(parents=True, exist_ok=True)
     report.to_csv(args.output_csv, index=False)
 

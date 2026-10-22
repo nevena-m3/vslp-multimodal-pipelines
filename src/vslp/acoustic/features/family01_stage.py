@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+from concurrent.futures import Executor, ProcessPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -148,8 +150,16 @@ def _f02_voiced_islands(track: F0Track, sr: int) -> list[tuple[float, float]]:
     return spans
 
 
+def _voice_quality_island(work: tuple[np.ndarray, int, set[str], int]):
+    """Keep Praat island calculations independent and ordered across processes."""
+    segment, sr, selected, minimum_cycles = work
+    return calculate_voice_quality(segment, sr, selected,
+                                   minimum_usable_cycles=minimum_cycles)
+
+
 def _f02_trial_values(parts: list[F0Track], audio: np.ndarray, sr: int,
-                      selected: set[str], sustained: bool):
+                      selected: set[str], sustained: bool,
+                      cpp_pool: Executor | None = None):
     base_selected = selected - H1H2_IDS
     islands = ([(part.analysis_start_sec, part.analysis_end_sec) for part in parts]
                if sustained else [island for part in parts
@@ -164,14 +174,28 @@ def _f02_trial_values(parts: list[F0Track], audio: np.ndarray, sr: int,
     audit = {"n_cycles": 0, "n_pulses": 0, "hnr_valid_frames": 0,
              "cpp_valid_frames": 0, "harmonic_window_count": 0,
              "pvi_interpolated_fraction": np.nan}
-    for start, end in islands:
-        segment = audio[round(start * sr):round(end * sr)]
-        if segment.size < sr // 10:
-            continue
-        if not base_selected:
-            continue
-        values, local = calculate_voice_quality(
-            segment, sr, base_selected, minimum_usable_cycles=100 if sustained else 4)
+    eligible = []
+    if base_selected:
+        for start, end in islands:
+            segment = audio[round(start * sr):round(end * sr)]
+            if segment.size >= sr // 10:
+                eligible.append((start, end, segment))
+    work = [(segment, sr, base_selected, 100 if sustained else 4)
+            for _, _, segment in eligible]
+    # Praat's robust peak-prominence fit dominates CPP time. Default to eight
+    # workers to limit process-tree RAM; the environment override remains available.
+    worker_limit = max(1, int(os.getenv(
+        "VSLP_CPP_WORKERS", str(min(8, os.cpu_count() or 1)))))
+    if "cpp_db" in base_selected and len(work) > 1 and worker_limit > 1:
+        if cpp_pool is not None:
+            island_results = list(cpp_pool.map(_voice_quality_island, work))
+        else:
+            with ProcessPoolExecutor(max_workers=min(worker_limit, len(work),
+                                                     os.cpu_count() or 1)) as pool:
+                island_results = list(pool.map(_voice_quality_island, work))
+    else:
+        island_results = [_voice_quality_island(item) for item in work]
+    for (start, end, _), (values, local) in zip(eligible, island_results, strict=True):
         for key in audit:
             if key == "pvi_interpolated_fraction":
                 if np.isfinite(local.get(key, np.nan)):
@@ -288,7 +312,9 @@ def _approved_sentence_intonation(track: F0Track, intervals: pd.DataFrame,
 
 def run_family01_stage(decisions_csv: str | Path, root: str | Path, config,
                        intervals_csv: str | Path | None, registry: pd.DataFrame,
-                       progress_callback=None, execution_stage_dir: Path | None = None) -> StageResult:
+                       progress_callback=None, execution_stage_dir: Path | None = None,
+                       cpp_pool: Executor | None = None,
+                       recording_scope=None) -> StageResult:
     root = Path(root)
     final = root / "acoustic" / "003_segmentation_review" / "final"
     decisions = final / "final_segmentation_decisions.csv"
@@ -296,8 +322,10 @@ def run_family01_stage(decisions_csv: str | Path, root: str | Path, config,
     if (Path(decisions_csv).resolve() != decisions.resolve() or intervals_csv is None
             or Path(intervals_csv).resolve() != intervals.resolve()):
         raise ValueError("Family 01 requires authoritative frozen reviewed segmentation")
-    kept = load_final_segmentation(intervals, decisions)
-    all_intervals = pd.read_csv(intervals, keep_default_na=False)
+    kept = (recording_scope.kept if recording_scope is not None else
+            load_final_segmentation(intervals, decisions))
+    all_intervals = (recording_scope.intervals if recording_scope is not None else
+                     pd.read_csv(intervals, keep_default_na=False))
     run = json.loads((root / "project_manifest.json").read_text(encoding="utf-8"))
     selected = set(config.selected_features) & (FAMILY01_IDS | FAMILY02_IDS)
     selected01 = selected & FAMILY01_IDS
@@ -505,9 +533,13 @@ def run_family01_stage(decisions_csv: str | Path, root: str | Path, config,
                         trial_id = str(trial["trial_id"])
                         parts = [part for part, identity, *_ in span_tracks
                                  if identity == trial_id]
+                        if progress_callback and "cpp_db" in active02:
+                            progress_callback(
+                                index - 1, len(kept),
+                                f"Preparing CPP track — recording {index}/{len(kept)}")
                         trial_values, trial_audit, pulses, islands = _f02_trial_values(
                             parts, audio, int(sr), active02,
-                            task["task_family"] == "sustained_vowel")
+                            task["task_family"] == "sustained_vowel", cpp_pool=cpp_pool)
                         voice_by_trial.append(trial_values)
                         h1h2_frame_rows.extend({
                             "recording_id": record_id, "task_family": task["task_family"],
@@ -588,8 +620,12 @@ def run_family01_stage(decisions_csv: str | Path, root: str | Path, config,
                     for feature_id in selected02 - active02:
                         result[feature_id] = (np.nan, "requires_reviewed_sustained_a")
                 except (ValueError, RuntimeError) as exc:
+                    if str(exc) == "feature_extraction_cancelled":
+                        raise
                     result.update({k: (np.nan, str(exc)) for k in selected02})
         except (OSError, ValueError, RuntimeError) as exc:
+            if str(exc) == "feature_extraction_cancelled":
+                raise
             reason = str(exc).splitlines()[0]
             result = {feature_id: (np.nan, reason) for feature_id in selected}
         base = {

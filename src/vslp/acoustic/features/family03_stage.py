@@ -24,7 +24,8 @@ from vslp.core.schemas import ArtifactRef, StageManifest, StageResult
 def run_family03_stage(decisions_csv: str | Path, root: str | Path, config,
                        intervals_csv: str | Path, registry: pd.DataFrame,
                        progress_callback=None,
-                       execution_stage_dir: Path | None = None) -> StageResult:
+                       execution_stage_dir: Path | None = None,
+                       recording_scope=None) -> StageResult:
     root = Path(root)
     final = root / "acoustic" / "003_segmentation_review" / "final"
     decisions = final / "final_segmentation_decisions.csv"
@@ -32,8 +33,10 @@ def run_family03_stage(decisions_csv: str | Path, root: str | Path, config,
     if (Path(decisions_csv).resolve() != decisions.resolve() or
             Path(intervals_csv).resolve() != intervals.resolve()):
         raise ValueError("F03 requires frozen reviewed segmentation")
-    kept = load_final_segmentation(intervals, decisions)
-    timeline = pd.read_csv(intervals, keep_default_na=False)
+    kept = (recording_scope.kept if recording_scope is not None else
+            load_final_segmentation(intervals, decisions))
+    timeline = (recording_scope.intervals if recording_scope is not None else
+                pd.read_csv(intervals, keep_default_na=False))
     project = json.loads((root / "project_manifest.json").read_text(encoding="utf-8"))
     task = task_context(project)
     selected = set(config.selected_features) & FAMILY03_IDS

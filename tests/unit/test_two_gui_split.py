@@ -25,7 +25,9 @@ def test_independent_windows_and_canonical_task_setup():
     assert acoustic.windowTitle() == "VSLP Acoustic Features"
     assert alignment.windowTitle() == "VSLP Alignment"
     assert "Alignment" not in [acoustic.tabs.tabText(i) for i in range(acoustic.tabs.count())]
-    assert "Alignment Review" in [alignment.tabs.tabText(i) for i in range(alignment.tabs.count())]
+    assert [alignment.tabs.tabText(i) for i in range(alignment.tabs.count())] == [
+        "Setup", "Align", "Review", "Export"]
+    assert not hasattr(alignment, "segmentation_review")
     assert acoustic.alignment_widget is None
     assert not hasattr(alignment, "feature_tree")
     assert alignment._selected_task()["task_id"] == "bamboo_passage"
@@ -112,5 +114,5 @@ def test_alignment_setup_inputs_and_export_route(tmp_path, monkeypatch):
     window._export()
     assert dispatched[0][0] == "export"
     assert dispatched[0][2]["project_root"] == tmp_path
-    assert dispatched[0][2]["destination"].parent == tmp_path
+    assert dispatched[0][2]["destination"].parent == tmp_path / "exports"
     window.close()

@@ -20,16 +20,19 @@ SENSITIVITY_FEATURES = frozenset({
 def _summary(values: np.ndarray, tolerances: tuple[float, ...]) -> dict:
     finite = values[np.isfinite(values)]
     if len(finite) == 0:
-        return {"n": 0, "median": np.nan, "iqr": np.nan, "p95": np.nan,
+        return {"n": 0, "median": np.nan, "iqr": np.nan, "p90": np.nan,
+                "p95": np.nan,
                 **{f"within_{t:g}": np.nan for t in tolerances}}
     return {"n": len(finite), "median": float(np.median(finite)),
             "iqr": float(np.percentile(finite, 75) - np.percentile(finite, 25)),
+            "p90": float(np.percentile(finite, 90)),
             "p95": float(np.percentile(finite, 95)),
             **{f"within_{t:g}": float(np.mean(finite <= t)) for t in tolerances}}
 
 
 def compare_boundaries(aligned: pd.DataFrame, manual: pd.DataFrame, *,
-                       token_type: str, tolerances_sec: tuple[float, ...] = ()) -> pd.DataFrame:
+                       token_type: str,
+                       tolerances_sec: tuple[float, ...] = (.01, .02, .05, .1)) -> pd.DataFrame:
     """Pair by explicit recording/token keys; unmatched tokens are reported."""
     index = "word_index" if token_type == "word" else "phone_index"
     keys = ["recording_id", index]

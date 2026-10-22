@@ -961,7 +961,18 @@ def attach_family_outputs(catalog: dict[str, Any], family_id: str,
 def task_key(task_name: str) -> str | None:
     """Resolve only registered display names; never infer task semantics."""
     normalized = task_name.strip().casefold()
+    # Older Acoustic Setup saved the explicit Bamboo task label as its ID.
+    if normalized == "bamboo":
+        return "bamboo_passage"
     return next((key for key, label in TASKS.items() if label.casefold() == normalized), None)
+
+
+def project_task_key(manifest: dict[str, Any]) -> str:
+    """Resolve explicit Setup task identity, including its older Bamboo label."""
+    value = str(manifest.get("task_id") or "").strip()
+    if value in TASKS:
+        return value
+    return task_key(value) or task_key(str(manifest.get("task_name") or "")) or value
 
 
 def supports_task(output: dict[str, Any], task_name: str,

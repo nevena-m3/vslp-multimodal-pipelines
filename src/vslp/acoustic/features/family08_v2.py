@@ -105,7 +105,8 @@ def bamboo_trial_rates(root: Path, recording_id: str, intervals: pd.DataFrame,
 
 def run_family08_stage(decisions_csv: str | Path, root: str | Path, config,
                        intervals_csv: str | Path | None, registry: pd.DataFrame,
-                       progress_callback=None, execution_stage_dir: Path | None = None) -> StageResult:
+                       progress_callback=None, execution_stage_dir: Path | None = None,
+                       recording_scope=None) -> StageResult:
     root = Path(root)
     final = root / "acoustic" / "003_segmentation_review" / "final"
     decisions = final / "final_segmentation_decisions.csv"
@@ -113,10 +114,14 @@ def run_family08_stage(decisions_csv: str | Path, root: str | Path, config,
     if (intervals_csv is None or Path(intervals_csv).resolve() != intervals.resolve()
             or Path(decisions_csv).resolve() != decisions.resolve()):
         raise ValueError("Family 08 requires frozen reviewed segmentation")
-    kept = load_final_segmentation(intervals, decisions)
-    timeline = pd.read_csv(intervals, keep_default_na=False)
+    kept = (recording_scope.kept if recording_scope is not None else
+            load_final_segmentation(intervals, decisions))
+    timeline = (recording_scope.intervals if recording_scope is not None else
+                pd.read_csv(intervals, keep_default_na=False))
     project = json.loads((root / "project_manifest.json").read_text(encoding="utf-8"))
-    task_id = str(project.get("task_id", ""))
+    from vslp.acoustic.features.catalog import project_task_key
+
+    task_id = project_task_key(project)
     selected = set(config.selected_features) & FAMILY08_IDS
     specs = registry.set_index("feature")
     stage = execution_stage_dir or root / "acoustic" / "005_features"

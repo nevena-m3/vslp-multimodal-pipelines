@@ -21,6 +21,11 @@ def task_context(manifest: dict) -> dict[str, str]:
     task_id = str(manifest.get("task_id") or "").strip().casefold()
     task_name = str(manifest.get("task_name") or "").strip()
     explicit_family = str(manifest.get("task_family") or "")
+    if (task_id == "bamboo" and task_name.casefold() == "bamboo" and
+            manifest.get("task_type") == "Passage / connected speech"):
+        task_id = "bamboo_passage"
+        if explicit_family == "other":
+            explicit_family = ""
     family = explicit_family or _TASK_TYPES.get(manifest.get("task_type"), "")
     item = str(manifest.get("task_item") or manifest.get("vowel_stimulus") or "").strip()
     registry = json.loads(_TASK_REGISTRY.read_text(encoding="utf-8"))
