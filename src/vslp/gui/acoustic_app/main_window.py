@@ -49,6 +49,7 @@ from vslp.acoustic.features.catalog import (
     requires_alignment_for_task, supports_task,
 )
 from vslp.gui.acoustic_app.feature_results import result_summary
+from vslp.gui.common.geometry import fit_initial_window
 from vslp.acoustic.alignment import freeze_alignment, load_final_alignment, run_acoustic_alignment
 from vslp.acoustic.alignment.package_v1 import (
     import_alignment_package, inspect_alignment_package,
@@ -129,8 +130,7 @@ class AcousticPipelineWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("VSLP Acoustic Features")
-        self.resize(1480, 900)
-        self.setMinimumSize(1180, 760)
+        fit_initial_window(self, (1480, 900), (900, 580))
         self._run_root: Path | None = None
         self._current_preview_pixmap: QPixmap | None = None
         self._current_preview_path: Path | None = None
@@ -170,7 +170,7 @@ class AcousticPipelineWindow(QMainWindow):
 
         sidebar = QFrame()
         sidebar.setObjectName("Sidebar")
-        sidebar.setFixedWidth(260)
+        sidebar.setMinimumWidth(190)
         side_layout = QVBoxLayout(sidebar)
         side_layout.setContentsMargins(12, 12, 12, 12)
         side_layout.setSpacing(7)
@@ -233,7 +233,15 @@ class AcousticPipelineWindow(QMainWindow):
         self.open_output_btn.clicked.connect(self.open_output_root)
         side_layout.addWidget(self.open_output_btn)
 
-        root.addWidget(sidebar)
+        sidebar_scroll = QScrollArea()
+        sidebar_scroll.setObjectName("AcousticSidebarScroll")
+        sidebar_scroll.setWidgetResizable(True)
+        sidebar_scroll.setFrameShape(QFrame.NoFrame)
+        sidebar_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        sidebar_scroll.setMinimumWidth(205)
+        sidebar_scroll.setMaximumWidth(260)
+        sidebar_scroll.setWidget(sidebar)
+        root.addWidget(sidebar_scroll)
 
         main_col = QVBoxLayout()
         main_col.setSpacing(16)
@@ -1003,15 +1011,15 @@ class AcousticPipelineWindow(QMainWindow):
         selector_layout = QVBoxLayout(selector_group)
         self.feature_task_label = QLabel("Task: Set up a run")
         selector_layout.addWidget(self.feature_task_label)
-        quick = QHBoxLayout()
-        for label, callback in [
+        quick = QGridLayout()
+        for index, (label, callback) in enumerate([
             ("Recommended for task", self.select_recommended_features),
             ("Select all selectable features", self.select_all_features),
             ("Clear all", self.clear_feature_selection),
-        ]:
+        ]):
             btn = QPushButton(label)
             btn.clicked.connect(callback)
-            quick.addWidget(btn)
+            quick.addWidget(btn, index // 2, index % 2)
         selector_layout.addLayout(quick)
         self.feature_search_edit = QLineEdit()
         self.feature_search_edit.setPlaceholderText("Search feature, code name, family, or task")
@@ -1049,6 +1057,7 @@ class AcousticPipelineWindow(QMainWindow):
         right = QWidget(); right_layout = QVBoxLayout(right)
         self.feature_count_label = QLabel("")
         self.feature_count_label.setObjectName("SectionHeader")
+        self.feature_count_label.setWordWrap(True)
         right_layout.addWidget(self.feature_count_label)
         detail_group = QGroupBox("SELECTED FEATURE")
         detail_layout = QVBoxLayout(detail_group)
@@ -1198,6 +1207,7 @@ class AcousticPipelineWindow(QMainWindow):
         self.feature_results_button.setEnabled(False)
         right_layout.addWidget(self.feature_results_button)
         right_layout.addStretch(1)
+        splitter.setChildrenCollapsible(False)
         splitter.addWidget(left); splitter.addWidget(right); splitter.setSizes([720, 430]); splitter.setMinimumHeight(540)
         layout.addWidget(splitter)
         self._refresh_feature_count_label()
@@ -1357,7 +1367,7 @@ class AcousticPipelineWindow(QMainWindow):
         self.preview_image_label = QLabel("No plot selected")
         self.preview_image_label.setObjectName("PlotPreviewLabel")
         self.preview_image_label.setAlignment(Qt.AlignCenter)
-        self.preview_image_label.setMinimumSize(560, 560)
+        self.preview_image_label.setMinimumSize(280, 220)
         self.preview_image_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.preview_image_label.setScaledContents(False)
         plot_canvas_layout.addWidget(self.preview_image_label, stretch=1)
@@ -2941,12 +2951,14 @@ class AcousticPipelineWindow(QMainWindow):
         summary, rows = result_summary(path)
         dialog = QDialog(self)
         dialog.setWindowTitle("Acoustic Feature Results")
-        dialog.resize(1050, 600)
+        fit_initial_window(dialog, (1050, 600), (560, 400))
         layout = QVBoxLayout(dialog)
-        layout.addWidget(QLabel(
+        summary_label = QLabel(
             f"{summary['recordings']} recordings · {summary['selected_features']} selected leaves · "
             f"{summary['computed']} computed · {summary['unavailable']} unavailable · "
-            f"{summary['warning']} warning · {summary['error']} error"))
+            f"{summary['warning']} warning · {summary['error']} error")
+        summary_label.setWordWrap(True)
+        layout.addWidget(summary_label)
         selector = QComboBox()
         selector.addItems(["All", "Computed", "Unavailable", "Warning", "Error"])
         layout.addWidget(selector)
@@ -2956,6 +2968,9 @@ class AcousticPipelineWindow(QMainWindow):
         table.setHorizontalHeaderLabels(["Recording", "Feature", "Value", "Status", "Reason"])
         table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         table.setSortingEnabled(False)
+        table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        for column, width in enumerate((165, 250, 100, 100, 260)):
+            table.setColumnWidth(column, width)
         layout.addWidget(table)
 
         def populate() -> None:
@@ -2964,9 +2979,10 @@ class AcousticPipelineWindow(QMainWindow):
             table.setRowCount(len(current))
             for row_index, item in enumerate(current.itertuples(index=False)):
                 for column_index, key in enumerate(columns):
-                    table.setItem(row_index, column_index,
-                                  QTableWidgetItem(str(getattr(item, key))))
-            table.resizeColumnsToContents()
+                    value = str(getattr(item, key))
+                    cell = QTableWidgetItem(value)
+                    cell.setToolTip(value)
+                    table.setItem(row_index, column_index, cell)
 
         selector.currentIndexChanged.connect(populate)
         populate()

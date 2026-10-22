@@ -88,10 +88,11 @@ class SegmentationReviewWidget(QWidget):
         self.recording_list.currentItemChanged.connect(self._show_selected)
         splitter.addWidget(self.recording_list)
         detail = QWidget()
-        detail.setMinimumWidth(900)
+        detail.setMinimumWidth(600)
         right = QVBoxLayout(detail)
         self.identity_label, self.status_label, self.flags_label = QLabel("Select a recording"), QLabel(), QLabel()
         for label in (self.identity_label, self.status_label, self.flags_label):
+            label.setWordWrap(True)
             right.addWidget(label)
         self.availability_label = QLabel()
         right.addWidget(self.availability_label)

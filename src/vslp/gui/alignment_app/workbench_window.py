@@ -26,6 +26,7 @@ from vslp.acoustic.alignment.workbench import (
 )
 from vslp.acoustic.alignment.workbench_package import export_standalone_package
 from vslp.gui.common.utils import open_path
+from vslp.gui.common.geometry import fit_initial_window
 from vslp.gui.common.worker import Worker
 from vslp.gui.alignment_app.workbench_review import WorkbenchReview, load_recording_review
 
@@ -75,8 +76,7 @@ class WorkbenchWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("VSLP Alignment")
-        self.resize(1450, 900)
-        self.setMinimumSize(1050, 700)
+        fit_initial_window(self, (1450, 900), (900, 580))
         self.audio_rows: list[dict] = []
         self.job_root: Path | None = None
         self._thread: QThread | None = None
@@ -100,8 +100,10 @@ class WorkbenchWindow(QMainWindow):
         title = QLabel("VSLP Alignment")
         title.setObjectName("AppTitleLabel")
         layout.addWidget(title)
-        layout.addWidget(QLabel("1 Add audio   →   2 Choose task   →   3 Validate / Pre-flight   →   "
-                                "4 Run alignment   →   5 Review flagged   →   6 Export"))
+        workflow = QLabel("1 Add audio   →   2 Choose task   →   3 Validate / Pre-flight   →   "
+                          "4 Run alignment   →   5 Review flagged   →   6 Export")
+        workflow.setWordWrap(True)
+        layout.addWidget(workflow)
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs, 1)
         self.tabs.addTab(self._setup_page(), "1  Job setup")
@@ -167,22 +169,32 @@ class WorkbenchWindow(QMainWindow):
         workspace_form = QFormLayout(workspace_box)
         self.job_name = QLineEdit("New Alignment Job")
         workspace_form.addRow("Job name", self.job_name)
-        workspace_row = QHBoxLayout()
         self.workspace = QLineEdit(str(self._workspace_default))
-        workspace_row.addWidget(self.workspace)
+        self.workspace.setToolTip(str(self._workspace_default))
+        self.workspace.textChanged.connect(self.workspace.setToolTip)
         choose = QPushButton("Change workspace")
         choose.clicked.connect(self._choose_workspace)
-        workspace_row.addWidget(choose)
-        workspace_form.addRow("Workspace", workspace_row)
-        workspace_form.addRow(QLabel("Raw input files remain untouched. Each job has its own corpus, "
-                                    "MFA output, review and export folders."))
+        workspace_form.addRow("Workspace", self.workspace)
+        workspace_form.addRow("", choose)
+        workspace_note = QLabel("Raw input files remain untouched. Each job has its own corpus, "
+                                "MFA output, review and export folders.")
+        workspace_note.setWordWrap(True)
+        workspace_form.addRow(workspace_note)
         details.addWidget(workspace_box, 1)
         layout.addLayout(details)
         self.create_button = QPushButton("Create Alignment Job")
         self.create_button.setObjectName("RunButton")
         self.create_button.clicked.connect(self._create_job)
-        layout.addWidget(self.create_button)
-        return page
+        wrapper = QWidget()
+        wrapper_layout = QVBoxLayout(wrapper)
+        wrapper_layout.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setObjectName("AlignmentSetupScroll")
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(page)
+        wrapper_layout.addWidget(scroll, 1)
+        wrapper_layout.addWidget(self.create_button)
+        return wrapper
 
     def _run_page(self) -> QWidget:
         page = QWidget()
@@ -237,6 +249,7 @@ class WorkbenchWindow(QMainWindow):
         navigation.addStretch()
         layout.addLayout(navigation)
         splitter = QSplitter(Qt.Horizontal)
+        splitter.setChildrenCollapsible(False)
         self.review_table = QTableWidget(0, 4)
         self.review_table.setHorizontalHeaderLabels(
             ["Recording", "Status", "Aligned words", "QC issue"])
@@ -251,10 +264,12 @@ class WorkbenchWindow(QMainWindow):
         self.reviewer.changed.connect(self._review_updated)
         review_scroll = QScrollArea()
         review_scroll.setWidgetResizable(True)
+        review_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         review_scroll.setWidget(self.reviewer)
         splitter.addWidget(review_scroll)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 4)
+        splitter.setSizes([320, 950])
         layout.addWidget(splitter, 1)
         return page
 
