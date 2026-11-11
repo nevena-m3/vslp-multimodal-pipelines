@@ -223,7 +223,7 @@ def test_bamboo_gui_shows_one_candidate_then_saves_human_confirmation(
     import soundfile as sf
     from PySide6.QtWidgets import QApplication
     from vslp.acoustic.alignment.task_workflow import load_project_choices
-    from vslp.gui.acoustic_app.alignment_widget import AlignmentWidget
+    from vslp.gui.alignment_app.alignment_widget import AlignmentWidget
 
     root = _review(tmp_path, "bamboo_passage", [(1, 3), (4, 6), (8, 12)])
     audio = root / "synthetic.wav"

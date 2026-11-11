@@ -1,5 +1,14 @@
 # Acoustic Alignment contract
 
+> **Separation (2026-11):** the Acoustic Features GUI contains no aligner. It never
+> runs, configures or imports Montreal Forced Aligner code. Word/phone boundaries
+> reach it only as a `VSLP_ALIGNMENT_PACKAGE_V1` folder, loaded with
+> **Acoustic Features → Import Alignment Package**. Packages are produced outside
+> the Acoustic GUI (the separate VSLP Alignment app or the batch aligner). The
+> feature-facing reader lives in `vslp.acoustic.alignment.contract` (MFA-free);
+> producer code (`stage`, `task_workflow`, `workbench`, `mfa_*`) is used only by
+> the Alignment tools. `tests/unit/test_acoustic_gui_has_no_mfa.py` enforces this.
+
 Alignment is optional and follows frozen Segmentation Manual Review. The stage
 reads `003_segmentation_review/final/final_segmentation_decisions.csv` and
 `final_segmentation_intervals.csv`; it never rewrites either file or canonical

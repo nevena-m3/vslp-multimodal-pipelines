@@ -92,7 +92,7 @@ def test_existing_project_resolves_registered_setup_task_when_legacy_id_is_unkno
     assert prompt["prompt_id"] == prompt_id
     assert prompt.get("expected_repetitions") == expected_repetitions
     assert project_alignment_context(root)["task_id"] == task
-    from vslp.gui.acoustic_app.alignment_widget import AlignmentWidget
+    from vslp.gui.alignment_app.alignment_widget import AlignmentWidget
     _keep_qt_app()
     widget = AlignmentWidget(lambda: root)
     widget.refresh()
@@ -145,7 +145,7 @@ def test_task_run_hands_registered_prompt_to_alignment(tmp_path, monkeypatch, ta
 @pytest.mark.parametrize("task", ["wstg", "bamboo_passage"])
 def test_validated_import_uses_registered_prompt_without_file_browsing(tmp_path, task):
     from PySide6.QtWidgets import QApplication
-    from vslp.gui.acoustic_app.alignment_widget import AlignmentWidget
+    from vslp.gui.alignment_app.alignment_widget import AlignmentWidget
 
     QApplication.instance() or QApplication([])
     root = _project(tmp_path, task=task, metadata_speaker="")
@@ -201,7 +201,7 @@ def test_preflight_requires_confirmed_trials_not_manual_speaker_ids(tmp_path, mo
 
 def test_48_recording_technical_speakers_persist_without_entry(tmp_path):
     from PySide6.QtWidgets import QApplication
-    from vslp.gui.acoustic_app.alignment_widget import AlignmentWidget
+    from vslp.gui.alignment_app.alignment_widget import AlignmentWidget
 
     app = _keep_qt_app()
     root = _project(tmp_path, metadata_speaker="")
@@ -243,7 +243,7 @@ def test_acoustic_gui_has_package_import_instead_of_embedded_alignment():
     assert all(window.tabs.tabText(index) != "Alignment"
                for index in range(window.tabs.count()))
     assert window.feature_package_status.text() == "No Alignment Package loaded"
-    assert window.alignment_widget is None
+    assert not hasattr(window, 'alignment_widget')
     window.close()
 
 
@@ -270,7 +270,7 @@ def test_bamboo_canonical_prompt_resolves_and_survives_project_reopen(tmp_path):
     save_project_choices(root, choices)
     assert resolve_prompt(project_alignment_context(root))[0]["prompt_id"] == "bamboo_passage_v1"
     from PySide6.QtWidgets import QApplication
-    from vslp.gui.acoustic_app.alignment_widget import AlignmentWidget
+    from vslp.gui.alignment_app.alignment_widget import AlignmentWidget
     QApplication.instance() or QApplication([])
     widget = AlignmentWidget(lambda: root)
     widget.refresh()
@@ -291,7 +291,7 @@ def test_finalized_bamboo_review_has_one_consistent_recording_and_protocol(tmp_p
     decisions = pd.read_csv(decisions_path)
     decisions["analysis_wav_path"] = str(audio)
     decisions.to_csv(decisions_path, index=False)
-    from vslp.gui.acoustic_app.alignment_widget import AlignmentWidget
+    from vslp.gui.alignment_app.alignment_widget import AlignmentWidget
     _keep_qt_app()
     for _ in range(2):
         context = project_alignment_context(root)
@@ -320,7 +320,7 @@ def test_unfrozen_bamboo_review_is_one_explicit_error_state(tmp_path):
     context = project_alignment_context(root)
     assert context["issue"] == "FINAL_SEGMENTATION_RECORDINGS_NOT_FOUND"
     assert context["eligible_recording_count"] == 0
-    from vslp.gui.acoustic_app.alignment_widget import AlignmentWidget
+    from vslp.gui.alignment_app.alignment_widget import AlignmentWidget
     _keep_qt_app()
     widget = AlignmentWidget(lambda: root)
     widget.refresh()
@@ -389,7 +389,7 @@ def test_nonlinguistic_tasks_are_exempt():
 
 @pytest.mark.parametrize("task", ["sustained_a", "ddk"])
 def test_nonlinguistic_trials_can_be_confirmed_without_mfa(tmp_path, task):
-    from vslp.gui.acoustic_app.alignment_widget import AlignmentWidget
+    from vslp.gui.alignment_app.alignment_widget import AlignmentWidget
     root = _project(tmp_path, task=task, metadata_speaker="")
     choices = load_project_choices(root)
     choices["trials"] = {}
@@ -424,7 +424,7 @@ def test_recording_choice_and_reviewed_transcript_persist(tmp_path):
 
 def test_wstg_alignment_gui_displays_prompt_without_manifest_browser(tmp_path, monkeypatch):
     from PySide6.QtWidgets import QApplication
-    from vslp.gui.acoustic_app.alignment_widget import AlignmentWidget
+    from vslp.gui.alignment_app.alignment_widget import AlignmentWidget
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     app = QApplication.instance() or QApplication([])
     root = _project(tmp_path)
@@ -468,7 +468,8 @@ def test_multiple_prompt_task_requires_explicit_recording_selection(tmp_path, mo
         "language": "en"})
     registry_path = tmp_path / "registry.json"
     registry_path.write_text(json.dumps(registry), encoding="utf-8")
-    monkeypatch.setattr(task_workflow, "REGISTRY_PATH", registry_path)
+    from vslp.acoustic.alignment import prompts
+    monkeypatch.setattr(prompts, "REGISTRY_PATH", registry_path)
     with pytest.raises(ValueError, match="PROMPT_SELECTION_REQUIRED"):
         build_task_alignment_config(root)
     choices = load_project_choices(root)
@@ -484,7 +485,7 @@ def test_multiple_prompt_task_requires_explicit_recording_selection(tmp_path, mo
     config = build_task_alignment_config(root)
     assert PromptManifest.load(config.recording_prompt_manifest_paths["r1"]).prompt_version == "v1"
     assert PromptManifest.load(config.recording_prompt_manifest_paths["r2"]).prompt_version == "v2"
-    from vslp.gui.acoustic_app.alignment_widget import AlignmentWidget
+    from vslp.gui.alignment_app.alignment_widget import AlignmentWidget
     _keep_qt_app()
     widget = AlignmentWidget(lambda: root)
     widget.refresh()
@@ -572,7 +573,7 @@ def test_mixed_feature_selection_dispatches_without_embedded_alignment(
 
     window.run_features()
     assert dispatched == [["bamboo_pause_count", "f1_vowel_median_hz"]]
-    assert window.alignment_widget is None
+    assert not hasattr(window, 'alignment_widget')
     window.close()
 
 

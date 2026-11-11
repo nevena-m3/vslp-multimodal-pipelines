@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Protocol, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .stage import AlignmentStore
+    from .contract import AlignmentStore
 
 
 class FinalAlignmentProvider(Protocol):
@@ -17,7 +17,7 @@ class FinalAlignmentProvider(Protocol):
 class EmbeddedAlignmentProvider:
     def load(self, root: Path, *, require_current_trials: bool,
              require_feature_contract: bool) -> tuple[AlignmentStore | None, str]:
-        from .stage import _load_embedded_final_alignment
+        from .contract import _load_embedded_final_alignment
 
         return _load_embedded_final_alignment(
             root, require_current_trials=require_current_trials,

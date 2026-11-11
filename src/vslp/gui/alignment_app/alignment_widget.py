@@ -41,7 +41,7 @@ from vslp.acoustic.alignment.trial_review import set_trial_review, trial_review_
 from vslp.acoustic.alignment.trial_review import mark_recording_stale
 from vslp.acoustic.alignment.corrections import (load_corrections, reset_corrections,
                                                  set_correction, reviewed_tables)
-from .display_waveform import DisplayWaveformCache
+from vslp.gui.acoustic_app.display_waveform import DisplayWaveformCache
 
 
 _DISPLAY_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="vslp-display")

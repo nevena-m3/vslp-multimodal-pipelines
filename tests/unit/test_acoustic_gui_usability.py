@@ -13,7 +13,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from vslp.gui.acoustic_app.main_window import AcousticPipelineWindow, FEATURE_FAMILY_LABELS
-from vslp.gui.acoustic_app.alignment_widget import AlignmentWidget
+from vslp.gui.alignment_app.alignment_widget import AlignmentWidget
 from vslp.gui.acoustic_app.waveform_editor import WaveformEditor
 from vslp.core.process_windows import hidden_console_kwargs
 
@@ -329,7 +329,7 @@ def test_alignment_technical_log_is_persistent():
 
 def test_bamboo_sentence_selector_zooms_shared_timeline(tmp_path, monkeypatch):
     _app()
-    import vslp.gui.acoustic_app.alignment_widget as alignment_gui
+    import vslp.gui.alignment_app.alignment_widget as alignment_gui
     import vslp.acoustic.features.family13_v1_stage as family13_stage
 
     alignment = SimpleNamespace(

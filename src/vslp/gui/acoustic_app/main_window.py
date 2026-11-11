@@ -50,14 +50,9 @@ from vslp.acoustic.features.catalog import (
 )
 from vslp.gui.acoustic_app.feature_results import result_summary
 from vslp.gui.common.geometry import fit_initial_window
-from vslp.acoustic.alignment import freeze_alignment, load_final_alignment, run_acoustic_alignment
+from vslp.acoustic.alignment.contract import load_final_alignment
 from vslp.acoustic.alignment.package_v1 import (
     import_alignment_package, inspect_alignment_package,
-)
-from vslp.acoustic.alignment.self_test import run_mfa_self_test
-from vslp.acoustic.alignment.task_workflow import (
-    check_mfa_environment, check_task_preflight, load_project_choices,
-    run_task_alignment, save_project_choices, task_entry,
 )
 from vslp.acoustic.features.scales import build_feature_family_policy_summary
 from vslp.acoustic.features.stage import (
@@ -74,7 +69,6 @@ from vslp.acoustic.segment.selection import SILERO, DDK, PHONATION, CUSTOM, reco
 from vslp.acoustic.segment.task_methods import DDKConfig, PhonationConfig
 from vslp.acoustic.segment.review import initialize_segmentation_review, select_segmentation_run
 from vslp.gui.acoustic_app.review_widget import SegmentationReviewWidget
-from vslp.gui.acoustic_app.alignment_widget import AlignmentWidget
 from vslp.gui.acoustic_app.feature_presentation import (
     LABELS, construct_presentation_status, output_presentation_status,
 )
@@ -260,8 +254,7 @@ class AcousticPipelineWindow(QMainWindow):
         self.review_widget.finalized.connect(lambda result: self._on_worker_finished("review", result))
         self.review_widget.continue_requested.connect(self.run_after_review)
         tabs.addTab(self.review_widget, "Segmentation manual review")
-        # Alignment production and review belong to the standalone Alignment app.
-        self.alignment_widget = None
+        # Alignment is produced outside this app; only Alignment Packages are imported.
         tabs.addTab(self._build_quality_tab(), "Quality Control")
         qc_index = tabs.count() - 1
         tabs.setTabEnabled(qc_index, False)
@@ -1539,13 +1532,12 @@ class AcousticPipelineWindow(QMainWindow):
                                             output["qc_range_text"] or "—",
                                             output["analysis_unit"] or "—"])
                     item.setData(0, Qt.UserRole, ("output", feature_id))
-                    if needs_alignment:
-                        item.setToolTip(0, "Requires final linguistic word/phone Alignment.")
                     item.setData(0, Qt.UserRole + 3,
                                  "Runnable output" if feature_availability(output)[0] == "Implemented"
                                  else "Unavailable exact output or unresolved template")
                     if needs_alignment:
-                        item.setToolTip(0, "Requires frozen final linguistic Alignment")
+                        item.setToolTip(0, "Requires word/phone boundaries: import an Alignment "
+                                           "Package (Acoustic Features → Import Alignment Package).")
                     item.setCheckState(0, Qt.Unchecked)
                     if feature_availability(output)[0] == "Implemented":
                         item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
@@ -1815,7 +1807,9 @@ class AcousticPipelineWindow(QMainWindow):
             f"{manifest.get('package_contract_version', 'Unknown package')} · "
             f"Matched {preview['matched']}/{project_count} · "
             f"Finalized {preview['finalized']} · Missing {preview['missing']} · "
-            f"Stale/mismatched {preview['stale']} · Invalid {preview['invalid']}")
+            f"Stale/mismatched {preview['stale']} · Invalid {preview['invalid']}" +
+            (f" · Other dataset recordings in package {preview['not_in_project']}"
+             if preview.get("not_in_project") else ""))
         if preview["error"]:
             active = bool(self._run_root and (self._run_root / "alignment_imports" / "active.json").is_file())
             self.feature_package_status.setText(
@@ -1832,6 +1826,8 @@ class AcousticPipelineWindow(QMainWindow):
             return "Source recording matches, but preprocessing changed the time axis. View details for the internal code."
         if "task_prompt" in reason or "transcript" in reason:
             return "The package task or transcript does not match this project. View details for the internal code."
+        if "matches_no_project_recording" in reason:
+            return "None of this project's recordings are in the package. Check that the package is for this task and dataset."
         if "audio_identity" in reason or "source_changed" in reason:
             return "The package could not be matched to this source recording. View details for the internal code."
         return "The Alignment Package could not be activated. View details for the reason."
@@ -1869,7 +1865,9 @@ class AcousticPipelineWindow(QMainWindow):
                 f"{manifest.get('package_contract_version', 'Unknown package')} · "
                 f"Matched {preview['matched']}/{project_count} · "
                 f"Finalized {preview['finalized']} · Missing {preview['missing']} · "
-                f"Stale/mismatched {preview['stale']} · Invalid {preview['invalid']}")
+                f"Stale/mismatched {preview['stale']} · Invalid {preview['invalid']}" +
+            (f" · Other dataset recordings in package {preview['not_in_project']}"
+             if preview.get("not_in_project") else ""))
             if preview["error"]:
                 self.feature_package_status.setText(f"Invalid package: {preview['error']}")
         except (OSError, ValueError, KeyError) as exc:
@@ -2500,13 +2498,6 @@ class AcousticPipelineWindow(QMainWindow):
         self._worker.failed.connect(self._cleanup_thread)
         self._thread.start()
 
-    def generate_alignment_trial_plot(self, run_id: str, recording_id: str,
-                                      trial_id: str) -> None:
-        from vslp.acoustic.alignment.qc import generate_selected_trial_plot
-        self._run_worker("alignment_qc_plot", generate_selected_trial_plot,
-                         {"root": self._output_root(), "run_id": run_id,
-                          "recording_id": recording_id, "trial_id": trial_id})
-
     def _cleanup_thread(self, *_args) -> None:
         self._feature_progress_timer.stop()
         if self._thread is not None:
@@ -2520,11 +2511,6 @@ class AcousticPipelineWindow(QMainWindow):
         if name == "features":
             self._feature_progress = (0, 0, "Preparing extraction...")
             self._feature_progress_timer.start()
-        if name == "alignment":
-            self.alignment_widget.alignment_started()
-        if name in {"alignment_preflight", "alignment_environment",
-                    "alignment_self_test", "alignment"}:
-            self.log_box.clear()
         if name in self.stage_records:
             self.stage_records[name].status = "running"
             self._refresh_stage_cards()
@@ -2537,8 +2523,6 @@ class AcousticPipelineWindow(QMainWindow):
             self.progress_label.setText("Cancelling after the current recording...")
 
     def _on_worker_progress(self, done: int, total: int, message: str) -> None:
-        if self._worker is not None and self._worker.name == "alignment":
-            self.alignment_widget.alignment_progress(done, total, message)
         if total > 0:
             self.progress.setRange(0, total)
             self.progress.setValue(max(0, min(done, total)))
@@ -2584,63 +2568,11 @@ class AcousticPipelineWindow(QMainWindow):
             QMessageBox.warning(self, "Alignment package",
                                 self._package_failure_message(reason))
             return
-        if name == "alignment":
-            self.alignment_widget.alignment_finished(err)
-        if name == "alignment_preflight":
-            self.alignment_widget.show_preflight_result(
-                {"status": "ACTION_REQUIRED", "issue": err.splitlines()[0]})
-            self.append_log(f"Alignment preflight issue: {err.splitlines()[0]}")
-            return
         rec = self.stage_records.get(name, StageRecord())
         rec.status = "failed"; self.stage_records[name] = rec
         self._refresh_stage_cards()
         label = "Acoustic Features" if name == "features" else name
         self.append_log(f"ERROR in {label}:\n{err}")
-        if name == "alignment":
-            code = err.splitlines()[0]
-            if code.startswith("trial_token_boundary_mismatch:"):
-                try:
-                    detail = json.loads(code.partition(":")[2])
-                    trial = detail["trial_id"]
-                    tier = detail["tier"]
-                    message = (f"{detail['file_name']} — {trial} contains a {tier} boundary "
-                               "outside its confirmed trial bounds.\n\n"
-                               f"Trial: {detail['trial_start_sec']:.6f}–"
-                               f"{detail['trial_end_sec']:.6f} s\n"
-                               f"{tier.title()} {detail['token_index']}: "
-                               f"{detail['token_start_sec']:.6f}–"
-                               f"{detail['token_end_sec']:.6f} s\n"
-                               f"Source: {detail['source']}")
-                    dialog = QMessageBox(self)
-                    dialog.setWindowTitle("Review Alignment boundary")
-                    dialog.setText(message)
-                    review_button = dialog.addButton("REVIEW THIS TRIAL", QMessageBox.AcceptRole)
-                    dialog.addButton(QMessageBox.Close)
-                    dialog.exec()
-                    if dialog.clickedButton() is review_button:
-                        self.tabs.setCurrentWidget(self.alignment_widget)
-                        self.alignment_widget.focus_trial(detail["recording_id"], trial)
-                    return
-                except (KeyError, ValueError, TypeError):
-                    pass
-            messages = {
-                "MFA_NOT_INSTALLED": "MFA is not installed in the active environment.",
-                "MFA_VERSION_UNSUPPORTED": "The installed MFA version is not supported by this alignment profile.",
-                "MISSING_MODEL": "No supported acoustic model is configured.",
-                "MISSING_DICTIONARY": "The pronunciation dictionary is missing.",
-                "OOV": "Prompt words are missing from the pronunciation dictionary. Inspect the OOV report.",
-                "PREFLIGHT_FAILED": "MFA corpus validation failed. Inspect the validation log.",
-                "MISSING_SPEAKER_MAPPING": "A recording-to-speaker mapping is required.",
-                "SPEAKER_ID_REQUIRED": "Enter a stable deidentified speaker ID for each recording.",
-                "MISSING_CANONICAL_PROMPT": "The selected task has no approved canonical transcript yet.",
-                "PROMPT_SELECTION_REQUIRED": "Select the stimulus for each recording.",
-                "TRANSCRIPT_OVERRIDE_REASON_REQUIRED": "Give a reason for the corrected transcript.",
-                "TRANSCRIPT_OVERRIDE_REVIEWER_REQUIRED": "Enter the transcript reviewer's identifier.",
-                "MISSING_MFA_PROFILE": "Select a versioned MFA alignment profile.",
-                "PHONESET_MAPPING_REQUIRED": "The configured phone set needs an approved mapping.",
-            }
-            QMessageBox.critical(self, "Alignment issue", messages.get(code, code))
-            return
         QMessageBox.critical(self, f"{label} failed", err)
 
     def _refresh_stage_cards(self) -> None:
@@ -3145,79 +3077,11 @@ table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{border-bottom:
         self.append_log("Final reviewed segmentation ready. Select Acoustic Features; "
                         "import an Alignment Package for alignment-dependent outputs.")
 
-    def run_alignment(self, config: object) -> None:
-        if not self._require_project_initialized():
-            return
-        self._run_worker("alignment", run_acoustic_alignment,
-                         {"output_root": self._output_root(), "config": config})
-
-    def freeze_alignment(self, run_id: str) -> None:
-        if not run_id or not self._require_project_initialized():
-            return
-        frozen = (self._output_root() / "acoustic" / "004_alignment" / "final" /
-                  "final_alignment_manifest.json")
-        supersede = False
-        if frozen.is_file():
-            current_id = json.loads(frozen.read_text(encoding="utf-8")).get("alignment_run_id")
-            if current_id == run_id:
-                QMessageBox.information(self, "Alignment already frozen",
-                                        "This Alignment run is already frozen.")
-                return
-            answer = QMessageBox.question(
-                self, "Replace frozen Alignment",
-                "Freeze this reviewed run as the new authoritative Alignment? "
-                "The previous frozen result will be retained in the Alignment archive.",
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if answer != QMessageBox.Yes:
-                return
-            supersede = True
-        self._run_worker("alignment", freeze_alignment,
-                         {"output_root": self._output_root(), "alignment_run_id": run_id,
-                          "supersede": supersede})
-
-    def run_mfa_self_test(self, profile_path: str, fallback_wav_path: str) -> None:
-        self._run_worker("alignment_self_test", run_mfa_self_test,
-                         {"profile_path": profile_path,
-                          "fallback_wav_path": fallback_wav_path or None})
-
-    def check_alignment_preflight(self, output_root: str, profile_path: str) -> None:
-        if self._thread is not None:
-            QTimer.singleShot(1000, lambda: self.check_alignment_preflight(output_root, profile_path))
-            return
-        self._run_worker("alignment_preflight", check_task_preflight,
-                         {"root": output_root, "profile_path": profile_path})
-
-    def check_alignment_environment(self, profile_path: str) -> None:
-        self._run_worker("alignment_environment", check_mfa_environment,
-                         {"profile_path": profile_path})
-
-    def run_task_alignment(self, output_root: str, profile_path: str) -> None:
-        self._run_worker("alignment", run_task_alignment,
-                         {"output_root": output_root, "profile_path": profile_path})
-
-    def rerun_recording_alignment(self, output_root: str, profile_path: str,
-                                  recording_id: str, previous_run_id: str) -> None:
-        self._run_worker("alignment", run_task_alignment,
-                         {"output_root": output_root, "profile_path": profile_path,
-                          "rerun_recording_id": recording_id,
-                          "reuse_run_id": previous_run_id})
-
     def _on_worker_finished(self, name: str, result: object) -> None:  # type: ignore[override]
         elapsed = monotonic() - self._operation_started_at
         self.append_log(f"{name} finished in {elapsed:.1f} s")
         if name == "package_import" and isinstance(result, dict):
             self._show_package_import_result(result)
-            return
-        if name == "alignment_preflight":
-            self.alignment_widget.show_preflight_result(result)
-            return
-        if name == "alignment_environment":
-            self.alignment_widget.show_environment_result(result)
-            return
-        if name == "alignment_self_test":
-            self.alignment_widget.show_self_test_result(result)
-            self.append_log(f"MFA self-test: {getattr(result, 'result', 'FAIL')} · "
-                            f"{getattr(result, 'result_path', '')}")
             return
         if name == "full_run" and isinstance(result, dict):
             for stage_name in ["ingest", "preprocess", "segment", "review"]:
@@ -3290,27 +3154,6 @@ table{{border-collapse:collapse;width:100%;font-size:14px}}td,th{{border-bottom:
                 self.stage_records["review"].status = "completed_with_warnings"
             except Exception as exc:  # noqa: BLE001
                 self.append_log(f"Review queue could not be initialized: {exc}")
-        if name == "alignment":
-            self.alignment_widget.alignment_finished()
-            if manifest and Path(manifest).is_file():
-                aligned = json.loads(Path(manifest).read_text(encoding="utf-8"))
-                run_id = aligned.get("alignment_run_id", "")
-                if run_id:
-                    choices = load_project_choices(self._output_root())
-                    choices["selected_run_id"] = run_id
-                    save_project_choices(self._output_root(), choices)
-            self.alignment_widget.refresh()
-            self._refresh_feature_count_label()
-            if (getattr(self, "_return_to_features_after_alignment", False)
-                    and manifest and Path(manifest).name == "final_alignment_manifest.json"):
-                self.alignment_widget._feature_return_pending = True
-                self.alignment_widget._show_step()
         if name == "quality":
             self._update_quality_feedback()
         self.refresh_latest_outputs()
-
-    def _return_to_acoustic_features(self) -> None:
-        self._return_to_features_after_alignment = False
-        self.alignment_widget._feature_return_pending = False
-        self.tabs.setCurrentIndex(next(i for i in range(self.tabs.count())
-                                   if self.tabs.tabText(i) == "Acoustic Features"))

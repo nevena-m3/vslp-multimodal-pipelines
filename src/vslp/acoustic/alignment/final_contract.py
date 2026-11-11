@@ -36,7 +36,7 @@ def build_feature_tables(
     A canonical word may normalize to several provider tokens.  The mapping
     must match every provider token exactly and in order within each trial.
     """
-    from .stage import normalize_transcript
+    from .contract import normalize_transcript
 
     word_rows: list[dict] = []
     phone_rows: list[dict] = []
@@ -52,7 +52,7 @@ def build_feature_tables(
         status = str(getattr(review, "alignment_review_status", ""))
         if status not in {"AUTO_ACCEPTED_STRUCTURAL", "HUMAN_ACCEPTED"}:
             raise ValueError("final_alignment_unresolved")
-        prompt_id = str(trial.prompt_id)
+        prompt_id = str(getattr(trial, "prompt_id", ""))
         prompt = prompts.get(prompt_id) or prompts.get(recording_id)
         if prompt is None or str(prompt["prompt_version"]) != str(getattr(trial, "prompt_version", prompt["prompt_version"])):
             raise ValueError("final_alignment_prompt_mismatch")

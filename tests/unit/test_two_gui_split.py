@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QApplication, QFileDialog
 
 from vslp.acoustic.alignment.task_workflow import project_alignment_context, task_entry
 from vslp.gui.acoustic_app.main_window import AcousticPipelineWindow
-from vslp.gui.acoustic_app.alignment_widget import AlignmentWidget
+from vslp.gui.alignment_app.alignment_widget import AlignmentWidget
 from vslp.gui.alignment_app.main_window import AlignmentWindow, alignment_tasks
 
 
@@ -28,7 +28,7 @@ def test_independent_windows_and_canonical_task_setup():
     assert [alignment.tabs.tabText(i) for i in range(alignment.tabs.count())] == [
         "Setup", "Align", "Review", "Export"]
     assert not hasattr(alignment, "segmentation_review")
-    assert acoustic.alignment_widget is None
+    assert not hasattr(acoustic, 'alignment_widget')
     assert not hasattr(alignment, "feature_tree")
     assert alignment._selected_task()["task_id"] == "bamboo_passage"
     assert alignment.repetitions.value() == 1

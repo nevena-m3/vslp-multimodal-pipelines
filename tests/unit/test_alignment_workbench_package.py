@@ -106,10 +106,10 @@ def test_standalone_package_matches_audio_and_remaps_record_identity(tmp_path):
     pd.DataFrame([{"recording_id": "project_record_key", "analysis_wav_path": str(other),
                    "source_file_path": str(other), "final_decision": "KEEP_MANUAL"}]).to_csv(
                        review / "final_segmentation_decisions.csv", index=False)
-    with pytest.raises(ValueError, match="standalone_audio_identity_mismatch"):
+    with pytest.raises(ValueError, match="standalone_package_matches_no_project_recording"):
         validate_alignment_package(package, project)
     rejected = inspect_alignment_package(package, project)
-    assert rejected["error"].startswith("standalone_audio_identity_mismatch")
+    assert rejected["error"].startswith("standalone_package_matches_no_project_recording")
     assert (rejected["matched"], rejected["missing"], rejected["invalid"]) == (0, 0, 1)
 
 
@@ -294,3 +294,43 @@ def test_lexical_edit_runs_new_alignment_and_preserves_old_grid(tmp_path):
     assert result["needs_review"] == 1
     assert "spoken_transcript_differs_from_canonical" in updated["qc_flags"]
     assert updated["extra_aligned_tokens"] == ["EXTRA"]
+
+
+def test_whole_dataset_package_imports_into_a_project_subset(tmp_path):
+    """One package for every recording of a task serves any project subset."""
+    sources = []
+    for index in range(3):
+        path = tmp_path / f"dataset_{index}.wav"
+        sf.write(path, np.full(16000, (index + 1) / 10, dtype=np.float32), 16000)
+        sources.append(path)
+    job_root = create_job(tmp_path / "workspace", name="S2",
+                          audio_rows=inspect_audio_files(sources),
+                          task_id="sentence_s2", repetitions=1)
+    manifest = load_job(job_root)
+    for record in manifest["recordings"]:
+        grid = job_root / "mfa_output" / f"{record['record_key']}.TextGrid"
+        _textgrid(grid, manifest["task_specification"]["normalized_transcript"].split())
+        record["textgrid_path"] = str(grid)
+    (job_root / "job_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    assert qc_job(job_root)["auto_pass"] == 3
+    package = export_standalone_package(job_root, tmp_path / "package")
+
+    project = tmp_path / "project"
+    review = project / "acoustic" / "003_segmentation_review" / "final"
+    review.mkdir(parents=True)
+    pd.DataFrame([{"recording_id": "p_two", "analysis_wav_path": str(sources[1]),
+                   "source_file_path": str(sources[1]), "final_decision": "KEEP_MANUAL"}]).to_csv(
+                       review / "final_segmentation_decisions.csv", index=False)
+    (project / "project_manifest.json").write_text(json.dumps({"task_id": "sentence_s2"}),
+                                                    encoding="utf-8")
+    result = validate_alignment_package(package, project)
+    assert result["record_key_map"] == {"record_000002": "p_two"}
+    assert (result["matched"], result["not_in_project"], result["missing"]) == (1, 2, 0)
+    import_alignment_package(package, project)
+    store, issue = load_imported_alignment(project)
+    assert not issue
+    for table in (store.trials, store.canonical_words, store.canonical_phones,
+                  store.words, store.phones, store.diagnostics):
+        assert set(table.recording_id.astype(str)) == {"p_two"}
+    assert store.canonical_words.word_id.str.startswith("p_two:").all()
+    assert store.canonical_phones.parent_word_id.str.startswith("p_two:").all()

@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import parselmouth
 
-from vslp.acoustic.alignment.stage import ARPABET_VOWELS, PHONE_SET
+from vslp.acoustic.alignment.contract import ARPABET_VOWELS, PHONE_SET
 from vslp.core.provenance import sha256_file
 
 
