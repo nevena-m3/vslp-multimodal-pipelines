@@ -109,6 +109,11 @@ def test_batch_from_zip_writes_importable_package_and_skips_on_rerun(tmp_path):
     assert table.set_index("speaker_id").loc["bad", "state"] == "NEEDS_REVIEW"
     assert list((workspace / "plots" / "256_NSM_NAS_WSTG__wstg").glob("*.png"))
 
+    limited = batch.run_batch(inventory_csv=str(tmp_path / "WAVS.csv"), workspace=tmp_path / "ws_pilot",
+                              audio_dir=str(source), provider=FakeProvider(), plot="none",
+                              limit_per_task=1, log=lambda *_: None)
+    assert limited["jobs"]["256_NSM_NAS_WSTG__wstg"]["recordings"] == 1
+
     again = batch.run_batch(inventory_csv=str(tmp_path / "WAVS.csv"), workspace=workspace,
                             zip_path=str(archive), provider=FakeProvider(), plot="none",
                             log=lambda *_: None)

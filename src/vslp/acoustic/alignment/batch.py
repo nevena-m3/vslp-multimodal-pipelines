@@ -255,9 +255,10 @@ def run_batch(*, inventory_csv: str | None, workspace: str | Path, zip_path: str
     if codes:
         fixed = fixed.loc[fixed.task_code.isin(codes)]
     if limit_per_task:
+        # One recording per participant, at most N per task (pandas 2 and 3 safe).
         fixed = (fixed.sort_values(["task_code", "subject_id", "file_name"])
-                 .groupby("task_code", group_keys=False)
-                 .apply(lambda group: group.drop_duplicates("subject_id").head(limit_per_task)))
+                 .drop_duplicates(["task_code", "subject_id"])
+                 .groupby("task_code").head(limit_per_task))
     names_needed = fixed.file_name.tolist()
     log(f"{len(names_needed)} recordings in {fixed.task_code.nunique()} task codes")
     if audio_dir:
