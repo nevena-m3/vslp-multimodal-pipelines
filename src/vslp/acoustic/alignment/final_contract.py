@@ -52,7 +52,7 @@ def build_feature_tables(
         status = str(getattr(review, "alignment_review_status", ""))
         if status not in {"AUTO_ACCEPTED_STRUCTURAL", "HUMAN_ACCEPTED"}:
             raise ValueError("final_alignment_unresolved")
-        prompt_id = str(trial.prompt_id)
+        prompt_id = str(getattr(trial, "prompt_id", ""))
         prompt = prompts.get(prompt_id) or prompts.get(recording_id)
         if prompt is None or str(prompt["prompt_version"]) != str(getattr(trial, "prompt_version", prompt["prompt_version"])):
             raise ValueError("final_alignment_prompt_mismatch")
