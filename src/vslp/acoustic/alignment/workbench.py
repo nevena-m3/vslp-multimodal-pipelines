@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 import json
 from pathlib import Path
+import re
 import shutil
 from uuid import uuid4
 
@@ -171,7 +172,10 @@ def prepare_corpus(root: str | Path, progress_callback=None, cancelled=None) -> 
         if not source.is_file():
             row.update(state="FAILED", issue="source_audio_missing")
             continue
-        speaker = corpus / f"speaker_{index:06d}"
+        # A deidentified participant ID groups that person's recordings for MFA
+        # speaker adaptation; otherwise every recording is its own speaker.
+        speaker_id = re.sub(r"[^A-Za-z0-9_]", "_", str(row.get("speaker_id", "")).strip())
+        speaker = corpus / (f"speaker_{speaker_id}" if speaker_id else f"speaker_{index:06d}")
         speaker.mkdir(parents=True, exist_ok=True)
         target = speaker / f"{row['record_key']}.wav"
         scope = row.get("alignment_scope") or propose_scope(source)

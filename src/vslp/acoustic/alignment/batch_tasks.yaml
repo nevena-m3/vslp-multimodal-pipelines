@@ -1,0 +1,31 @@
+# One-time batch alignment: which recordings go through MFA, and with which
+# registered prompt. Keys are the task code in the file name, i.e. the part
+# after the date: SUBJECT_PROTOCOL_ITERATION_YYYYMMDD_<CODE>.wav
+#
+# repetitions = how many times the prompt is said in ONE recording. MFA aligns
+# exactly this many copies of the text; a recording with fewer/more is flagged
+# for review and left out of the package (never forced).
+# repetitions_verified: false marks counts that still need a listening check.
+version: vslp_batch_alignment_tasks_v1
+
+tasks:
+  240_PSG_BAMBOO:   {task_id: bamboo_passage,      repetitions: 1, repetitions_verified: true}
+  1052_SENT_JUDGE:  {task_id: sentence_s7,         repetitions: 1, repetitions_verified: false}
+  1061_CAPEV_3:     {task_id: sentence_s5,         repetitions: 1, repetitions_verified: false}
+  1063_CAPEV_4:     {task_id: sentence_s6,         repetitions: 1, repetitions_verified: false}
+  1064_CAPEV_2:     {task_id: sentence_capev_hit,  repetitions: 1, repetitions_verified: false}
+  256_NSM_NAS_WSTG: {task_id: wstg,                repetitions: 3, repetitions_verified: false}
+  238_BBP_NORMAL:   {task_id: sentence_s2,         repetitions: 3, repetitions_verified: false}
+  1048_BBP_SHORT:   {task_id: sentence_s2,         repetitions: 3, repetitions_verified: false}
+
+# Content not known per recording: identified first (speech-to-text, then
+# closest match among known sentences), aligned afterwards. Not run by the
+# fixed-prompt batch.
+identify_first:
+  258_SENT_CAPEV: {candidates: [sentence_s3, sentence_capev_hit, sentence_s5,
+                                sentence_capev_eggs, sentence_s6, sentence_s9]}
+  1059_SIT: {candidates: sit_sentence_pool_required}
+
+# Deliberately never aligned with MFA (handled by GUI segmentation methods).
+not_aligned: [242_DDK_PA, 260_DDK_TA, 261_DDK_KA, 262_DDK_PATAKA,
+              241_VWL_SUSTAIN, 1050_VWL_SUSTAIN_2, 1102_MAX_PHON]

@@ -124,8 +124,14 @@ def _rows_for_record(record: dict, spec: dict, run_id: str,
     return trial_rows, word_rows, phone_rows
 
 
-def export_standalone_package(job_root: str | Path, destination: str | Path) -> Path:
-    """Export only structurally accepted records, preserving Package V1 files."""
+def export_standalone_package(job_root: str | Path, destination: str | Path, *,
+                              skip_unmappable: bool = False) -> Path:
+    """Export only structurally accepted records, preserving Package V1 files.
+
+    With ``skip_unmappable`` a record whose tokens cannot be mapped to the
+    canonical transcript is left out (and counted as failed) instead of
+    aborting the whole export. This suits one-time whole-dataset batches.
+    """
     root, target = Path(job_root), Path(destination)
     job = load_job(root)
     records = [row for row in job["recordings"]
@@ -138,22 +144,33 @@ def export_standalone_package(job_root: str | Path, destination: str | Path) -> 
     run_id = job["job_id"]
     trials, words, phones = [], [], []
     identities = []
+    skipped: list[dict] = []
+    exported = []
     for record in records:
-        record_trials, record_words, record_phones = _rows_for_record(record, spec, run_id,
-                                                                      root)
+        try:
+            record_trials, record_words, record_phones = _rows_for_record(
+                record, spec, run_id, root)
+        except ValueError as exc:
+            if not skip_unmappable:
+                raise
+            skipped.append({"recording_id": record["record_key"], "status": "NOT_EXPORTED",
+                            "reason": str(exc)})
+            continue
+        exported.append(record)
         trials.extend(record_trials)
         words.extend(record_words)
         phones.extend(record_phones)
         source = Path(record["source_path"])
         info = sf.info(source)
+        file_hash, content_hash = _hash(source), audio_content_sha256(source)
         identities.append({"record_key": record["record_key"],
                            "source_filename": record["recording"],
                            "task_id": spec["task_id"], "prompt_id": spec["prompt_id"],
                            "transcript_hash": spec["transcript_hash"],
-                           "source_file_sha256": _hash(source),
-                           "source_audio_content_sha256": audio_content_sha256(source),
-                           "raw_source_file_sha256": _hash(source),
-                           "raw_source_audio_content_sha256": audio_content_sha256(source),
+                           "source_file_sha256": file_hash,
+                           "source_audio_content_sha256": content_hash,
+                           "raw_source_file_sha256": file_hash,
+                           "raw_source_audio_content_sha256": content_hash,
                            "raw_source_sample_rate_hz": info.samplerate,
                            "raw_source_channels": info.channels,
                            "raw_source_sample_count": info.frames,
@@ -170,12 +187,15 @@ def export_standalone_package(job_root: str | Path, destination: str | Path) -> 
                            "alignment_scope_uncertain": bool(record.get(
                                "alignment_scope", {}).get("uncertain", False)),
                            "boundary_time_basis": "selected_source_original_time",
-                           "analysis_wav_sha256": _hash(source),
+                           "analysis_wav_sha256": file_hash,
                            "sample_rate": info.samplerate, "channels": info.channels,
                            "sample_count": info.frames, "alignment_status": "ALIGNED",
                            "review_status": ("HUMAN_ACCEPTED" if record["state"] == "REVIEWED"
                                              else "AUTO_ACCEPTED_STRUCTURAL"),
                            "finalization_status": "FINALIZED"})
+    records = exported
+    if not records:
+        raise ValueError("no_mappable_recordings_to_export")
     trial_table, word_table, phone_table = map(pd.DataFrame, (trials, words, phones))
     _validate_canonical(trial_table, word_table, phone_table, 16000)
     target.mkdir(parents=True)
@@ -187,7 +207,7 @@ def export_standalone_package(job_root: str | Path, destination: str | Path) -> 
         ("final_alignment_phones.csv", phone_table),
         ("final_alignment_diagnostics.csv", pd.DataFrame([
             {"recording_id": row["record_key"], "status": "AUTO_PASS", "reason": ""}
-            for row in records])),
+            for row in records] + skipped)),
         ("recording_status.csv", pd.DataFrame(identities)),
     ):
         table.to_csv(target / name, index=False)
