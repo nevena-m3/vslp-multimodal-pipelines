@@ -29,6 +29,10 @@ JOB_VERSION = "VSLP_ALIGNMENT_WORKBENCH_JOB_V1"
 AUDIO_EXTENSIONS = frozenset({".wav"})
 # Engineering review trigger only, not an acoustic word-duration definition.
 WORD_SPAN_REVIEW_SEC = 2.0
+# Inside one reading of a short sentence, consecutive words more than this far
+# apart mean MFA spread one reading across several (seen in the 2026-11 pilot).
+WITHIN_READING_PAUSE_REVIEW_SEC = 1.0
+SHORT_PROMPT_MAX_WORDS = 15
 
 
 def _now() -> str:
@@ -403,6 +407,16 @@ def qc_job(root: str | Path) -> dict:
                 if spoken and reviewed_expected != expected:
                     flags.append("spoken_transcript_differs_from_canonical")
                 word_count, phone_count = len(words), len(phones)
+                per_reading = len(job["task_specification"]["normalized_transcript"].split())
+                if (not spoken and actual == expected and per_reading <= SHORT_PROMPT_MAX_WORDS
+                        and len(words) == len(expected)):
+                    starts = words.start_sec.astype(float).to_numpy()
+                    ends = words.end_sec.astype(float).to_numpy()
+                    for first in range(0, len(words), per_reading):
+                        gaps = starts[first + 1:first + per_reading] - ends[first:first + per_reading - 1]
+                        if gaps.size and float(gaps.max()) > WITHIN_READING_PAUSE_REVIEW_SEC:
+                            flags.append("long_pause_within_reading_requires_review")
+                            break
                 if actual != reviewed_expected:
                     flags.append("reviewed_transcript_alignment_mismatch" if spoken else
                                  "transcript_token_mismatch")

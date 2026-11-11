@@ -79,15 +79,68 @@ def build_inventory(inventory_csv: str | Path | None, names: list[str] | None = 
         code = parts["code"] if parts else ""
         spec = table["tasks"].get(code)
         rows.append({"file_name": name, "subject_id": subjects.get(name) or
-                     (parts["subject"] if parts else ""), "task_code": code,
+                     (parts["subject"] if parts else ""),
+                     "protocol": parts["protocol"] if parts else "", "task_code": code,
                      "task_id": spec["task_id"] if spec else "",
                      "repetitions": int(spec["repetitions"]) if spec else 0,
+                     "count_readings": bool(spec.get("count_readings")) if spec else False,
                      "batch_role": ("fixed_prompt" if spec else
                                     "identify_first" if code in table.get("identify_first", {})
                                     else "not_aligned" if code in table.get("not_aligned", [])
                                     else "not_in_batch")})
-    return pd.DataFrame(rows, columns=["file_name", "subject_id", "task_code", "task_id",
-                                       "repetitions", "batch_role"])
+    return pd.DataFrame(rows, columns=["file_name", "subject_id", "protocol", "task_code",
+                                       "task_id", "repetitions", "count_readings",
+                                       "batch_role"])
+
+
+def pilot_sample(fixed: pd.DataFrame, per_task: int) -> pd.DataFrame:
+    """Deterministic pseudo-random pilot: one file per participant, spread over protocols.
+
+    Sorting by subject ID would pick only one protocol's controls (2026-11 pilot),
+    so files are shuffled by a hash of their name and taken round-robin over
+    protocols within each task.
+    """
+    from hashlib import sha256
+
+    shuffled = fixed.assign(_order=[sha256(name.encode("utf-8")).hexdigest()
+                                    for name in fixed.file_name]).sort_values("_order")
+    shuffled = shuffled.drop_duplicates(["task_code", "subject_id"])
+    shuffled["_turn"] = shuffled.groupby(["task_code", "protocol"]).cumcount()
+    return (shuffled.sort_values(["task_code", "_turn", "_order"])
+            .groupby("task_code").head(per_task).drop(columns=["_order", "_turn"]))
+
+
+def apply_reading_counts(fixed: pd.DataFrame, readings_csv: str | Path | None) -> tuple[
+        pd.DataFrame, pd.DataFrame]:
+    """Set per-recording repetitions from a reading-count CSV.
+
+    Tasks marked ``count_readings`` are aligned only with a counted number of
+    readings; a recording without a count, or with zero readings, is held back
+    (returned separately with a reason) rather than aligned with a guess.
+    """
+    fixed = fixed.copy()
+    held: list[dict] = []
+    counts = {}
+    if readings_csv:
+        table = pd.read_csv(readings_csv, dtype=str, keep_default_na=False)
+        counts = {row.file_name: int(row.readings) for row in table.itertuples()
+                  if str(row.readings).strip().isdigit()}
+    keep = []
+    for index, row in fixed.iterrows():
+        if not row.count_readings:
+            keep.append(index)
+            continue
+        count = counts.get(row.file_name)
+        if count is None:
+            held.append({"file_name": row.file_name, "task_code": row.task_code,
+                         "reason": "reading_count_missing"})
+        elif count == 0:
+            held.append({"file_name": row.file_name, "task_code": row.task_code,
+                         "reason": "no_reading_of_prompt_detected"})
+        else:
+            fixed.at[index, "repetitions"] = count
+            keep.append(index)
+    return fixed.loc[keep], pd.DataFrame(held, columns=["file_name", "task_code", "reason"])
 
 
 def extract_from_zip(zip_path: str | Path, names: list[str], destination: str | Path) -> dict:
@@ -238,7 +291,8 @@ def plot_recording(job_root: str | Path, record_key: str, source: str | Path,
 def run_batch(*, inventory_csv: str | None, workspace: str | Path, zip_path: str | None = None,
               audio_dir: str | None = None, codes: list[str] | None = None,
               limit_per_task: int = 0, profile_path: str = "", provider=None,
-              plot: str = "flagged", log=print) -> dict:
+              plot: str = "flagged", readings_csv: str | None = None,
+              extract_only: bool = False, log=print) -> dict:
     workspace = Path(workspace).resolve()
     workspace.mkdir(parents=True, exist_ok=True)
     table = load_task_table()
@@ -255,10 +309,7 @@ def run_batch(*, inventory_csv: str | None, workspace: str | Path, zip_path: str
     if codes:
         fixed = fixed.loc[fixed.task_code.isin(codes)]
     if limit_per_task:
-        # One recording per participant, at most N per task (pandas 2 and 3 safe).
-        fixed = (fixed.sort_values(["task_code", "subject_id", "file_name"])
-                 .drop_duplicates(["task_code", "subject_id"])
-                 .groupby("task_code").head(limit_per_task))
+        fixed = pilot_sample(fixed, limit_per_task)
     names_needed = fixed.file_name.tolist()
     log(f"{len(names_needed)} recordings in {fixed.task_code.nunique()} task codes")
     if audio_dir:
@@ -272,15 +323,26 @@ def run_batch(*, inventory_csv: str | None, workspace: str | Path, zip_path: str
         log(f"WARNING: {len(located['missing'])} inventory files not found in the audio source")
         (workspace / "missing_audio.txt").write_text("\n".join(located["missing"]),
                                                     encoding="utf-8")
+    if extract_only:
+        log(f"Extracted {len(located['found'])} recordings to {workspace / 'audio'}; "
+            "count readings next, then rerun with --readings.")
+        return {"workspace": str(workspace), "jobs": {}, "recordings": 0,
+                "extracted": len(located["found"])}
+    fixed, held = apply_reading_counts(fixed, readings_csv)
+    held.to_csv(workspace / "held_back_recordings.csv", index=False)
+    if len(held):
+        log(f"{len(held)} recordings held back (no reading count or no reading detected); "
+            "see held_back_recordings.csv")
     state_path = workspace / "batch_state.json"
     state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.is_file() else {
         "created_utc": _now(), "jobs": {}}
     tables = []
-    for code, rows in fixed.groupby("task_code"):
+    for (code, repetitions), rows in fixed.groupby(["task_code", "repetitions"]):
         rows = rows.loc[rows.file_name.isin(located["found"])]
-        job_name = f"{code}__{rows.task_id.iloc[0]}" if len(rows) else code
         if rows.empty:
             continue
+        # One job per task code and reading count: MFA gets exactly the readings spoken.
+        job_name = f"{code}__{rows.task_id.iloc[0]}__x{int(repetitions)}"
         previous = state["jobs"].get(job_name)
         if previous and previous.get("status") == "DONE" and previous.get(
                 "recordings") == len(rows):
@@ -328,11 +390,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--profile", default=str(BATCH_PROFILE),
                         help="MFA profile JSON (default: wide-beam batch profile)")
     parser.add_argument("--plots", choices=["flagged", "all", "none"], default="flagged")
+    parser.add_argument("--readings", help="reading counts CSV from vslp.acoustic.alignment.readings")
+    parser.add_argument("--extract-only", action="store_true",
+                        help="only extract the selected WAVs (step 1 of 3)")
     args = parser.parse_args(argv)
     result = run_batch(inventory_csv=args.inventory, workspace=args.workspace,
                        zip_path=args.zip, audio_dir=args.audio_dir, codes=args.codes,
                        limit_per_task=args.limit_per_task, profile_path=args.profile,
-                       plot=args.plots)
+                       plot=args.plots, readings_csv=args.readings,
+                       extract_only=args.extract_only)
     failed = [name for name, job in result["jobs"].items() if job.get("status") != "DONE"]
     return 1 if failed else 0
 
