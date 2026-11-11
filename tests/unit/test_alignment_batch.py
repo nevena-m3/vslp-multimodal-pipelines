@@ -149,6 +149,12 @@ def test_reading_counts_follow_the_speech_not_the_protocol():
                               "we see three geese. Done?", "We see three geese.")) == 3
     assert count_readings("Nothing appeared on the screen. Should I read this?",
                           "We see three geese.") == []
+    # Pilot 2 cases: dysarthric ASR slips count, a false start and "thank you" don't.
+    assert len(count_readings("Bye, Bubby and Puppy", "Buy Bobby a puppy.")) == 1
+    assert count_readings("Thank you very much.", "Buy Bobby a puppy.") == []
+    assert len(count_readings("did he hit him? He's not a drip boy | How hard did he hit him? | "
+                              "How hard did he hit him? | how hard did he hit him",
+                              "How hard did he hit him?")) == 3
 
 
 def test_unknown_or_zero_reading_counts_are_held_back_not_guessed(tmp_path):
