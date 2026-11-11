@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
 
 from vslp.acoustic.alignment.corrections import load_corrections
 from vslp.acoustic.alignment.trial_review import set_trial_review, trial_review_table
-from vslp.gui.acoustic_app.alignment_widget import AlignmentWidget
+from vslp.gui.alignment_app.alignment_widget import AlignmentWidget
 
 
 ISSUE_CATEGORIES = (

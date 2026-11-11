@@ -20,7 +20,7 @@ import soundfile as sf
 
 from .audio_identity import audio_content_sha256
 from .final_contract import FINAL_ALIGNMENT_CONTRACT_VERSION
-from .stage import AlignmentStore
+from .contract import AlignmentStore
 
 
 PACKAGE_VERSION = "VSLP_ALIGNMENT_PACKAGE_V1"
@@ -36,13 +36,37 @@ REQUIRED_FILES = (
 FINAL_STATES = frozenset({"AUTO_ACCEPTED_STRUCTURAL", "HUMAN_ACCEPTED"})
 
 
+_HASH_CACHE: dict[tuple, str] = {}
+
+
+def _stat_key(kind: str, path: Path) -> tuple:
+    stat = Path(path).stat()
+    return kind, str(Path(path).resolve()), stat.st_mtime_ns, stat.st_size
+
+
 def _hash(path: Path) -> str:
-    return sha256(path.read_bytes()).hexdigest()
+    """File SHA-256, cached per (path, mtime, size) so repeated loads stay fast."""
+    key = _stat_key("file", path)
+    if key not in _HASH_CACHE:
+        digest = sha256()
+        with Path(path).open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        _HASH_CACHE[key] = digest.hexdigest()
+    return _HASH_CACHE[key]
+
+
+def _audio_hash(path: Path) -> str:
+    """Decoded-audio identity, cached per (path, mtime, size)."""
+    key = _stat_key("audio", path)
+    if key not in _HASH_CACHE:
+        _HASH_CACHE[key] = audio_content_sha256(path)
+    return _HASH_CACHE[key]
 
 
 def _available_audio_hash(path: Path) -> str:
     try:
-        return audio_content_sha256(path)
+        return _audio_hash(path)
     except (OSError, RuntimeError):
         return ""
 
@@ -114,7 +138,7 @@ def _validate_canonical(trials: pd.DataFrame, words: pd.DataFrame,
 
 def export_alignment_package(project_root: str | Path, destination: str | Path) -> Path:
     """Export a *current* embedded Final Alignment without rerunning its backend."""
-    from .stage import _load_embedded_final_alignment
+    from .contract import _load_embedded_final_alignment
 
     root, target = Path(project_root), Path(destination)
     store, issue = _load_embedded_final_alignment(root)
@@ -196,7 +220,7 @@ def export_alignment_package(project_root: str | Path, destination: str | Path) 
     if len(task_rows) != 1:
         raise ValueError("mixed_alignment_package_task_specification")
     task_row = task_rows.iloc[0]
-    from .task_workflow import task_entry
+    from .prompts import task_entry
 
     registered_task = task_entry(str(task_row.task_id))
     registered_prompt = next((item for item in registered_task.get("prompts", [])
@@ -286,7 +310,7 @@ def validate_alignment_package(package: str | Path, project_root: str | Path) ->
     project_manifest_path = root / "project_manifest.json"
     project_task = ""
     if project_manifest_path.is_file():
-        from .task_workflow import _manifest_task
+        from .prompts import _manifest_task
 
         task = _manifest_task(json.loads(project_manifest_path.read_text(encoding="utf-8")))
         project_task = str(task["task_id"]) if task else ""
@@ -312,11 +336,11 @@ def validate_alignment_package(package: str | Path, project_root: str | Path) ->
             continue
         audio = Path(str(current.get("analysis_wav_path", "")))
         source = Path(str(current.get("source_file_path", "")))
-        if (not audio.is_file() or audio_content_sha256(audio) !=
+        if (not audio.is_file() or _audio_hash(audio) !=
                 str(row.source_audio_content_sha256) or
                 (str(row.source_file_sha256) and not source.is_file()) or
                 (str(getattr(row, "raw_source_audio_content_sha256", "")) and
-                 (not source.is_file() or audio_content_sha256(source) !=
+                 (not source.is_file() or _audio_hash(source) !=
                   str(row.raw_source_audio_content_sha256)))):
             per_record.append({"record_key": key, "status": "IDENTITY MISMATCH"})
             continue
@@ -341,7 +365,7 @@ def _validate_standalone_identity(manifest: dict, status: pd.DataFrame,
     decisions = pd.read_csv(decisions_path, keep_default_na=False)
     if decisions.duplicated("recording_id").any():
         raise ValueError("duplicate_project_record_key")
-    from .task_workflow import _manifest_task, task_entry
+    from .prompts import _manifest_task, task_entry
 
     project_manifest = root / "project_manifest.json"
     registered = (_manifest_task(json.loads(project_manifest.read_text(encoding="utf-8")))
@@ -371,8 +395,8 @@ def _validate_standalone_identity(manifest: dict, status: pd.DataFrame,
         if str(getattr(row, "source_sha256", "")) not in {"", source_file_hash}:
             raise ValueError(f"standalone_project_source_changed:{key}")
         source_info, analysis_info = sf.info(source), sf.info(analysis)
-        source_audio_hash = audio_content_sha256(source)
-        analysis_audio_hash = audio_content_sha256(analysis)
+        source_audio_hash = _audio_hash(source)
+        analysis_audio_hash = _audio_hash(analysis)
         same_time_axis = (source_info.samplerate == analysis_info.samplerate and
                           source_info.frames == analysis_info.frames)
         if source_audio_hash != analysis_audio_hash:
@@ -392,6 +416,7 @@ def _validate_standalone_identity(manifest: dict, status: pd.DataFrame,
                          "raw_info": source_info, "analysis_info": analysis_info}
     mapping = {}
     result_rows = []
+    not_in_project = 0
     for row in status.itertuples():
         trial_subset = trials.loc[trials.recording_id.astype(str).eq(str(row.record_key))]
         if (trial_subset.empty or str(row.task_id) != task["task_id"] or
@@ -413,6 +438,10 @@ def _validate_standalone_identity(manifest: dict, status: pd.DataFrame,
         derived_matches = [key for key, item in identity.items()
                            if item["analysis_audio"] == selected_audio]
         matches = raw_matches if raw_matches else derived_matches
+        if not matches:
+            # A whole-dataset package may cover recordings outside this project.
+            not_in_project += 1
+            continue
         if len(matches) != 1 or matches[0] in mapping.values():
             raise ValueError(f"standalone_audio_identity_mismatch:{row.record_key}")
         key = matches[0]
@@ -442,8 +471,11 @@ def _validate_standalone_identity(manifest: dict, status: pd.DataFrame,
     for key in identity:
         if key not in mapping.values():
             result_rows.append({"record_key": key, "status": "MISSING"})
+    if not mapping:
+        raise ValueError("standalone_package_matches_no_project_recording")
     return {"manifest": manifest, "recording_status": result_rows,
             "record_key_map": mapping, "matched": len(mapping),
+            "not_in_project": not_in_project,
             "finalized": len(mapping), "missing": len(identity) - len(mapping),
             "stale": 0, "invalid": 0}
 
@@ -542,6 +574,25 @@ def import_alignment_package(package: str | Path, project_root: str | Path) -> P
     return destination
 
 
+def _remap_records(table: pd.DataFrame, mapping: dict[str, str]) -> pd.DataFrame:
+    """Keep only package records matched to this project and rename their IDs.
+
+    Composite IDs start with ``<record_key>:``; only that prefix is replaced.
+    """
+    if "recording_id" not in table:
+        return table
+    keys = table.recording_id.astype(str)
+    table = table.loc[keys.isin(mapping)].copy()
+    table["recording_id"] = table.recording_id.astype(str).map(mapping)
+    for column in ("sequence_id", "word_id", "phone_id", "parent_word_id"):
+        if column in table:
+            head = table[column].astype(str).str.split(":", n=1)
+            table[column] = [
+                f"{mapping.get(parts[0], parts[0])}:{parts[1]}" if len(parts) == 2 else value
+                for parts, value in zip(head, table[column].astype(str))]
+    return table.reset_index(drop=True)
+
+
 def load_imported_alignment(project_root: str | Path) -> tuple[AlignmentStore | None, str]:
     """Load an explicitly selected imported package as the same AlignmentStore."""
     root = Path(project_root)
@@ -563,15 +614,9 @@ def load_imported_alignment(project_root: str | Path) -> tuple[AlignmentStore | 
         diagnostics = pd.read_csv(folder / "final_alignment_diagnostics.csv", keep_default_na=False)
         mapping = validation.get("record_key_map", {})
         if mapping:
-            for table in (trials, words, phones, provider_words, provider_phones, diagnostics):
-                if "recording_id" in table:
-                    table["recording_id"] = table.recording_id.astype(str).replace(mapping)
-                for column in ("sequence_id", "word_id", "phone_id", "parent_word_id"):
-                    if column in table:
-                        table[column] = table[column].astype(str).map(lambda value:
-                            next((f"{project_id}{value[len(source_id):]}"
-                                  for source_id, project_id in mapping.items()
-                                  if value.startswith(f"{source_id}:")), value))
+            trials, words, phones, provider_words, provider_phones, diagnostics = (
+                _remap_records(table, mapping) for table in
+                (trials, words, phones, provider_words, provider_phones, diagnostics))
         store = AlignmentStore(
             provider_words, provider_phones, diagnostics,
             manifest, trials, words, phones)

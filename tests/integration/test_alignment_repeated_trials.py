@@ -254,7 +254,8 @@ def test_final_contract_rejects_changed_registered_prompt(tmp_path, monkeypatch)
         for entry in task.get("prompts", []):
             if entry["prompt_id"] == "wstg_we_see_three_geese":
                 entry["exact_expected_text"] = "CHANGED"
-    monkeypatch.setattr(task_workflow, "task_registry", lambda: registry)
+    from vslp.acoustic.alignment import prompts
+    monkeypatch.setattr(prompts, "task_registry", lambda: registry)
     assert load_final_alignment(root)[1] == "stale_alignment_prompt"
 
 
@@ -323,7 +324,7 @@ def test_structural_review_policy_auto_passes_only_matching_complete_trials(
         assert qc["flags"].str.contains("PROTOCOL_TRIAL_COUNT_MISMATCH").all()
         assert all((run / path).is_file() for path in qc.plot_path)
         from PySide6.QtWidgets import QApplication
-        from vslp.gui.acoustic_app.alignment_widget import AlignmentWidget
+        from vslp.gui.alignment_app.alignment_widget import AlignmentWidget
         QApplication.instance() or QApplication([])
         widget = AlignmentWidget(lambda: root)
         widget.refresh()
@@ -413,7 +414,7 @@ def test_freeze_trial_boundary_uses_working_sample_tolerance_and_identifies_toke
 def test_repeated_trial_viewer_navigation_playback_and_review_persist(tmp_path, monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
-    from vslp.gui.acoustic_app.alignment_widget import AlignmentWidget
+    from vslp.gui.alignment_app.alignment_widget import AlignmentWidget
 
     QApplication.instance() or QApplication([])
     root, prompt, speakers, trials = _fixture(tmp_path)
@@ -445,7 +446,7 @@ def test_repeated_trial_viewer_navigation_playback_and_review_persist(tmp_path, 
 def test_four_step_gui_confirms_proposals_runs_and_requires_review(tmp_path, monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
-    from vslp.gui.acoustic_app.alignment_widget import AlignmentWidget
+    from vslp.gui.alignment_app.alignment_widget import AlignmentWidget
     from vslp.acoustic.alignment.task_workflow import load_project_choices
 
     QApplication.instance() or QApplication([])
@@ -520,7 +521,7 @@ def test_five_fragments_merge_to_three_visual_trials_then_align_and_freeze(
         load_project_choices, project_alignment_context,
     )
     from vslp.acoustic.alignment.trials import trial_manifest_for_alignment
-    from vslp.gui.acoustic_app.alignment_widget import AlignmentWidget
+    from vslp.gui.alignment_app.alignment_widget import AlignmentWidget
 
     QApplication.instance() or QApplication([])
     root, prompt, speakers, _old_trials = _fixture(tmp_path)
@@ -588,7 +589,7 @@ def test_five_fragments_merge_to_three_visual_trials_then_align_and_freeze(
 def test_merge_enabled_for_one_selected_trial(tmp_path, monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
-    from vslp.gui.acoustic_app.alignment_widget import AlignmentWidget
+    from vslp.gui.alignment_app.alignment_widget import AlignmentWidget
 
     QApplication.instance() or QApplication([])
     root, _prompt, _speakers, _old_trials = _fixture(tmp_path)
@@ -617,7 +618,7 @@ def test_visual_trial_editor_delete_split_add_undo_and_exclusion(tmp_path, monke
     from PySide6.QtGui import QMouseEvent
     from PySide6.QtWidgets import QApplication
     from vslp.acoustic.alignment.trials import validate_trial_draft
-    from vslp.gui.acoustic_app.alignment_widget import AlignmentWidget
+    from vslp.gui.alignment_app.alignment_widget import AlignmentWidget
 
     QApplication.instance() or QApplication([])
     root, _prompt, _speakers, _trials = _fixture(tmp_path)
@@ -671,7 +672,7 @@ def test_trial_boundary_handle_drag_is_undoable(tmp_path, monkeypatch):
     from PySide6.QtCore import Qt
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication
-    from vslp.gui.acoustic_app.alignment_widget import AlignmentWidget
+    from vslp.gui.alignment_app.alignment_widget import AlignmentWidget
 
     QApplication.instance() or QApplication([])
     root, _prompt, _speakers, _trials = _fixture(tmp_path)
@@ -846,7 +847,7 @@ def test_targeted_recording_rerun_preserves_unrelated_review(tmp_path):
     choices["selected_run_id"] = second_run
     save_project_choices(root, choices)
     from PySide6.QtWidgets import QApplication
-    from vslp.gui.acoustic_app.alignment_widget import AlignmentWidget
+    from vslp.gui.alignment_app.alignment_widget import AlignmentWidget
     QApplication.instance() or QApplication([])
     widget = AlignmentWidget(lambda: root)
     widget.refresh()
@@ -863,7 +864,7 @@ def test_targeted_recording_rerun_preserves_unrelated_review(tmp_path):
 def test_gui_repair_wrong_trial_count_marks_old_run_stale(tmp_path, monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication, QMessageBox
-    from vslp.gui.acoustic_app.alignment_widget import AlignmentWidget
+    from vslp.gui.alignment_app.alignment_widget import AlignmentWidget
     from vslp.acoustic.alignment.task_workflow import load_project_choices, save_project_choices
 
     QApplication.instance() or QApplication([])
@@ -906,7 +907,7 @@ def test_gui_repair_wrong_trial_count_marks_old_run_stale(tmp_path, monkeypatch)
 def test_trial_count_mismatch_visible_before_run(tmp_path, monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication, QMessageBox
-    from vslp.gui.acoustic_app.alignment_widget import AlignmentWidget
+    from vslp.gui.alignment_app.alignment_widget import AlignmentWidget
     from vslp.acoustic.alignment.task_workflow import load_project_choices, save_project_choices
 
     QApplication.instance() or QApplication([])
@@ -930,7 +931,7 @@ def test_gui_manual_boundary_edit_persists_across_reopen(tmp_path, monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
     import pyqtgraph as pg
-    from vslp.gui.acoustic_app.alignment_widget import AlignmentWidget
+    from vslp.gui.alignment_app.alignment_widget import AlignmentWidget
 
     QApplication.instance() or QApplication([])
     root, prompt, speakers, trials = _fixture(tmp_path)
@@ -959,7 +960,7 @@ def test_gui_manual_boundary_edit_persists_across_reopen(tmp_path, monkeypatch):
 def test_frozen_trial_repair_creates_pending_revision_without_mutating_final(tmp_path, monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
-    from vslp.gui.acoustic_app.alignment_widget import AlignmentWidget
+    from vslp.gui.alignment_app.alignment_widget import AlignmentWidget
     from vslp.acoustic.alignment.task_workflow import load_project_choices
 
     QApplication.instance() or QApplication([])

@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from vslp.acoustic.alignment.task_workflow import task_entry
+from vslp.acoustic.alignment.prompts import task_entry
 from vslp.acoustic.features.family07_v2 import bamboo_reviewed_trial_domains, reviewed_timing
 from vslp.acoustic.segment.review import load_final_segmentation
 from vslp.core.feature_contract import build_feature_delivery, write_feature_handoff

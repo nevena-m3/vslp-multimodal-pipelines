@@ -6,7 +6,7 @@ import os
 
 from PySide6.QtWidgets import QApplication, QPushButton
 
-from vslp.gui.acoustic_app.alignment_widget import AlignmentWidget
+from vslp.gui.alignment_app.alignment_widget import AlignmentWidget
 from vslp.acoustic.alignment.self_test import MfaSelfTestResult
 
 

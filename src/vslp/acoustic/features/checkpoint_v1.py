@@ -174,7 +174,7 @@ def _implementation_identity(group: str) -> dict[str, str]:
     paths = [base / modules[group], *(base / name for name in families[group]),
              base / "mixed_dispatch.py", base / "checkpoint_v1.py"]
     if group == "bamboo_rates":
-        paths.extend([base.parent / "alignment" / "task_workflow.py",
+        paths.extend([base.parent / "alignment" / "prompts.py",
                       base.parent / "alignment" / "task_prompts.json"])
     return {str(path.relative_to(base.parent)): sha256_file(path)
             for path in paths if path.is_file()}

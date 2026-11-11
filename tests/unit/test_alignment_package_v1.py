@@ -108,7 +108,7 @@ def test_acoustic_gui_imports_explicit_package_without_embedded_alignment_contro
     loop.exec()
     app.processEvents()
     assert "Matched 1/1" in window.feature_package_status.text()
-    assert window.alignment_widget is None
+    assert not hasattr(window, 'alignment_widget')
     assert "Alignment" not in [window.tabs.tabText(i) for i in range(window.tabs.count())]
     assert load_final_alignment(root)[0] is not None
     window.close()

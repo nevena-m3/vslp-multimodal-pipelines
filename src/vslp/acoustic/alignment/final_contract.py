@@ -36,7 +36,7 @@ def build_feature_tables(
     A canonical word may normalize to several provider tokens.  The mapping
     must match every provider token exactly and in order within each trial.
     """
-    from .stage import normalize_transcript
+    from .contract import normalize_transcript
 
     word_rows: list[dict] = []
     phone_rows: list[dict] = []
