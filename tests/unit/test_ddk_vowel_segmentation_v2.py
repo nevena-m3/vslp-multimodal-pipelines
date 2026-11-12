@@ -122,3 +122,50 @@ def test_reviewed_pataka_events_form_triplets_for_f10():
     result, _audit, summary = measure_trial(events, "pataka")
     assert summary["syllable_equivalent_count"] == 30
     assert 4 < result["rate"][0] < 8
+
+
+# Failure modes found when v2 was checked on 72 real recordings.
+
+@pytest.mark.parametrize("sr", [16000, 44100])
+def test_ddk_rejects_regular_noise_bumps_in_the_silences(sr):
+    rng = np.random.default_rng(1)
+    x, truth = ddk(sr=sr, syllables="ka" * 15, rate=4, lead=2.0, snr_db=35, seed=1)
+    x = x.astype(float)
+    noise = np.std(x[: int(0.5 * sr)])
+    end = truth[-1]["vowel_off"]
+    for start in list(np.arange(0.3, 1.8, 0.15)) + list(np.arange(end + 0.3, end + 0.9, 0.15)):
+        n, a = int(0.04 * sr), int(start * sr)
+        x[a:a + n] += rng.standard_normal(n) * noise * 10 ** (rng.uniform(3, 10) / 20) * np.hanning(n)
+    result = segment_ddk(x.astype(np.float32), sr, DDKConfig())
+    assert result["n_events"] == len(truth)
+
+
+@pytest.mark.parametrize("sr", [16000, 44100])
+def test_ddk_does_not_split_slow_syllables_with_two_energy_humps(sr):
+    x, truth = ddk(sr=sr, syllables="pa" * 15, rate=2.5, lead=2.0, snr_db=35, seed=1)
+    x = x.astype(float)
+    t = np.arange(len(x)) / sr
+    for syllable in truth:
+        mid = (syllable["vowel_on"] + syllable["vowel_off"]) / 2
+        width = (syllable["vowel_off"] - syllable["vowel_on"]) * 0.18
+        a, b = int((mid - 3 * width) * sr), int((mid + 3 * width) * sr)
+        x[a:b] *= 1 - 0.45 * np.exp(-0.5 * ((t[a:b] - mid) / width) ** 2)
+    result = segment_ddk(x.astype(np.float32), sr, DDKConfig())
+    assert result["n_events"] == len(truth)
+
+
+@pytest.mark.parametrize("sr", [16000, 44100])
+def test_vowel_stable_window_avoids_low_level_hum_at_another_pitch(sr):
+    # The vowel (210 Hz) is followed and preceded by a steady 100 Hz hum 18 dB
+    # lower; the old score picked the hum because its F0 is flatter.
+    a = vowel(sr=sr, trials=((1.7, 4.7),), total=9.0, f0=210, jitter=0.015, shimmer=0.08, seed=3)
+    hum = vowel(sr=sr, trials=((4.6, 8.3),), total=9.0, f0=100, jitter=0.002, shimmer=0.01,
+                onset_ramp=0.05, seed=4)
+    pre = vowel(sr=sr, trials=((0.7, 1.7),), total=9.0, f0=100, jitter=0.002, shimmer=0.01,
+                onset_ramp=0.05, seed=5)
+    x = (a.astype(float) + 10 ** (-18 / 20) * (hum + pre)).astype(np.float32)
+    result = segment_phonation(x, sr, PhonationConfig())
+    full = np.array(result["full_samples"]) / sr
+    stable = np.array(result["stable_samples"]) / sr
+    assert 1.5 < full[0] < 1.95 and 4.4 < full[1] < 4.9
+    assert full[0] <= stable[0] and stable[1] <= full[1]

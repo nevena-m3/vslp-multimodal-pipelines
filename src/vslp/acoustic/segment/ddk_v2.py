@@ -40,7 +40,7 @@ from dataclasses import asdict
 import numpy as np
 from scipy import ndimage, signal
 
-ALGORITHM_VERSION = "vslp-ddk-nuclei-2"
+ALGORITHM_VERSION = "vslp-ddk-nuclei-2.1"
 
 
 def _db(values: np.ndarray) -> np.ndarray:
@@ -110,23 +110,35 @@ def label_pataka(balances: list[float]) -> tuple[list[str], float]:
 
 
 def _merge_split_syllables(contour, peaks, prominences, config):
-    """Merge a peak into its neighbour when they are far closer than the typical
-    syllable spacing and the dip between them is shallow (a slow, long vowel
-    with two energy humps, seen in PLS/ALS pilot files)."""
+    """Merge two energy humps of one slow, long vowel into one syllable.
+
+    Between two real syllables the contour falls into a stop closure. Between
+    two humps of one vowel it dips only a little. A pair is merged when its
+    dip is shallow in absolute terms (< ``split_dip_db``) and also small next
+    to this speaker's typical closure depth (the upper quartile of all dips),
+    and the two humps are not further apart than a typical syllable. Speakers
+    whose closures are all shallow (slurred DDK) are therefore never merged.
+    (Real-data check: slow PLS/ALS syllables were split 2-3 ways.)
+    """
     peaks, prominences = list(peaks), list(prominences)
     changed = True
     while changed and len(peaks) > 3:
         changed = False
         gaps = np.diff(peaks)
-        typical = float(np.median(gaps))
-        for index, gap in enumerate(gaps):
+        dips = np.array([min(contour[a], contour[b]) - float(np.min(contour[a:b + 1]))
+                         for a, b in zip(peaks[:-1], peaks[1:])])
+        closure = float(np.percentile(dips, 75))
+        typical = float(np.percentile(gaps, 75))
+        candidates = [index for index in range(len(gaps))
+                      if dips[index] < config.split_dip_db
+                      and dips[index] < config.split_dip_fraction * closure
+                      and gaps[index] < typical]
+        if candidates:
+            index = min(candidates, key=lambda k: dips[k])
             a, b = peaks[index], peaks[index + 1]
-            dip = min(contour[a], contour[b]) - float(np.min(contour[a:b + 1]))
-            if gap < config.split_gap_fraction * typical and dip < config.split_dip_db:
-                drop = index if contour[a] < contour[b] else index + 1
-                del peaks[drop], prominences[drop]
-                changed = True
-                break
+            drop = index if contour[a] < contour[b] else index + 1
+            del peaks[drop], prominences[drop]
+            changed = True
     return np.array(peaks, dtype=int), np.array(prominences, dtype=float)
 
 
@@ -146,7 +158,7 @@ def segment_ddk_v2(x: np.ndarray, sr: int, config) -> dict:
     times = np.minimum(centers, len(x) - 1) / sr
     noise_floor = float(np.percentile(contour, 5))
     top = float(np.percentile(contour, 95))
-    floor = max(top - config.floor_below_p95_db, noise_floor + 6.0)
+    floor = max(top - config.floor_below_p95_db, noise_floor + config.min_snr_db)
     distance = max(1, round(config.min_ioi_ms / config.hop_ms))
     if not silent:
         peaks, properties = signal.find_peaks(contour, height=floor, distance=distance,
@@ -212,6 +224,33 @@ def segment_ddk_v2(x: np.ndarray, sr: int, config) -> dict:
             sequences += [[index] for index in outside] + [trimmed]
             sequences.sort(key=lambda seq: seq[0])
             main = trimmed
+    # Low-level noise next to the sequence (breathing, rustle, hum bumps in
+    # the silence before and after) is often regular enough to survive the gap
+    # rule. An edge event that is both much quieter and much less modulated
+    # than the typical syllable, or very much quieter, is not a syllable.
+    noise_edge: list[int] = []
+    if len(main) >= 4:
+        levels = np.array([events[index]["energy_peak_value"] for index in main])
+        proms = np.array([events[index]["prominence_db"] for index in main])
+        level_ref, prom_ref = float(np.median(levels)), float(np.median(proms))
+
+        def weak(index: int) -> bool:
+            event = events[index]
+            drop = level_ref - event["energy_peak_value"]
+            return (drop > config.noise_edge_level_db
+                    or (drop > config.weak_edge_level_db
+                        and event["prominence_db"] < config.weak_edge_prominence_fraction * prom_ref))
+
+        trimmed = list(main)
+        while len(trimmed) >= 4 and weak(trimmed[0]):
+            noise_edge.append(trimmed.pop(0))
+        while len(trimmed) >= 4 and weak(trimmed[-1]):
+            noise_edge.append(trimmed.pop())
+        if noise_edge:
+            sequences = [seq for seq in sequences if seq is not main]
+            sequences += [[index] for index in noise_edge] + [trimmed]
+            sequences.sort(key=lambda seq: seq[0])
+            main = trimmed
     accepted, rejected = [], []
     for sequence_number, members in enumerate(sequences, 1):
         for index in members:
@@ -219,7 +258,9 @@ def segment_ddk_v2(x: np.ndarray, sr: int, config) -> dict:
             if members is main:
                 accepted.append(event)
             else:
-                rejected.append({**event, "rejection_reason": "outside_main_ddk_sequence"})
+                reason = ("low_level_noise_at_sequence_edge" if index in noise_edge
+                          else "outside_main_ddk_sequence")
+                rejected.append({**event, "rejection_reason": reason})
     labels: list[str] = []
     label_fit = np.nan
     if getattr(config, "target", "") == "pataka" and accepted:
@@ -240,6 +281,8 @@ def segment_ddk_v2(x: np.ndarray, sr: int, config) -> dict:
             flags.append("fewer_than_min_syllables")
         if np.median([event["prominence_db"] for event in accepted]) < config.low_modulation_db:
             flags.append("low_modulation")
+        if noise_edge:
+            flags.append("noise_removed_at_sequence_edges")
         if len(cycles) > 2 and np.max(cycles) > config.missed_syllable_factor * np.median(cycles):
             flags.append("suspected_missed_syllable")
         if len(sequences) > 1 and sum(len(s) >= config.min_syllables for s in sequences) > 1:

@@ -32,7 +32,7 @@ from dataclasses import asdict
 import numpy as np
 from scipy import ndimage
 
-ALGORITHM_VERSION = "vslp-phonation-voicing-2"
+ALGORITHM_VERSION = "vslp-phonation-voicing-2.1"
 
 
 def _runs(mask: np.ndarray) -> list[tuple[int, int]]:
@@ -66,8 +66,54 @@ def _tracks(x: np.ndarray, sr: int, config):
     return times, f0, intensity
 
 
+def _trial_reference(f0, intensity, a, b):
+    """Peak level and main F0 of one trial (from its strongest voiced frames)."""
+    voiced = np.isfinite(f0[a:b])
+    if not voiced.any():
+        return float(np.max(intensity[a:b])), np.nan
+    levels = intensity[a:b][voiced]
+    peak = float(np.percentile(levels, 95))
+    strong = voiced & (intensity[a:b] >= peak - 6.0)
+    return peak, float(np.median(f0[a:b][strong]))
+
+
+def _semitones_from(values, reference):
+    return np.abs(12 * np.log2(values / reference))
+
+
+def _trim_trial(f0, intensity, a, b, config):
+    """Drop weak or off-pitch frames at a trial's ends.
+
+    Low-level hum or creak next to a vowel is voiced and steady, so it can
+    otherwise extend the trial and even win the stable window (real-data
+    check: TPV016, CNEC009-1, where F0 fell from ~210 Hz to a ~100 Hz hum).
+    """
+    peak, reference = _trial_reference(f0, intensity, a, b)
+    if not np.isfinite(reference):
+        return a, b
+
+    def good(frame: int) -> bool:
+        return (np.isfinite(f0[frame]) and intensity[frame] >= peak - 20.0
+                and _semitones_from(f0[frame], reference) <= config.max_f0_shift_semitones)
+
+    while a < b and not good(a):
+        a += 1
+    while b > a and not good(b - 1):
+        b -= 1
+    return a, b
+
+
 def _stable_window(f0, intensity, a, b, config):
-    """Steadiest window inside one episode, after relative onset/offset guards."""
+    """Steadiest window inside one episode, after relative onset/offset guards.
+
+    A window qualifies only if it lies in strong voicing (mean level within
+    ``stable_level_below_peak_db`` of the trial peak), stays on the trial's
+    main F0 and has no voice break longer than ``max_stable_break_ms``. If no
+    window qualifies, the steadiest one is still returned, marked
+    ``qualified=False`` so that it is flagged for review.
+    """
+    peak, reference = _trial_reference(f0, intensity, a, b)
+    longest_break = max(1, round(config.max_stable_break_ms / config.hop_ms))
     frames = b - a
     left = a + min(round(config.onset_guard_ms / config.hop_ms), round(0.2 * frames))
     right = b - min(round(config.offset_guard_ms / config.hop_ms), round(0.1 * frames))
@@ -75,18 +121,25 @@ def _stable_window(f0, intensity, a, b, config):
     if right - left < minimum:
         return None
     length = min(round(config.stable_duration_ms / config.hop_ms), right - left)
-    best, best_score = left, np.inf
+    best, best_score, best_ok = left, np.inf, False
     for start in range(left, right - length + 1, max(1, round(50 / config.hop_ms))):
         pitch = f0[start:start + length]
         ok = np.isfinite(pitch)
         semitones = 12 * np.log2(pitch[ok] / np.median(pitch[ok])) if ok.sum() > 2 else []
         score = ((float(np.std(semitones)) if len(semitones) else 10.0)
                  + 0.5 * float(np.std(intensity[start:start + length])) + 10 * (1 - ok.mean()))
-        if score < best_score:
-            best, best_score = start, score
+        gaps = [end - begin for begin, end in _runs(~ok)]
+        qualified = bool(
+            ok.sum() > 2
+            and float(np.mean(intensity[start:start + length])) >= peak - config.stable_level_below_peak_db
+            and (not np.isfinite(reference)
+                 or _semitones_from(float(np.median(pitch[ok])), reference) <= config.max_f0_shift_semitones)
+            and max(gaps, default=0) <= longest_break)
+        if (qualified, -score) > (best_ok, -best_score):
+            best, best_score, best_ok = start, score, qualified
     pitch = f0[best:best + length]
     ok = np.isfinite(pitch)
-    return {"start": best, "end": best + length, "score": best_score,
+    return {"start": best, "end": best + length, "score": best_score, "qualified": best_ok,
             "f0_median_hz": float(np.median(pitch[ok])) if ok.any() else np.nan,
             "f0_sd_semitones": float(np.std(12 * np.log2(pitch[ok] / np.median(pitch[ok]))))
             if ok.sum() > 2 else np.nan,
@@ -125,6 +178,8 @@ def segment_phonation_v2(x: np.ndarray, sr: int, config) -> dict:
     min_frames = round(config.min_phonation_ms / config.hop_ms)
     long_enough = [pair for pair in episodes if pair[1] - pair[0] >= min_frames]
     trials = []
+    long_enough = [_trim_trial(f0, intensity, a, b, config) for a, b in long_enough]
+    long_enough = [pair for pair in long_enough if pair[1] - pair[0] >= min_frames]
     for number, (a, b) in enumerate(long_enough, 1):
         window = _stable_window(f0, intensity, a, b, config)
         trials.append({"trial_index": number, "start_sample": to_sample(a),
@@ -145,7 +200,8 @@ def segment_phonation_v2(x: np.ndarray, sr: int, config) -> dict:
         # Analysed trial: the steadiest one that has a stable window; if none
         # has one, the longest.
         with_window = [trial for trial in trials if trial["stable"]]
-        chosen = (min(with_window, key=lambda trial: trial["stable"]["score"]) if with_window
+        chosen = (min(with_window, key=lambda trial: (not trial["stable"]["qualified"],
+                                                      trial["stable"]["score"])) if with_window
                   else max(trials, key=lambda trial: trial["end_sample"] - trial["start_sample"]))
         a, b = long_enough[chosen["trial_index"] - 1]
         full = (chosen["start_sample"], chosen["end_sample"])
@@ -159,11 +215,19 @@ def segment_phonation_v2(x: np.ndarray, sr: int, config) -> dict:
             if window["end"] - window["start"] < round(config.stable_duration_ms / config.hop_ms):
                 flags.append("stable_region_shorter_than_target")
             stability = {f"stable_{key}": value for key, value in window.items()
-                         if key not in {"start", "end", "score"}}
+                         if key not in {"start", "end", "score", "qualified"}}
+            if not window["qualified"]:
+                flags.append("stable_window_in_weak_or_off_pitch_voicing")
             if window["unvoiced_fraction"] > 0.2:
                 flags.append("unsteady_voicing_in_stable_region")
             if window["f0_sd_semitones"] > config.max_stable_f0_sd_semitones:
                 flags.append("not_a_steady_vowel_check_task")
+        _peak, reference = _trial_reference(f0, intensity, a, b)
+        voiced = np.isfinite(f0[a:b])
+        if np.isfinite(reference) and voiced.sum() > 10:
+            off = _semitones_from(f0[a:b][voiced], reference) > config.max_f0_shift_semitones
+            if off.mean() > 0.1:
+                flags.append("f0_jump_within_trial")
         if chosen["voiced_fraction"] < 0.6:
             flags.append("not_a_steady_vowel_check_task")
         if len(x) - full[1] < round(0.05 * sr):
