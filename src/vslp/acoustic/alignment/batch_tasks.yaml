@@ -21,6 +21,14 @@ tasks:
   256_NSM_NAS_WSTG: {task_id: wstg,                repetitions: 3, count_readings: true}
   238_BBP_NORMAL:   {task_id: sentence_s2,         repetitions: 3, count_readings: true}
   1048_BBP_SHORT:   {task_id: sentence_s2,         repetitions: 3, count_readings: true}
+  # 258_SENT_CAPEV (six different sentences in one file) is first cut into one
+  # WAV per sentence by capev_split.py; those files end in these codes.
+  258_SENT_CAPEV_S3:   {task_id: sentence_s3,         repetitions: 1, count_readings: true}
+  258_SENT_CAPEV_HIT:  {task_id: sentence_capev_hit,  repetitions: 1, count_readings: true}
+  258_SENT_CAPEV_S5:   {task_id: sentence_s5,         repetitions: 1, count_readings: true}
+  258_SENT_CAPEV_EGGS: {task_id: sentence_capev_eggs, repetitions: 1, count_readings: true}
+  258_SENT_CAPEV_S6:   {task_id: sentence_s6,         repetitions: 1, count_readings: true}
+  258_SENT_CAPEV_S9:   {task_id: sentence_s9,         repetitions: 1, count_readings: true}
 
 # Content not known per recording: identified first (speech-to-text, then
 # closest match among known sentences), aligned afterwards. Not run by the
