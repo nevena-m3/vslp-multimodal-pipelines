@@ -118,8 +118,12 @@ def rhythm_period(contour: np.ndarray, hop_s: float, min_s: float = 0.07,
     peaks, _ = signal.find_peaks(correlation[lo:hi])
     if not len(peaks):
         return np.nan
-    best = lo + int(peaks[np.argmax(correlation[lo:hi][peaks])])
-    return best * hop_s
+    heights = correlation[lo:hi][peaks]
+    # The shortest lag that is nearly as strong as the best: the syllable
+    # period, not a multiple of it (pa-ta-ka triplets, very regular controls
+    # locked onto 2-3x the period in the real-data check).
+    strong = peaks[heights >= 0.7 * float(np.max(heights))]
+    return (lo + int(strong[0])) * hop_s
 
 
 def label_pataka(balances: list[float]) -> tuple[list[str], float]:
@@ -363,10 +367,22 @@ def segment_ddk_v2(x: np.ndarray, sr: int, config) -> dict:
             flags.append("possible_split_syllables")
         hop_s = config.hop_ms / 1000
         a, b = int(intervals[0][0] / sr / hop_s), int(intervals[-1][1] / sr / hop_s)
-        period = rhythm_period(contour[a:b], hop_s) if len(accepted) >= config.min_syllables else np.nan
-        if np.isfinite(period):
-            expected = (intervals[-1][1] - intervals[0][0]) / sr / period
-            if abs(len(accepted) - expected) > config.rhythm_count_tolerance * expected:
+        # Period per ~4 s window, so a rate that drifts over a long attempt
+        # (fatigue, 30 s control files) is followed.
+        expected = 0.0
+        if len(accepted) >= config.min_syllables:
+            window = max(1, round(4.0 / hop_s))
+            last = np.nan
+            for start in range(a, b, window):
+                stop = min(b, start + window)
+                if stop - start >= round(1.0 / hop_s) or not np.isfinite(last):
+                    last = rhythm_period(contour[start:stop], hop_s)
+                # a short remainder reuses the previous window's period
+                expected += (stop - start) * hop_s / last
+        tolerance = (config.pataka_rhythm_count_tolerance
+                     if getattr(config, "target", "") == "pataka" else config.rhythm_count_tolerance)
+        if np.isfinite(expected) and expected > 0:
+            if abs(len(accepted) - expected) > tolerance * expected:
                 # Peak count and rhythm disagree: split or merged syllables.
                 flags.append("count_disagrees_with_rhythm")
         lengths = np.array([(b - a) / sr for a, b in intervals])
