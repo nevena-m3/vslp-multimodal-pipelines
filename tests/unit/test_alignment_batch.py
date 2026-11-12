@@ -204,3 +204,30 @@ def test_one_reading_spread_over_several_is_flagged(tmp_path):
     (job_root / "job_manifest.json").write_text(json.dumps(job), encoding="utf-8")
     flags = qc_job(job_root)["records"][0]["flags"]
     assert "long_pause_within_reading_requires_review" in flags
+
+
+def test_readings_from_chunks_handle_merged_and_split_readings():
+    from vslp.acoustic.alignment.readings import estimate_readings
+
+    prompt = "Buy Bobby a puppy."
+    one = lambda start, length, text: {"start": start, "end": start + length, "text": text}  # noqa: E731
+    # Pilot 3, CNEC044: four readings with no pause between them became one long
+    # chunk that Whisper wrote once.
+    merged = [one(0.5, 1.2, "Buy Bobby a puppy"), one(2.2, 1.1, "Buy Bobby a puppy"),
+              one(4.0, 4.6, "Buy Bobby a puppy")]
+    assert estimate_readings(merged, prompt)[0] == 6
+    # A reading split across two chunks still counts once.
+    split = [one(0.5, .6, "My mama"), one(1.3, .9, "makes lemon jam"),
+             one(3.0, 1.5, "My mama makes lemon jam"), one(5.0, 1.5, "My mama makes lemon jam")]
+    assert estimate_readings(split, "My mama makes lemon jam")[0] == 3
+
+
+def test_unrecognised_speech_falls_back_to_protocol_count_not_dropped(tmp_path):
+    names = ["A_1_1_20240101_256_NSM_NAS_WSTG.wav", "B_1_1_20240101_256_NSM_NAS_WSTG.wav"]
+    fixed = batch.build_inventory(None, names)
+    readings = tmp_path / "r.csv"
+    pd.DataFrame({"file_name": names, "readings": [0, 0],
+                  "speech_sec": [6.0, 0.3]}).to_csv(readings, index=False)
+    kept, held = batch.apply_reading_counts(fixed, readings)
+    assert kept.file_name.tolist() == [names[0]] and kept.repetitions.tolist() == [3]
+    assert held.file_name.tolist() == [names[1]]

@@ -28,8 +28,11 @@ import re
 NAME_PATTERN = re.compile(r"^[^_]+_\d+_\d+_\d{8}_(?P<code>.+)$")
 TASKS_PATH = Path(__file__).with_name("batch_tasks.yaml")
 
-READINGS_COLUMNS = ["file_name", "task_code", "task_id", "readings", "match_scores",
-                    "speech_chunks", "transcript", "asr_model"]
+READINGS_COLUMNS = ["file_name", "task_code", "task_id", "readings", "count_source",
+                    "match_scores", "speech_chunks", "speech_sec", "transcript", "asr_model"]
+# A chunk this many times longer than a typical one-reading chunk holds
+# several readings spoken without a pause (pilot 3: 4 readings in one chunk).
+LONG_CHUNK_FACTOR = 1.6
 MATCH_THRESHOLD = 0.6
 # Speech chunks are transcribed one by one: Whisper on a whole recording tends
 # to write a repeated sentence only once (2026-11 pilot 2), which undercounts.
@@ -77,6 +80,31 @@ def count_readings(transcript: str, prompt: str, threshold: float = MATCH_THRESH
     return scores
 
 
+def estimate_readings(chunks: list[dict], prompt: str) -> tuple[int, list[float], str]:
+    """Readings in one recording from its per-chunk transcripts and durations.
+
+    1. Count readings in the joined chunk texts, so a reading split across two
+       chunks ("my mama | makes lemon jam") still counts once.
+    2. Whisper writes a sentence repeated without a pause only once. So a chunk
+       whose own text holds one reading, but which is at least 1.6 times as
+       long as the file's typical one-reading chunk, is counted as
+       round(duration / typical) readings.
+    """
+    joined = " | ".join(chunk["text"] for chunk in chunks if chunk["text"])
+    scores = count_readings(joined, prompt)
+    singles = [chunk["end"] - chunk["start"] for chunk in chunks
+               if len(count_readings(chunk["text"], prompt)) == 1]
+    extra = 0
+    if len(singles) >= 2:
+        typical = float(sorted(singles)[len(singles) // 2])
+        for chunk in chunks:
+            duration = chunk["end"] - chunk["start"]
+            if (len(count_readings(chunk["text"], prompt)) == 1
+                    and duration >= LONG_CHUNK_FACTOR * typical):
+                extra += round(duration / typical) - 1
+    return len(scores) + extra, scores, "chunks+duration" if extra else "chunks"
+
+
 def _prompt_text(task_id: str) -> str:
     from .prompts import task_entry
 
@@ -122,30 +150,37 @@ def load_16k(path: Path):
     return audio.astype(np.float32)
 
 
-def transcribe(paths: list[Path], model_name: str, model_dir: str | None, log=print) -> dict:
-    """Transcribe every speech chunk of each file separately; join with ' | '."""
+def transcribe(paths: list[Path], model_name: str, model_dir: str | None, log=print,
+               prompts: dict | None = None) -> dict:
+    """Transcribe each speech chunk separately (and the whole file as a fallback)."""
     from faster_whisper import WhisperModel  # only in the vslp-whisper environment
     from faster_whisper.vad import VadOptions, get_speech_timestamps
 
     model = WhisperModel(model_name, device="cpu", compute_type="int8",
                          download_root=model_dir)
     options = VadOptions(min_silence_duration_ms=CHUNK_MIN_SILENCE_MS, speech_pad_ms=150)
+
+    def text_of(audio) -> str:
+        segments, _info = model.transcribe(audio, language="en", beam_size=5,
+                                           vad_filter=False, condition_on_previous_text=False)
+        return " ".join(segment.text.strip() for segment in segments).strip()
+
     results = {}
     for number, path in enumerate(paths, 1):
         audio = load_16k(path)
-        chunks = get_speech_timestamps(audio, options)
-        texts = []
-        for chunk in chunks:
-            piece = audio[chunk["start"]:chunk["end"]]
-            if len(piece) < 0.25 * 16000:
-                continue
-            segments, _info = model.transcribe(piece, language="en", beam_size=5,
-                                               vad_filter=False,
-                                               condition_on_previous_text=False)
-            text = " ".join(segment.text.strip() for segment in segments).strip()
-            if text:
-                texts.append(text)
-        results[path.name] = {"text": " | ".join(texts), "chunks": len(chunks)}
+        chunks = []
+        for stamp in get_speech_timestamps(audio, options):
+            piece = audio[stamp["start"]:stamp["end"]]
+            if len(piece) >= 0.25 * 16000:
+                chunks.append({"start": stamp["start"] / 16000, "end": stamp["end"] / 16000,
+                               "text": text_of(piece)})
+        result = {"chunks": chunks, "whole_text": ""}
+        prompt = (prompts or {}).get(path.name)
+        # Very short chunks of dysarthric speech can transcribe as nonsense;
+        # if no reading is found in them, try the whole file once (pilot 3).
+        if prompt and chunks and estimate_readings(chunks, prompt)[0] == 0:
+            result["whole_text"] = text_of(audio)
+        results[path.name] = result
         log(f"{number}/{len(paths)} {path.name}: {len(chunks)} speech chunks")
     return results
 
@@ -174,13 +209,23 @@ def main(argv: list[str] | None = None) -> int:
     done = {row["file_name"] for row in rows}
     todo = [item for item in wanted if item[0].name not in done]
     print(f"{len(wanted)} recordings need a reading count; {len(todo)} not yet done")
-    texts = transcribe([item[0] for item in todo], args.model, args.model_dir) if todo else {}
+    prompts = {item[0].name: _prompt_text(item[2]) for item in todo}
+    texts = (transcribe([item[0] for item in todo], args.model, args.model_dir,
+                        prompts=prompts) if todo else {})
     for path, code, task_id in todo:
-        text = texts[path.name]["text"]
-        scores = count_readings(text, _prompt_text(task_id))
+        result = texts[path.name]
+        prompt = prompts[path.name]
+        count, scores, source = estimate_readings(result["chunks"], prompt)
+        if count == 0 and result["whole_text"]:
+            scores = count_readings(result["whole_text"], prompt)
+            count, source = len(scores), "whole_file" if scores else "none"
         rows.append({"file_name": path.name, "task_code": code, "task_id": task_id,
-                     "readings": len(scores), "match_scores": json.dumps(scores),
-                     "speech_chunks": texts[path.name]["chunks"], "transcript": text,
+                     "readings": count, "count_source": source if count else "none",
+                     "match_scores": json.dumps(scores),
+                     "speech_chunks": len(result["chunks"]),
+                     "speech_sec": round(sum(c["end"] - c["start"] for c in result["chunks"]), 2),
+                     "transcript": " | ".join(c["text"] for c in result["chunks"])
+                     + (f" || whole: {result['whole_text']}" if result["whole_text"] else ""),
                      "asr_model": args.model})
     with out.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=READINGS_COLUMNS)

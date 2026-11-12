@@ -110,6 +110,9 @@ def pilot_sample(fixed: pd.DataFrame, per_task: int) -> pd.DataFrame:
             .groupby("task_code").head(per_task).drop(columns=["_order", "_turn"]))
 
 
+MIN_SPEECH_FOR_DEFAULT_SEC = 1.5
+
+
 def apply_reading_counts(fixed: pd.DataFrame, readings_csv: str | Path | None) -> tuple[
         pd.DataFrame, pd.DataFrame]:
     """Set per-recording repetitions from a reading-count CSV.
@@ -121,10 +124,13 @@ def apply_reading_counts(fixed: pd.DataFrame, readings_csv: str | Path | None) -
     fixed = fixed.copy()
     held: list[dict] = []
     counts = {}
+    speech = {}
     if readings_csv:
         table = pd.read_csv(readings_csv, dtype=str, keep_default_na=False)
         counts = {row.file_name: int(row.readings) for row in table.itertuples()
                   if str(row.readings).strip().isdigit()}
+        if "speech_sec" in table:
+            speech = {row.file_name: float(row.speech_sec or 0) for row in table.itertuples()}
     keep = []
     for index, row in fixed.iterrows():
         if not row.count_readings:
@@ -134,6 +140,11 @@ def apply_reading_counts(fixed: pd.DataFrame, readings_csv: str | Path | None) -
         if count is None:
             held.append({"file_name": row.file_name, "task_code": row.task_code,
                          "reason": "reading_count_missing"})
+        elif count == 0 and speech.get(row.file_name, 0) >= MIN_SPEECH_FOR_DEFAULT_SEC:
+            # Speech is there but speech-to-text did not recognise the prompt
+            # (often severe dysarthria): align with the protocol's usual count
+            # and let structural QC accept or flag it, rather than drop it.
+            keep.append(index)
         elif count == 0:
             held.append({"file_name": row.file_name, "task_code": row.task_code,
                          "reason": "no_reading_of_prompt_detected"})
@@ -306,6 +317,10 @@ def run_batch(*, inventory_csv: str | None, workspace: str | Path, zip_path: str
     inventory = build_inventory(inventory_csv, names, table)
     inventory.to_csv(workspace / "inventory_with_batch_roles.csv", index=False)
     fixed = inventory.loc[inventory.batch_role.eq("fixed_prompt")]
+    if audio_dir and not zip_path:
+        # Only the recordings that are actually in the folder (pilot reruns).
+        present = {path.name for path in Path(audio_dir).rglob("*.wav")}
+        fixed = fixed.loc[fixed.file_name.isin(present)]
     if codes:
         fixed = fixed.loc[fixed.task_code.isin(codes)]
     if limit_per_task:
