@@ -18,6 +18,7 @@ from uuid import uuid4
 import numpy as np
 import pandas as pd
 
+from vslp.acoustic.segment.ddk_events import ddk_event_rows, ddk_events_frame
 from vslp.acoustic.segment.pipeline import _frames, _plot, _segments
 from vslp.acoustic.segment.pipeline import segmentation_runs
 from vslp.acoustic.preprocess.stage import safe_stem
@@ -236,6 +237,7 @@ def _paths(output_root: str | Path) -> dict[str, Path]:
             "audit": tables / "audit_log.csv",
             "final_decisions": final / "final_segmentation_decisions.csv",
             "final_intervals": final / "final_segmentation_intervals.csv",
+            "final_ddk_events": final / "final_ddk_events.csv",
             "final_summary": final / "final_segmentation_summary.csv",
             "final_manifest": final / "final_manifest.json",
             "manifest": stage / "logs" / "stage_manifest.json"}
@@ -801,6 +803,7 @@ def finalize_segmentation_review(output_root: str | Path) -> StageResult:
     if not persisted.fillna("").equals(decisions[REVIEW_COLUMNS].fillna("")):
         raise RuntimeError("Working review table differs from committed review actions")
     interval_rows: list[dict[str, Any]] = []
+    ddk_rows: list[dict[str, Any]] = []
     final_rows = []
     for _, row in decisions.iterrows():
         record = row.to_dict()
@@ -865,6 +868,14 @@ def finalize_segmentation_review(output_root: str | Path) -> StageResult:
                     "cycle_mean_sec": np.mean(cycles) if len(cycles) else "",
                     "cycle_sd_sec": np.std(cycles) if len(cycles) else "",
                     "ddk_timing_source": "reviewed_interval_midpoint"})
+        if row.segmentation_method == "ddk_energy" and primary:
+            # The F10 DDK features read reviewed syllable events from
+            # final_ddk_events.csv; write them from the frozen intervals.
+            ddk_rows.extend(ddk_event_rows(
+                x, sr, [(item.start_sec, item.end_sec) for item in primary],
+                recording_id=str(row.recording_id), file_name=str(row.file_name),
+                task_name=str(row.task_name),
+                reviewer=row.reviewer if isinstance(row.reviewer, str) else ""))
         if row.segmentation_method == "sustained_phonation":
             record["full_phonation_start"] = primary[0].start_sec
             record["full_phonation_end"] = primary[-1].end_sec
@@ -927,6 +938,10 @@ def finalize_segmentation_review(output_root: str | Path) -> StageResult:
     frozen = pd.DataFrame(final_rows, columns=[*REVIEW_COLUMNS, "segments_csv_path"])
     intervals = pd.DataFrame(interval_rows, columns=INTERVAL_COLUMNS)
     _atomic_csv(intervals, paths["final_intervals"])
+    if ddk_rows:
+        _atomic_csv(ddk_events_frame(ddk_rows), paths["final_ddk_events"])
+    elif paths["final_ddk_events"].is_file():
+        paths["final_ddk_events"].unlink()  # stale events from an earlier freeze
     # The decisions file is the freeze marker. Write it last so an interrupted
     # materialization cannot appear finalized to downstream stages.
     _atomic_csv(frozen, paths["final_decisions"])

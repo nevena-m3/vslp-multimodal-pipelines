@@ -17,6 +17,25 @@ class DDKConfig:
     fir_order: int = 100
     min_event_ms: float = 20.0
     min_separation_ms: float = 10.0
+    # "nuclei_v2" (default): syllable-nucleus peaks with closure valleys and
+    # sequence detection (ddk_v2.py). "tanchip_energy_v1": the earlier energy
+    # threshold-crossing method, kept for comparison.
+    algorithm: str = "nuclei_v2"
+    target: str = ""  # pa / ta / ka / pataka; pataka adds pa-ta-ka labels
+    min_prominence_db: float = 3.0
+    floor_below_p95_db: float = 35.0
+    min_ioi_ms: float = 70.0
+    break_gap_s: float = 1.0
+    break_gap_factor: float = 3.0
+    missed_syllable_factor: float = 1.8
+    min_syllables: int = 8
+    low_modulation_db: float = 6.0
+    min_pataka_label_fit: float = 0.0
+    edge_gap_factor: float = 2.5
+    split_gap_fraction: float = 0.5
+    split_dip_db: float = 6.0
+    irregular_cv: float = 0.6
+    long_event_factor: float = 2.5
 
 
 @dataclass(frozen=True)
@@ -29,6 +48,16 @@ class PhonationConfig:
     onset_guard_ms: float = 1000.0
     offset_guard_ms: float = 300.0
     stable_duration_ms: float = 2000.0
+    # "voicing_v2" (default): Praat voicing + intensity range, all episodes,
+    # steadiest-window stable region (phonation_v2.py). "energy_v1": earlier
+    # energy-only method, kept for comparison.
+    algorithm: str = "voicing_v2"
+    pitch_floor_hz: float = 75.0
+    pitch_ceiling_hz: float = 600.0
+    intensity_range_db: float = 25.0
+    min_stable_ms: float = 1000.0
+    v2_max_internal_gap_ms: float = 350.0  # longer gaps separate trials
+    max_stable_f0_sd_semitones: float = 3.0
 
 
 def _frame_energy(x: np.ndarray, sr: int, frame_ms: float, hop_ms: float):
@@ -49,6 +78,17 @@ def _runs(mask: np.ndarray) -> list[tuple[int, int]]:
 
 
 def segment_ddk(x: np.ndarray, sr: int, config: DDKConfig = DDKConfig()) -> dict:
+    """DDK syllable events; ``config.algorithm`` picks the method."""
+    if config.algorithm == "nuclei_v2":
+        from .ddk_v2 import segment_ddk_v2
+
+        return segment_ddk_v2(x, sr, config)
+    if config.algorithm != "tanchip_energy_v1":
+        raise ValueError(f"unknown DDK algorithm: {config.algorithm}")
+    return _segment_ddk_tanchip_v1(x, sr, config)
+
+
+def _segment_ddk_tanchip_v1(x: np.ndarray, sr: int, config: DDKConfig) -> dict:
     """Tanchip 2022 Energy method; engineering choices are in processing provenance."""
     if sr <= 400 or len(x) == 0:
         raise ValueError("DDK requires nonempty audio sampled above 400 Hz")
@@ -160,6 +200,17 @@ def segment_ddk(x: np.ndarray, sr: int, config: DDKConfig = DDKConfig()) -> dict
 
 
 def segment_phonation(x: np.ndarray, sr: int, config: PhonationConfig = PhonationConfig()) -> dict:
+    """Sustained-vowel episode and stable interior; ``config.algorithm`` picks the method."""
+    if config.algorithm == "voicing_v2":
+        from .phonation_v2 import segment_phonation_v2
+
+        return segment_phonation_v2(x, sr, config)
+    if config.algorithm != "energy_v1":
+        raise ValueError(f"unknown phonation algorithm: {config.algorithm}")
+    return _segment_phonation_energy_v1(x, sr, config)
+
+
+def _segment_phonation_energy_v1(x: np.ndarray, sr: int, config: PhonationConfig) -> dict:
     """Detect the whole phonatory episode and a separate guarded stable interior."""
     if sr <= 0 or len(x) == 0:
         raise ValueError("Phonation requires non-empty audio and a positive sample rate")

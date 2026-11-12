@@ -25,7 +25,7 @@ def test_ta_pattern_decreasing_amplitude_and_native_timing(sample_rate, gain, ir
         x[round(.5 * sample_rate):round(.6 * sample_rate)] += (
             gain * .015 * rng.normal(size=round(.1 * sample_rate)))
     before = x.copy()
-    result = segment_ddk(x, sample_rate)
+    result = segment_ddk(x, sample_rate, DDKConfig(algorithm="tanchip_energy_v1"))
     assert np.array_equal(x, before)
     assert result["automatic_status"] in {"ACCEPTED", "REVIEW"}
     assert result["n_syllables"] >= 20
@@ -44,7 +44,7 @@ def test_ddk_rate_and_ctv_follow_authoritative_event_times():
     for start in (.4, .8, 1.3, 1.9, 2.6):
         a, b = round(start * sr), round((start + .12) * sr)
         x[a:b] = .3 * np.sin(2 * np.pi * 150 * np.arange(b - a) / sr)
-    result = segment_ddk(x, sr, DDKConfig())
+    result = segment_ddk(x, sr, DDKConfig(algorithm="tanchip_energy_v1"))
     assert result["n_syllables"] == 5
     assert result["ddk_rate_hz"] == pytest.approx(
         5 / (result["ddk_sequence_end_sec"] - result["ddk_sequence_start_sec"]))

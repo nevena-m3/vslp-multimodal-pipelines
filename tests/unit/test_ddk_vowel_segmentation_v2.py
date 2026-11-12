@@ -1,0 +1,124 @@
+"""DDK (nuclei v2) and sustained-vowel (voicing v2) segmentation on synthetic speech
+with known syllables and trials, plus the reviewed DDK event contract for F10."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import pytest
+
+sys.path.insert(0, str(Path(__file__).parent))
+from _speech_synth import ddk, vowel  # noqa: E402
+
+from vslp.acoustic.features.family10_v2 import measure_trial
+from vslp.acoustic.segment.ddk_events import ddk_event_rows, ddk_events_frame, ddk_target
+from vslp.acoustic.segment.task_methods import (DDKConfig, PhonationConfig, segment_ddk,
+                                                segment_phonation)
+
+
+@pytest.mark.parametrize("syllables", ["pa" * 15, "ta" * 15, "pataka" * 6])
+@pytest.mark.parametrize("rate", [4, 8])
+@pytest.mark.parametrize("dip_db", [60, 6])  # 6 dB = slurred, incomplete closures
+@pytest.mark.parametrize("sr", [16000, 44100])
+def test_ddk_counts_every_syllable_once(syllables, rate, dip_db, sr):
+    x, truth = ddk(sr=sr, syllables=syllables, rate=rate, dip_db=dip_db, snr_db=15,
+                   decay=0.6, seed=rate + dip_db)
+    result = segment_ddk(x, sr, DDKConfig())
+    assert result["n_events"] == len(truth)
+    nuclei = np.array(result["nuclei_samples"]) / sr
+    for syllable, nucleus in zip(truth, nuclei):
+        assert syllable["vowel_on"] - .03 <= nucleus <= syllable["vowel_off"] + .03
+
+
+def test_pataka_labels_follow_the_bursts():
+    x, truth = ddk(sr=44100, syllables="pataka" * 6, rate=6, snr_db=35)
+    result = segment_ddk(x, 44100, DDKConfig(target="pataka"))
+    assert result["syllable_labels"] == [s["cons"] + "a" for s in truth]
+
+
+def test_ddk_ignores_presounds_and_a_second_attempt():
+    sr = 16000
+    x, truth = ddk(sr=sr, syllables="pa" * 20, rate=6, lead=2.0, seed=3)
+    blip = np.zeros_like(x)
+    blip[int(.4 * sr):int(.5 * sr)] = .3 * np.sin(2 * np.pi * 200 * np.arange(int(.1 * sr)) / sr)
+    second, _ = ddk(sr=sr, syllables="pa" * 4, rate=6, lead=0.2, seed=4)
+    signal = np.concatenate([x + blip, second])
+    result = segment_ddk(signal, sr, DDKConfig())
+    assert result["n_events"] == 20
+    assert abs(result["ddk_sequence_start_sec"] - truth[0]["vowel_on"]) < .05
+    assert {e["rejection_reason"] for e in result["rejected_events"]} == {"outside_main_ddk_sequence"}
+
+
+@pytest.mark.parametrize("length", [0.6, 6.0])
+def test_empty_or_silent_files_are_flagged_not_measured(length):
+    x = np.random.default_rng(0).normal(0, 3e-5, int(16000 * length)).astype(np.float32)
+    ddk_result = segment_ddk(x, 16000, DDKConfig())
+    assert ddk_result["n_events"] == 0 and "silent_or_empty_recording" in ddk_result["flags"]
+    vowel_result = segment_phonation(x, 16000, PhonationConfig())
+    assert vowel_result["full_samples"] is None
+    assert "silent_or_empty_recording" in vowel_result["flags"]
+
+
+@pytest.mark.parametrize("case,kwargs", [
+    ("three_trials", dict(trials=((1.0, 5.0), (7.0, 11.5), (13.5, 18.0)))),
+    ("short_trials", dict(trials=((1.0, 4.3), (6.0, 9.3)))),
+    ("voice_break", dict(trials=((1.0, 6.0),), breaks=((3.0, 3.2),))),
+    ("tremor_after_4_5s", dict(trials=((1.0, 7.0),), wobble_start=4.5)),
+    ("noisy", dict(trials=((1.0, 6.0),), snr_db=12)),
+])
+def test_vowel_stable_window_lies_in_steady_voicing(case, kwargs):
+    sr = 44100
+    result = segment_phonation(vowel(sr=sr, **kwargs), sr, PhonationConfig())
+    assert result["n_trials"] == len(kwargs["trials"])
+    a, b = (value / sr for value in result["stable_samples"])
+    assert any(t0 <= a and b <= t1 for t0, t1 in kwargs["trials"])
+    assert not any(a < q1 and b > q0 for q0, q1 in kwargs.get("breaks", ()))
+    if kwargs.get("wobble_start"):
+        assert b <= kwargs["wobble_start"] + .05
+
+
+def test_truncated_phonation_is_flagged():
+    result = segment_phonation(vowel(trials=((1.0, 6.0),), total=6.0), 44100, PhonationConfig())
+    assert "phonation_truncated_at_file_end" in result["flags"]
+
+
+@pytest.mark.parametrize("name,expected", [
+    ("P01_270_1_20230101_242_DDK_PA.wav", "pa"), ("P01_270_1_20230101_260_DDK_TA.wav", "ta"),
+    ("P01_270_1_20230101_261_DDK_KA.wav", "ka"), ("P01_270_1_20230101_262_DDK_PATAKA.wav", "pataka"),
+    ("bamboo.wav", ""),
+])
+def test_ddk_target_from_file_name(name, expected):
+    assert ddk_target(name) == expected
+
+
+def _events(x, sr, name):
+    result = segment_ddk(x, sr, DDKConfig())
+    intervals = [(a / sr, b / sr) for a, b in result["intervals_samples"]]
+    return ddk_events_frame(ddk_event_rows(x, sr, intervals, recording_id="r1",
+                                           file_name=name))
+
+
+def test_reviewed_pa_events_give_the_true_ddk_rate():
+    sr = 16000
+    x, truth = ddk(sr=sr, syllables="pa" * 15, rate=6, rate_jitter=0, snr_db=35)
+    events = _events(x, sr, "S_270_1_20230101_242_DDK_PA.wav")
+    assert events.valid.all() and len(events) == 15
+    result, _audit, summary = measure_trial(events, "pa")
+    assert summary["n_events_used"] == 10
+    # 10 syllables from first onset to tenth offset at 6 syll/s.
+    assert result["rate"][0] == pytest.approx(10 / (truth[9]["vowel_off"] - truth[0]["vowel_on"]),
+                                              rel=.08)
+
+
+def test_reviewed_pataka_events_form_triplets_for_f10():
+    sr = 44100
+    x, _truth = ddk(sr=sr, syllables="pataka" * 12, rate=6, snr_db=35)
+    events = _events(x, sr, "S_270_1_20230101_262_DDK_PATAKA.wav")
+    complete = events.loc[events.sequence_complete.astype(bool)]
+    assert len(complete) == 12 and complete.sequence_label.eq("pa-ta-ka").all()
+    result, _audit, summary = measure_trial(events, "pataka")
+    assert summary["syllable_equivalent_count"] == 30
+    assert 4 < result["rate"][0] < 8

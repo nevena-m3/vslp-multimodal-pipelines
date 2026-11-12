@@ -244,11 +244,17 @@ class SegmentationReviewWidget(QWidget):
                                f"min silence={params.get('min_silence_duration_ms', '?')}")
                 elif entry["method"] == "ddk_energy":
                     ddk = params.get("ddk", {})
-                    profile = (f"LPF={ddk.get('envelope_lowpass_hz', '?')} Hz, "
-                               f"energy={ddk.get('frame_ms', '?')} ms, "
-                               f"threshold={ddk.get('threshold_window_ms', '?')} ms")
+                    if ddk.get("algorithm", "tanchip_energy_v1") == "nuclei_v2":
+                        profile = (f"syllable nuclei v2, dip>={ddk.get('min_prominence_db', '?')} dB, "
+                                   f"min gap={ddk.get('min_ioi_ms', '?')} ms")
+                    else:
+                        profile = (f"LPF={ddk.get('envelope_lowpass_hz', '?')} Hz, "
+                                   f"energy={ddk.get('frame_ms', '?')} ms, "
+                                   f"threshold={ddk.get('threshold_window_ms', '?')} ms")
                 else:
-                    profile = "sustained phonation"
+                    algorithm = params.get("phonation", {}).get("algorithm", "energy_v1")
+                    profile = ("sustained phonation (voicing v2)" if algorithm == "voicing_v2"
+                               else "sustained phonation")
                 label = (f"{entry['created_at_utc']} · {entry['method']} · {entry['task_name']} · "
                          f"{profile} · N={entry['n_recordings']}")
                 self.run_combo.addItem(label, entry["segmentation_run_id"])
