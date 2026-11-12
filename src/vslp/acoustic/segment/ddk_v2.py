@@ -358,11 +358,18 @@ def segment_ddk_v2(x: np.ndarray, sr: int, config) -> dict:
             flags.append("low_modulation")
         if noise_edge:
             flags.append("noise_removed_at_sequence_edges")
+        span_s = (intervals[-1][1] - intervals[0][0]) / sr
+        if (len(accepted) >= config.min_syllables and span_s > 0
+                and len(accepted) / span_s < config.min_plausible_rate_hz
+                and "irregular_rhythm_check_task" not in flags):
+            # Far slower than any DDK attempt: probably another task (CNES11).
+            flags.append("irregular_rhythm_check_task")
         if len(cycles) > 2 and np.max(cycles) > config.missed_syllable_factor * np.median(cycles):
             flags.append("suspected_missed_syllable")
         if len(sequences) > 1 and sum(len(s) >= config.min_syllables for s in sequences) > 1:
             flags.append("multiple_ddk_sequences")
-        if len(cycles) > 3 and np.std(cycles) / np.mean(cycles) > config.irregular_cv:
+        if (len(cycles) > 3 and np.std(cycles) / np.mean(cycles) > config.irregular_cv
+                and "irregular_rhythm_check_task" not in flags):
             flags.append("irregular_rhythm_check_task")
         if len(cycles) > 5 and np.mean(cycles < 0.6 * np.percentile(cycles, 75)) > 0.3:
             # Many short gaps among normal ones: syllables split into two humps.
