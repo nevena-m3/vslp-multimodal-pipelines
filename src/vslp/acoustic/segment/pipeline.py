@@ -279,8 +279,11 @@ def _method_result(x: np.ndarray, sr: int, cfg: SegmentationConfig, model: Any):
                                                   "ddk_sequence_duration_sec", "ddk_rate_hz", "ctv_sec",
                                                   "cycle_mean_sec", "cycle_sd_sec", "minimum_peak_threshold_ratio")})
         extras["threshold_perturbation_event_counts"] = json.dumps(result["threshold_perturbation_event_counts"])
-        extras.update({"boundary_source": "ddk_energy_envelope_threshold_crossings",
-                       "algorithm_version": "vslp-ddk-tanchip-energy-2", "processing_provenance": json.dumps(result["processing"])})
+        extras.update({"boundary_source": ("ddk_syllable_nuclei_closure_valleys"
+                                          if cfg.ddk.algorithm == "nuclei_v2"
+                                          else "ddk_energy_envelope_threshold_crossings"),
+                       "algorithm_version": result["processing"].get("algorithm", "vslp-ddk-tanchip-energy-2"),
+                       "processing_provenance": json.dumps(result["processing"], default=str)})
     elif cfg.method == PHONATION:
         result = segment_phonation(x, sr, cfg.phonation)
         raw = [Interval(a / sr, b / sr) for a, b in [result["full_samples"]] if a is not None] if result["full_samples"] else []
@@ -296,8 +299,9 @@ def _method_result(x: np.ndarray, sr: int, cfg: SegmentationConfig, model: Any):
                        "stable_region_end": stable.end_sec if stable else np.nan,
                        "n_internal_voice_breaks": len(breaks),
                        "boundary_source": "sustained_phonation_energy_episode",
-                       "algorithm_version": "vslp-phonation-1",
-                       "processing_provenance": json.dumps(result["processing"])})
+                       "n_phonation_trials": result.get("n_trials", ""),
+                       "algorithm_version": result["processing"].get("algorithm", "vslp-phonation-1"),
+                       "processing_provenance": json.dumps(result["processing"], default=str)})
     else:
         raise ValueError(f"Unsupported segmentation method: {cfg.method}")
     strict = erode_intervals(primary, cfg.strict_speech_edge_ms / 1000)
