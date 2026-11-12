@@ -40,7 +40,7 @@ from dataclasses import asdict
 import numpy as np
 from scipy import ndimage, signal
 
-ALGORITHM_VERSION = "vslp-ddk-nuclei-2.3"
+ALGORITHM_VERSION = "vslp-ddk-nuclei-2.4"
 
 
 def _db(values: np.ndarray) -> np.ndarray:
@@ -97,6 +97,29 @@ def _periodicity(band: np.ndarray, sr: int, center: int) -> float:
     # Unbiased normalisation, so longer lags are not penalised.
     values = correlation[lo:hi] / correlation[0] * len(segment) / (len(segment) - lags)
     return float(np.clip(np.max(values), 0.0, 1.0))
+
+
+def rhythm_period(contour: np.ndarray, hop_s: float, min_s: float = 0.07,
+                  max_s: float = 0.6) -> float:
+    """Dominant syllable period (s) of an energy contour, from its autocorrelation.
+
+    An independent count check: the syllable count should be about the
+    sequence duration divided by this period. It does not depend on where
+    single peaks are found, so splits and merges show up as a disagreement.
+    """
+    values = contour - np.mean(contour)
+    if len(values) < 4 or not np.any(values):
+        return np.nan
+    spectrum = np.fft.rfft(values, n=2 * len(values))
+    correlation = np.fft.irfft(np.abs(spectrum) ** 2)[:len(values)]
+    lo, hi = max(1, round(min_s / hop_s)), min(len(values) - 1, round(max_s / hop_s))
+    if hi <= lo + 2:
+        return np.nan
+    peaks, _ = signal.find_peaks(correlation[lo:hi])
+    if not len(peaks):
+        return np.nan
+    best = lo + int(peaks[np.argmax(correlation[lo:hi][peaks])])
+    return best * hop_s
 
 
 def label_pataka(balances: list[float]) -> tuple[list[str], float]:
@@ -338,6 +361,14 @@ def segment_ddk_v2(x: np.ndarray, sr: int, config) -> dict:
         if len(cycles) > 5 and np.mean(cycles < 0.6 * np.percentile(cycles, 75)) > 0.3:
             # Many short gaps among normal ones: syllables split into two humps.
             flags.append("possible_split_syllables")
+        hop_s = config.hop_ms / 1000
+        a, b = int(intervals[0][0] / sr / hop_s), int(intervals[-1][1] / sr / hop_s)
+        period = rhythm_period(contour[a:b], hop_s) if len(accepted) >= config.min_syllables else np.nan
+        if np.isfinite(period):
+            expected = (intervals[-1][1] - intervals[0][0]) / sr / period
+            if abs(len(accepted) - expected) > config.rhythm_count_tolerance * expected:
+                # Peak count and rhythm disagree: split or merged syllables.
+                flags.append("count_disagrees_with_rhythm")
         lengths = np.array([(b - a) / sr for a, b in intervals])
         if len(lengths) > 3 and np.max(lengths) > config.long_event_factor * np.median(lengths):
             flags.append("possible_merged_syllables")
