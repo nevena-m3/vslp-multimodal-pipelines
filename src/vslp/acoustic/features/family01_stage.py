@@ -18,7 +18,7 @@ from vslp.acoustic.features.family01 import (
     calculate_f0_features, praat_f0_track,
 )
 from vslp.acoustic.features.family01_task import task_context
-from vslp.acoustic.features.stable_phonation import centered_stable_spans
+from vslp.acoustic.features.stable_phonation import centered_stable_spans, repetition_trials
 from vslp.acoustic.features.family02 import (
     ALGORITHM_VERSION as F02_ALGORITHM_VERSION, FAMILY02_IDS, HARMONIC_IDS,
     PARAMETER_SET_ID as F02_PARAMETER_SET_ID, calculate_voice_quality,
@@ -347,6 +347,14 @@ def run_family01_stage(decisions_csv: str | Path, root: str | Path, config,
         record_id = str(row.recording_id)
         confirmed_trials = confirmed_task_trials(root, record_id)
         timeline = all_intervals.loc[all_intervals.recording_id.astype(str).eq(record_id)]
+        if not confirmed_trials and task["task_family"] == "sustained_vowel":
+            # Every /a/ repetition is a trial: features per repetition, then
+            # the median across repetitions (not only the steadiest one).
+            try:
+                recording_sec = sf.info(row.analysis_wav_path).duration
+            except (OSError, RuntimeError):
+                recording_sec = float("inf")
+            confirmed_trials = repetition_trials(row, timeline, recording_sec)
         result = {feature_id: (np.nan, "analysis_unavailable") for feature_id in selected}
         track = None
         span_tracks = []

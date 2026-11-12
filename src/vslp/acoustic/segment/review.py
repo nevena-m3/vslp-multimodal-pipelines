@@ -18,6 +18,7 @@ from uuid import uuid4
 import numpy as np
 import pandas as pd
 
+from vslp.acoustic.segment.ddk_events import ddk_event_rows, ddk_events_frame
 from vslp.acoustic.segment.pipeline import _frames, _plot, _segments
 from vslp.acoustic.segment.pipeline import segmentation_runs
 from vslp.acoustic.preprocess.stage import safe_stem
@@ -35,6 +36,7 @@ REVIEW_COLUMNS = [
     "automatic_plot_path", "source_sha256", "project_name", "run_id",
     "run_created_at_local", "run_created_at_utc", "source_file_path",
     "full_phonation_start", "full_phonation_end", "stable_region_start", "stable_region_end",
+    "stable_regions_json",
     "n_events", "n_syllables", "ddk_sequence_start_sec", "ddk_sequence_end_sec",
     "ddk_sequence_duration_sec", "ddk_rate_hz", "ctv_sec", "ddk_timing_source",
     "cycle_mean_sec", "cycle_sd_sec",
@@ -236,6 +238,7 @@ def _paths(output_root: str | Path) -> dict[str, Path]:
             "audit": tables / "audit_log.csv",
             "final_decisions": final / "final_segmentation_decisions.csv",
             "final_intervals": final / "final_segmentation_intervals.csv",
+            "final_ddk_events": final / "final_ddk_events.csv",
             "final_summary": final / "final_segmentation_summary.csv",
             "final_manifest": final / "final_manifest.json",
             "manifest": stage / "logs" / "stage_manifest.json"}
@@ -350,6 +353,7 @@ def initialize_segmentation_review(segmentation_summary_csv: str | Path,
                "full_phonation_end": auto.get("full_phonation_end", ""),
                "stable_region_start": auto.get("stable_region_start", ""),
                "stable_region_end": auto.get("stable_region_end", ""),
+               "stable_regions_json": auto.get("stable_regions_json", ""),
                "n_events": auto.get("n_events", ""),
                "n_syllables": auto.get("n_syllables", ""),
                "ddk_sequence_start_sec": auto.get("ddk_sequence_start_sec", ""),
@@ -801,6 +805,7 @@ def finalize_segmentation_review(output_root: str | Path) -> StageResult:
     if not persisted.fillna("").equals(decisions[REVIEW_COLUMNS].fillna("")):
         raise RuntimeError("Working review table differs from committed review actions")
     interval_rows: list[dict[str, Any]] = []
+    ddk_rows: list[dict[str, Any]] = []
     final_rows = []
     for _, row in decisions.iterrows():
         record = row.to_dict()
@@ -865,9 +870,27 @@ def finalize_segmentation_review(output_root: str | Path) -> StageResult:
                     "cycle_mean_sec": np.mean(cycles) if len(cycles) else "",
                     "cycle_sd_sec": np.std(cycles) if len(cycles) else "",
                     "ddk_timing_source": "reviewed_interval_midpoint"})
+        if row.segmentation_method == "ddk_energy" and primary:
+            # The F10 DDK features read reviewed syllable events from
+            # final_ddk_events.csv; write them from the frozen intervals.
+            ddk_rows.extend(ddk_event_rows(
+                x, sr, [(item.start_sec, item.end_sec) for item in primary],
+                recording_id=str(row.recording_id), file_name=str(row.file_name),
+                task_name=str(row.task_name),
+                reviewer=row.reviewer if isinstance(row.reviewer, str) else ""))
         if row.segmentation_method == "sustained_phonation":
             record["full_phonation_start"] = primary[0].start_sec
             record["full_phonation_end"] = primary[-1].end_sec
+            # Per-repetition stable windows survive review only where they still
+            # lie inside a final phonation interval (manual edits included).
+            try:
+                regions = json.loads(record.get("stable_regions_json") or "[]")
+            except (TypeError, ValueError):
+                regions = []
+            kept_regions = [[float(a), float(b)] for a, b in regions if any(
+                interval.start_sec <= float(a) < float(b) <= interval.end_sec
+                for interval in primary)]
+            record["stable_regions_json"] = json.dumps(kept_regions) if kept_regions else ""
             stable_start = record.get("stable_region_start", "")
             stable_end = record.get("stable_region_end", "")
             if not stable_start or not stable_end or not any(
@@ -927,6 +950,10 @@ def finalize_segmentation_review(output_root: str | Path) -> StageResult:
     frozen = pd.DataFrame(final_rows, columns=[*REVIEW_COLUMNS, "segments_csv_path"])
     intervals = pd.DataFrame(interval_rows, columns=INTERVAL_COLUMNS)
     _atomic_csv(intervals, paths["final_intervals"])
+    if ddk_rows:
+        _atomic_csv(ddk_events_frame(ddk_rows), paths["final_ddk_events"])
+    elif paths["final_ddk_events"].is_file():
+        paths["final_ddk_events"].unlink()  # stale events from an earlier freeze
     # The decisions file is the freeze marker. Write it last so an interrupted
     # materialization cannot appear finalized to downstream stages.
     _atomic_csv(frozen, paths["final_decisions"])

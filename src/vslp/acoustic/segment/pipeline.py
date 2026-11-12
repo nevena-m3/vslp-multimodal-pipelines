@@ -188,9 +188,9 @@ def _plot(path: Path, x: np.ndarray | None, sr: int | None, method: str,
             axes[0].axvspan(0, analysis_start, color="#aeb5bd", alpha=0.62)
         if analysis_end < duration:
             axes[0].axvspan(analysis_end, duration, color="#aeb5bd", alpha=0.62)
-    if stable:
-        axes[0].axvspan(stable.start_sec, stable.end_sec, color="#efaa33", alpha=0.4,
-                        label="Stable analysis region")
+    for number, item in enumerate(stable if isinstance(stable, list) else [stable] if stable else []):
+        axes[0].axvspan(item.start_sec, item.end_sec, color="#efaa33", alpha=0.4,
+                        label="Stable analysis region" if number == 0 else None)
     for item in breaks or []:
         axes[0].axvspan(item.start_sec, item.end_sec, color="#d94055", alpha=0.32)
     if nuclei:
@@ -279,15 +279,30 @@ def _method_result(x: np.ndarray, sr: int, cfg: SegmentationConfig, model: Any):
                                                   "ddk_sequence_duration_sec", "ddk_rate_hz", "ctv_sec",
                                                   "cycle_mean_sec", "cycle_sd_sec", "minimum_peak_threshold_ratio")})
         extras["threshold_perturbation_event_counts"] = json.dumps(result["threshold_perturbation_event_counts"])
-        extras.update({"boundary_source": "ddk_energy_envelope_threshold_crossings",
-                       "algorithm_version": "vslp-ddk-tanchip-energy-2", "processing_provenance": json.dumps(result["processing"])})
+        extras.update({"boundary_source": ("ddk_syllable_nuclei_closure_valleys"
+                                          if cfg.ddk.algorithm == "nuclei_v2"
+                                          else "ddk_energy_envelope_threshold_crossings"),
+                       "algorithm_version": result["processing"].get("algorithm", "vslp-ddk-tanchip-energy-2"),
+                       "processing_provenance": json.dumps(result["processing"], default=str)})
     elif cfg.method == PHONATION:
         result = segment_phonation(x, sr, cfg.phonation)
-        raw = [Interval(a / sr, b / sr) for a, b in [result["full_samples"]] if a is not None] if result["full_samples"] else []
+        regions = result.get("trial_regions_samples")
+        if regions and result["full_samples"]:
+            # Every /a/ repetition is kept, each with its own stable window
+            # (Nev, 2026-11-12: only one repetition reached the features).
+            raw = [Interval(item["full"][0] / sr, item["full"][1] / sr) for item in regions]
+            stables = [Interval(item["stable"][0] / sr, item["stable"][1] / sr)
+                       for item in regions if item["stable"]]
+        else:
+            raw = [Interval(a / sr, b / sr) for a, b in [result["full_samples"]] if a is not None] if result["full_samples"] else []
+            stables = []
         primary = raw
         if result["stable_samples"]:
             a, b = result["stable_samples"]
             stable = Interval(a / sr, b / sr)
+        if stables:
+            extras["stable_regions_json"] = json.dumps(
+                [[round(item.start_sec, 6), round(item.end_sec, 6)] for item in stables])
         breaks = [Interval(a / sr, b / sr) for a, b in result["internal_breaks_samples"]]
         trace = (result["frame_times_sec"], result["activity_rms"], result["activity_threshold"])
         extras.update({"full_phonation_start": primary[0].start_sec if primary else np.nan,
@@ -296,8 +311,11 @@ def _method_result(x: np.ndarray, sr: int, cfg: SegmentationConfig, model: Any):
                        "stable_region_end": stable.end_sec if stable else np.nan,
                        "n_internal_voice_breaks": len(breaks),
                        "boundary_source": "sustained_phonation_energy_episode",
-                       "algorithm_version": "vslp-phonation-1",
-                       "processing_provenance": json.dumps(result["processing"])})
+                       "n_phonation_trials": result.get("n_trials", ""),
+                       "algorithm_version": result["processing"].get("algorithm", "vslp-phonation-1"),
+                       "processing_provenance": json.dumps(result["processing"], default=str)})
+        if stables:
+            stable = stables  # plotted and listed for every repetition
     else:
         raise ValueError(f"Unsupported segmentation method: {cfg.method}")
     strict = erode_intervals(primary, cfg.strict_speech_edge_ms / 1000)
@@ -456,7 +474,8 @@ def run_acoustic_segmentation(preprocess_summary_csv: str | Path, output_root: s
             elif cfg.method == PHONATION:
                 item["phonation_regions_csv_path"] = _write_csv(pd.DataFrame([
                     {"region": "full_phonation", "start_sec": p.start_sec, "end_sec": p.end_sec} for p in intervals] +
-                    ([{"region": "stable_analysis", "start_sec": stable.start_sec, "end_sec": stable.end_sec}] if stable else []) +
+                    [{"region": "stable_analysis", "start_sec": item.start_sec, "end_sec": item.end_sec}
+                     for item in (stable if isinstance(stable, list) else [stable] if stable else [])] +
                     [{"region": "internal_break", "start_sec": p.start_sec, "end_sec": p.end_sec} for p in breaks]),
                     folders["tables"] / "interval_views" / f"{base}__phonation_regions.csv")
         except Exception as exc:  # Batch review retains every input.
