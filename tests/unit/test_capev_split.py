@@ -45,7 +45,8 @@ def test_cuts_fall_in_the_pauses_between_the_six_sentences():
     words = _timed(spoken)
     energy = _energy(17.0, [(a, b) for _t, a, b in spoken])
     spans = plan_split(words, energy, 0.01, 17.0)
-    assert [span["status"] for span in spans] == ["OK"] * 6
+    # "on a key": one word misheard, so S3 is written but marked partial.
+    assert [span["status"] for span in spans] == ["OK_PARTIAL_WORDS"] + ["OK"] * 5
     pauses = [(3.4, 4.4), (5.8, 6.3), (7.9, 9.5), (11.0, 11.6), (13.0, 14.2)]
     for span, (a, b) in zip(spans, pauses):
         assert a <= span["end"] <= b
@@ -97,3 +98,16 @@ def test_pause_is_measured_on_the_audio_not_on_stretched_word_times():
     for span, (_a, end_of_speech), (next_start, _b) in zip(spans, real_speech, real_speech[1:]):
         assert end_of_speech < span["end"] < next_start
         assert span["pause_after"] >= 0.4
+
+
+def test_cut_stays_clear_of_a_weak_sentence_onset():
+    # The /h/ of "How" is above the silence floor but below the pause threshold.
+    spoken = [("the blue spot is on the key again", 1.0, 3.0), ("how hard did he hit him", 4.0, 5.5),
+              ("we were away a year ago", 6.5, 8.0), ("we eat eggs every easter", 9.0, 10.5),
+              ("my mama makes lemon jam", 11.5, 13.0), ("peter will keep at the peak", 14.0, 15.5)]
+    energy = _energy(16.5, [(a, b) for _t, a, b in spoken])
+    energy[int(3.75 / 0.01):int(4.0 / 0.01)] = -55.0  # weak /h/ onset, 35 dB below speech
+    spans = plan_split(_timed(spoken), energy, 0.01, 16.5)
+    hit = spans[1]
+    assert 3.0 < hit["start"] <= 3.75 - 0.15
+    assert [span["status"] for span in spans] == ["OK"] * 6

@@ -114,18 +114,31 @@ def _pause_between(energy_db: np.ndarray, hop: float, start: float, end: float,
     segment = energy_db[a:b]
     if len(segment) == 0:
         return (start + end) / 2, 0.0
-    quiet = segment <= speech_db - PAUSE_BELOW_SPEECH_DB
-    best, best_length, run_start = None, 0, None
-    for index, flag in enumerate(np.r_[quiet, False]):
-        if flag and run_start is None:
-            run_start = index
-        elif not flag and run_start is not None:
-            if index - run_start > best_length:
-                best, best_length = (run_start, index), index - run_start
-            run_start = None
+    def longest_run(mask):
+        best, best_length, run_start = None, 0, None
+        for index, flag in enumerate(np.r_[mask, False]):
+            if flag and run_start is None:
+                run_start = index
+            elif not flag and run_start is not None:
+                if index - run_start > best_length:
+                    best, best_length = (run_start, index), index - run_start
+                run_start = None
+        return best, best_length
+
+    best, best_length = longest_run(segment <= speech_db - PAUSE_BELOW_SPEECH_DB)
     if best is None:
         return (a + int(np.argmin(segment)) + 0.5) * hop, 0.0
-    return (a + (best[0] + best[1]) / 2) * hop, best_length * hop
+    # Place the cut in the true silence: weak onsets (/h/ of "How", /w/ of
+    # "We") can sit below the pause threshold but above the silence floor,
+    # and the first test cut just before them (5 test files). The cut goes in
+    # the middle of the near-floor run, and at least 150 ms before its end.
+    pause = segment[best[0]:best[1]]
+    floor = float(np.percentile(pause, 10))
+    core, _length = longest_run(pause <= floor + 6.0)
+    lo, hi = (best[0] + core[0], best[0] + core[1]) if core else best
+    margin = round(0.15 / hop)
+    cut = min((lo + hi) / 2, max(lo, hi - margin))
+    return (a + cut) * hop, best_length * hop
 
 
 def plan_split(words: list[dict], energy_db: np.ndarray, hop: float, duration: float) -> list[dict]:
@@ -175,7 +188,8 @@ def plan_split(words: list[dict], energy_db: np.ndarray, hop: float, duration: f
             continue
         span["start"] = span.get("cut_before", max(0.0, span["first"] - OUTER_PAD_SEC))
         span["end"] = span.get("cut_after", min(duration, span["last"] + OUTER_PAD_SEC))
-        span["status"] = "OK"
+        span["status"] = ("OK" if span["words_found"] == span["words_expected"]
+                          else "OK_PARTIAL_WORDS")
     for left, right in zip(found, found[1:]):
         if left.get("pause_after", 1.0) < MIN_PAUSE_SEC:
             left["status"] = right["status"] = "NO_PAUSE_BETWEEN_SENTENCES"
@@ -255,7 +269,7 @@ def main(argv: list[str] | None = None) -> int:
         text = " ".join(word["word"].strip() for word in words)
         for span in spans:
             split_name = ""
-            if span["status"] == "OK":
+            if span["status"].startswith("OK"):
                 split_name = f"{source.stem}_{span['sentence']}.wav"
                 write_slice(source, out_dir / split_name, span["start"], span["end"])
             rows.append({"source_file": name, "split_file": split_name,
