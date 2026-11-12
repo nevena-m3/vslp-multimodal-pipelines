@@ -251,3 +251,10 @@ def test_rhythm_check_never_crashes_on_irregular_audio():
         x[a:a + int(rng.uniform(.05, .4) * sr)] += .3
     x += rng.standard_normal(len(x)).astype(np.float32) * 1e-3
     segment_ddk(x, sr, DDKConfig())
+
+
+def test_implausibly_slow_ddk_is_flagged_as_possible_wrong_task():
+    sr = 16000
+    x, _truth = ddk(sr=sr, syllables="ta" * 12, rate=1.1, lead=1.0, seed=8)
+    result = segment_ddk(x, sr, DDKConfig())
+    assert result["flags"].count("irregular_rhythm_check_task") == 1
