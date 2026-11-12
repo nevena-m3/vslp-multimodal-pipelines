@@ -22,8 +22,14 @@ python -m vslp.acoustic.alignment.batch --inventory WAVS.csv --zip WAVs.zip \
 Sentence tasks are read a different number of times by protocol and speaker
 (the 2026-11 pilot found 3 readings in protocol 1075 and 3 to ~8 for "Buy
 Bobby a puppy"), so their count is taken per recording. Speech-to-text only
-counts readings; MFA always aligns the canonical prompt text. A recording with
-no count, or no reading detected, is held back (`held_back_recordings.csv`).
+counts readings; MFA always aligns the canonical prompt text. Each speech
+chunk is transcribed separately; a chunk much longer than the file's typical
+one-reading chunk counts as several readings (repeats without a pause). If no
+reading is recognised, the whole file is tried once. A recording with speech
+(>= 1.5 s) but no recognised reading is aligned with the protocol's usual count
+and left to QC; only recordings with no count or no speech are held back
+(`held_back_recordings.csv`). With `--audio-dir` alone, only files present in
+that folder are considered.
 Pilots (`--limit-per-task`) draw one file per participant, spread over protocols.
 
 * Which recordings and prompts: `src/vslp/acoustic/alignment/batch_tasks.yaml`
