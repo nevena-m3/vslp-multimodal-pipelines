@@ -40,7 +40,7 @@ from dataclasses import asdict
 import numpy as np
 from scipy import ndimage, signal
 
-ALGORITHM_VERSION = "vslp-ddk-nuclei-2.2"
+ALGORITHM_VERSION = "vslp-ddk-nuclei-2.3"
 
 
 def _db(values: np.ndarray) -> np.ndarray:
@@ -77,6 +77,26 @@ def _burst_balance(band_source: np.ndarray, sr: int, start: int, peak: int) -> f
     mid = np.sum(spectrum[(freqs >= 1500) & (freqs < 2500)] ** 2)
     # One axis: /p/ (low) < /k/ (mid-compact) < /t/ (high).
     return float(_db(high + 0.5 * mid) - _db(low + 0.5 * mid))
+
+
+def _periodicity(band: np.ndarray, sr: int, center: int) -> float:
+    """Voicing strength (0-1) at a syllable peak: the normalised autocorrelation
+    maximum for F0 between 60 and 400 Hz over 40 ms. A DDK vowel is voiced;
+    rustle, breath and clicks are not."""
+    half = round(0.02 * sr)
+    segment = band[max(0, center - half):center + half]
+    segment = segment - np.mean(segment) if len(segment) else segment
+    if len(segment) < half or not np.any(segment):
+        return 0.0
+    spectrum = np.fft.rfft(segment, n=2 * len(segment))
+    correlation = np.fft.irfft(np.abs(spectrum) ** 2)[:len(segment)]
+    lo, hi = round(sr / 400), min(len(segment) - 1, round(sr / 60))
+    if hi <= lo or correlation[0] <= 0:
+        return 0.0
+    lags = np.arange(lo, hi)
+    # Unbiased normalisation, so longer lags are not penalised.
+    values = correlation[lo:hi] / correlation[0] * len(segment) / (len(segment) - lags)
+    return float(np.clip(np.max(values), 0.0, 1.0))
 
 
 def label_pataka(balances: list[float]) -> tuple[list[str], float]:
@@ -131,8 +151,10 @@ def _merge_split_syllables(contour, peaks, prominences, config):
                          for a, b in zip(peaks[:-1], peaks[1:])])
         closure = float(np.percentile(dips, 75))
         typical = float(np.percentile(gaps, 75))
+        cap = (min(config.split_dip_db, config.pataka_split_dip_db)
+               if getattr(config, "target", "") == "pataka" else config.split_dip_db)
         candidates = [index for index in range(len(gaps))
-                      if dips[index] < config.split_dip_db
+                      if dips[index] < cap
                       and dips[index] < config.split_dip_fraction * closure
                       and gaps[index] < typical]
         if candidates:
@@ -191,6 +213,12 @@ def segment_ddk_v2(x: np.ndarray, sr: int, config) -> dict:
             "prominence_db": float(properties["prominences"][number]),
             "closure_before_sample": int(centers[left_valley]),
         })
+        # Voicing anywhere in the syllable (the energy peak can sit on the
+        # release, right at the vowel onset).
+        span = (events[-1]["start_sample"], events[-1]["end_sample"])
+        events[-1]["periodicity"] = max(
+            _periodicity(band, sr, position) for position in
+            (int(centers[peak]), *(int(span[0] + f * (span[1] - span[0])) for f in (.25, .5, .75))))
     for event in events:
         if event["end_sample"] <= event["start_sample"]:
             event["end_sample"] = min(len(x), event["start_sample"] + round(0.01 * sr))
@@ -199,8 +227,10 @@ def segment_ddk_v2(x: np.ndarray, sr: int, config) -> dict:
     sequences: list[list[int]] = []
     if len(events):
         gaps = np.diff(nuclei)
-        median_gap = float(np.median(gaps)) if len(gaps) else np.inf
-        limit = max(config.break_gap_s, config.break_gap_factor * median_gap)
+        # Upper quartile, not median: split humps of slow PLS/ALS syllables
+        # shrink the median and broke one slow attempt into five (EPLS02).
+        typical_gap = float(np.percentile(gaps, 75)) if len(gaps) else np.inf
+        limit = max(config.break_gap_s, config.break_gap_factor * typical_gap)
         current = [0]
         for index, gap in enumerate(gaps, 1):
             if gap > limit:
@@ -252,9 +282,15 @@ def segment_ddk_v2(x: np.ndarray, sr: int, config) -> dict:
                     or length > config.long_event_factor * length_ref)
 
         trimmed = list(main)
-        while len(trimmed) >= 4 and weak(trimmed[0]):
+        while len(trimmed) >= 4 and (
+                weak(trimmed[0])
+                # Quiet bumps before a loud onset (rustle/breath ramp). Only at
+                # the start: at the end, quieter syllables are real fatigue.
+                or level_ref - events[trimmed[0]]["energy_peak_value"] > config.lead_in_level_db
+                or events[trimmed[0]]["periodicity"] < config.min_edge_periodicity):
             noise_edge.append(trimmed.pop(0))
-        while len(trimmed) >= 4 and weak(trimmed[-1]):
+        while len(trimmed) >= 4 and (weak(trimmed[-1]) or
+                                     events[trimmed[-1]]["periodicity"] < config.min_edge_periodicity):
             noise_edge.append(trimmed.pop())
         if noise_edge:
             sequences = [seq for seq in sequences if seq is not main]

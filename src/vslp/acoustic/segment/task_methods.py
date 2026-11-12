@@ -41,6 +41,9 @@ class DDKConfig:
     split_gap_fraction: float = 0.5  # used by v1-style callers only
     split_dip_fraction: float = 0.5  # split dip vs the speaker's typical closure depth
     split_dip_db: float = 10.0  # absolute cap; also must be < split_dip_fraction x closure depth
+    pataka_split_dip_db: float = 5.0  # pa-ta-ka closures are shallower: merge only tiny dips
+    min_edge_periodicity: float = 0.35  # unvoiced edge events (rustle, breath) are not syllables
+    lead_in_level_db: float = 10.0  # events before the onset this much quieter are a lead-in ramp
     irregular_cv: float = 0.6
     long_event_factor: float = 2.5
 

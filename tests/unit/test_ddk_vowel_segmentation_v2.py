@@ -202,3 +202,33 @@ def test_ddk_rejects_a_sustained_hum_before_the_sequence(sr):
     x = (x + 0.5 * hum[:len(x)]).astype(np.float32)
     result = segment_ddk(x, sr, DDKConfig())
     assert result["n_events"] == len(truth)
+
+
+def test_slow_irregular_ddk_stays_one_sequence():
+    # EPLS02-like: slow, irregular PLS syllables with split humps must not be
+    # broken into several sequences of which only one is kept.
+    sr = 16000
+    x, truth = ddk(sr=sr, syllables="pa" * 14, rate=1.6, rate_jitter=0.25, lead=2.0, seed=5)
+    x = x.astype(float)
+    t = np.arange(len(x)) / sr
+    for syllable in truth[::2]:
+        mid = (syllable["vowel_on"] + syllable["vowel_off"]) / 2
+        width = (syllable["vowel_off"] - syllable["vowel_on"]) * 0.18
+        a, b = int((mid - 3 * width) * sr), int((mid + 3 * width) * sr)
+        x[a:b] *= 1 - 0.45 * np.exp(-0.5 * ((t[a:b] - mid) / width) ** 2)
+    result = segment_ddk(x.astype(np.float32), sr, DDKConfig())
+    assert abs(result["ddk_sequence_start_sec"] - truth[0]["vowel_on"]) < .1
+    assert abs(result["ddk_sequence_end_sec"] - truth[-1]["vowel_off"]) < .1
+
+
+def test_quiet_lead_in_ramp_before_the_onset_is_rejected():
+    sr = 16000
+    rng = np.random.default_rng(3)
+    x, truth = ddk(sr=sr, syllables="ka" * 15, rate=5, lead=2.0, snr_db=45, seed=7)
+    x = x.astype(float)
+    loud = np.max(np.abs(x))
+    for k, start in enumerate(np.arange(0.9, 1.9, 0.2)):  # rising bumps 22 -> 14 dB down
+        n, a = int(0.05 * sr), int(start * sr)
+        x[a:a + n] += rng.standard_normal(n) * loud * 10 ** (-(22 - 2 * k) / 20) * np.hanning(n)
+    result = segment_ddk(x.astype(np.float32), sr, DDKConfig())
+    assert result["n_events"] == len(truth)
