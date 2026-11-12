@@ -265,6 +265,12 @@ def segment_phonation_v2(x: np.ndarray, sr: int, config) -> dict:
     return {
         "full_samples": full, "stable_samples": stable, "internal_breaks_samples": breaks,
         "phonation_episodes_samples": [(to_sample(a), to_sample(b)) for a, b in long_enough],
+        # Every repetition with its own stable window: features use all of them.
+        "trial_regions_samples": [
+            {"full": (trial["start_sample"], trial["end_sample"]),
+             "stable": ((to_sample(trial["stable"]["start"]), to_sample(trial["stable"]["end"]))
+                        if trial["stable"] and trial["stable"]["qualified"] else None)}
+            for trial in trials],
         "trials": trials, "n_trials": len(trials),
         "frame_times_sec": times, "activity_rms": intensity,
         "activity_threshold": activity_threshold, "f0_hz": f0,
