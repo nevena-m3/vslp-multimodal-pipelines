@@ -119,6 +119,8 @@ def rhythm_period(contour: np.ndarray, hop_s: float, min_s: float = 0.07,
     if not len(peaks):
         return np.nan
     heights = correlation[lo:hi][peaks]
+    if float(np.max(heights)) <= 0:
+        return np.nan  # no clear rhythm (irregular or wrong-task file)
     # The shortest lag that is nearly as strong as the best: the syllable
     # period, not a multiple of it (pa-ta-ka triplets, very regular controls
     # locked onto 2-3x the period in the real-data check).
@@ -377,8 +379,9 @@ def segment_ddk_v2(x: np.ndarray, sr: int, config) -> dict:
                 stop = min(b, start + window)
                 if stop - start >= round(1.0 / hop_s) or not np.isfinite(last):
                     last = rhythm_period(contour[start:stop], hop_s)
-                # a short remainder reuses the previous window's period
-                expected += (stop - start) * hop_s / last
+                # a short remainder reuses the previous window's period; a
+                # window with no clear rhythm makes the check unavailable
+                expected += (stop - start) * hop_s / last if np.isfinite(last) else np.nan
         tolerance = (config.pataka_rhythm_count_tolerance
                      if getattr(config, "target", "") == "pataka" else config.rhythm_count_tolerance)
         if np.isfinite(expected) and expected > 0:
