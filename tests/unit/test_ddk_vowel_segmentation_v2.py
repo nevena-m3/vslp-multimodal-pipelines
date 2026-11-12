@@ -232,3 +232,22 @@ def test_quiet_lead_in_ramp_before_the_onset_is_rejected():
         x[a:a + n] += rng.standard_normal(n) * loud * 10 ** (-(22 - 2 * k) / 20) * np.hanning(n)
     result = segment_ddk(x.astype(np.float32), sr, DDKConfig())
     assert result["n_events"] == len(truth)
+
+
+def test_rhythm_check_never_crashes_on_irregular_audio():
+    # Real-data check: an irregular PLS file and a wrong-task file crashed the
+    # rhythm estimate (no autocorrelation peak above zero).
+    from vslp.acoustic.segment.ddk_v2 import rhythm_period
+
+    t = np.arange(2000) * 0.005
+    contour = np.sin(2 * np.pi * t / 1.0) + 0.3 * np.sin(2 * np.pi * t / 0.1)
+    # every autocorrelation peak between 0.4 and 0.6 s is negative
+    assert np.isnan(rhythm_period(contour, 0.005, min_s=0.4, max_s=0.6))
+    rng = np.random.default_rng(0)
+    sr = 16000
+    x = np.zeros(12 * sr, dtype=np.float32)
+    for start in rng.uniform(0.5, 11, 25):  # irregular bursts, no rhythm
+        a = int(start * sr)
+        x[a:a + int(rng.uniform(.05, .4) * sr)] += .3
+    x += rng.standard_normal(len(x)).astype(np.float32) * 1e-3
+    segment_ddk(x, sr, DDKConfig())
