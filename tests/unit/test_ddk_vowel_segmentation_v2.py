@@ -258,3 +258,18 @@ def test_implausibly_slow_ddk_is_flagged_as_possible_wrong_task():
     x, _truth = ddk(sr=sr, syllables="ta" * 12, rate=1.1, lead=1.0, seed=8)
     result = segment_ddk(x, sr, DDKConfig())
     assert result["flags"].count("irregular_rhythm_check_task") == 1
+
+
+def test_segmentation_keeps_every_vowel_repetition_with_its_own_stable_window():
+    """Nev, 2026-11-12: the GUI kept only the steadiest repetition."""
+    from vslp.acoustic.segment.pipeline import SegmentationConfig, _method_result
+    from vslp.acoustic.segment.selection import PHONATION
+
+    sr = 16000
+    x = vowel(sr=sr, trials=((1.0, 4.5), (6.0, 9.5), (11.0, 14.5)), total=15.5)
+    result = _method_result(x, sr, SegmentationConfig(method=PHONATION), None)
+    primary, stable = result[0], result[9]
+    assert len(primary) == 3
+    assert len(stable) == 3
+    for interval, window in zip(primary, stable):
+        assert interval.start_sec <= window.start_sec < window.end_sec <= interval.end_sec

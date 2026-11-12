@@ -238,3 +238,47 @@ def test_sustained_trial_first_median_preserves_legacy_pooled_audit(tmp_path, mo
         assert np.isclose(values[feature_id], np.median(trials[feature_id]))
     assert not np.isclose(values.f0_mean_hz, legacy.f0_mean_hz)
     assert values.task_item == "a"
+
+
+def test_every_vowel_repetition_is_measured_and_summarised_by_median(tmp_path, monkeypatch):
+    """Nev, 2026-11-12: only one of several /a/ repetitions reached the features."""
+    sr = 16000
+    pitches = [150.0, 180.0, 210.0]  # one F0 per repetition
+    audio = np.zeros(sr * 11, dtype=np.float32)
+    bounds = [(0.5, 3.5), (4.0, 7.0), (7.5, 10.5)]
+    for (a, b), f0 in zip(bounds, pitches):
+        t = np.arange(int((b - a) * sr)) / sr
+        audio[int(a * sr):int(a * sr) + len(t)] = .2 * np.sin(2 * np.pi * f0 * t)
+    wav = tmp_path / "canonical.wav"
+    sf.write(wav, audio, sr, subtype="FLOAT")
+    final = tmp_path / "acoustic" / "003_segmentation_review" / "final"
+    final.mkdir(parents=True)
+    decisions = final / "final_segmentation_decisions.csv"
+    intervals = final / "final_segmentation_intervals.csv"
+    decisions.write_text("recording_id,final_decision\nr1,KEEP_AUTO\n", encoding="utf-8")
+    pd.DataFrame([{"recording_id": "r1", "segment_role": "speech", "start_sec": a,
+                   "end_sec": b} for a, b in bounds]).to_csv(intervals, index=False)
+    (tmp_path / "project_manifest.json").write_text(json.dumps({
+        "task_id": "sustained_a", "task_type": "Sustained phonation",
+        "task_name": "Sustained /a/", "run_id": "run01"}), encoding="utf-8")
+    stable = [(a + .5, a + 2.5) for a, _b in bounds]
+    kept = pd.DataFrame([{
+        "recording_id": "r1", "file_name": "vowel.wav",
+        "segmentation_method": "sustained_phonation",
+        "stable_region_start": stable[1][0], "stable_region_end": stable[1][1],
+        "stable_regions_json": json.dumps([list(item) for item in stable]),
+        "analysis_wav_path": str(wav), "source_sha256": "a" * 64,
+        "source_file_path": str(wav), "segmentation_run_id": "seg01",
+        "review_run_id": "rev01"}])
+    monkeypatch.setattr("vslp.acoustic.features.family01_stage.load_final_segmentation",
+                        lambda *_: kept)
+    cfg = FeatureExtractionConfig(selected_features=["f0_mean_hz"])
+    result = run_family01_stage(decisions, tmp_path, cfg, intervals, _select_registry(cfg))
+    values = pd.read_csv(result.summary_table)
+    assert abs(values.f0_mean_hz.iloc[0] - 180) < 2  # median of 150, 180, 210
+    tracks = pd.read_csv(tmp_path / "acoustic" / "005_features" / "tables" /
+                         "native_measurements" / "f0_tracks.csv")
+    assert set(tracks.trial_id) == {"repetition_01", "repetition_02", "repetition_03"}
+    for (a, b), trial in zip(stable, ["repetition_01", "repetition_02", "repetition_03"]):
+        times = tracks.loc[tracks.trial_id.eq(trial), "time_sec"]
+        assert a - .01 <= times.min() and times.max() <= b + .01

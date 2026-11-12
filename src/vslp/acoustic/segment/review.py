@@ -36,6 +36,7 @@ REVIEW_COLUMNS = [
     "automatic_plot_path", "source_sha256", "project_name", "run_id",
     "run_created_at_local", "run_created_at_utc", "source_file_path",
     "full_phonation_start", "full_phonation_end", "stable_region_start", "stable_region_end",
+    "stable_regions_json",
     "n_events", "n_syllables", "ddk_sequence_start_sec", "ddk_sequence_end_sec",
     "ddk_sequence_duration_sec", "ddk_rate_hz", "ctv_sec", "ddk_timing_source",
     "cycle_mean_sec", "cycle_sd_sec",
@@ -352,6 +353,7 @@ def initialize_segmentation_review(segmentation_summary_csv: str | Path,
                "full_phonation_end": auto.get("full_phonation_end", ""),
                "stable_region_start": auto.get("stable_region_start", ""),
                "stable_region_end": auto.get("stable_region_end", ""),
+               "stable_regions_json": auto.get("stable_regions_json", ""),
                "n_events": auto.get("n_events", ""),
                "n_syllables": auto.get("n_syllables", ""),
                "ddk_sequence_start_sec": auto.get("ddk_sequence_start_sec", ""),
@@ -879,6 +881,16 @@ def finalize_segmentation_review(output_root: str | Path) -> StageResult:
         if row.segmentation_method == "sustained_phonation":
             record["full_phonation_start"] = primary[0].start_sec
             record["full_phonation_end"] = primary[-1].end_sec
+            # Per-repetition stable windows survive review only where they still
+            # lie inside a final phonation interval (manual edits included).
+            try:
+                regions = json.loads(record.get("stable_regions_json") or "[]")
+            except (TypeError, ValueError):
+                regions = []
+            kept_regions = [[float(a), float(b)] for a, b in regions if any(
+                interval.start_sec <= float(a) < float(b) <= interval.end_sec
+                for interval in primary)]
+            record["stable_regions_json"] = json.dumps(kept_regions) if kept_regions else ""
             stable_start = record.get("stable_region_start", "")
             stable_end = record.get("stable_region_end", "")
             if not stable_start or not stable_end or not any(
