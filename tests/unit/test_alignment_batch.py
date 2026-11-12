@@ -206,7 +206,7 @@ def test_one_reading_spread_over_several_is_flagged(tmp_path):
     assert "long_pause_within_reading_requires_review" in flags
 
 
-def test_readings_from_chunks_handle_merged_and_split_readings():
+def test_readings_from_chunks_never_overcount():
     from vslp.acoustic.alignment.readings import estimate_readings
 
     prompt = "Buy Bobby a puppy."
@@ -215,7 +215,12 @@ def test_readings_from_chunks_handle_merged_and_split_readings():
     # chunk that Whisper wrote once.
     merged = [one(0.5, 1.2, "Buy Bobby a puppy"), one(2.2, 1.1, "Buy Bobby a puppy"),
               one(4.0, 4.6, "Buy Bobby a puppy")]
-    assert estimate_readings(merged, prompt)[0] == 6
+    # Duration never adds readings (pilot 4: it overcounted clean files);
+    # the undercount goes to review through structural QC instead.
+    assert estimate_readings(merged, prompt)[0] == 3
+    clean = [one(0.5, 1.2, "How hard did he hit him?"), one(2.4, 2.1, "How hard did he hit him?"),
+             one(5.0, 1.3, "How hard did he hit him?")]
+    assert estimate_readings(clean, "How hard did he hit him?")[0] == 3
     # A reading split across two chunks still counts once.
     split = [one(0.5, .6, "My mama"), one(1.3, .9, "makes lemon jam"),
              one(3.0, 1.5, "My mama makes lemon jam"), one(5.0, 1.5, "My mama makes lemon jam")]
@@ -231,3 +236,73 @@ def test_unrecognised_speech_falls_back_to_protocol_count_not_dropped(tmp_path):
     kept, held = batch.apply_reading_counts(fixed, readings)
     assert kept.file_name.tolist() == [names[0]] and kept.repetitions.tolist() == [3]
     assert held.file_name.tolist() == [names[1]]
+
+
+def test_extra_reading_squeezed_into_a_pause_is_flagged(tmp_path):
+    """Pilot 4, CNEC023: 3 readings aligned as 4; the 4th got ~0.08 s words in a pause."""
+    from vslp.acoustic.alignment.workbench import (create_job, inspect_audio_files, load_job,
+                                                   qc_job)
+
+    audio = tmp_path / "hit.wav"
+    sf.write(audio, np.full(9 * 16000, .1, dtype="float32"), 16000)
+    job_root = create_job(tmp_path / "ws", name="hit", audio_rows=inspect_audio_files([audio]),
+                          task_id="sentence_capev_hit", repetitions=4)
+    job = load_job(job_root)
+    labels = job["task_specification"]["alignment_transcript"].split()
+    times = []
+    for start, step in [(0.5, .25), (2.0, .25), (3.2, .08), (4.2, .25)]:
+        times += [(start + k * step, start + k * step + step * .9) for k in range(6)]
+    rows = ['File type = "ooTextFile"', 'Object class = "TextGrid"', 'item [1]:',
+            'name = "words"']
+    for index, ((a, b), label) in enumerate(zip(times, labels), 1):
+        rows += [f'intervals [{index}]:', f'xmin = {a}', f'xmax = {b}', f'text = "{label}"']
+    rows += ['item [2]:', 'name = "phones"']
+    for index, (a, b) in enumerate(times, 1):
+        rows += [f'intervals [{index}]:', f'xmin = {a}', f'xmax = {b}', 'text = "B"']
+    grid = job_root / "mfa_output" / "record_000001.TextGrid"
+    grid.write_text("\n".join(rows), encoding="utf-8")
+    job["recordings"][0]["textgrid_path"] = str(grid)
+    (job_root / "job_manifest.json").write_text(json.dumps(job), encoding="utf-8")
+    record = qc_job(job_root)["records"][0]
+    assert "reading_compressed_requires_review" in record["flags"]
+
+
+def test_failed_mfa_validation_lists_recordings_for_review(tmp_path):
+    class FailingPreflight(FakeProvider):
+        def preflight(self, corpus, profile, transcripts, logs):
+            return {"status": "FAILED", "version": "fake", "oov_words": []}
+
+    audio = tmp_path / "audio"
+    audio.mkdir()
+    name = "CNES01_1078_1_20240101_1048_BBP_SHORT.wav"
+    _wav(audio / name, 1)
+    readings = tmp_path / "r.csv"
+    pd.DataFrame({"file_name": [name], "readings": [3]}).to_csv(readings, index=False)
+    batch.run_batch(inventory_csv=None, workspace=tmp_path / "ws", audio_dir=str(audio),
+                    readings_csv=str(readings), provider=FailingPreflight(), plot="none",
+                    log=lambda *_: None)
+    table = pd.read_csv(tmp_path / "ws" / "batch_recordings.csv")
+    assert table.state.tolist() == ["NEEDS_REVIEW"]
+    assert table.qc_flags.str.startswith("alignment_not_completed").all()
+
+
+def test_reading_counts_are_recomputed_from_the_cache_without_speech_to_text(tmp_path, monkeypatch):
+    from vslp.acoustic.alignment import readings
+
+    audio = tmp_path / "audio"
+    audio.mkdir()
+    name = "CNES01_1075_1_20240101_1064_CAPEV_2.wav"
+    _wav(audio / name, 1)
+    out = tmp_path / "readings.csv"
+    chunk = {"start": 0.5, "end": 1.9, "text": "How hard did he hit him?"}
+    Path(str(out) + ".chunks.jsonl").write_text(json.dumps(
+        {"file_name": name, "chunks": [chunk, {**chunk, "start": 2.5, "end": 3.9}],
+         "whole_text": ""}) + "\n", encoding="utf-8")
+
+    def no_whisper(*args, **kwargs):
+        raise AssertionError("speech-to-text must not run for cached files")
+
+    monkeypatch.setattr(readings, "transcribe", no_whisper)
+    readings.main(["--audio-dir", str(audio), "--out", str(out)])
+    table = pd.read_csv(out)
+    assert table.readings.tolist() == [2]

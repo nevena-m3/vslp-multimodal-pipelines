@@ -207,6 +207,8 @@ def run_task(job_name: str, rows: pd.DataFrame, paths: dict[str, Path], workspac
                 "detail": prepared}
     preflight = preflight_job(job_root, provider)
     if preflight["status"] != "AVAILABLE":
+        log(f"[{job_name}] MFA validation FAILED ({preflight['status']}); its "
+            f"{len(audio_rows)} recordings are listed as NEEDS_REVIEW")
         return {"job": job_name, "status": f"PREFLIGHT_{preflight['status']}",
                 "job_root": str(job_root), "oov_words": preflight.get("oov_words", [])}
     log(f"[{job_name}] MFA validation passed; aligning (one corpus-level MFA run)...")
@@ -229,10 +231,19 @@ def run_task(job_name: str, rows: pd.DataFrame, paths: dict[str, Path], workspac
 
 def recording_table(job_root: str | Path, job_name: str) -> pd.DataFrame:
     job = load_job(job_root)
+    finished = {"AUTO_PASS", "NEEDS_REVIEW"}
+
+    def state_and_flags(row):
+        # A job that stopped early (failed MFA validation, corpus error) must
+        # not leave its recordings in a silent intermediate state (pilot 4).
+        if row["state"] in finished:
+            return row["state"], list(row.get("qc_flags", []))
+        return "NEEDS_REVIEW", [f"alignment_not_completed:{job.get('state', row['state'])}"]
+
     return pd.DataFrame([{
         "job": job_name, "file_name": row["recording"], "record_key": row["record_key"],
-        "speaker_id": row.get("speaker_id", ""), "state": row["state"],
-        "qc_flags": ";".join(row.get("qc_flags", [])),
+        "speaker_id": row.get("speaker_id", ""), "state": state_and_flags(row)[0],
+        "qc_flags": ";".join(state_and_flags(row)[1]),
         "aligned_words": row.get("aligned_word_count", 0),
         "expected_words": row.get("expected_provider_word_count", 0),
         "first_word_start_sec": row.get("first_aligned_word_start_sec"),

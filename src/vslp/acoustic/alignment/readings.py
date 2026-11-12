@@ -30,9 +30,6 @@ TASKS_PATH = Path(__file__).with_name("batch_tasks.yaml")
 
 READINGS_COLUMNS = ["file_name", "task_code", "task_id", "readings", "count_source",
                     "match_scores", "speech_chunks", "speech_sec", "transcript", "asr_model"]
-# A chunk this many times longer than a typical one-reading chunk holds
-# several readings spoken without a pause (pilot 3: 4 readings in one chunk).
-LONG_CHUNK_FACTOR = 1.6
 MATCH_THRESHOLD = 0.6
 # Speech chunks are transcribed one by one: Whisper on a whole recording tends
 # to write a repeated sentence only once (2026-11 pilot 2), which undercounts.
@@ -81,28 +78,20 @@ def count_readings(transcript: str, prompt: str, threshold: float = MATCH_THRESH
 
 
 def estimate_readings(chunks: list[dict], prompt: str) -> tuple[int, list[float], str]:
-    """Readings in one recording from its per-chunk transcripts and durations.
+    """Readings in one recording from its per-chunk transcripts.
 
-    1. Count readings in the joined chunk texts, so a reading split across two
-       chunks ("my mama | makes lemon jam") still counts once.
-    2. Whisper writes a sentence repeated without a pause only once. So a chunk
-       whose own text holds one reading, but which is at least 1.6 times as
-       long as the file's typical one-reading chunk, is counted as
-       round(duration / typical) readings.
+    Readings are counted in the joined chunk texts, so a reading split across
+    two chunks ("my mama | makes lemon jam") still counts once.
+
+    Chunk duration is deliberately NOT used to add readings. In pilot 4 a
+    duration rule overcounted clean 3-reading files (a chunk that also held a
+    pause or a breath looked like two readings), and MFA then squeezed the
+    extra copy into a pause: a false AUTO_PASS. An undercount is safe by
+    comparison, because structural QC sends it to review (long word spans).
     """
     joined = " | ".join(chunk["text"] for chunk in chunks if chunk["text"])
     scores = count_readings(joined, prompt)
-    singles = [chunk["end"] - chunk["start"] for chunk in chunks
-               if len(count_readings(chunk["text"], prompt)) == 1]
-    extra = 0
-    if len(singles) >= 2:
-        typical = float(sorted(singles)[len(singles) // 2])
-        for chunk in chunks:
-            duration = chunk["end"] - chunk["start"]
-            if (len(count_readings(chunk["text"], prompt)) == 1
-                    and duration >= LONG_CHUNK_FACTOR * typical):
-                extra += round(duration / typical) - 1
-    return len(scores) + extra, scores, "chunks+duration" if extra else "chunks"
+    return len(scores), scores, "chunks"
 
 
 def _prompt_text(task_id: str) -> str:
@@ -151,7 +140,7 @@ def load_16k(path: Path):
 
 
 def transcribe(paths: list[Path], model_name: str, model_dir: str | None, log=print,
-               prompts: dict | None = None) -> dict:
+               prompts: dict | None = None, on_result=None) -> dict:
     """Transcribe each speech chunk separately (and the whole file as a fallback)."""
     from faster_whisper import WhisperModel  # only in the vslp-whisper environment
     from faster_whisper.vad import VadOptions, get_speech_timestamps
@@ -181,6 +170,8 @@ def transcribe(paths: list[Path], model_name: str, model_dir: str | None, log=pr
         if prompt and chunks and estimate_readings(chunks, prompt)[0] == 0:
             result["whole_text"] = text_of(audio)
         results[path.name] = result
+        if on_result is not None:
+            on_result(path, result)
         log(f"{number}/{len(paths)} {path.name}: {len(chunks)} speech chunks")
     return results
 
@@ -202,18 +193,33 @@ def main(argv: list[str] | None = None) -> int:
         if spec and spec.get("count_readings"):
             wanted.append((path, match["code"], spec["task_id"]))
     out = Path(args.out)
+    # Whisper output per file is cached as it is produced (one JSON line per
+    # file), so a long run can resume after an interruption and every count
+    # can be recomputed offline when the counting rule changes.
+    cache_path = Path(str(out) + ".chunks.jsonl")
+    cache: dict[str, dict] = {}
+    if cache_path.is_file():
+        for line in cache_path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                item = json.loads(line)
+                cache[item["file_name"]] = {"chunks": item["chunks"],
+                                            "whole_text": item.get("whole_text", "")}
+    todo = [item for item in wanted if item[0].name not in cache]
+    print(f"{len(wanted)} recordings need a reading count; {len(todo)} not yet transcribed")
+    prompts = {item[0].name: _prompt_text(item[2]) for item in wanted}
+
+    def remember(path: Path, result: dict) -> None:
+        cache[path.name] = result
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with cache_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({"file_name": path.name, **result}) + "\n")
+
+    if todo:
+        transcribe([item[0] for item in todo], args.model, args.model_dir,
+                   prompts=prompts, on_result=remember)
     rows: list[dict] = []
-    if out.is_file():
-        with out.open(encoding="utf-8", newline="") as handle:
-            rows = list(csv.DictReader(handle))
-    done = {row["file_name"] for row in rows}
-    todo = [item for item in wanted if item[0].name not in done]
-    print(f"{len(wanted)} recordings need a reading count; {len(todo)} not yet done")
-    prompts = {item[0].name: _prompt_text(item[2]) for item in todo}
-    texts = (transcribe([item[0] for item in todo], args.model, args.model_dir,
-                        prompts=prompts) if todo else {})
-    for path, code, task_id in todo:
-        result = texts[path.name]
+    for path, code, task_id in wanted:
+        result = cache[path.name]
         prompt = prompts[path.name]
         count, scores, source = estimate_readings(result["chunks"], prompt)
         if count == 0 and result["whole_text"]:

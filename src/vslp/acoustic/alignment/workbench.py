@@ -33,6 +33,9 @@ WORD_SPAN_REVIEW_SEC = 2.0
 # apart mean MFA spread one reading across several (seen in the 2026-11 pilot).
 WITHIN_READING_PAUSE_REVIEW_SEC = 1.0
 SHORT_PROMPT_MAX_WORDS = 15
+# One reading lasting under this fraction of the median reading in the same
+# recording is an extra copy squeezed into a pause, not a real reading.
+COMPRESSED_READING_FRACTION = 0.4
 
 
 def _now() -> str:
@@ -417,6 +420,13 @@ def qc_job(root: str | Path) -> dict:
                         if gaps.size and float(gaps.max()) > WITHIN_READING_PAUSE_REVIEW_SEC:
                             flags.append("long_pause_within_reading_requires_review")
                             break
+                    spans = [float(ends[first + per_reading - 1] - starts[first])
+                             for first in range(0, len(words), per_reading)]
+                    if len(spans) >= 2 and min(spans) < (COMPRESSED_READING_FRACTION
+                                                         * float(sorted(spans)[len(spans) // 2])):
+                        # MFA squeezed one copy of the sentence into a pause:
+                        # more readings were aligned than were spoken (pilot 4).
+                        flags.append("reading_compressed_requires_review")
                 if actual != reviewed_expected:
                     flags.append("reviewed_transcript_alignment_mismatch" if spoken else
                                  "transcript_token_mismatch")

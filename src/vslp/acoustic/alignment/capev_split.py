@@ -53,7 +53,8 @@ SENTENCES = [  # (file-name suffix, registered task_id, prompt text)
 ]
 WORD_MATCH = 0.5        # word similarity that counts as the same word
 MIN_FOUND_FRACTION = 0.5  # share of a sentence's words that must be matched
-MIN_PAUSE_SEC = 0.08    # shorter gaps between sentences are "no pause"
+MIN_PAUSE_SEC = 0.10    # shorter silences between sentences are "no pause"
+PAUSE_BELOW_SPEECH_DB = 25.0  # a pause frame is this far below the sentences' speech level
 OUTER_PAD_SEC = 0.5     # kept before the first and after the last sentence
 SPLIT_COLUMNS = ["source_file", "split_file", "sentence", "task_id", "status",
                  "start_sec", "end_sec", "words_found", "words_expected", "pause_after_sec",
@@ -97,17 +98,24 @@ def align_words(said: list[str], target: list[str]) -> list[int | None]:
     return result
 
 
-def _quietest_point(energy_db: np.ndarray, hop: float, start: float, end: float) -> tuple[float, float]:
-    """Middle of the longest stretch within 6 dB of the minimum between start and end.
+def _pause_between(energy_db: np.ndarray, hop: float, start: float, end: float,
+                   speech_db: float) -> tuple[float, float]:
+    """Cut point and pause length between two sentences, measured on the audio.
 
-    Returns (cut time, length of that quiet stretch).
+    Whisper stretches a word's end over the following silence, so word times
+    cannot measure a pause (CAPE-V test: real 0.4-1 s pauses read as 0.02 s).
+    Here the pause is the longest run of frames at least
+    ``PAUSE_BELOW_SPEECH_DB`` below the sentences' speech level; the cut goes
+    in its middle. Without such a run, the cut goes at the quietest frame and
+    the pause length is 0.
     """
-    a, b = int(start / hop), max(int(start / hop) + 1, int(np.ceil(end / hop)))
+    a = max(0, int(start / hop))
+    b = min(len(energy_db), max(a + 1, int(np.ceil(end / hop))))
     segment = energy_db[a:b]
     if len(segment) == 0:
         return (start + end) / 2, 0.0
-    quiet = segment <= float(np.min(segment)) + 6.0
-    best, best_length, run_start = (0, 0), 0, None
+    quiet = segment <= speech_db - PAUSE_BELOW_SPEECH_DB
+    best, best_length, run_start = None, 0, None
     for index, flag in enumerate(np.r_[quiet, False]):
         if flag and run_start is None:
             run_start = index
@@ -115,8 +123,9 @@ def _quietest_point(energy_db: np.ndarray, hop: float, start: float, end: float)
             if index - run_start > best_length:
                 best, best_length = (run_start, index), index - run_start
             run_start = None
-    middle = (best[0] + best[1]) / 2
-    return (a + middle) * hop, best_length * hop
+    if best is None:
+        return (a + int(np.argmin(segment)) + 0.5) * hop, 0.0
+    return (a + (best[0] + best[1]) / 2) * hop, best_length * hop
 
 
 def plan_split(words: list[dict], energy_db: np.ndarray, hop: float, duration: float) -> list[dict]:
@@ -135,20 +144,30 @@ def plan_split(words: list[dict], energy_db: np.ndarray, hop: float, duration: f
                 and matched[j] is not None]
         expected = sum(1 for owner_sentence in sentence_of if owner_sentence == number)
         found = len(hits) >= MIN_FOUND_FRACTION * expected
+        first_word = words[owner[min(hits)]] if found else None
+        last_word = words[owner[max(hits)]] if found else None
         spans.append({
             "sentence": suffix, "task_id": task_id, "words_found": len(hits),
             "words_expected": expected, "found": found,
-            "first": float(words[owner[min(hits)]]["start"]) if found else None,
-            "last": float(words[owner[max(hits)]]["end"]) if found else None})
+            "first": float(first_word["start"]) if found else None,
+            "last": float(last_word["end"]) if found else None,
+            # The pause is searched from the start of the last word to the end
+            # of the next sentence's first word: Whisper stretches word edges
+            # into the silence, so the silence can lie inside those words.
+            "first_mid": float(first_word["end"]) if found else None,
+            "last_mid": max(float(first_word["start"]), float(last_word["start"]) - 0.3)
+            if found else None})
     # Cuts between consecutive found sentences, in the quietest stretch.
     found = [span for span in spans if span["found"]]
     for left, right in zip(found, found[1:]):
-        if right["first"] - left["last"] < MIN_PAUSE_SEC:
-            left["pause_after"] = max(0.0, right["first"] - left["last"])
-            cut = (left["last"] + right["first"]) / 2
+        lo, hi = left["first"], right["last"]
+        inside = energy_db[int(lo / hop):max(int(lo / hop) + 1, int(hi / hop))]
+        speech_db = float(np.percentile(inside, 90)) if len(inside) else float(np.max(energy_db))
+        if right["first_mid"] <= left["last_mid"]:
+            left["pause_after"], cut = 0.0, (left["last_mid"] + right["first_mid"]) / 2
         else:
-            cut, length = _quietest_point(energy_db, hop, left["last"], right["first"])
-            left["pause_after"] = length
+            cut, left["pause_after"] = _pause_between(energy_db, hop, left["last_mid"],
+                                                      right["first_mid"], speech_db)
         left["cut_after"] = right["cut_before"] = cut
     for span in spans:
         if not span["found"]:

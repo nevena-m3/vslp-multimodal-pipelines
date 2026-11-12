@@ -83,3 +83,17 @@ def test_sentence_wavs_are_exact_copies_and_map_to_their_prompts(tmp_path):
     inventory = batch.build_inventory(None, names)
     assert inventory.batch_role.eq("fixed_prompt").all()
     assert inventory.task_id.tolist() == [task for _s, task, _t in SENTENCES]
+
+
+def test_pause_is_measured_on_the_audio_not_on_stretched_word_times():
+    # CAPE-V test, real files: Whisper ended each last word at the next
+    # sentence's start, although the audio had a 0.6 s silence there.
+    spoken = [("the blue spot is on the key again", 1.0, 3.6), ("how hard did he hit him", 3.6, 5.6),
+              ("we were away a year ago", 5.6, 7.6), ("we eat eggs every easter", 7.6, 9.6),
+              ("my mama makes lemon jam", 9.6, 11.6), ("peter will keep at the peak", 11.6, 13.6)]
+    real_speech = [(1.0, 3.0), (3.6, 5.0), (5.6, 7.0), (7.6, 9.0), (9.6, 11.0), (11.6, 13.0)]
+    spans = plan_split(_timed(spoken), _energy(14.5, real_speech), 0.01, 14.5)
+    assert [span["status"] for span in spans] == ["OK"] * 6
+    for span, (_a, end_of_speech), (next_start, _b) in zip(spans, real_speech, real_speech[1:]):
+        assert end_of_speech < span["end"] < next_start
+        assert span["pause_after"] >= 0.4
