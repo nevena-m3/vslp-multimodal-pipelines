@@ -26,6 +26,8 @@ class DDKConfig:
     min_snr_db: float = 12.0  # syllable peaks must clear the noise floor by this much
     weak_edge_level_db: float = 12.0  # edge events this far below the median syllable...
     weak_edge_prominence_fraction: float = 0.5  # ...and this much less modulated are noise
+    edge_low_prominence_fraction: float = 0.3  # barely modulated edge events...
+    edge_low_prominence_level_db: float = 6.0  # ...that are also quieter are noise
     noise_edge_level_db: float = 25.0  # edge events this far below the median are always noise
     floor_below_p95_db: float = 35.0
     min_ioi_ms: float = 70.0
@@ -34,11 +36,11 @@ class DDKConfig:
     missed_syllable_factor: float = 2.2
     min_syllables: int = 8
     low_modulation_db: float = 6.0
-    min_pataka_label_fit: float = 0.0
+    min_pataka_label_fit: float = 0.5
     edge_gap_factor: float = 2.5
     split_gap_fraction: float = 0.5  # used by v1-style callers only
     split_dip_fraction: float = 0.5  # split dip vs the speaker's typical closure depth
-    split_dip_db: float = 6.0
+    split_dip_db: float = 10.0  # absolute cap; also must be < split_dip_fraction x closure depth
     irregular_cv: float = 0.6
     long_event_factor: float = 2.5
 

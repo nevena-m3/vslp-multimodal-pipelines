@@ -40,7 +40,7 @@ from dataclasses import asdict
 import numpy as np
 from scipy import ndimage, signal
 
-ALGORITHM_VERSION = "vslp-ddk-nuclei-2.1"
+ALGORITHM_VERSION = "vslp-ddk-nuclei-2.2"
 
 
 def _db(values: np.ndarray) -> np.ndarray:
@@ -105,7 +105,9 @@ def label_pataka(balances: list[float]) -> tuple[list[str], float]:
 
     scores = [fit(phase) for phase in range(3)]
     best = int(np.argmax(scores))
-    phase = best if scores[best] > scores[0] + 0.5 else 0
+    # The burst evidence is weak (labels not yet validated against listening),
+    # so the "pa" start is kept unless another phase fits much better.
+    phase = best if scores[best] > scores[0] + 1.0 else 0
     return [order[(index + phase) % 3] for index in range(len(values))], float(scores[phase])
 
 
@@ -233,13 +235,21 @@ def segment_ddk_v2(x: np.ndarray, sr: int, config) -> dict:
         levels = np.array([events[index]["energy_peak_value"] for index in main])
         proms = np.array([events[index]["prominence_db"] for index in main])
         level_ref, prom_ref = float(np.median(levels)), float(np.median(proms))
+        length_ref = float(np.median([events[index]["end_sample"] - events[index]["start_sample"]
+                                      for index in main]))
 
         def weak(index: int) -> bool:
             event = events[index]
             drop = level_ref - event["energy_peak_value"]
+            length = event["end_sample"] - event["start_sample"]
             return (drop > config.noise_edge_level_db
                     or (drop > config.weak_edge_level_db
-                        and event["prominence_db"] < config.weak_edge_prominence_fraction * prom_ref))
+                        and event["prominence_db"] < config.weak_edge_prominence_fraction * prom_ref)
+                    # barely modulated and somewhat quieter: rustle/breath ramp
+                    or (drop > config.edge_low_prominence_level_db
+                        and event["prominence_db"] < config.edge_low_prominence_fraction * prom_ref)
+                    # one long sustained sound (hum, "uh") before or after the sequence
+                    or length > config.long_event_factor * length_ref)
 
         trimmed = list(main)
         while len(trimmed) >= 4 and weak(trimmed[0]):
@@ -289,6 +299,9 @@ def segment_ddk_v2(x: np.ndarray, sr: int, config) -> dict:
             flags.append("multiple_ddk_sequences")
         if len(cycles) > 3 and np.std(cycles) / np.mean(cycles) > config.irregular_cv:
             flags.append("irregular_rhythm_check_task")
+        if len(cycles) > 5 and np.mean(cycles < 0.6 * np.percentile(cycles, 75)) > 0.3:
+            # Many short gaps among normal ones: syllables split into two humps.
+            flags.append("possible_split_syllables")
         lengths = np.array([(b - a) / sr for a, b in intervals])
         if len(lengths) > 3 and np.max(lengths) > config.long_event_factor * np.median(lengths):
             flags.append("possible_merged_syllables")

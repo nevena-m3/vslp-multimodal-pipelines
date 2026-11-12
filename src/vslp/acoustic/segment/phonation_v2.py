@@ -32,7 +32,7 @@ from dataclasses import asdict
 import numpy as np
 from scipy import ndimage
 
-ALGORITHM_VERSION = "vslp-phonation-voicing-2.1"
+ALGORITHM_VERSION = "vslp-phonation-voicing-2.2"
 
 
 def _runs(mask: np.ndarray) -> list[tuple[int, int]]:
@@ -78,7 +78,22 @@ def _trial_reference(f0, intensity, a, b):
 
 
 def _semitones_from(values, reference):
-    return np.abs(12 * np.log2(values / reference))
+    """Pitch distance in semitones, ignoring whole-octave jumps.
+
+    Praat's tracker often halves or doubles F0 on a steady vowel (real-data
+    check: TCV005 read 260 Hz as 130 Hz for 5 s). Those are tracker errors,
+    not a change of sound, so distances are folded by octaves. A hum at a
+    different pitch is told apart by its level instead (see ``_trim_trial``).
+    """
+    distance = 12 * np.log2(np.asarray(values, dtype=float) / reference)
+    return np.abs(distance - 12 * np.round(distance / 12))
+
+
+def _octave_folded(pitch: np.ndarray) -> np.ndarray:
+    """Fold octave jumps onto the median, so tracker errors do not look unsteady."""
+    reference = np.median(pitch)
+    distance = 12 * np.log2(pitch / reference)
+    return reference * 2 ** ((distance - 12 * np.round(distance / 12)) / 12)
 
 
 def _trim_trial(f0, intensity, a, b, config):
@@ -93,8 +108,13 @@ def _trim_trial(f0, intensity, a, b, config):
         return a, b
 
     def good(frame: int) -> bool:
-        return (np.isfinite(f0[frame]) and intensity[frame] >= peak - 20.0
-                and _semitones_from(f0[frame], reference) <= config.max_f0_shift_semitones)
+        if not np.isfinite(f0[frame]) or intensity[frame] < peak - 20.0:
+            return False
+        # Off the vowel's pitch AND clearly weaker: hum or creak, not the vowel.
+        off_pitch = abs(12 * np.log2(f0[frame] / reference)) > config.max_f0_shift_semitones
+        weak_or_folded = (intensity[frame] < peak - config.stable_level_below_peak_db
+                          or _semitones_from(f0[frame], reference) > config.max_f0_shift_semitones)
+        return not (off_pitch and weak_or_folded)
 
     while a < b and not good(a):
         a += 1
@@ -125,7 +145,8 @@ def _stable_window(f0, intensity, a, b, config):
     for start in range(left, right - length + 1, max(1, round(50 / config.hop_ms))):
         pitch = f0[start:start + length]
         ok = np.isfinite(pitch)
-        semitones = 12 * np.log2(pitch[ok] / np.median(pitch[ok])) if ok.sum() > 2 else []
+        folded = _octave_folded(pitch[ok]) if ok.sum() > 2 else pitch[ok]
+        semitones = 12 * np.log2(folded / np.median(folded)) if ok.sum() > 2 else []
         score = ((float(np.std(semitones)) if len(semitones) else 10.0)
                  + 0.5 * float(np.std(intensity[start:start + length])) + 10 * (1 - ok.mean()))
         gaps = [end - begin for begin, end in _runs(~ok)]
@@ -139,6 +160,9 @@ def _stable_window(f0, intensity, a, b, config):
             best, best_score, best_ok = start, score, qualified
     pitch = f0[best:best + length]
     ok = np.isfinite(pitch)
+    if ok.sum() > 2:
+        pitch = pitch.copy()
+        pitch[ok] = _octave_folded(pitch[ok])
     return {"start": best, "end": best + length, "score": best_score, "qualified": best_ok,
             "f0_median_hz": float(np.median(pitch[ok])) if ok.any() else np.nan,
             "f0_sd_semitones": float(np.std(12 * np.log2(pitch[ok] / np.median(pitch[ok]))))
@@ -178,8 +202,13 @@ def segment_phonation_v2(x: np.ndarray, sr: int, config) -> dict:
     min_frames = round(config.min_phonation_ms / config.hop_ms)
     long_enough = [pair for pair in episodes if pair[1] - pair[0] >= min_frames]
     trials = []
-    long_enough = [_trim_trial(f0, intensity, a, b, config) for a, b in long_enough]
-    long_enough = [pair for pair in long_enough if pair[1] - pair[0] >= min_frames]
+    # Truncation is judged on the untrimmed voicing, before weak/hum frames are cut.
+    reaches_end = bool(long_enough) and len(x) - to_sample(long_enough[-1][1]) < round(0.05 * sr)
+    trimmed = [_trim_trial(f0, intensity, a, b, config) for a, b in long_enough]
+    kept = [index for index, pair in enumerate(trimmed) if pair[1] - pair[0] >= min_frames]
+    last_untrimmed = len(long_enough) - 1
+    long_enough = [trimmed[index] for index in kept]
+    ends_at_file_end = [index == last_untrimmed and reaches_end for index in kept]
     for number, (a, b) in enumerate(long_enough, 1):
         window = _stable_window(f0, intensity, a, b, config)
         trials.append({"trial_index": number, "start_sample": to_sample(a),
@@ -230,7 +259,7 @@ def segment_phonation_v2(x: np.ndarray, sr: int, config) -> dict:
                 flags.append("f0_jump_within_trial")
         if chosen["voiced_fraction"] < 0.6:
             flags.append("not_a_steady_vowel_check_task")
-        if len(x) - full[1] < round(0.05 * sr):
+        if len(x) - full[1] < round(0.05 * sr) or ends_at_file_end[chosen["trial_index"] - 1]:
             flags.append("phonation_truncated_at_file_end")
     activity_threshold = np.full_like(intensity, loudest - config.intensity_range_db)
     return {

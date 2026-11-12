@@ -169,3 +169,36 @@ def test_vowel_stable_window_avoids_low_level_hum_at_another_pitch(sr):
     stable = np.array(result["stable_samples"]) / sr
     assert 1.5 < full[0] < 1.95 and 4.4 < full[1] < 4.9
     assert full[0] <= stable[0] and stable[1] <= full[1]
+
+
+def test_vowel_octave_tracking_errors_are_not_trimmed_as_off_pitch():
+    # Real-data check, TCV005: Praat read a steady 260 Hz vowel as 130 Hz for
+    # its middle 5 s. The whole vowel must stay, up to the file end.
+    from vslp.acoustic.segment.phonation_v2 import _stable_window, _trim_trial
+
+    config = PhonationConfig()
+    f0 = np.full(700, 260.0)
+    f0[110:580] = 130.0
+    intensity = np.full(700, -20.0)
+    assert _trim_trial(f0, intensity, 0, 700, config) == (0, 700)
+    window = _stable_window(f0, intensity, 0, 700, config)
+    assert window["qualified"] and window["f0_sd_semitones"] < 0.5
+
+
+def test_vowel_weak_hum_at_another_pitch_is_trimmed():
+    from vslp.acoustic.segment.phonation_v2 import _trim_trial
+
+    f0 = np.r_[np.full(300, 210.0), np.full(300, 100.0)]
+    intensity = np.r_[np.full(300, -20.0), np.full(300, -38.0)]
+    a, b = _trim_trial(f0, intensity, 0, 600, PhonationConfig())
+    assert a == 0 and 295 <= b <= 300
+
+
+@pytest.mark.parametrize("sr", [16000, 44100])
+def test_ddk_rejects_a_sustained_hum_before_the_sequence(sr):
+    x, truth = ddk(sr=sr, syllables="pa" * 15, rate=4, lead=2.5, snr_db=35, seed=2)
+    x = x.astype(float)
+    hum = vowel(sr=sr, trials=((0.8, 1.9),), total=len(x) / sr, f0=110, seed=6).astype(float)
+    x = (x + 0.5 * hum[:len(x)]).astype(np.float32)
+    result = segment_ddk(x, sr, DDKConfig())
+    assert result["n_events"] == len(truth)
