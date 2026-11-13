@@ -43,10 +43,15 @@ from .mfa_provider import MfaProfile, MfaProvider, dictionary_oovs, parse_textgr
 
 EXAMINER = "<unk>"
 # "5A", "5 A.", "10b", "number 6", "#7": item numbers the examiner reads out.
-# A spaced letter counts only before punctuation ("5 A."), so the article in
-# "5 a boy ran" is kept.
+_NUMBER_WORDS = ("one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|"
+                 "thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty")
+# Examiner item labels: "5A", "5 A.", "10b", "number 6", "#7", and Whisper's
+# spelled forms "five A.", "five-a", "elevenee". A spaced letter counts only
+# before punctuation, so the article in "5 a boy ran" is kept.
 EXAMINER_PATTERN = re.compile(
-    r"(?:\bnumber\s+|#\s*)?\b\d{1,2}(?:[a-d]\b|\s[a-d](?=[.,:;)]))?\.?",
+    r"(?:\bnumber\s+|#\s*)\d{1,2}[a-d]?\b\.?"
+    r"|\b\d{1,2}(?:[a-d]\b|\s[a-d](?=[.,:;)]))\.?"
+    rf"|\b(?:{_NUMBER_WORDS})(?:-?(?:a|ay|ee+)\b|\s(?:a|ay)(?=[.,:;)]))\.?",
     flags=re.IGNORECASE)
 WORD_SPAN_REVIEW_SEC = 2.0
 LOW_ASR_CONFIDENCE = -0.6  # Whisper average log-probability per token
@@ -74,8 +79,18 @@ def transcript_text(data) -> str:
 
 
 def mfa_transcript(text: str, examiner: str = "unk") -> tuple[str, list[str]]:
-    """Text for the .lab file and the reasons it cannot be used ([] if fine)."""
+    """Text for the .lab file and the reasons it cannot be used ([] if fine).
+
+    The examiner usually opens with a spoken preamble (date, participant ID,
+    visit), which is not part of the reading. Everything before the first item
+    label ("5A") is replaced by one ``<unk>`` (or dropped with ``drop``), so its
+    numbers neither block the recording nor stretch the first sentence.
+    """
     marker = "\x00"
+    first = EXAMINER_PATTERN.search(text)
+    preamble = bool(first and text[:first.start()].strip())
+    if first:
+        text = text[first.start():]
     marked = EXAMINER_PATTERN.sub(f" {marker} ", text)
     pieces = []
     for part in marked.split(marker):
@@ -84,18 +99,18 @@ def mfa_transcript(text: str, examiner: str = "unk") -> tuple[str, list[str]]:
         except ValueError:
             return "", ["transcript_contains_number_requires_review"]
     joiner = f" {EXAMINER} " if examiner == "unk" else " "
-    lab = " ".join(joiner.join(pieces).split())
-    # No examiner token at the very start or end: nothing to absorb there
-    # that leading/trailing silence does not already cover.
-    tokens = lab.split()
+    tokens = joiner.join(pieces).split()
+    # A label at the very start or end has nothing to absorb (silence covers
+    # it); a dropped preamble does: the examiner was talking there.
     while tokens and tokens[0] == EXAMINER:
         tokens.pop(0)
     while tokens and tokens[-1] == EXAMINER:
         tokens.pop()
-    lab = " ".join(tokens)
-    if not [token for token in tokens if token != EXAMINER]:
+    if not tokens:
         return "", ["empty_transcript"]
-    return lab, []
+    if preamble and examiner == "unk":
+        tokens.insert(0, EXAMINER)
+    return " ".join(tokens), []
 
 
 def _speaker(file_name: str) -> str:
