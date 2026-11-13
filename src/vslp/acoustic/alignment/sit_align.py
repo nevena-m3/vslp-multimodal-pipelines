@@ -85,7 +85,8 @@ _MONTHS = ("january|february|march|april|may|june|july|august|september|october|
 EXAMINER_METADATA = re.compile("|".join([
     r"\b(?:[A-Za-z]-){2,}[A-Za-z0-9](?:-[A-Za-z0-9])*\b",       # C-A-P-T-0-0-5, 0-4-M
     r"\b(?:\d+-)+\d*[A-Za-z]?\b",                               # 0-0-0-20, 0-4-M
-    r"\b(?=[A-Za-z]*\d)(?=\d*[A-Za-z])[A-Za-z0-9]{3,}\b",       # CAPT0000106, 04M, 08M
+    # CAPT0000106, 04M, 08M; not an ordinal or decade (21st, 1990s)
+    r"\b(?!\d+(?:st|nd|rd|th|s)\b)(?=[A-Za-z]*\d)(?=\d*[A-Za-z])[A-Za-z0-9]{3,}\b",
     r"\b0\d{2,}\b(?:[\s,]+\d+\b)*",                              # 000130, 0008204
     rf"\b(?:{_MONTHS})\s+\d{{1,2}}(?:st|nd|rd|th)?,?(?:\s+\d{{4}})?",  # March 5th, 2025
     rf"\b(?:the\s+)?\d{{1,2}}(?:st|nd|rd|th)\s+of\s+(?:{_MONTHS})(?:,?\s+\d{{4}})?",

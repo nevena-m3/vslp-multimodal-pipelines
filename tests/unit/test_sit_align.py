@@ -77,6 +77,8 @@ def test_preamble_without_item_label_and_ids_anywhere_are_examiner_speech():
         "is CAPT0000106. We bought a cake.": "<unk> WE BOUGHT A CAKE",
         "It's December 20th, 2024, and I'm here. The little dog ran.":
             "<unk> THE LITTLE DOG RAN",
+        "Cap 000, 130, 12 months. She sold shells in the 1990s.":
+            "<unk> SHE SOLD SHELLS IN THE NINETEEN NINETIES",
         "Today's the 23rd of March. CAPTCHA0000106 underscore 08M. The little dog ran.":
             "<unk> THE LITTLE DOG RAN",
     }
