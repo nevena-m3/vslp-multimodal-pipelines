@@ -55,10 +55,22 @@ def test_examiner_numbers_become_garbage_words_and_articles_stay():
     lab, problems = sit_align.mfa_transcript("5A. The boy ran home. 6A. A dog sat.")
     assert problems == []
     assert lab == "THE BOY RAN HOME <unk> A DOG SAT"
-    lab, _ = sit_align.mfa_transcript("Number 7 the cat. 8 a hat.")
+    lab, _ = sit_align.mfa_transcript("Number 7 the cat. Number 8 a hat.")
     assert lab == "THE CAT <unk> A HAT"
     dropped, _ = sit_align.mfa_transcript("5A. The boy. 6A. A dog.", examiner="drop")
     assert dropped == "THE BOY A DOG"
+
+
+def test_spoken_preamble_and_spelled_labels_are_examiner_speech():
+    lab, problems = sit_align.mfa_transcript(
+        "It's March 5th, 2025, and this is CAPT0000138, 12 months. 5A. The boy ran. "
+        "Six A. A dog sat. Elevenee. The cat ran.")
+    assert problems == []
+    assert lab == "<unk> THE BOY RAN <unk> A DOG SAT <unk> THE CAT RAN"
+    assert sit_align.mfa_transcript("Cap 00060 5A. The boy.", examiner="drop")[0] == "THE BOY"
+    # No item label at all: a date stays a number problem, never guessed.
+    assert sit_align.mfa_transcript("It's March 5th. The boy ran.")[1] == [
+        "transcript_contains_number_requires_review"]
 
 
 def test_unusable_transcripts_are_held_not_guessed():
