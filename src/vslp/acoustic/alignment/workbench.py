@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 import json
 from pathlib import Path
+import re
 import shutil
 from uuid import uuid4
 
@@ -28,6 +29,13 @@ JOB_VERSION = "VSLP_ALIGNMENT_WORKBENCH_JOB_V1"
 AUDIO_EXTENSIONS = frozenset({".wav"})
 # Engineering review trigger only, not an acoustic word-duration definition.
 WORD_SPAN_REVIEW_SEC = 2.0
+# Inside one reading of a short sentence, consecutive words more than this far
+# apart mean MFA spread one reading across several (seen in the 2026-11 pilot).
+WITHIN_READING_PAUSE_REVIEW_SEC = 1.0
+SHORT_PROMPT_MAX_WORDS = 15
+# One reading lasting under this fraction of the median reading in the same
+# recording is an extra copy squeezed into a pause, not a real reading.
+COMPRESSED_READING_FRACTION = 0.4
 
 
 def _now() -> str:
@@ -171,7 +179,10 @@ def prepare_corpus(root: str | Path, progress_callback=None, cancelled=None) -> 
         if not source.is_file():
             row.update(state="FAILED", issue="source_audio_missing")
             continue
-        speaker = corpus / f"speaker_{index:06d}"
+        # A deidentified participant ID groups that person's recordings for MFA
+        # speaker adaptation; otherwise every recording is its own speaker.
+        speaker_id = re.sub(r"[^A-Za-z0-9_]", "_", str(row.get("speaker_id", "")).strip())
+        speaker = corpus / (f"speaker_{speaker_id}" if speaker_id else f"speaker_{index:06d}")
         speaker.mkdir(parents=True, exist_ok=True)
         target = speaker / f"{row['record_key']}.wav"
         scope = row.get("alignment_scope") or propose_scope(source)
@@ -399,6 +410,23 @@ def qc_job(root: str | Path) -> dict:
                 if spoken and reviewed_expected != expected:
                     flags.append("spoken_transcript_differs_from_canonical")
                 word_count, phone_count = len(words), len(phones)
+                per_reading = len(job["task_specification"]["normalized_transcript"].split())
+                if (not spoken and actual == expected and per_reading <= SHORT_PROMPT_MAX_WORDS
+                        and len(words) == len(expected)):
+                    starts = words.start_sec.astype(float).to_numpy()
+                    ends = words.end_sec.astype(float).to_numpy()
+                    for first in range(0, len(words), per_reading):
+                        gaps = starts[first + 1:first + per_reading] - ends[first:first + per_reading - 1]
+                        if gaps.size and float(gaps.max()) > WITHIN_READING_PAUSE_REVIEW_SEC:
+                            flags.append("long_pause_within_reading_requires_review")
+                            break
+                    spans = [float(ends[first + per_reading - 1] - starts[first])
+                             for first in range(0, len(words), per_reading)]
+                    if len(spans) >= 2 and min(spans) < (COMPRESSED_READING_FRACTION
+                                                         * float(sorted(spans)[len(spans) // 2])):
+                        # MFA squeezed one copy of the sentence into a pause:
+                        # more readings were aligned than were spoken (pilot 4).
+                        flags.append("reading_compressed_requires_review")
                 if actual != reviewed_expected:
                     flags.append("reviewed_transcript_alignment_mismatch" if spoken else
                                  "transcript_token_mismatch")
