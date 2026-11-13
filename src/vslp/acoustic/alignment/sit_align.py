@@ -78,28 +78,114 @@ def transcript_text(data) -> str:
     return ""
 
 
+_MONTHS = ("january|february|march|april|may|june|july|august|september|october|"
+           "november|december")
+# Spoken examiner metadata (participant ID, visit, date), which can sit at the
+# start or run straight into the first sentence. Each match is examiner speech.
+EXAMINER_METADATA = re.compile("|".join([
+    r"\b(?:[A-Za-z]-){2,}[A-Za-z0-9](?:-[A-Za-z0-9])*\b",       # C-A-P-T-0-0-5, 0-4-M
+    r"\b(?:\d+-)+\d*[A-Za-z]?\b",                               # 0-0-0-20, 0-4-M
+    r"\b(?=[A-Za-z]*\d)(?=\d*[A-Za-z])[A-Za-z0-9]{3,}\b",       # CAPT0000106, 04M, 08M
+    r"\b0\d{2,}\b(?:[\s,]+\d+\b)*",                              # 000130, 0008204
+    rf"\b(?:{_MONTHS})\s+\d{{1,2}}(?:st|nd|rd|th)?,?(?:\s+\d{{4}})?",  # March 5th, 2025
+    rf"\b(?:the\s+)?\d{{1,2}}(?:st|nd|rd|th)\s+of\s+(?:{_MONTHS})(?:,?\s+\d{{4}})?",
+    r"\b\d{1,2}\s+months?\b",
+    r"\bunderscore\b",
+]), flags=re.IGNORECASE)
+_ONES = ("zero one two three four five six seven eight nine ten eleven twelve thirteen "
+         "fourteen fifteen sixteen seventeen eighteen nineteen").split()
+_TENS = "_ _ twenty thirty forty fifty sixty seventy eighty ninety".split()
+_ORDINAL = {"one": "first", "two": "second", "three": "third", "five": "fifth",
+            "eight": "eighth", "nine": "ninth", "twelve": "twelfth"}
+
+
+def _cardinal(value: int) -> str:
+    if value < 20:
+        return _ONES[value]
+    if value < 100:
+        return _TENS[value // 10] + ("" if value % 10 == 0 else " " + _ONES[value % 10])
+    if value < 1000:
+        rest = value % 100
+        return _ONES[value // 100] + " hundred" + (" " + _cardinal(rest) if rest else "")
+    rest = value % 1000
+    return _cardinal(value // 1000) + " thousand" + (" " + _cardinal(rest) if rest else "")
+
+
+def spell_number(token: str) -> str | None:
+    """Spoken form of a whole number, ordinal, year or decade; None if unsure."""
+    match = re.fullmatch(r"(\d{1,4})(st|nd|rd|th|s|'s)?", token, flags=re.IGNORECASE)
+    if not match:
+        return None
+    digits, suffix = match.group(1), (match.group(2) or "").lower()
+    value = int(digits)
+    if len(digits) > 1 and digits.startswith("0"):
+        return None
+    if len(digits) == 4 and (1100 <= value <= 1999 or 2010 <= value <= 2099):
+        high, low = divmod(value, 100)   # 1990 -> nineteen ninety, 2025 -> twenty twenty five
+        words = _cardinal(high) + " " + ("hundred" if low == 0 else
+                                         ("oh " if low < 10 else "") + _cardinal(low))
+    else:
+        words = _cardinal(value)
+    if suffix in {"st", "nd", "rd", "th"}:
+        *head, last = words.split()
+        last = _ORDINAL.get(last, last[:-1] + "ieth" if last.endswith("y") else last + "th")
+        words = " ".join(head + [last])
+    elif suffix in {"s", "'s"}:
+        *head, last = words.split()
+        words = " ".join(head + [last[:-1] + "ies" if last.endswith("y") else last + "s"])
+    return words
+
+
+def _spell_numbers(text: str) -> str:
+    def replace(match: re.Match) -> str:
+        spoken = spell_number(match.group(0))
+        return spoken if spoken is not None else match.group(0)
+    # Not part of a decimal, a grouped number or a percentage (held instead).
+    return re.sub(r"(?<![\d.,])\b\d{1,4}(?:st|nd|rd|th|'s|s)?\b(?![.,]\d|\s?%)", replace,
+                  text, flags=re.IGNORECASE)
+
+
 def mfa_transcript(text: str, examiner: str = "unk") -> tuple[str, list[str]]:
     """Text for the .lab file and the reasons it cannot be used ([] if fine).
 
     The examiner usually opens with a spoken preamble (date, participant ID,
     visit), which is not part of the reading. Everything before the first item
-    label ("5A") is replaced by one ``<unk>`` (or dropped with ``drop``), so its
-    numbers neither block the recording nor stretch the first sentence.
+    label ("5A") is examiner speech; so is every ID, visit or date phrase
+    anywhere, and, when no label is found, every sentence up to the last such
+    phrase in the opening (first half, or first 250 characters). Each run of examiner speech becomes
+    one ``<unk>`` (or is dropped with ``drop``). Numbers that remain are part
+    of a sentence and are spelled out ("2 hours" -> "two hours"); anything
+    still holding a digit is held for review, never guessed.
     """
     marker = "\x00"
+    preamble = False
     first = EXAMINER_PATTERN.search(text)
-    preamble = bool(first and text[:first.start()].strip())
     if first:
+        preamble = bool(text[:first.start()].strip())
         text = text[first.start():]
-    marked = EXAMINER_PATTERN.sub(f" {marker} ", text)
+    else:
+        # Preamble = the opening: first half of the text, or its first 250
+        # characters for a short transcript.
+        limit = max(len(text) / 2, 250)
+        early = [m for m in EXAMINER_METADATA.finditer(text) if m.start() < limit]
+        if early:
+            stop = re.search(r"[.!?](?:\s|$)", text[early[-1].end():])
+            cut = early[-1].end() + (stop.end() if stop else 0)
+            preamble, text = True, text[cut:]
+    marked = EXAMINER_METADATA.sub(f" {marker} ", text)
+    marked = EXAMINER_PATTERN.sub(f" {marker} ", marked)
+    marked = _spell_numbers(marked)
     pieces = []
     for part in marked.split(marker):
         try:
             pieces.append(normalize_transcript(part))
         except ValueError:
             return "", ["transcript_contains_number_requires_review"]
-    joiner = f" {EXAMINER} " if examiner == "unk" else " "
-    tokens = joiner.join(pieces).split()
+    tokens = []
+    for index, piece in enumerate(pieces):
+        if index and examiner == "unk" and (not tokens or tokens[-1] != EXAMINER):
+            tokens.append(EXAMINER)
+        tokens.extend(piece.split())
     # A label at the very start or end has nothing to absorb (silence covers
     # it); a dropped preamble does: the examiner was talking there.
     while tokens and tokens[0] == EXAMINER:
