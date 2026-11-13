@@ -68,14 +68,41 @@ def test_spoken_preamble_and_spelled_labels_are_examiner_speech():
     assert problems == []
     assert lab == "<unk> THE BOY RAN <unk> A DOG SAT <unk> THE CAT RAN"
     assert sit_align.mfa_transcript("Cap 00060 5A. The boy.", examiner="drop")[0] == "THE BOY"
-    # No item label at all: a date stays a number problem, never guessed.
-    assert sit_align.mfa_transcript("It's March 5th. The boy ran.")[1] == [
+
+
+
+def test_preamble_without_item_label_and_ids_anywhere_are_examiner_speech():
+    cases = {
+        "The participant number is C-A-P-T-0-0-0-0-0-0-5 underscore 0-4-M. Capture ID "
+        "is CAPT0000106. We bought a cake.": "<unk> WE BOUGHT A CAKE",
+        "It's December 20th, 2024, and I'm here. The little dog ran.":
+            "<unk> THE LITTLE DOG RAN",
+        "Today's the 23rd of March. CAPTCHA0000106 underscore 08M. The little dog ran.":
+            "<unk> THE LITTLE DOG RAN",
+    }
+    for text, expected in cases.items():
+        lab, problems = sit_align.mfa_transcript(text)
+        assert problems == [] and lab == expected, (text, lab, problems)
+
+
+def test_numbers_inside_sentences_are_spelled_out():
+    assert sit_align.mfa_transcript("5A. The workout lasted 2 hours.")[0] == (
+        "THE WORKOUT LASTED TWO HOURS")
+    assert sit_align.spell_number("1990s") == "nineteen nineties"
+    assert sit_align.spell_number("2025") == "twenty twenty five"
+    assert sit_align.spell_number("21st") == "twenty first"
+    assert sit_align.spell_number("3rd") == "third"
+    assert sit_align.spell_number("40") == "forty"
+    assert sit_align.spell_number("1500") == "fifteen hundred"
+    assert sit_align.spell_number("007") is None
+    # A decimal stays a number problem, never guessed.
+    assert sit_align.mfa_transcript("5A. It cost 2.50 today.")[1] == [
         "transcript_contains_number_requires_review"]
 
 
 def test_unusable_transcripts_are_held_not_guessed():
     assert sit_align.mfa_transcript("5A.")[1] == ["empty_transcript"]
-    assert sit_align.mfa_transcript("He paid 250 dollars")[1] == [
+    assert sit_align.mfa_transcript("He paid 2.5 percent")[1] == [
         "transcript_contains_number_requires_review"]
 
 
