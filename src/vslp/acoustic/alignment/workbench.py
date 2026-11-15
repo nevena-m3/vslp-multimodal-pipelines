@@ -22,7 +22,7 @@ from .profiles import default_profile_path
 from .stage import normalize_transcript
 from .final_contract import canonical_units
 from .task_workflow import task_entry
-from .utterance_scope import propose_scope, write_scoped_audio
+from .utterance_scope import propose_scope, speech_at_edges, write_scoped_audio
 
 
 JOB_VERSION = "VSLP_ALIGNMENT_WORKBENCH_JOB_V1"
@@ -368,8 +368,19 @@ def qc_job(root: str | Path) -> dict:
             flags.append("alignment_scope_requires_review")
         if scope and scope_end - scope_start < len(expected) * .05:
             flags.append("transcript_cannot_fit_proposed_scope")
-        if scope and (scope_start < .05 or float(row["duration_sec"]) - scope_end < .05):
-            flags.append("alignment_scope_touches_recording_boundary")
+        touches_start = bool(scope) and scope_start < .05
+        touches_end = bool(scope) and float(row["duration_sec"]) - scope_end < .05
+        if touches_start or touches_end:
+            # Flag only when speech energy reaches a touching edge (possible
+            # clipped word); a tight cut through silence is fine.
+            if "edge_speech" not in row:
+                try:
+                    row["edge_speech"] = list(speech_at_edges(row["source_path"]))
+                except (OSError, RuntimeError, ValueError):
+                    row["edge_speech"] = [True, True]
+            if (touches_start and row["edge_speech"][0]) or (
+                    touches_end and row["edge_speech"][1]):
+                flags.append("alignment_scope_touches_recording_boundary")
         if not row.get("textgrid_path"):
             flags.append("mfa_output_missing")
             word_count = phone_count = 0

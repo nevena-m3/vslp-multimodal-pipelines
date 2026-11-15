@@ -306,3 +306,43 @@ def test_reading_counts_are_recomputed_from_the_cache_without_speech_to_text(tmp
     readings.main(["--audio-dir", str(audio), "--out", str(out)])
     table = pd.read_csv(out)
     assert table.readings.tolist() == [2]
+
+
+def _edge_wav(path: Path, start: float, end: float, seed: int) -> None:
+    rng = np.random.default_rng(seed)
+    audio = rng.standard_normal(4 * 16000).astype("float32") * 1e-4  # room noise
+    audio[int(start * 16000):int(end * 16000)] = rng.standard_normal(
+        int(end * 16000) - int(start * 16000)) * .2
+    sf.write(path, audio, 16000)
+
+
+def test_tight_cut_through_silence_is_not_a_boundary_problem(tmp_path):
+    from vslp.acoustic.alignment.utterance_scope import speech_at_edges
+
+    audio = tmp_path / "audio"
+    audio.mkdir()
+    tight = "TIGHT_1_1_20240101_256_NSM_NAS_WSTG.wav"
+    clipped = "CLIP_1_1_20240101_256_NSM_NAS_WSTG.wav"
+    _edge_wav(audio / tight, .12, 3.88, 1)    # speech near, not at, both edges
+    _edge_wav(audio / clipped, 0.0, 3.88, 2)  # speech already running at 0 s
+    assert speech_at_edges(audio / tight) == (False, False)
+    assert speech_at_edges(audio / clipped) == (True, False)
+    readings = tmp_path / "readings.csv"
+    pd.DataFrame({"file_name": [tight, clipped], "readings": [3, 3]}).to_csv(readings,
+                                                                             index=False)
+    workspace = tmp_path / "ws"
+    batch.run_batch(inventory_csv=None, workspace=workspace, audio_dir=str(audio),
+                    provider=FakeProvider(), plot="none", readings_csv=str(readings),
+                    log=lambda *_: None)
+    table = pd.read_csv(workspace / "batch_recordings.csv", keep_default_na=False)
+    flags = dict(zip(table.speaker_id, table.qc_flags))
+    assert "alignment_scope_touches_recording_boundary" not in flags["TIGHT"]
+    assert "alignment_scope_touches_recording_boundary" in flags["CLIP"]
+
+    # Re-checking finished jobs (after a QC rule change) needs no MFA run and
+    # keeps the earlier table.
+    result = batch.requalify(workspace, log=lambda *_: None)
+    assert result["recordings"] == 2
+    assert (workspace / "batch_recordings_before_requalify.csv").is_file()
+    again = pd.read_csv(workspace / "batch_recordings.csv", keep_default_na=False)
+    assert dict(zip(again.speaker_id, again.state)) == dict(zip(table.speaker_id, table.state))
