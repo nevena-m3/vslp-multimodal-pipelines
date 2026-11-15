@@ -46,6 +46,10 @@ class MfaProfile:
     conda_executable: str = ""
     mfa_executable: str = ""
     supported_mfa_version: str = ""
+    # Optional Viterbi search widths (MFA defaults 10/40 when 0). A wider beam
+    # lets slow or dysarthric speech align instead of silently dropping out.
+    beam: int = 0
+    retry_beam: int = 0
 
     @classmethod
     def load(cls, path: str | Path) -> "MfaProfile":
@@ -60,6 +64,7 @@ class MfaProfile:
                 or profile.output_format != "long_textgrid"
                 or profile.status != "engineering_not_empirically_validated"
                 or profile.launcher_type.upper() not in {"CONDA_ENV", "EXPLICIT_EXECUTABLE", "CURRENT_PATH"}
+                or profile.beam < 0 or profile.retry_beam < 0
                 or not profile.acoustic_model or not profile.dictionary):
             raise ValueError("invalid_mfa_profile")
         return profile
@@ -280,7 +285,12 @@ class MfaProvider:
                                 profile.acoustic_model, str(output))
         else:
             command = self._mfa("align_hf", str(corpus), profile.acoustic_model, str(output))
-        return command + ["--output_format", profile.output_format]
+        command += ["--output_format", profile.output_format]
+        if profile.beam:
+            command += ["--beam", str(profile.beam)]
+        if profile.retry_beam:
+            command += ["--retry_beam", str(profile.retry_beam)]
+        return command
 
     def preflight(self, corpus: Path, profile: MfaProfile, transcripts: list[str],
                   logs: Path) -> dict:
