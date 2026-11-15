@@ -37,6 +37,9 @@ TASKS_PATH = Path(__file__).with_name("batch_tasks.yaml")
 # Whole-dataset default: same model/dictionary as the engineering profile, but a
 # wide Viterbi beam (100/400) so slow, dysarthric speech is not silently dropped.
 BATCH_PROFILE = Path(__file__).parent / "profiles" / "mfa_vslp_en_us_arpa_334_wide_beam_v1.json"
+# Second pass for recordings MFA dropped (no TextGrid): a 4x wider search.
+RETRY_PROFILE = Path(__file__).parent / "profiles" / "mfa_vslp_en_us_arpa_334_extra_wide_beam_v1.json"
+RETRY_SUFFIX = "__retry_wide"
 NAME_PATTERN = re.compile(
     r"^(?P<subject>[^_]+)_(?P<protocol>\d+)_(?P<iteration>\d+)_(?P<date>\d{8})_(?P<code>.+)$")
 
@@ -397,11 +400,78 @@ def run_batch(*, inventory_csv: str | None, workspace: str | Path, zip_path: str
                                            f"{item.file_name} · {item.state} · {item.qc_flags}")
                         except Exception as exc:  # noqa: BLE001 - plots never block results
                             log(f"plot failed for {item.file_name}: {exc}")
-    summary = pd.concat(tables, ignore_index=True) if tables else pd.DataFrame()
+    summary = prefer_retries(pd.concat(tables, ignore_index=True)) if tables else pd.DataFrame()
     summary.to_csv(workspace / "batch_recordings.csv", index=False)
     log(f"Done. Packages in {workspace / 'packages'}; per-recording table: "
         f"{workspace / 'batch_recordings.csv'}")
     return {"workspace": str(workspace), "jobs": state["jobs"], "recordings": len(summary)}
+
+
+def prefer_retries(table: pd.DataFrame) -> pd.DataFrame:
+    """One row per recording: a retry job's row replaces the original job's."""
+    if table.empty or "job" not in table:
+        return table
+    retried = set(table.loc[table.job.str.endswith(RETRY_SUFFIX), "file_name"])
+    return table.loc[table.job.str.endswith(RETRY_SUFFIX) |
+                     ~table.file_name.isin(retried)].reset_index(drop=True)
+
+
+def retry_unaligned(workspace: str | Path, *, min_duration_sec: float = 15.0,
+                    profile_path: str | Path = RETRY_PROFILE, provider=None,
+                    plot: str = "flagged", log=print) -> dict:
+    """Align again, with a wider search, recordings MFA returned nothing for.
+
+    Only recordings flagged ``mfa_output_missing`` and at least
+    ``min_duration_sec`` long are retried (a cut-off file cannot hold the
+    prompt; it stays in review). One retry job per original job, named
+    ``<job>__retry_wide``, with its own package; the per-recording table then
+    lists each retried recording once, from the retry.
+    """
+    workspace = Path(workspace).resolve()
+    state_path = workspace / "batch_state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    inventory = pd.read_csv(workspace / "inventory_with_batch_roles.csv", dtype=str,
+                            keep_default_na=False).set_index("file_name")
+    results = {}
+    for job_name, result in sorted(state["jobs"].items()):
+        if job_name.endswith(RETRY_SUFFIX) or not result.get("job_root"):
+            continue
+        job = load_job(result["job_root"])
+        missing = [row for row in job["recordings"] if not row.get("textgrid_path")
+                   and row.get("state") in {"NEEDS_REVIEW", "FAILED"}
+                   and float(row.get("duration_sec", 0)) >= min_duration_sec]
+        if not missing or result.get("status") != "DONE":
+            continue
+        names = [row["recording"] for row in missing]
+        rows = inventory.loc[inventory.index.intersection(names)].reset_index()
+        rows["repetitions"] = int(job["task_specification"]["expected_repetitions"])
+        paths = {row["recording"]: Path(row["source_path"]) for row in missing}
+        retry_name = job_name + RETRY_SUFFIX
+        log(f"[{retry_name}] retrying {len(rows)} recordings with a wider search")
+        try:
+            retry = run_task(retry_name, rows, paths, workspace,
+                             profile_path=str(profile_path), provider=provider, log=log)
+        except Exception as exc:  # noqa: BLE001 - one failed retry must not stop the rest
+            retry = {"job": retry_name, "status": "FAILED", "error": repr(exc)[:500]}
+            log(f"[{retry_name}] FAILED: {exc}")
+        state["jobs"][retry_name] = {**retry, "finished_utc": _now()}
+        state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+        results[retry_name] = retry
+        if retry.get("job_root") and plot != "none":
+            records = recording_table(retry["job_root"], retry_name)
+            chosen = records if plot == "all" else records.loc[records.state.ne("AUTO_PASS")]
+            for item in chosen.itertuples():
+                target = workspace / "plots" / retry_name / f"{Path(item.file_name).stem}.png"
+                try:
+                    plot_recording(retry["job_root"], item.record_key, item.source_path,
+                                   target, f"{item.file_name} · {item.state} · {item.qc_flags}")
+                except Exception as exc:  # noqa: BLE001
+                    log(f"plot failed for {item.file_name}: {exc}")
+    tables = [recording_table(job["job_root"], name) for name, job in sorted(
+        state["jobs"].items()) if job.get("job_root") and Path(job["job_root"]).is_dir()]
+    table = prefer_retries(pd.concat(tables, ignore_index=True)) if tables else pd.DataFrame()
+    table.to_csv(workspace / "batch_recordings.csv", index=False)
+    return results
 
 
 def requalify(workspace: str | Path, log=print) -> dict:
@@ -443,7 +513,7 @@ def requalify(workspace: str | Path, log=print) -> dict:
             log(f"[{job_name}] auto-pass {before} -> {qc['auto_pass']}, exported {exported}")
         tables.append(recording_table(root, job_name))
     state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
-    summary = pd.concat(tables, ignore_index=True) if tables else pd.DataFrame()
+    summary = prefer_retries(pd.concat(tables, ignore_index=True)) if tables else pd.DataFrame()
     summary.to_csv(table_path, index=False)
     return {"workspace": str(workspace), "jobs": changes, "recordings": len(summary)}
 
@@ -463,11 +533,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--readings", help="reading counts CSV from vslp.acoustic.alignment.readings")
     parser.add_argument("--extract-only", action="store_true",
                         help="only extract the selected WAVs (step 1 of 3)")
+    parser.add_argument("--retry-unaligned", action="store_true",
+                        help="align again, with a 4x wider search, recordings MFA returned "
+                             "nothing for (no TextGrid), if at least --retry-min-sec long")
+    parser.add_argument("--retry-min-sec", type=float, default=15.0)
     parser.add_argument("--requalify", action="store_true",
                         help="re-run QC on finished jobs and rebuild packages (no MFA)")
     args = parser.parse_args(argv)
     if args.requalify:
         requalify(args.workspace)
+        return 0
+    if args.retry_unaligned:
+        retry_unaligned(args.workspace, min_duration_sec=args.retry_min_sec,
+                        plot=args.plots)
         return 0
     result = run_batch(inventory_csv=args.inventory, workspace=args.workspace,
                        zip_path=args.zip, audio_dir=args.audio_dir, codes=args.codes,

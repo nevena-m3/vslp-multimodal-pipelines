@@ -346,3 +346,46 @@ def test_tight_cut_through_silence_is_not_a_boundary_problem(tmp_path):
     assert (workspace / "batch_recordings_before_requalify.csv").is_file()
     again = pd.read_csv(workspace / "batch_recordings.csv", keep_default_na=False)
     assert dict(zip(again.speaker_id, again.state)) == dict(zip(table.speaker_id, table.state))
+
+
+class DroppingProvider(FakeProvider):
+    """Like FakeProvider, but MFA 'drops' the DROP speaker (no TextGrid)."""
+
+    def align_corpus(self, corpus, output, profile, logs):
+        grids = super().align_corpus(corpus, output, profile, logs)
+        return {key: grid for key, grid in grids.items()
+                if not any(part.name.endswith("DROP") for part in
+                           next(Path(corpus).rglob(f"{key}.lab")).parents)}
+
+
+def test_dropped_recordings_are_retried_with_a_wider_search(tmp_path):
+    audio = tmp_path / "audio"
+    audio.mkdir()
+    names = ["KEEP_1_1_20240101_256_NSM_NAS_WSTG.wav", "DROP_1_1_20240101_256_NSM_NAS_WSTG.wav"]
+    for seed, name in enumerate(names):
+        _wav(audio / name, seed)
+    readings = tmp_path / "readings.csv"
+    pd.DataFrame({"file_name": names, "readings": [3, 3]}).to_csv(readings, index=False)
+    workspace = tmp_path / "ws"
+    batch.run_batch(inventory_csv=None, workspace=workspace, audio_dir=str(audio),
+                    provider=DroppingProvider(), plot="none", readings_csv=str(readings),
+                    log=lambda *_: None)
+    first = pd.read_csv(workspace / "batch_recordings.csv", keep_default_na=False)
+    assert "mfa_output_missing" in first.set_index("speaker_id").loc["DROP", "qc_flags"]
+
+    # Too short to hold the prompt: not retried.
+    assert batch.retry_unaligned(workspace, min_duration_sec=10, provider=FakeProvider(),
+                                 plot="none", log=lambda *_: None) == {}
+    results = batch.retry_unaligned(workspace, min_duration_sec=1, provider=FakeProvider(),
+                                    plot="none", log=lambda *_: None)
+    retry = results["256_NSM_NAS_WSTG__wstg__x3__retry_wide"]
+    assert (retry["recordings"], retry["auto_pass"], retry["exported"]) == (1, 1, 1)
+    job = json.loads((Path(retry["job_root"]) / "job_manifest.json").read_text("utf-8"))
+    assert job["profile_path"].endswith("extra_wide_beam_v1.json")
+    table = pd.read_csv(workspace / "batch_recordings.csv", keep_default_na=False)
+    assert sorted(table.speaker_id) == ["DROP", "KEEP"]  # each recording once
+    assert table.set_index("speaker_id").loc["DROP", "state"] == "AUTO_PASS"
+    # A later QC re-check keeps one row per recording too.
+    batch.requalify(workspace, log=lambda *_: None)
+    again = pd.read_csv(workspace / "batch_recordings.csv", keep_default_na=False)
+    assert sorted(again.speaker_id) == ["DROP", "KEEP"]
