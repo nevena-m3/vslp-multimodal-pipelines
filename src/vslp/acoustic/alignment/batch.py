@@ -30,7 +30,7 @@ import pandas as pd
 import yaml
 
 from .workbench import (align_job, create_job, inspect_audio_files, load_job,
-                        preflight_job, prepare_corpus)
+                        preflight_job, prepare_corpus, qc_job)
 from .workbench_package import export_standalone_package
 
 TASKS_PATH = Path(__file__).with_name("batch_tasks.yaml")
@@ -404,6 +404,50 @@ def run_batch(*, inventory_csv: str | None, workspace: str | Path, zip_path: str
     return {"workspace": str(workspace), "jobs": state["jobs"], "recordings": len(summary)}
 
 
+def requalify(workspace: str | Path, log=print) -> dict:
+    """Re-run structural QC on finished jobs and re-export their packages.
+
+    For QC rule changes after a batch: MFA is not run again; the existing
+    TextGrids, reviews and audio are re-checked, packages are rebuilt and
+    ``batch_recordings.csv`` is rewritten. The previous table is kept as
+    ``batch_recordings_before_requalify.csv``.
+    """
+    workspace = Path(workspace).resolve()
+    state_path = workspace / "batch_state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    table_path = workspace / "batch_recordings.csv"
+    if table_path.is_file():
+        shutil.copy2(table_path, workspace / "batch_recordings_before_requalify.csv")
+    tables, changes = [], {}
+    for job_name, result in sorted(state["jobs"].items()):
+        root = result.get("job_root")
+        if not root or not Path(root).is_dir():
+            continue
+        job = load_job(root)
+        if result.get("status") == "DONE" and any(row.get("textgrid_path")
+                                                  for row in job["recordings"]):
+            before = result.get("auto_pass", 0)
+            qc = qc_job(root)
+            package = workspace / "packages" / job_name
+            if package.exists():
+                shutil.rmtree(package)
+            exported = 0
+            if qc["auto_pass"]:
+                export_standalone_package(root, package, skip_unmappable=True)
+                exported = int(json.loads((package / "package_manifest.json").read_text(
+                    encoding="utf-8"))["recording_count"])
+            result.update(auto_pass=qc["auto_pass"], needs_review=qc["needs_review"],
+                          exported=exported, package=str(package) if exported else "",
+                          requalified_utc=_now())
+            changes[job_name] = (before, qc["auto_pass"])
+            log(f"[{job_name}] auto-pass {before} -> {qc['auto_pass']}, exported {exported}")
+        tables.append(recording_table(root, job_name))
+    state_path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    summary = pd.concat(tables, ignore_index=True) if tables else pd.DataFrame()
+    summary.to_csv(table_path, index=False)
+    return {"workspace": str(workspace), "jobs": changes, "recordings": len(summary)}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--inventory", help="WAVS.csv inventory (optional)")
@@ -419,7 +463,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--readings", help="reading counts CSV from vslp.acoustic.alignment.readings")
     parser.add_argument("--extract-only", action="store_true",
                         help="only extract the selected WAVs (step 1 of 3)")
+    parser.add_argument("--requalify", action="store_true",
+                        help="re-run QC on finished jobs and rebuild packages (no MFA)")
     args = parser.parse_args(argv)
+    if args.requalify:
+        requalify(args.workspace)
+        return 0
     result = run_batch(inventory_csv=args.inventory, workspace=args.workspace,
                        zip_path=args.zip, audio_dir=args.audio_dir, codes=args.codes,
                        limit_per_task=args.limit_per_task, profile_path=args.profile,
